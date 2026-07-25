@@ -77,6 +77,54 @@ Both inject the same synthetic `search_capabilities` call/result pair; they diff
 
 Rule of thumb: for a long-lived multi-turn agent that already persists `responseMessages`, `appendRecall` keeps recalls inside the cached prefix across turns. For a one-shot or stateless call — or when you'd rather not store recall pairs in your history — `prepareStep` is the lighter drop-in. Both are shipped so a host can measure `cachedInputTokens` on its own traffic and pick.
 
+## Telemetry: `RatelOtelIntegration` (`ai@7`)
+
+Emission and delivery are separate concerns. `@ratel-ai/sdk` already emits its own
+`ratel.*` spans onto the global OTel tracer with no wiring at all. This integration adds
+the *other* half on `ai@7`: the AI SDK's standard `gen_ai.*` spans, with Ratel's `ratel.*`
+overlay stamped on each one.
+
+It only **creates** spans, onto a provider **you** own. It never registers a provider and
+never exports, so whatever processors you already run receive them:
+
+```ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { RatelOtelIntegration } from "@ratel-ai/vercel-ai-sdk/otel";
+import { registerTelemetry } from "ai";
+
+const sdk = new NodeSDK({ spanProcessors: [new LangfuseSpanProcessor()] });
+sdk.start();
+
+registerTelemetry(new RatelOtelIntegration());
+```
+
+Install `@ai-sdk/otel` alongside it — it's an optional peer, and the integration embeds its
+`OpenTelemetry` emitter as a private delegate (enriching through that emitter's `enrichSpan`
+hook). Flush and shutdown belong to the host's `NodeSDK`.
+
+- **Register exactly one emitting integration.** `RatelOtelIntegration`, Langfuse's
+  `LangfuseVercelAiSdkIntegration`, and the bare `OpenTelemetry` from `@ai-sdk/otel` all
+  embed the same emitter, so registering two duplicates every `gen_ai.*` span. Every
+  processor on the shared provider sees the spans regardless of which one you pick — but
+  only this one adds the `ratel.*` overlay. Per-call `telemetry: { integrations: [...] }`
+  overrides the global registration for that call.
+- **It's a separate entrypoint on purpose.** `@ai-sdk/otel` depends on an exact `ai@7`, so
+  exporting it from the package root would pull a second `ai` into every `ai@5`/`ai@6`
+  host's type graph — where two copies redeclare `AI_SDK_DEFAULT_PROVIDER` and the host's
+  build fails without it ever importing the integration. Importing
+  `@ratel-ai/vercel-ai-sdk` costs you nothing if you don't ask for `/otel`.
+- **`RatelOtelIntegration` targets the `ai@7` seam only.** `ai@5` has none at all; `ai@6`
+  (from `6.0.150`) has an *earlier, different* one — `registerTelemetryIntegration` with a
+  six-method `TelemetryIntegration` interface, not `registerTelemetry`/`Telemetry` — which
+  this class does not implement. On either major, pass
+  `experimental_telemetry: { isEnabled: true }` per call instead. The SDK's own `ratel.*`
+  spans are unaffected and still need no wiring.
+- **What lands on each span, for now, is `ratel.origin`.** Not a limit of the hook: the AI
+  SDK hands `enrichSpan` the `spanType`, `operationId`, `callId`, and `runtimeContext` at
+  span creation, so per-span-kind and per-call attributes are already reachable. It's a
+  deliberate baseline — the richer experiment vocabulary lands with the work that defines it.
+
 ## Limitations
 
 - **Persist the response messages** (`await result.responseMessages` on `ai@7`; `(await result.response).messages` on `ai@5`/`ai@6`, which have no `responseMessages`). Recall fires only when the last message is the user's turn. If you drop the accumulated response messages between turns, turn *N+1* loses turn *N*'s tool calls and results — standard AI SDK message hygiene, load-bearing here.
@@ -93,7 +141,7 @@ Peer range: **`ai@^5.0.0 || ^6.0.0 || ^7.0.0`** — one shared code path, no per
 Approval (`needsApproval`) is available on AI SDK 6+, while per-tool `contextSchema` is AI
 SDK 7-only. When present, both stay on the native passthrough path.
 
-Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.33` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Releases between floor and latest are covered by the range, not row-verified.
+Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.37` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Every row also asserts that consumer resolved **no** `@ai-sdk/otel`; the v7 rows additionally install it and typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface. Releases between floor and latest are covered by the range, not row-verified.
 
 - **`ai@4` is excluded.** The v5 release reshaped the tool and message surface the adapter speaks (`inputSchema`/`ModelMessage`-era shapes); `ai@4` predates it and would need a different adapter, not a wider range.
 - **Breaking-change policy:** narrowing the supported-majors peer range (dropping a major) is a breaking change of this adapter and ships as a major (post-1.0) with a changelog callout — never a patch or minor. Widening the range to a new `ai` major is additive.
@@ -101,7 +149,8 @@ Each supported major is verified in CI at two exact releases — its floor and i
 ## Package shape
 
 - Package name: `@ratel-ai/vercel-ai-sdk`
-- Pure TypeScript, **zero runtime dependencies** — the adapter is glue. `ai@^5.0.0 || ^6.0.0 || ^7.0.0` and `@ratel-ai/sdk` are peers the host already installs.
+- Two entrypoints: `.` (the adapter) and `./otel` (the `ai@7` telemetry integration).
+- Pure TypeScript, and the adapter itself is still glue: `ai@^5.0.0 || ^6.0.0 || ^7.0.0` and `@ratel-ai/sdk` are peers the host already installs, and `@ai-sdk/otel` / `@opentelemetry/api` are *optional* peers only `./otel` needs. Its one runtime dependency is `@ratel-ai/telemetry`, the zero-dependency `ratel.*` constants package that `./otel` imports unconditionally — a peer there could go unmet or unhoisted and break the import at load time, which no typecheck would catch.
 - MIT ([ADR-0009](../../../docs/adr/0009-licensing.md)); member of the pnpm workspace; `publishConfig` provenance on.
 
 ## Build & test

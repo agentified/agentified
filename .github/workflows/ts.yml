@@ -87,7 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ai-version: ['5.0.0', '5.0.217', '6.0.0', '6.0.232', '7.0.0', '7.0.33']
+        ai-version: ['5.0.0', '5.0.217', '6.0.0', '6.0.232', '7.0.0', '7.0.37']
     env:
       AI_SDK_VERSION: ${{ matrix.ai-version }}
     steps:
@@ -122,6 +122,7 @@ jobs:
       # misrouting. `--omit=optional` skips the SDK's platform-binary optionals
       # (irrelevant to a type-level check and unpublished at workspace versions).
       - name: Typecheck a packed consumer
+        id: packed-consumer
         run: |
           set -e
           tmp=$(mktemp -d)
@@ -153,3 +154,37 @@ jobs:
           export const appended = view.appendRecall([]);
           TS
           npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 consumer.mts
+          echo "otel=$(ls node_modules/@ai-sdk/otel >/dev/null 2>&1 && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          echo "dir=$tmp" >> "$GITHUB_OUTPUT"
+      # The integration is deliberately NOT on the root entrypoint and its peers
+      # are optional, so a host that never asks for telemetry must not resolve
+      # `@ai-sdk/otel` at all — it pins its own exact `ai@7`, and a second `ai` in
+      # one program redeclares `AI_SDK_DEFAULT_PROVIDER` (TS2403) in the host's
+      # build. This asserts the absence; the v7 step below asserts it still works
+      # when asked for.
+      - name: Assert the integration stays off the default resolution path
+        run: |
+          test "${{ steps.packed-consumer.outputs.otel }}" = "no" \
+            || { echo "@ai-sdk/otel was installed for an ai@${AI_SDK_VERSION} consumer that never imported it"; exit 1; }
+      # `RatelOtelIntegration` never imports `Telemetry` from `ai` (that would
+      # break the ai@5/6 rows), so the only place its assignability to the real
+      # `ai@7` interface is proven is a consumer resolving both for real.
+      - name: Typecheck the telemetry integration (v7 rows)
+        if: startsWith(matrix.ai-version, '7.')
+        run: |
+          set -e
+          cd "${{ steps.packed-consumer.outputs.dir }}"
+          npm install --no-audit --no-fund --omit=optional @ai-sdk/otel @opentelemetry/api
+          cat > telemetry-consumer.mts <<'TS'
+          import { RatelOtelIntegration } from "@ratel-ai/vercel-ai-sdk/otel";
+          import { registerTelemetry, type Telemetry } from "ai";
+
+          const integration: Telemetry = new RatelOtelIntegration();
+          registerTelemetry(integration);
+          TS
+          npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 telemetry-consumer.mts
+          # `tsc` provably cannot catch a missing runtime-only import: the
+          # `ratel.*` constants never reach `otel.d.ts`, and every typecheck here
+          # runs --skipLibCheck. Actually loading the module is the only check
+          # that fails when a dependency is declared but never installed.
+          node -e "import('@ratel-ai/vercel-ai-sdk/otel').then(m => { if (typeof m.RatelOtelIntegration !== 'function') { throw new Error('subpath loaded without RatelOtelIntegration'); } new m.RatelOtelIntegration(); })"

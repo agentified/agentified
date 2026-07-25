@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `RatelOtelIntegration`, an `ai@7` telemetry integration, at the new `@ratel-ai/vercel-ai-sdk/otel` entrypoint. It embeds `@ai-sdk/otel`'s `OpenTelemetry` emitter as a private delegate and stamps Ratel's `ratel.origin` overlay on every span through that emitter's `enrichSpan` hook, so hosts get the AI SDK's standard `gen_ai.*` spans plus the `ratel.*` overlay. It only *creates* spans, onto a provider the host owns — it never registers a provider and never exports, so any processor already on that provider (Langfuse, a generic OTLP exporter, anything else) receives them. Register exactly one emitting integration: this one, Langfuse's, and the bare `OpenTelemetry` all embed the same emitter, so two would duplicate every `gen_ai.*` span. On `ai@5`/`ai@6` there is no integration seam — pass `experimental_telemetry: { isEnabled: true }` per call instead.
+- `@ai-sdk/otel` and `@opentelemetry/api` as **optional** peers, needed only by `./otel`. Optional and off-root are both load-bearing, not stylistic: `@ai-sdk/otel` depends on an exact `ai@7`, so a required peer or a root re-export drags a second `ai` into an `ai@5`/`ai@6` host's type graph, where the two copies redeclare `AI_SDK_DEFAULT_PROVIDER` and break the host's build (TS2403) without it ever importing the integration. The compat matrix now asserts a packed consumer resolves no `@ai-sdk/otel`; its v7 rows typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface and then actually import and construct it.
+
+### Changed
+
+- The adapter takes its first runtime dependency, `@ratel-ai/telemetry` — the zero-dependency `ratel.*` constants package that `dist/otel.js` imports unconditionally. It was briefly an optional peer, which nothing installs; the `ratel.*` constants never reach `otel.d.ts`, so no typecheck could catch the resulting load-time `ERR_MODULE_NOT_FOUND`. It carries no `ai` of its own, so none of the duplicate-`ai` hazard that keeps the other two peers optional applies.
+- Dev-pinned `ai` moves to `7.0.37` (matching `@ai-sdk/otel@1.0.37`, which depends on that exact release), and the compat matrix's latest v7 row moves with it. The peer range is unchanged.
+
 ## [0.1.0] - 2026-07-23
 
 ### Added
