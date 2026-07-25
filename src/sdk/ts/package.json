@@ -38,7 +38,7 @@
     "ratel"
   ],
   "engines": {
-    "node": ">=20.19.0 <21 || >=22.12.0"
+    "node": ">=20.0.0"
   },
   "files": [
     "dist",
@@ -87,13 +87,5 @@
     "@opentelemetry/api-logs": "^0.220.0",
     "@ratel-ai/telemetry": "workspace:^",
     "@types/json-schema": "^7.0.15"
-  },
-  "peerDependencies": {
-    "@ratel-ai/telemetry-otlp": "workspace:^"
-  },
-  "peerDependenciesMeta": {
-    "@ratel-ai/telemetry-otlp": {
-      "optional": true
-    }
   }
 }

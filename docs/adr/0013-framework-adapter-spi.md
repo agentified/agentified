@@ -143,8 +143,8 @@ adapter is three pure codecs; the core owns all state and every framework-indepe
 
 - **Detection powers error messages only.** A framework-shaped tool — a zod-style schema or a
   dynamic `description` — hitting the native `r.tools.register(...)` throws an actionable error
-  that names the exact adapter package to install, probing known frameworks with the existing
-  `isPeerInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
+  that names the exact adapter package to install, probing known frameworks with
+  `isPackageInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
   it takes its own plain error path rather than the adapter hint.) Detection can't tell *installed*
   from *in use* (Mastra depends on `ai` internally), so it never drives behavior — only the hint.
 

@@ -193,9 +193,6 @@ importers:
       '@ratel-ai/telemetry':
         specifier: workspace:^
         version: link:../../telemetry/ts
-      '@ratel-ai/telemetry-otlp':
-        specifier: workspace:^
-        version: link:../../telemetry/ts-otlp
       '@types/json-schema':
         specifier: ^7.0.15
         version: 7.0.15

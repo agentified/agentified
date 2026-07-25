@@ -6,17 +6,16 @@
  * `@ratel-ai/telemetry` vocabulary.
  *
  * Emission is **transparent**: records go to whichever OpenTelemetry tracer and logger
- * providers are registered globally. Until providers are wired — via a
- * host's own OTel SDK, or the convenience `configureTelemetry()` below — every
- * span is a no-op `NonRecordingSpan`, so instrumentation is effectively free and
- * the local trace stream (`recordEvent`) is untouched. This mirrors how the
- * Vercel AI SDK instruments: the library emits; the app decides where it goes.
+ * providers are registered globally. The SDK never registers one — that is the host's
+ * job (`new NodeSDK({ spanProcessors })`). Until the host wires providers, every span is
+ * a no-op `NonRecordingSpan`, so instrumentation is effectively free and the local trace
+ * stream (`recordEvent`) is untouched. This mirrors how the Vercel AI SDK instruments:
+ * the library emits; the app decides where it goes.
  *
  * Message/tool content (`ratel.search.query`, tool args/result) follows the ecosystem
  * capture gate's span-attribute and Logs EventRecord channels (default off), per ADR-0007.
  */
 
-import { createRequire } from "node:module";
 import {
   context,
   type Context as OtelContext,
@@ -36,7 +35,6 @@ import {
   GEN_AI_TOOL_CALL_ARGUMENTS,
   GEN_AI_TOOL_CALL_RESULT,
   GEN_AI_TOOL_NAME,
-  type InitOptions,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
   RATEL_ORIGIN,
@@ -398,237 +396,6 @@ export function recordAuthNeeded(server?: string): void {
   span.end();
 }
 
-/**
- * Handle returned by {@link startTelemetry} (and {@link configureTelemetry}). `forceFlush()`
- * drains pending spans/EventRecords to the exporters now (serverless / short-lived jobs);
- * `shutdown()` flushes and stops both exporters — call once at process exit.
- */
-export interface TelemetryHandle {
-  /** Drain pending spans/EventRecords to their exporters now (serverless / short-lived jobs). */
-  forceFlush(): Promise<void>;
-  /** Flush pending spans/EventRecords and shut both exporters down. Call once at exit. */
-  shutdown(): Promise<void>;
-}
-
-/**
- * Options for {@link configureTelemetry}: the exporter wiring of {@link InitOptions}
- * plus programmatic control of the message/tool content-capture gate.
- */
-export interface ConfigureTelemetryOptions extends InitOptions {
-  /**
-   * Exact content-capture mode, set programmatically instead of via
-   * `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Code-level config wins
-   * over the env var (OTel treats env vars as the fallback for code-level
-   * configuration), and wins over {@link ConfigureTelemetryOptions.includeSpanAndEvents}.
-   */
-  captureContent?: ContentCapture;
-  /**
-   * Convenience switch over {@link ConfigureTelemetryOptions.captureContent}:
-   * `true` is full capture (`SPAN_AND_EVENT`), `false` is none (`NO_CONTENT`).
-   * Ignored when `captureContent` is set. When neither is provided, the env var
-   * keeps ruling.
-   */
-  includeSpanAndEvents?: boolean;
-  /**
-   * Export every span, not just the `gen_ai.*`/`ratel.*` signal. Default `false`:
-   * this high-level path defaults to the `ratelSignalFilter` so unrelated HTTP /
-   * database / application spans are not shipped to Ratel (privacy + cost). Set
-   * `true` to forward all spans — e.g. when Ratel Cloud is your only tracing
-   * backend and you want full-app traces.
-   */
-  exportAllSpans?: boolean;
-}
-
-/**
- * The capture mode {@link configureTelemetry} should set, or `undefined` to
- * leave the gate env-driven: `captureContent` wins over `includeSpanAndEvents`.
- */
-function resolveCaptureOverride(options: ConfigureTelemetryOptions): ContentCapture | undefined {
-  if (options.captureContent !== undefined) return options.captureContent;
-  if (options.includeSpanAndEvents !== undefined) {
-    return options.includeSpanAndEvents ? ContentCapture.SpanAndEvent : ContentCapture.NoContent;
-  }
-  return undefined;
-}
-
-const OTLP_PACKAGE = "@ratel-ai/telemetry-otlp";
-
-/**
- * Options for the turnkey {@link startTelemetry} path: the greenfield exporter wiring of
- * {@link InitOptions} (endpoint / apiKey / serviceName), plus `enabled: false` for a no-op
- * handle on first setup. Host span-processor composition (Langfuse, ...) stays on
- * `@ratel-ai/telemetry-otlp`'s own `startTelemetry`, so the base SDK's public surface never
- * references the OpenTelemetry SDK (ADR-0007).
- */
-export interface StartTelemetryOptions extends InitOptions {
-  /** On first setup, set false to skip configuration and provider registration. */
-  enabled?: boolean;
-}
-
-/**
- * The turnkey greenfield path: register Ratel-owned OTLP trace and Logs exporters so the spans
- * and EventRecords this SDK emits ship to Ratel Cloud (or any OTLP endpoint) — one import, one
- * call. Loads the optional `@ratel-ai/telemetry-otlp` peer *synchronously* (via `require`, so no
- * `await`) and delegates to its `startTelemetry`; the returned handle exposes `forceFlush()` and
- * `shutdown()`.
- *
- * A host already running its own OpenTelemetry providers should skip this — SDK telemetry flows
- * to those providers automatically — and add both `ratelSpanProcessor` and
- * `ratelLogRecordProcessor`. When the peer is absent (or Node is too old to `require()` an ES
- * module) this throws with actionable guidance; {@link configureTelemetry} is the async
- * alternative for older Node.
- */
-export function startTelemetry(options: StartTelemetryOptions = {}): TelemetryHandle {
-  return requireOtlpPeer().startTelemetry(options);
-}
-
-/**
- * The **async** counterpart to {@link startTelemetry}, kept as compatibility sugar for existing
- * callers and as the fallback for Node too old to `require()` the ES-module peer synchronously
- * (< 20.19 / 22.12). Prefer `startTelemetry` (one import, one call, no `await`) for new code;
- * this path is slated to be sunset once that lands everywhere.
- *
- * Registers Ratel-owned OTLP trace and Logs exporters so the spans and EventRecords this SDK
- * emits are shipped to Ratel Cloud (or any OTLP endpoint). Delegates to the optional
- * `@ratel-ai/telemetry-otlp` package, lazily imported (hence `async`) so the base SDK install
- * stays OTel-SDK-free (ADR-0007). A host that already runs its own OpenTelemetry providers should
- * skip this — SDK telemetry flows to those providers automatically — and add both
- * `ratelSpanProcessor` and `ratelLogRecordProcessor`.
- *
- * `captureContent` / `includeSpanAndEvents` opt into content capture in code via
- * `setContentCapture` (an unrecognized `captureContent` throws a `TypeError`
- * before any exporter is wired); the returned handle's `shutdown()` clears the
- * override, so tests and hot-reloads return to env-driven behavior. The clear is
- * generation-scoped: a stale handle shutting down late never clobbers an
- * override a newer `configureTelemetry`/`setContentCapture` installed.
- */
-export async function configureTelemetry(
-  options: ConfigureTelemetryOptions = {},
-): Promise<TelemetryHandle> {
-  // Split "the peer is absent" from "the peer is present but fails to load": a
-  // plain `import().catch` can't, because a missing *transitive* OTel dep throws
-  // the same MODULE_NOT_FOUND code as an absent peer, so it would mislabel a
-  // broken install as "not installed". Resolve (no execution) answers the first
-  // question; the import then surfaces any genuine load error unmasked.
-  if (!isPeerInstalled(OTLP_PACKAGE)) {
-    throw new Error(
-      `configureTelemetry() needs the optional ${OTLP_PACKAGE} package. Install it ` +
-        `(e.g. \`npm i ${OTLP_PACKAGE}\`), or register your own OpenTelemetry provider — ` +
-        "the SDK emits ratel.*/gen_ai.* telemetry to whichever providers are active.",
-    );
-  }
-  const otlp: typeof import("@ratel-ai/telemetry-otlp") = await import(OTLP_PACKAGE);
-  const {
-    captureContent: _captureContent,
-    includeSpanAndEvents: _include,
-    exportAllSpans,
-    ...baseOptions
-  } = options;
-  // High-level SDK config defaults to the ratel.*/gen_ai.* signal filter, so unrelated
-  // application spans are not shipped (privacy + cost); opt in to all spans explicitly.
-  // `init()` itself keeps its accept-all turnkey default (CONVENTIONS.md § init() surface).
-  const initOptions = exportAllSpans
-    ? { ...baseOptions, logFilter: otlp.ratelEventFilter }
-    : {
-        ...baseOptions,
-        spanFilter: otlp.ratelSignalFilter,
-        logFilter: otlp.ratelEventFilter,
-      };
-  const capture = resolveCaptureOverride(options);
-  if (capture === undefined) return otlp.init(initOptions); // env keeps ruling; nothing to undo
-  // Apply (and validate — an unrecognized mode throws a TypeError) the override
-  // *before* wiring the exporter, so a bad option fails loud with no provider
-  // side effects; unwind it if init() itself throws.
-  const generation = setContentCapture(capture);
-  let handle: TelemetryHandle;
-  try {
-    handle = otlp.init(initOptions);
-  } catch (err) {
-    clearContentCapture(generation);
-    throw err;
-  }
-  return {
-    forceFlush: () => handle.forceFlush(),
-    shutdown: async () => {
-      // Generation-scoped: back to env-driven behavior, unless a newer
-      // configureTelemetry/setContentCapture owns the override by now — then a
-      // stale handle shutting down late must not clobber it.
-      clearContentCapture(generation);
-      await handle.shutdown();
-    },
-  };
-}
-
-/**
- * Load the optional `@ratel-ai/telemetry-otlp` peer synchronously — the seam that lets
- * {@link startTelemetry} stay non-`async`. `require` (not `await import`) is the only
- * synchronous loader, so this needs a Node that can `require()` an ES module (>= 20.19 / 22.12).
- * When the peer is absent, throws install guidance naming it (mirrors {@link isPeerInstalled}:
- * a *present* peer that fails to load surfaces its real error rather than "not installed").
- */
-export function requireOtlpPeer(
-  specifier: string = OTLP_PACKAGE,
-): typeof import("@ratel-ai/telemetry-otlp") {
-  if (!isPeerInstalled(specifier)) {
-    throw new Error(
-      `startTelemetry() needs the optional ${specifier} package. Install it ` +
-        `(e.g. \`npm i ${specifier}\`), or register your own OpenTelemetry provider — ` +
-        "the SDK emits ratel.*/gen_ai.* spans to whatever provider is active.",
-    );
-  }
-  try {
-    return createRequire(import.meta.url)(specifier);
-  } catch (err) {
-    // The peer is present but this Node build can't require() it synchronously (too old,
-    // or a top-level-await graph). Point at the async escape hatch instead of leaking a
-    // raw ERR_REQUIRE_ESM.
-    if (isRequireEsmUnsupported(err)) {
-      const code = (err as { code?: string }).code;
-      throw new Error(
-        `startTelemetry() could not load ${specifier} synchronously (${code}). Upgrade to ` +
-          "Node >= 20.19 or >= 22.12 to require() ES modules, or use the async " +
-          "configureTelemetry() instead.",
-      );
-    }
-    throw err;
-  }
-}
-
-/**
- * Whether `specifier` resolves from this module (i.e. is installed), without
- * executing it. Lets {@link configureTelemetry} tell an absent optional peer
- * (show install guidance) apart from a present-but-broken one (let the real load
- * error surface), which a MODULE_NOT_FOUND code alone cannot.
- */
-export function isPeerInstalled(specifier: string): boolean {
-  try {
-    createRequire(import.meta.url).resolve(specifier);
-    return true;
-  } catch (err) {
-    if (isModuleNotFound(err)) return false;
-    // Resolvable-but-quirky (e.g. an exports-map edge case): assume present, so
-    // the subsequent import surfaces the real failure rather than "not installed".
-    return true;
-  }
-}
-
-/** A resolve/import reports a module-not-found code only when the package is absent. */
-export function isModuleNotFound(err: unknown): boolean {
-  const code = (err as { code?: unknown })?.code;
-  return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
-}
-
-/**
- * Whether a `require()` failed because this Node build can't load the ES-module peer
- * synchronously — either `require(esm)` predates the runtime (< 20.19 / 22.12) or the peer's
- * graph has top-level await. Both mean {@link requireOtlpPeer} should steer to the async path.
- */
-export function isRequireEsmUnsupported(err: unknown): boolean {
-  const code = (err as { code?: unknown })?.code;
-  return code === "ERR_REQUIRE_ESM" || code === "ERR_REQUIRE_ASYNC_MODULE";
-}
-
-export type { InitOptions };
 // Re-exported so hosts configuring capture don't need a second import from
 // @ratel-ai/telemetry.
 export { ContentCapture, clearContentCapture, setContentCapture };

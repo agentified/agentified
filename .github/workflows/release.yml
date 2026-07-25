@@ -191,12 +191,11 @@ jobs:
           cp src/sdk/ts/artifacts/index.cjs src/sdk/ts/native/index.cjs
           cp src/sdk/ts/artifacts/index.d.cts src/sdk/ts/native/index.d.cts
       - name: Build TS loader
-        # The SDK loader imports @ratel-ai/telemetry (and the optional-peer
-        # @ratel-ai/telemetry-otlp types), so build those workspace deps' dist/
-        # before tsc. The native binary is already downloaded from artifacts, so
+        # The SDK loader imports @ratel-ai/telemetry, so build that workspace dep's
+        # dist/ before tsc. The native binary is already downloaded from artifacts, so
         # build only the TS loader (build:ts), not the native crate.
         run: |
-          pnpm --filter @ratel-ai/telemetry --filter @ratel-ai/telemetry-otlp run build
+          pnpm --filter @ratel-ai/telemetry run build
           pnpm --filter @ratel-ai/sdk run build:ts
       - name: Inject optionalDependencies into SDK loader package.json
         run: node scripts/inject-sdk-optional-deps.mjs

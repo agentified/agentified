@@ -5,9 +5,9 @@
 //   1. `optionalDependencies` — the five committed src/sdk/ts/npm/<triple>/package.json
 //      platform packages, injected at the loader's version (their source of truth).
 //   2. `workspace:` specifiers — the SDK depends on sibling workspace packages
-//      (@ratel-ai/telemetry, and the optional peer @ratel-ai/telemetry-otlp). npm keeps
-//      `workspace:^` verbatim, which is uninstallable off-workspace, so pin each to a
-//      caret range on the sibling's current (published-in-lockstep) version.
+//      (today just @ratel-ai/telemetry). npm keeps `workspace:^` verbatim, which is
+//      uninstallable off-workspace, so pin each to a caret range on the sibling's
+//      current (published-in-lockstep) version.
 //
 // A final guard throws if ANY `workspace:` specifier survives, so a new workspace dep
 // can never silently ship a broken manifest again.

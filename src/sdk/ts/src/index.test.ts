@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as sdk from "./index.js";
 import { type SearchHit, type Skill, SkillRegistry, type Tool, ToolRegistry } from "./index.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 
@@ -205,5 +206,33 @@ describe("SkillRegistry removed methods", () => {
     expect(registry.registerMany).toBeUndefined();
     expect(registry.buildEmbeddings).toBeUndefined();
     expect(registry.rebuildEmbeddings).toBeUndefined();
+  });
+});
+
+/**
+ * Telemetry v2: the SDK ships no provider bootstrap. Hosts own the OTel provider
+ * (`new NodeSDK({ spanProcessors })`), so the optional-`@ratel-ai/telemetry-otlp`-peer
+ * machinery — and the `require(esm)` engines floor it forced — is gone. Emission and
+ * the content-capture gate stay: they are the SDK's actual telemetry surface.
+ */
+describe("removed telemetry bootstrap", () => {
+  const surface = sdk as unknown as Record<string, unknown>;
+
+  it("no longer exports the bootstrap entry points", () => {
+    expect(surface.startTelemetry).toBeUndefined();
+    expect(surface.configureTelemetry).toBeUndefined();
+  });
+
+  it("no longer exports the optional-peer loading machinery", () => {
+    expect(surface.requireOtlpPeer).toBeUndefined();
+    expect(surface.isPeerInstalled).toBeUndefined();
+    expect(surface.isModuleNotFound).toBeUndefined();
+    expect(surface.isRequireEsmUnsupported).toBeUndefined();
+  });
+
+  it("keeps the content-capture gate", () => {
+    expect(typeof sdk.setContentCapture).toBe("function");
+    expect(typeof sdk.clearContentCapture).toBe("function");
+    expect(sdk.ContentCapture).toBeDefined();
   });
 });

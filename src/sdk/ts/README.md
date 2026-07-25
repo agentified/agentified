@@ -132,6 +132,18 @@ describeAdapterConformance(myConformanceOptions(), { describe, it });
 Assertions use `node:assert`, so no test runner leaks into your published types;
 `referenceConformanceOptions` is a worked example to copy. Prefer full control? `adapterConformanceCases(options)` returns the named cases to run yourself.
 
-Telemetry export is optional. With `@ratel-ai/telemetry-otlp` installed, `startTelemetry({ endpoint, apiKey })` — or the `RATEL_OTLP_ENDPOINT` / `RATEL_API_KEY` env vars — wires Ratel-owned trace and Logs exporters in one import and one call and returns a `forceFlush()` / `shutdown()` handle; `configureTelemetry()` is the async equivalent kept for older Node. `configureTelemetry` exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default (`exportAllSpans: true` widens spans only), with message/tool content off unless opted in via `captureContent`/`includeSpanAndEvents` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Hosts that already own OpenTelemetry providers add both `ratelSpanProcessor` and `ratelLogRecordProcessor` instead.
+Telemetry is emit-only and always on: the SDK writes `ratel.*` / `gen_ai.*` spans and EventRecords to whatever OpenTelemetry providers are registered globally, and registers none itself — with no provider wired, every span is a no-op, so there is nothing to configure or switch off. Delivery is yours:
+
+```ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+
+new NodeSDK({
+  spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: "https://<your-backend>/v1/traces" }))],
+}).start();
+```
+
+Any processor works the same way — a vendor's (`new LangfuseSpanProcessor()`) or several side by side — and flush/shutdown stay with the host that owns the provider. Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications).
 
 Package layout: `src/` is the TypeScript surface, `native/` contains the NAPI binding, `npm/` holds platform packages, and tests live beside their source. From the repository root, run `pnpm --filter @ratel-ai/sdk... build` and `pnpm --filter @ratel-ai/sdk test`.
