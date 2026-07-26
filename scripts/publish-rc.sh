@@ -3,8 +3,15 @@
 # bind before a package exists) and temporarily manual release units.
 #
 # After Trusted Publishers are configured, use the release.yml workflow instead —
-# it publishes via OIDC with provenance and no stored tokens. `vercel-ai-sdk`
-# remains on this helper for every release until its workflow/OIDC wiring lands.
+# it publishes via OIDC with provenance and no stored tokens. `vercel-ai-sdk` is
+# wired there now (`publish-vercel-ai-sdk`); it stays here only as the bootstrap
+# path that first-published the npm name.
+#
+# This helper packs before publishing, so `pnpm pack` rewrites every `workspace:`
+# specifier for it. What it does NOT do is check the rewritten range exists on npm
+# — publish a unit ahead of a workspace dependency it names and the tarball is
+# permanently uninstallable. The stable ordering at the bottom of this file only
+# protects an all-units run; `--unit vercel-ai-sdk` skips straight past it.
 #
 # Release units (ADR-0008), each publishable independently:
 #   core           -> ratel-ai-core on crates.io          (cargo publish)
@@ -303,10 +310,10 @@ publish_telemetry_ts_otlp() {
 }
 
 # ---------- vercel-ai-sdk: @ratel-ai/vercel-ai-sdk on npm, packed locally ----------
-# The Vercel AI SDK framework adapter. Pure-TS like telemetry-ts-otlp, with a
-# workspace:^ dep on @ratel-ai/sdk. `pnpm pack` rewrites that dep to a real version
-# range in the tarball, so a plain `npm publish <tarball>` (bootstrap: no OIDC, no
-# provenance) ships a valid manifest.
+# The Vercel AI SDK framework adapter. Pure-TS like telemetry-ts-otlp, with a workspace:^
+# peer on @ratel-ai/sdk and a workspace:^ runtime dep on @ratel-ai/telemetry. `pnpm pack`
+# rewrites both to real version ranges in the tarball, so a plain `npm publish <tarball>`
+# (bootstrap: no OIDC, no provenance) ships a valid manifest.
 publish_vercel_ai_sdk() {
   local version; version="$(resolve_version vercel-ai-sdk)"
   echo "===== vercel-ai-sdk @ $version (npm) ====="
@@ -320,7 +327,8 @@ publish_vercel_ai_sdk() {
   if [[ $DRY_RUN -eq 0 ]] && ! npm whoami >/dev/null 2>&1; then
     echo "error: not logged in to npm. run 'npm login' first." >&2; exit 1
   fi
-  # Build the adapter + its @ratel-ai/sdk workspace dependency (topo order).
+  # Build the adapter + its @ratel-ai/sdk and @ratel-ai/telemetry workspace
+  # dependencies (topo order).
   ( cd "$REPO_ROOT" && pnpm --filter "@ratel-ai/vercel-ai-sdk..." run build )
   local tgz
   tgz="$( cd "$REPO_ROOT/src/adapters/ts-vercel-ai-sdk" && pnpm pack --pack-destination "$(mktemp -d)" | tail -1 )"

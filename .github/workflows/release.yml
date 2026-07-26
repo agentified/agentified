@@ -692,7 +692,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src/sdk/ts/native
-      # Build the adapter and its @ratel-ai/sdk workspace dependency (topo order).
+      # Build the adapter and its @ratel-ai/sdk + @ratel-ai/telemetry workspace
+      # dependencies (topo order).
       - name: Build TS
         run: pnpm --filter "@ratel-ai/vercel-ai-sdk..." run build
       # npm keeps `workspace:` specifiers verbatim, so pin the @ratel-ai/sdk peer AND
@@ -706,6 +707,29 @@ jobs:
           sdk_ver=$(node -p "require('./src/sdk/ts/package.json').version")
           SDK_VER="$sdk_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-vercel-ai-sdk/package.json'; const p=require(f); const v='^'+process.env.SDK_VER; p.peerDependencies['@ratel-ai/sdk']=v; p.devDependencies['@ratel-ai/sdk']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
           echo "pinned @ratel-ai/sdk -> $(node -p "const p=require('./src/adapters/ts-vercel-ai-sdk/package.json'); p.peerDependencies['@ratel-ai/sdk'] + ' (peer), ' + p.devDependencies['@ratel-ai/sdk'] + ' (dev)'")"
+          # A peer is not the soft constraint it used to be: npm installs peers
+          # automatically, so a range the registry can't satisfy is an ETARGET for
+          # every consumer, not a warning. Same immutability, same release ordering.
+          npm view "@ratel-ai/sdk@^${sdk_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/sdk@^${sdk_ver} is not on npm — publish sdk-ts before vercel-ai-sdk"; exit 1; }
+      # Same treatment for the @ratel-ai/telemetry *runtime* dep: left alone, npm ships
+      # the literal `workspace:^`, which no consumer can resolve — the adapter is then
+      # uninstallable, not merely mis-ranged.
+      #
+      # Then check the pinned range actually resolves on npm, because nothing else will:
+      # the preflight dry-run packs locally without contacting the registry, tag-version-check
+      # only inspects the tagged unit, and verify-install runs after an immutable publish.
+      # A `vercel-ai-sdk-v*` tag cut before its `telemetry-ts-v*` would otherwise ship a
+      # permanently uninstallable version. Release telemetry-ts first.
+      - name: Pin the @ratel-ai/telemetry runtime and dev dependencies for publish
+        shell: bash
+        run: |
+          set -e
+          tele_ver=$(node -p "require('./src/telemetry/ts/package.json').version")
+          TELE_VER="$tele_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-vercel-ai-sdk/package.json'; const p=require(f); const v='^'+process.env.TELE_VER; p.dependencies['@ratel-ai/telemetry']=v; p.devDependencies['@ratel-ai/telemetry']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
+          echo "pinned @ratel-ai/telemetry -> $(node -p "const p=require('./src/adapters/ts-vercel-ai-sdk/package.json'); p.dependencies['@ratel-ai/telemetry'] + ' (runtime), ' + p.devDependencies['@ratel-ai/telemetry'] + ' (dev)'")"
+          npm view "@ratel-ai/telemetry@^${tele_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/telemetry@^${tele_ver} is not on npm — publish telemetry-ts before vercel-ai-sdk"; exit 1; }
       # Preflight dry-run BEFORE the real (immutable) publish, mirroring the SDK job.
       - name: Preflight — dry-run npm publish
         shell: bash

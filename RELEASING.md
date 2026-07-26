@@ -25,8 +25,10 @@ The units are registered once, in [`scripts/release-units.mjs`](scripts/release-
 drafter, and the manual publish helper all read. Adding a future unit is a one-place change.
 
 The `vercel-ai-sdk` framework adapter is wired into `release.yml`'s triggers and its own
-`publish-vercel-ai-sdk` job (pure-TS, built + `pnpm pack`ed locally, like the telemetry npm
-units), publishing over OIDC via a Trusted Publisher. Its npm name was bootstrapped by a manual
+`publish-vercel-ai-sdk` job (pure-TS, built in CI then published from the package directory,
+like the telemetry npm units), publishing over OIDC via a Trusted Publisher. That path does
+*not* `pnpm pack`, so unlike the manual helper it rewrites nothing: every `workspace:`
+specifier the adapter ships needs an explicit pin step in the job. Its npm name was bootstrapped by a manual
 first-publish (`scripts/publish-rc.sh --unit vercel-ai-sdk`) before the Trusted Publisher could
 exist. The `release` environment's tag policy must allow `vercel-ai-sdk-v*`, or the publish job
 hangs at the deploy gate.
@@ -48,9 +50,12 @@ artifacts).
 
 The **framework adapters** (`vercel-ai-sdk` → `@ratel-ai/vercel-ai-sdk`, `mastra` →
 `@ratel-ai/mastra`; more to come) are npm-only, pure-language units that peer-depend on
-`@ratel-ai/sdk` via `workspace:^`. Like `telemetry-ts-otlp`, the manual helper builds and
-`pnpm pack`s them locally (the pack rewrites the `workspace:` peer to a concrete range); they
-need no prebuilt artifact.
+`@ratel-ai/sdk` via `workspace:^`. `vercel-ai-sdk` additionally depends on
+`@ratel-ai/telemetry` at publish time — a real runtime `dependencies` entry, not a peer, so
+`telemetry-ts` must be released **before** it or the adapter's pinned range names a version
+that is not on npm yet. `mastra` has no such dependency. Like `telemetry-ts-otlp`, the manual
+helper builds and `pnpm pack`s them locally (the pack rewrites every `workspace:` specifier,
+peer and runtime alike, to a concrete range); they need no prebuilt artifact.
 
 `@ratel-ai/mcp-server` ships from a sibling repo, [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp), on its own cadence.
 
@@ -72,8 +77,8 @@ need no prebuilt artifact.
 - **`verify-install.yml`** — `workflow_dispatch` + daily cron. Installs a unit's published
   package from its public registry with no repo checkout / local toolchain and exercises it.
   Pick a `unit` (and optionally a `version`) to verify one; the daily cron verifies every unit
-  at `latest`, except the prerelease-only `vercel-ai-sdk`, which verifies `rc` until its first
-  GA moves npm's `latest` tag. Run after every release.
+  at `latest`, `vercel-ai-sdk` included now that its GA holds npm's `latest` tag. A caller can
+  still pin a version or select `rc` explicitly. Run after every release.
 - **`build-binaries.yml`** / **`python-binaries.yml`** — `workflow_dispatch` only. Build the
   npm `.node` binaries (bundled into a `release-tarballs` artifact) and the PyPI `wheels-*` +
   sdist respectively. Used for the very first manual publish of a brand-new package, before a

@@ -191,8 +191,8 @@ jobs:
           REQUESTED_UNIT: ${{ inputs.unit }}
           REQUESTED_VERSION: ${{ inputs.version }}
           REQUESTED_TAG: ${{ inputs.tag || 'latest' }}
-        # mastra has a GA on `latest` (unlike vercel-ai-sdk): the cron verifies
-        # `latest`. A caller can pin a version or select the `rc` tag explicitly.
+        # mastra has a GA on `latest`: the cron verifies `latest`. A caller can
+        # pin a version or select the `rc` tag explicitly.
         run: |
           set -euo pipefail
           case "$REQUESTED_TAG" in

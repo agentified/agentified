@@ -170,7 +170,14 @@ or a content-bearing Logs EventRecord under `ratel.*`.
 
 | Attribute | Type | On | Values |
 |---|---|---|---|
-| `ratel.origin` | enum | search, invoke | `direct \| agent` |
+| `ratel.origin` | enum | search, invoke, and third-party `gen_ai.*` spans a framework adapter overlays | `direct \| agent` |
+
+On Ratel's own spans the emitter knows which case it is. On the overlay case it cannot: a
+framework adapter (`@ratel-ai/vercel-ai-sdk/otel`) stamps `ratel.origin` onto `gen_ai.*` spans
+another library created, so the value is host-selectable there and defaults to `agent` — right
+for the tool-loop spans an agent synthesizes, wrong for host-driven `embed` / `rerank` calls.
+It is selected per adapter instance, not per span, so a host making both kinds of call marks
+the direct ones by passing a second, `direct`-configured instance on those calls.
 
 ### `ratel.search`: capability search (unifies `search`, `gateway_search`, `skill_search`)
 
