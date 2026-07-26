@@ -14,7 +14,14 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type ExecutableTool, SkillCatalog, setContentCapture, ToolCatalog } from "./index.js";
+import {
+  ContentCapture,
+  clearContentCapture,
+  type ExecutableTool,
+  SkillCatalog,
+  setContentCapture,
+  ToolCatalog,
+} from "./index.js";
 import { recordAuthNeeded } from "./telemetry.js";
 
 /**
@@ -208,6 +215,21 @@ describe("execute_tool span", () => {
     expect(attrs(span)["gen_ai.tool.call.result"]).toBeUndefined();
     expect(eventNamed(span, INFERENCE_DETAILS)).toBeUndefined();
     expect(logEventsNamed("ratel.tool.execution.details")).toHaveLength(0);
+  });
+
+  it("captures content from a programmatic setContentCapture and stops once cleared", async () => {
+    // No env var here: the programmatic override is the only thing opening the gate.
+    const catalog = new ToolCatalog();
+    await catalog.register(readFile);
+
+    const generation = setContentCapture(ContentCapture.SpanOnly);
+    await catalog.invoke("read_file", { path: "/p" });
+    clearContentCapture(generation);
+    await catalog.invoke("read_file", { path: "/p" });
+
+    const [captured, cleared] = spansNamed("execute_tool read_file");
+    expect(attrs(captured)["gen_ai.tool.call.arguments"]).toBe('{"path":"/p"}');
+    expect(attrs(cleared)["gen_ai.tool.call.arguments"]).toBeUndefined();
   });
 
   it("records args_size_bytes as UTF-8 bytes, not UTF-16 characters", async () => {

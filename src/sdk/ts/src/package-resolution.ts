@@ -28,7 +28,7 @@ export function isPackageInstalled(specifier: string): boolean {
 }
 
 /** A resolve/import reports a module-not-found code only when the package is absent. */
-export function isModuleNotFound(err: unknown): boolean {
+function isModuleNotFound(err: unknown): boolean {
   const code = (err as { code?: unknown })?.code;
   return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
 }
