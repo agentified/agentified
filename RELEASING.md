@@ -135,8 +135,9 @@ rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
   (0.1.2, manual first-publish); confirm its Trusted Publisher before the next
   `telemetry-ts-v*` tag. **The `ratel-ai-telemetry` names (PyPI + crates.io) and the
   `@ratel-ai/mastra` npm name are not yet registered** — they are added at their first-time
-  bootstrap. `@ratel-ai/telemetry-otlp@0.1.1` is retired: `npm deprecate`d by hand, out of the
-  repo, no longer a release unit.
+  bootstrap. `@ratel-ai/telemetry-otlp` is out of the repo and no longer a release unit, but
+  **0.1.1 is still live and undeprecated on npm** — run `npm deprecate "@ratel-ai/telemetry-otlp@*"`
+  with a pointer to the host-owned-provider recipe in the SDK README.
 - A `release` GitHub Environment exists whose **deployment tag policy allows the unit
   prefixes** — `core-v*`, `sdk-ts-v*`, `sdk-py-v*`. Keep the environment *name* `release`
   unchanged (it's what binds the Trusted Publishers); only its tag policy lists the prefixes.

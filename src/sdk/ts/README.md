@@ -143,7 +143,7 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 
 new NodeSDK({
   spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: "https://<your-backend>/v1/traces" }))],
-  logRecordProcessors: [new BatchLogRecordProcessor(new OTLPLogExporter({ url: "https://<your-backend>/v1/logs" }))],
+  logRecordProcessors: [new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: "https://<your-backend>/v1/logs" }) })],
 }).start();
 ```
 
