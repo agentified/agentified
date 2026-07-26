@@ -5,10 +5,10 @@ Runnable offline: its trace-only demo wires a ConsoleSpanExporter so spans print
 stdout (no collector, no API key). The Ratel-specific part is the vocabulary from
 `ratel_ai_telemetry` — the constants and value enums you set as span attributes. In
 production you swap the console exporter for `init()` (shown at the end), which wires
-OTLP trace and Logs exporters to RATEL_URL; everything else stays identical.
+OTLP trace and Logs exporters to RATEL_OTLP_ENDPOINT; everything else stays identical.
 
-    uv run main.py                       # print the spans (offline)
-    RATEL_URL=... uv run main.py         # export a real trace via init()
+    uv run main.py                          # print the spans (offline)
+    RATEL_OTLP_ENDPOINT=... uv run main.py  # export a real trace via init()
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from ratel_ai_telemetry import (
 # vocabulary above stays OTel-free.
 from ratel_ai_telemetry.otlp import (
     DEFAULT_SERVICE_NAME,
+    OTLP_ENDPOINT_ENV,
     content_capture_mode,
     init,
     resolve_otlp_config,
@@ -121,14 +122,18 @@ def main() -> None:
     # One startup call for both on/off paths. When disabled, init() needs no endpoint or
     # OTel setup; when enabled it also reads RATEL_API_KEY from the environment. init() returns
     # a shutdown handle — emit through the global OTel API, not off the handle.
-    telemetry = init(enabled=bool(os.environ.get("RATEL_URL")))
-    if os.environ.get("RATEL_URL"):
-        print(f"\n--- RATEL_URL set — exporting a real trace to {os.environ['RATEL_URL']} ---")
+    endpoint = os.environ.get(OTLP_ENDPOINT_ENV)
+    telemetry = init(enabled=bool(endpoint))
+    if endpoint:
+        print(f"\n--- {OTLP_ENDPOINT_ENV} set — exporting a real trace to {endpoint} ---")
         from opentelemetry import trace
 
         emit_ratel_trace(trace.get_tracer("ratel-example-telemetry"))
     else:
-        print("\n(set RATEL_URL — and optionally RATEL_API_KEY — to export a real trace via init())")
+        print(
+            f"\n(set {OTLP_ENDPOINT_ENV} — and optionally RATEL_API_KEY — "
+            "to export a real trace via init())"
+        )
     telemetry.shutdown()
 
     print("\nOK")

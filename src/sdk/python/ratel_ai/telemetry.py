@@ -364,7 +364,8 @@ def configure_telemetry(
 
     Args:
         api_key: Ratel Cloud API key override; defaults to ``RATEL_API_KEY``.
-        endpoint: OTLP endpoint override; defaults to ``RATEL_URL``.
+        endpoint: OTLP endpoint override; defaults to ``RATEL_OTLP_ENDPOINT``, then
+            the superseded ``RATEL_URL`` (which warns).
         logs_endpoint: OTLP logs endpoint override; defaults to the sibling
             ``/v1/logs`` URL derived from `endpoint`.
         headers: Extra headers sent with every export request.

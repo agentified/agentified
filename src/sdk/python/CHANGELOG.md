@@ -6,7 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.5.2] - 2026-07-24
+## [0.5.2] - 2026-07-26
+
+### Changed
+
+- `configure_telemetry(endpoint=...)` now defaults to `RATEL_OTLP_ENDPOINT`, falling back to the superseded `RATEL_URL` with a `DeprecationWarning`. `RATEL_URL` also selects the catalog source (ADR-0003), so it no longer doubles as the OTLP destination. Resolution lives in `ratel-ai-telemetry>=0.1.3`; nothing breaks here, a `RATEL_URL`-only install keeps exporting to the same endpoint.
 
 ### Fixed
 

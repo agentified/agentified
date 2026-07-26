@@ -11,7 +11,8 @@ ADR-0016 (per-package versions and releases, 2026-07-04), and ADR-0018 (defer th
 2026-07-04).
 
 Amended 2026-07-26 to drop the `telemetry-ts-otlp` unit with the `@ratel-ai/telemetry-otlp`
-package, and to record the `mastra` adapter unit.
+package, to record the `mastra` adapter unit, and to generalize the cross-unit publish order
+(it binds `sdk-ts` too, not only the adapters) with its PyPI pre-release caveat.
 
 ## Context
 
@@ -50,14 +51,24 @@ throws on divergence before publish. This is the only lockstep left, and it is a
 invariant, not a coupling convenience. Versions diverge across units by design; cross-unit
 compatibility is expressed by dependency ranges, not a shared semver.
 
-The `vercel-ai-sdk` framework adapter is an independent, pure-TypeScript unit. It peers on
-`@ratel-ai/sdk` and takes a runtime dependency on `@ratel-ai/telemetry`; its release therefore
+Publish order across npm units is load-bearing rather than tidy. Every `workspace:^` specifier
+is replaced with a concrete published range at pack time, and npm installs peers
+automatically, so a range naming a version the registry does not have is an `ETARGET` at
+install time and not a warning — for a runtime dependency and a peer alike. npm versions are
+immutable, so publishing out of order ships a permanently uninstallable release. The order is
+`telemetry-ts` → `sdk-ts` → {`vercel-ai-sdk`, `mastra`}: `sdk-ts` takes `@ratel-ai/telemetry`
+as a runtime dependency, and both adapters peer on `@ratel-ai/sdk` (`vercel-ai-sdk` also
+depends on `@ratel-ai/telemetry` at runtime). Each of the three dependent publish jobs
+verifies its pinned range resolves on npm and fails before publishing; nothing downstream
+catches it, since the preflight `npm publish --dry-run` packs locally, `tag-version-check`
+inspects only the tagged unit, and `verify-install` runs after the publish is already
+immutable. PyPI adds a stricter case: `ratel-ai` floors `ratel-ai-telemetry>=0.1.3`, and under
+PEP 440 that does not admit `0.1.3rc1` even with `--pre`, so an RC of `sdk-py` requires
+telemetry-py at GA rather than at a matching RC.
+
+The `vercel-ai-sdk` framework adapter is an independent, pure-TypeScript unit. Its release
 changes only the adapter version, while both workspace specifiers are replaced with the
-compatible published ranges — which orders `telemetry-ts` and `sdk-ts` ahead of it. That
-ordering is load-bearing rather than tidy: npm installs peers automatically, so a range naming
-a version the registry does not have is an `ETARGET` at install time and not a warning — for
-the runtime dependency and the peer alike. npm versions are immutable, so publishing out of
-order ships a permanently uninstallable release.
+compatible published ranges.
 It publishes over OIDC from `release.yml`'s `publish-vercel-ai-sdk` job. That job publishes the
 package directory, not a `pnpm pack` tarball, so the substitution is explicit pin steps in the
 job rather than something the pack step does for free. Only the first publish went through

@@ -13,6 +13,8 @@ from ratel_ai_telemetry.otlp import (
     API_KEY_ENV,
     DEFAULT_SERVICE_NAME,
     ENDPOINT_ENV,
+    LEGACY_ENDPOINT_ENV,
+    OTLP_ENDPOINT_ENV,
     ContentCapture,
     clear_content_capture,
     content_capture_mode,
@@ -123,6 +125,62 @@ class TestResolveOtlpConfig:
     def test_raises_when_no_endpoint_and_no_ratel_url(self) -> None:
         with pytest.raises(ValueError, match=ENDPOINT_ENV):
             resolve_otlp_config(api_key="k", env={})
+
+
+class TestOtlpEndpointEnvMigration:
+    """RATEL_URL also selects the SDK's catalog source (ADR-0003), so the OTLP endpoint
+    moved to its own RATEL_OTLP_ENDPOINT (TS did this in @ratel-ai/telemetry 0.2.0).
+    Python keeps reading the legacy var so existing installs are untouched by a patch."""
+
+    def test_reads_the_dedicated_otlp_endpoint_var(self) -> None:
+        cfg = resolve_otlp_config(env={OTLP_ENDPOINT_ENV: "https://otlp/v1/traces"})
+        assert cfg.url == "https://otlp/v1/traces"
+
+    def test_endpoint_env_names_the_dedicated_var(self) -> None:
+        # The exported constant is the name callers set; it must be the new spelling,
+        # and the legacy name stays available under its own constant.
+        assert OTLP_ENDPOINT_ENV == "RATEL_OTLP_ENDPOINT"
+        assert ENDPOINT_ENV == OTLP_ENDPOINT_ENV
+        assert LEGACY_ENDPOINT_ENV == "RATEL_URL"
+
+    def test_dedicated_var_wins_over_the_legacy_var(self) -> None:
+        cfg = resolve_otlp_config(
+            env={
+                OTLP_ENDPOINT_ENV: "https://new/v1/traces",
+                LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces",
+            },
+        )
+        assert cfg.url == "https://new/v1/traces"
+
+    def test_falls_back_to_the_legacy_var_with_a_deprecation_warning(self) -> None:
+        with pytest.warns(DeprecationWarning, match=OTLP_ENDPOINT_ENV):
+            cfg = resolve_otlp_config(env={LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces"})
+        assert cfg.url == "https://legacy/v1/traces"
+
+    def test_explicit_endpoint_wins_over_both_vars_without_warning(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            cfg = resolve_otlp_config(
+                endpoint="https://explicit/v1/traces",
+                env={
+                    OTLP_ENDPOINT_ENV: "https://new/v1/traces",
+                    LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces",
+                },
+            )
+        assert cfg.url == "https://explicit/v1/traces"
+
+    def test_missing_endpoint_error_names_the_dedicated_var(self) -> None:
+        with pytest.raises(ValueError, match=OTLP_ENDPOINT_ENV):
+            resolve_otlp_config(api_key="k", env={})
+
+    def test_the_dedicated_var_does_not_warn(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            resolve_otlp_config(env={OTLP_ENDPOINT_ENV: "https://otlp/v1/traces"})
 
 
 class TestContentCaptureMode:

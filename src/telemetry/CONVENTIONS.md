@@ -282,8 +282,10 @@ vocabulary plus the content-capture gate. The asymmetry is deliberate (ADR-0007)
 
 Turnkey initialization:
 
-- Resolves the traces endpoint from `RATEL_URL`; an explicit `endpoint=` wins over the environment.
-  Resolves auth from `RATEL_API_KEY`; an explicit `api_key=` wins. Custom `headers` compose with
+- Resolves the traces endpoint from `RATEL_OTLP_ENDPOINT`, falling back to the superseded
+  `RATEL_URL` with a `DeprecationWarning` (that var also selects the SDK's catalog source per
+  ADR-0003, so it no longer doubles as the OTLP destination); an explicit `endpoint=` wins over
+  both. Resolves auth from `RATEL_API_KEY`; an explicit `api_key=` wins. Custom `headers` compose with
   either form. An explicit API key sets `Authorization: Bearer ...`; the `RATEL_API_KEY` fallback
   applies only when neither an explicit API key nor an explicit `Authorization` header is given, so
   ambient env never clobbers auth the caller set on purpose. The traces endpoint remains the full

@@ -33,7 +33,7 @@ Want turnkey OTLP export to Ratel? Install `ratel-ai-telemetry[otlp]` and call `
 ```python
 from ratel_ai_telemetry.otlp import init  # also importable as `from ratel_ai_telemetry import init`
 
-handle = init()  # reads RATEL_URL + RATEL_API_KEY (or pass endpoint=, api_key=, headers=)
+handle = init()  # reads RATEL_OTLP_ENDPOINT + RATEL_API_KEY (or pass endpoint=, api_key=, headers=)
 # ... emit spans and EventRecords through the global OTel APIs ...
 handle.shutdown()  # flush the exporter on exit
 ```
@@ -41,7 +41,8 @@ handle.shutdown()  # flush the exporter on exit
 `init()` returns a shutdown handle (`handle.shutdown()` / `handle.force_flush()`), not a provider —
 emit through the global OTel API. Explicit arguments beat the environment: an explicit `api_key=`
 sets the Bearer header, and the `RATEL_API_KEY` fallback never overrides an `Authorization` header
-you pass yourself. `endpoint` is the full traces URL; `logs_endpoint` overrides the Logs URL that
+you pass yourself. The endpoint resolves from `RATEL_OTLP_ENDPOINT`; the superseded `RATEL_URL` is
+still read as a fallback and warns, since it also names the SDK's catalog source (ADR-0003). `endpoint` is the full traces URL; `logs_endpoint` overrides the Logs URL that
 otherwise derives from sibling `/v1/logs`. On first setup, pass `enabled=False` to get an OTel-free
 no-op shutdown handle without endpoint configuration or the `[otlp]` extra, `span_filter=` to
 narrow spans, or `log_filter=` to narrow EventRecords (both default to accepting everything).

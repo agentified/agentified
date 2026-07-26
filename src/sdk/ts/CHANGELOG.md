@@ -6,21 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-26
+
+> **Read this before upgrading from 0.5.2.** Despite the patch version, this release
+> **removes** `configureTelemetry()`. The number is patch because 0.5.3 was already cut
+> in the repo before the removal landed and the two shipped together; treat the upgrade
+> as breaking if you called that function. Everything else is additive.
+
+### Added
+
+- Content capture emits structured OpenTelemetry Logs `EventRecord`s. `EVENT_ONLY` and `SPAN_AND_EVENT` now produce real records (in 0.5.2 the event half of those modes emitted nothing), carrying `gen_ai.system_instructions`, `gen_ai.input_messages`, `gen_ai.output_messages`, and `ratel.tool.execution_details`. Tool results stay out of inference-output messages, which are reserved for model output with a `finish_reason`.
+
 ### Changed
 
+- **BREAKING:** the telemetry bootstrap `configureTelemetry()` is gone, with its `TelemetryHandle`, `InitOptions`, and `ConfigureTelemetryOptions` types. The SDK ships no OpenTelemetry provider wiring — it emits `ratel.*`/`gen_ai.*` to whatever providers the host has registered, and the host owns the provider (`new NodeSDK({ spanProcessors })`), its composition, and its flush/shutdown. The content-capture gate (`ContentCapture`, `setContentCapture`, `clearContentCapture`) and the emitted spans and `EventRecord`s are unchanged. To migrate, build the provider yourself and register it before importing the SDK; see the [package README](README.md).
+- **BREAKING:** the optional `@ratel-ai/telemetry-otlp` peer dependency is gone, along with the `require()`-an-ES-module machinery that loaded it. `@ratel-ai/telemetry-otlp` is discontinued, and 0.4.0's `ratelSpanProcessor` recipe with it: build the OTLP exporter onto the provider you register.
 - `engines.node` is now `>=20.6.0` (0.5.2 declared `>=20.0.0`), matching the `@ratel-ai/telemetry` runtime dependency.
-
-### Removed
-
-- **BREAKING:** the telemetry bootstrap `configureTelemetry()`, with its `TelemetryHandle`, `InitOptions`, and `ConfigureTelemetryOptions` types. The SDK ships no OpenTelemetry provider wiring — it emits `ratel.*`/`gen_ai.*` to whatever providers the host has registered, and the host owns the provider (`new NodeSDK({ spanProcessors })`), its composition, and its flush/shutdown. The content-capture gate (`ContentCapture`, `setContentCapture`, `clearContentCapture`) and the emitted spans and `EventRecord`s are unchanged.
-- The optional `@ratel-ai/telemetry-otlp` peer dependency and the `require()`-an-ES-module machinery that loaded it. `@ratel-ai/telemetry-otlp` is discontinued, and 0.4.0's `ratelSpanProcessor` recipe with it: build the OTLP exporter onto the provider you register (see the [package README](README.md)).
-
-## [0.5.3] - 2026-07-24
-
-### Fixed
-
-- Emit content capture as structured OpenTelemetry Logs `EventRecord`s and keep tool results out of inference-output messages.
-- Require the telemetry vocabulary version that defines the EventRecord contract.
+- New runtime dependency `@opentelemetry/api-logs` (`^0.220.0`), the API-only Logs surface the `EventRecord` emission needs. Like `@opentelemetry/api` it is inert until the host registers a provider.
+- The `@ratel-ai/telemetry` dependency floor moves to `^0.2.0`, the vocabulary version that defines the `EventRecord` contract.
 
 ## [0.5.2] - 2026-07-24
 

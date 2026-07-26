@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -47,8 +48,16 @@ class TelemetryHandle(Protocol):
     def force_flush(self, timeout_millis: int = 30_000) -> bool: ...
 
 
-#: Env var whose value is the default OTLP endpoint.
-ENDPOINT_ENV = "RATEL_URL"
+#: Env var whose value is the default OTLP traces endpoint.
+OTLP_ENDPOINT_ENV = "RATEL_OTLP_ENDPOINT"
+
+#: Superseded spelling, still read as a fallback. ``RATEL_URL`` also names the SDK's
+#: catalog source (ADR-0003), so overloading it as the OTLP endpoint conflated two
+#: unrelated destinations. Setting it still works and warns.
+LEGACY_ENDPOINT_ENV = "RATEL_URL"
+
+#: Backwards-compatible alias of :data:`OTLP_ENDPOINT_ENV`, the var callers set.
+ENDPOINT_ENV = OTLP_ENDPOINT_ENV
 
 #: Env var whose value is the default API key when api_key= is omitted.
 API_KEY_ENV = "RATEL_API_KEY"
@@ -103,18 +112,18 @@ def resolve_otlp_config(
     """Resolve init() options into concrete exporter config.
 
     Accepts either api_key= (falling back to RATEL_API_KEY; endpoint defaults to
-    RATEL_URL; Authorization: Bearer) or endpoint=/headers= (custom endpoint /
-    collector). The forms compose: explicit endpoint/api_key values win over their
-    environment fallbacks. An explicit api_key sets the Bearer header; the RATEL_API_KEY
-    fallback applies only when neither api_key nor an explicit Authorization header is
-    given, so ambient env never clobbers auth the caller set on purpose. env is injectable
-    so the precedence is testable without a network.
+    RATEL_OTLP_ENDPOINT, then the superseded RATEL_URL; Authorization: Bearer) or
+    endpoint=/headers= (custom endpoint / collector). The forms compose: explicit
+    endpoint/api_key values win over their environment fallbacks. An explicit api_key sets
+    the Bearer header; the RATEL_API_KEY fallback applies only when neither api_key nor an
+    explicit Authorization header is given, so ambient env never clobbers auth the caller
+    set on purpose. env is injectable so the precedence is testable without a network.
     """
     resolved_env = os.environ if env is None else env
-    url = endpoint if endpoint is not None else resolved_env.get(ENDPOINT_ENV)
+    url = endpoint if endpoint is not None else _resolve_endpoint_from_env(resolved_env)
     if not url:
         raise ValueError(
-            f"ratel telemetry init: no endpoint. Pass endpoint= or set {ENDPOINT_ENV} "
+            f"ratel telemetry init: no endpoint. Pass endpoint= or set {OTLP_ENDPOINT_ENV} "
             f"(use api_key= or {API_KEY_ENV} for Bearer auth)."
         )
     resolved_headers: dict[str, str] = dict(headers or {})
@@ -128,6 +137,28 @@ def resolve_otlp_config(
         headers=resolved_headers,
         service_name=service_name or DEFAULT_SERVICE_NAME,
     )
+
+
+def _resolve_endpoint_from_env(env: Mapping[str, str]) -> str | None:
+    """The OTLP traces endpoint from the environment: dedicated var, then legacy.
+
+    Reading the legacy var warns rather than failing, so a patch release never breaks an
+    install that only sets RATEL_URL. Warning only on the fallback keeps the common path
+    silent, including for callers who set both during a migration.
+    """
+    url = env.get(OTLP_ENDPOINT_ENV)
+    if url:
+        return url
+    legacy = env.get(LEGACY_ENDPOINT_ENV)
+    if legacy:
+        warnings.warn(
+            f"{LEGACY_ENDPOINT_ENV} as the OTLP endpoint is deprecated and will be dropped "
+            f"in the next minor; set {OTLP_ENDPOINT_ENV} instead. {LEGACY_ENDPOINT_ENV} "
+            "also selects the SDK's catalog source, which is a different destination.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return legacy
 
 
 def _derive_logs_url(traces_url: str) -> str:

@@ -130,21 +130,43 @@ rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
 - `@ratel-ai` npm org exists; the publishing account is a member with `developer`+ role; 2FA enabled.
 - `ratel-ai-core` (crates.io) and `ratel-ai` (PyPI) names are registered.
 - Trusted Publishers are configured on the 6 SDK npm packages, the `ratel-ai-core` crate, the
-  `ratel-ai` PyPI project, and the `@ratel-ai/vercel-ai-sdk` npm name — each pointing at this
-  repo / `release.yml` / the `release` environment. `@ratel-ai/telemetry` is registered on npm
-  (0.1.2, manual first-publish); confirm its Trusted Publisher before the next
-  `telemetry-ts-v*` tag. **The `ratel-ai-telemetry` names (PyPI + crates.io) and the
-  `@ratel-ai/mastra` npm name are not yet registered** — they are added at their first-time
-  bootstrap. `@ratel-ai/telemetry-otlp` is out of the repo and no longer a release unit, but
+  `ratel-ai` PyPI project, `@ratel-ai/telemetry`, `@ratel-ai/vercel-ai-sdk`, and
+  `@ratel-ai/mastra` — each pointing at this repo / `release.yml` / the `release` environment.
+  Every unit's registry name is registered and has shipped at least once, including
+  `ratel-ai-telemetry` on both PyPI and crates.io and both adapter names on npm.
+  `@ratel-ai/telemetry-otlp` is out of the repo and no longer a release unit, but
   **0.1.1 is still live and undeprecated on npm** — run `npm deprecate "@ratel-ai/telemetry-otlp@*"`
-  with a pointer to the host-owned-provider recipe in the SDK README.
+  with a pointer to the host-owned-provider recipe in the SDK README. That is a manual step:
+  it needs a token + 2FA, and OIDC Trusted Publishing does not cover `npm deprecate`.
 - A `release` GitHub Environment exists whose **deployment tag policy allows the unit
-  prefixes** — `core-v*`, `sdk-ts-v*`, `sdk-py-v*`. Keep the environment *name* `release`
+  prefixes** — `core-v*`, `sdk-ts-v*`, `sdk-py-v*`, `telemetry-core-v*`, `telemetry-ts-v*`,
+  `telemetry-py-v*`, `mastra-v*`, `vercel-ai-sdk-v*`. Keep the environment *name* `release`
   unchanged (it's what binds the Trusted Publishers); only its tag policy lists the prefixes.
-  A tag not matched by the policy hangs the publish job at the deploy gate. **Add
-  `telemetry-core-v*`, `telemetry-ts-v*`, `telemetry-py-v*` to the policy before cutting the
-  first telemetry release, and `mastra-v*` + `vercel-ai-sdk-v*` before their first CI-driven
-  adapter release.**
+  A tag not matched by the policy hangs the publish job at the deploy gate. The vestigial
+  `telemetry-ts-otlp-v*` entry can be dropped — `release.yml` no longer triggers on it.
+
+### Publish order
+
+Units version independently but do **not** publish independently when they depend on each
+other. `workspace:^` is rewritten to a concrete `^X.Y.Z` at pack time from whatever the
+workspace manifest says, so a tag cut out of order ships an immutable version pointing at a
+version that is not on the registry:
+
+```
+telemetry-ts  →  sdk-ts  →  vercel-ai-sdk, mastra
+telemetry-py  →  sdk-py
+telemetry-core, core                                   (independent)
+```
+
+Wait for each publish to land on its registry before tagging the next. `publish-sdk-ts`,
+`publish-mastra`, and `publish-vercel-ai-sdk` each verify their pinned range resolves on npm
+and fail the job *before* publishing. Nothing else catches this: the preflight
+`npm publish --dry-run` packs locally without contacting the registry, `tag-version-check`
+only inspects the tagged unit, and `verify-install` runs after an immutable publish.
+
+On PyPI the constraint is stricter. `ratel-ai` floors `ratel-ai-telemetry>=0.1.3`, and under
+PEP 440 `>=0.1.3` does **not** admit `0.1.3rc1`, even with `--pre`. An RC of `sdk-py`
+therefore needs telemetry-py at **GA**, not at an RC.
 
 ### Per-release flow (one unit at a time)
 
@@ -207,8 +229,10 @@ rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
   pool has very long queues. Building `x86_64-apple-darwin` on `macos-14` with Rust's
   `--target` flag works because the Apple Silicon runners ship both SDKs. Don't switch back
   unless you've confirmed the Intel pool latency has improved.
-- **Linux arm64-gnu** uses NAPI-RS's `--use-napi-cross` (its prebuilt sysroot containers).
-  Don't switch to QEMU/`cross` without verifying glibc compatibility.
+- **Linux arm64-gnu builds natively on `ubuntu-24.04-arm`**, deliberately *not* with NAPI-RS's
+  `--use-napi-cross`: the dense/hybrid ML dependencies (candle's `esaxx-rs` C++, `ring`) do not
+  zig-cross-compile. Don't switch to cross-compilation, QEMU, or `cross` without verifying
+  those two build and the resulting glibc requirement.
 
 ## First-time bootstrap
 
