@@ -5,17 +5,27 @@
  * Runnable offline: its trace-only demo wires a `ConsoleSpanExporter` so spans print
  * to stdout (no collector, no API key). The Ratel-specific part is the vocabulary from
  * `@ratel-ai/telemetry` — the constants and value enums you set as span attributes.
- * In production you swap the console exporter for `init()` (shown at the end), which
- * wires OTLP trace and Logs exporters from `RATEL_OTLP_ENDPOINT`; everything else stays identical.
+ * Ratel ships no bootstrap (ADR-0007): in production you own the providers and swap the
+ * console exporter for the OTLP trace + Logs exporters at `RATEL_OTLP_ENDPOINT` (shown at
+ * the end); everything else stays identical.
  */
 
 import { context, type Tracer, trace } from "@opentelemetry/api";
+import type { Logger } from "@opentelemetry/api-logs";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { ConsoleSpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import {
+  BatchSpanProcessor,
+  ConsoleSpanExporter,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 import {
+  API_KEY_ENV,
   contentCaptureMode,
   DEFAULT_SERVICE_NAME,
   EXECUTE_TOOL,
@@ -26,6 +36,8 @@ import {
   RATEL_ORIGIN,
   RATEL_SEARCH,
   RATEL_SEARCH_HIT_COUNT,
+  RATEL_SEARCH_QUERY,
+  RATEL_SEARCH_RESULTS,
   RATEL_SEARCH_TARGET,
   RATEL_SEARCH_TOP_K,
   RATEL_TOOL_ARGS_SIZE_BYTES,
@@ -35,17 +47,15 @@ import {
   SearchTarget,
   SEMCONV_VERSION,
 } from "@ratel-ai/telemetry";
-// init() lives in the exporter package so the vocabulary above stays OTel-free.
-import { init } from "@ratel-ai/telemetry-otlp";
 
 /**
  * Emit one realistic Ratel trace: a `ratel.search` (capability search) span
  * followed by an `execute_tool` span enriched with the `ratel.*` overlay, both
  * hanging under a root span so they share ONE trace. This is the pattern you copy
  * into your own agent — only the constants come from Ratel; the tracer is the
- * stock OTel SDK.
+ * stock OTel SDK. Pass a `logger` to also emit the content-bearing EventRecord half.
  */
-function emitRatelTrace(tracer: Tracer): void {
+function emitRatelTrace(tracer: Tracer, logger?: Logger): void {
   // A root span standing in for the caller's own span — the agent turn (in a real
   // app, the LLM `chat` gen_ai span or the inbound request). Ratel's search + tool
   // spans hang under it, so the `ratel.*` overlay and the `gen_ai.*` call land in
@@ -69,6 +79,14 @@ function emitRatelTrace(tracer: Tracer): void {
     },
     parentCtx,
   );
+  // The second stream: the query text stays off the span and rides a
+  // `ratel.search.results` EventRecord instead, parented on the search span so both
+  // streams join on trace/span id. A real emitter gates this on `contentCaptureMode()`.
+  logger?.emit({
+    eventName: RATEL_SEARCH_RESULTS,
+    attributes: { [RATEL_SEARCH_QUERY]: "email the team the release notes" },
+    context: trace.setSpan(parentCtx, search),
+  });
   search.end();
 
   // 2. Tool invocation — a standard gen_ai `execute_tool` span (so any OTel
@@ -108,29 +126,52 @@ async function main(): Promise<void> {
   await provider.forceFlush();
   await provider.shutdown();
 
-  // --- Production wiring: traces + EventRecords exported to Ratel via init() ---
+  // --- Production wiring: traces + EventRecords exported to Ratel over OTLP ---
   // `resolveOtlpConfig` is pure (no network), so we can show how endpoint + auth
   // resolve without sending anything:
   const cfg = resolveOtlpConfig({ apiKey: "sk-demo", endpoint: "https://cloud.ratel.sh/v1/traces" });
-  console.log("\n--- how init() resolves options -> exporter config (illustrative demo values) ---");
+  console.log("\n--- how options resolve -> exporter config (illustrative demo values) ---");
   console.log(`  url:         ${cfg.url}`);
   console.log(`  logsUrl:     ${cfg.logsUrl}`);
   console.log(`  serviceName: ${cfg.serviceName} (default ${DEFAULT_SERVICE_NAME})`);
   console.log(`  headers:     ${Object.keys(cfg.headers).join(", ") || "(none)"}`);
 
-  // One startup call for both on/off paths. When disabled, init() needs no endpoint and
-  // returns a no-op shutdown handle; when enabled it also reads RATEL_API_KEY from env.
+  // The host owns the providers. Same construction as the offline demo, with OTLP batch
+  // processors in place of the console one, plus a LoggerProvider for the EventRecord
+  // stream. Both are threaded into `emitRatelTrace` rather than registered globally.
   const endpoint = process.env[OTLP_ENDPOINT_ENV];
-  const telemetry = init({ enabled: Boolean(endpoint) });
   if (endpoint) {
+    const { url, logsUrl, headers, serviceName } = resolveOtlpConfig({
+      serviceName: "ratel-telemetry-example",
+    });
+    const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName });
+    const tracerProvider = new NodeTracerProvider({
+      resource,
+      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url, headers }))],
+    });
+    const loggerProvider = new LoggerProvider({
+      resource,
+      processors: [
+        new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: logsUrl, headers }) }),
+      ],
+    });
+
     console.log(`\n--- ${OTLP_ENDPOINT_ENV} set — exporting a real trace to ${endpoint} ---`);
-    emitRatelTrace(trace.getTracer("@ratel-ai/example-telemetry"));
+    console.log(`--- and a ratel.search.results EventRecord to ${logsUrl} ---`);
+    emitRatelTrace(
+      tracerProvider.getTracer("@ratel-ai/example-telemetry"),
+      loggerProvider.getLogger("@ratel-ai/example-telemetry"),
+    );
+    // Shutting the providers down flushes both batch processors. An unreachable collector
+    // makes that reject, so report it rather than failing the whole example.
+    for (const owned of [tracerProvider, loggerProvider]) {
+      await owned.shutdown().catch((err) => console.error(`  export failed: ${err}`));
+    }
   } else {
     console.log(
-      `\n(set ${OTLP_ENDPOINT_ENV} — and optionally RATEL_API_KEY — to export a real trace via init())`,
+      `\n(set ${OTLP_ENDPOINT_ENV} — and optionally ${API_KEY_ENV} — to export a real trace over OTLP)`,
     );
   }
-  await telemetry.shutdown();
 
   console.log("\nOK");
 }

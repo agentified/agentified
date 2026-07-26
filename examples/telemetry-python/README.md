@@ -2,6 +2,8 @@
 
 The Python mirror of [`examples/telemetry-ts`](../telemetry-ts/README.md): how to emit Ratel's telemetry vocabulary through the standard [OpenTelemetry Python SDK](https://opentelemetry.io/docs/languages/python/) using [`ratel-ai-telemetry`](../../src/telemetry/python/README.md). The package supplies the `ratel.*` vocabulary plus optional standard OTLP trace and Logs wiring.
 
+The mirror is not exact, by design: in TS the host builds and owns the OTel providers, while Python keeps `init()` wiring both exporters.
+
 The trace-only offline demo emits one realistic trace — a `ratel.search` span followed by an `execute_tool` span under a root agent-turn span — and prints it with a `ConsoleSpanExporter`. Production `init()` additionally exports content-bearing Logs EventRecords.
 
 ## Setup

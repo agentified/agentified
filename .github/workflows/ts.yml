@@ -69,8 +69,9 @@ jobs:
           pnpm --filter @ratel-ai/mastra test
       # Telemetry example — runs offline (console exporter), emitting a ratel.search
       # + execute_tool trace through the OTel SDK, so it verifies the `ratel.*` vocab
-      # end-to-end. @ratel-ai/telemetry and @ratel-ai/telemetry-otlp (the example imports
-      # init() from the latter) are already built by `pnpm -r build` above.
+      # end-to-end. The example owns its providers: a NodeTracerProvider for the console
+      # demo, plus a LoggerProvider + OTLP exporters when RATEL_OTLP_ENDPOINT is set.
+      # @ratel-ai/telemetry is already built by `pnpm -r build` above.
       # See examples/telemetry-ts/src/index.ts.
       - name: Run the telemetry example
         run: pnpm --filter @ratel-ai/example-telemetry exec tsx src/index.ts
