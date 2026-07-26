@@ -10,6 +10,9 @@ Compacted 2026-07 from pre-compaction ADR-0008 (per-package CHANGELOGs, 2026-05-
 ADR-0016 (per-package versions and releases, 2026-07-04), and ADR-0018 (defer the CLI,
 2026-07-04).
 
+Amended 2026-07-26 to drop the `telemetry-ts-otlp` unit with the `@ratel-ai/telemetry-otlp`
+package, and to record the `mastra` adapter unit.
+
 ## Context
 
 The repo once released everything in lockstep on one `v*` tag: one bump shipped every
@@ -37,8 +40,8 @@ publish helpers read:
 | `telemetry-core` | `telemetry-core-v*` | `ratel-ai-telemetry` on crates.io |
 | `telemetry-ts` | `telemetry-ts-v*` | `@ratel-ai/telemetry` on npm |
 | `telemetry-py` | `telemetry-py-v*` | `ratel-ai-telemetry` on PyPI |
-| `telemetry-ts-otlp` | `telemetry-ts-otlp-v*` | `@ratel-ai/telemetry-otlp` on npm |
 | `vercel-ai-sdk` | `vercel-ai-sdk-v*` | `@ratel-ai/vercel-ai-sdk` on npm |
+| `mastra` | `mastra-v*` | `@ratel-ai/mastra` on npm |
 
 The `sdk-ts` unit is **internally lockstep**: the loader, its five per-OS native packages,
 and the `ts-native` crate must share a version, because the loader's `optionalDependencies`

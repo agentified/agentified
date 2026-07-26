@@ -60,7 +60,7 @@ For cross-cutting choices, write an ADR in `docs/adr/` — Nygard format (`Statu
 
 ## Releases
 
-Independently-versioned units publish from this repo (ADR-0008): `ratel-ai-core` (crates.io, `core-v*`), `@ratel-ai/sdk` + its per-OS packages (npm, `sdk-ts-v*`), `ratel-ai` (PyPI, `sdk-py-v*`), and the four telemetry units — `ratel-ai-telemetry` (crates.io, `telemetry-core-v*`), `@ratel-ai/telemetry` (npm, `telemetry-ts-v*`), `ratel-ai-telemetry` (PyPI, `telemetry-py-v*`), and the `init()` exporter `@ratel-ai/telemetry-otlp` (npm, `telemetry-ts-otlp-v*`). Each has a `CHANGELOG.md` in its package directory and its own tag prefix. `@ratel-ai/mcp-server` publishes independently from [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp).
+Independently-versioned units publish from this repo (ADR-0008): `ratel-ai-core` (crates.io, `core-v*`), `@ratel-ai/sdk` + its per-OS packages (npm, `sdk-ts-v*`), `ratel-ai` (PyPI, `sdk-py-v*`), and the three telemetry units — `ratel-ai-telemetry` (crates.io, `telemetry-core-v*`), `@ratel-ai/telemetry` (npm, `telemetry-ts-v*`), and `ratel-ai-telemetry` (PyPI, `telemetry-py-v*`). Each has a `CHANGELOG.md` in its package directory and its own tag prefix. `@ratel-ai/mcp-server` publishes independently from [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp).
 
 To cut a release — one unit at a time; see [RELEASING.md](RELEASING.md) for the full flow:
 

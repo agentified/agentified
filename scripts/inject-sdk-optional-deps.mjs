@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 // version lives. A `workspace:` specifier for any other name is a hard error.
 const WORKSPACE_DEP_MANIFESTS = {
   "@ratel-ai/telemetry": "src/telemetry/ts/package.json",
-  "@ratel-ai/telemetry-otlp": "src/telemetry/ts-otlp/package.json",
 };
 
 const DEP_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"];

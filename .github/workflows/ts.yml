@@ -114,8 +114,7 @@ jobs:
       # `@ratel-ai/telemetry` is packed alongside them because both tarballs turn
       # their `workspace:^` on it into a hard `^<workspace version>` — a version
       # that only reaches npm at release time, so a registry-only install of the
-      # other two ETARGETs on every unreleased bump. (`@ratel-ai/telemetry-otlp`
-      # needs no tarball: it is an *optional* peer, so npm never asks for it.)
+      # other two ETARGETs on every unreleased bump.
       # The build step above already covers all three — `...` selects the
       # adapter's whole dependency closure, in topological order.
       - name: Pack the adapter, the SDK, and the telemetry vocabulary
@@ -142,7 +141,7 @@ jobs:
           cp /tmp/ratel-pack/*.tgz "$tmp"
           cd "$tmp"
           npm init -y >/dev/null
-          # The digit anchor keeps this off a future `ratel-ai-telemetry-otlp-*.tgz`.
+          # The digit anchor keeps this off any future `ratel-ai-telemetry-<name>-*.tgz`.
           npm install --no-audit --no-fund --omit=optional --save-exact \
             typescript@5 "ai@${AI_SDK_VERSION}" \
             ./ratel-ai-sdk-*.tgz ./ratel-ai-telemetry-[0-9]*.tgz ./ratel-ai-vercel-ai-sdk-*.tgz
