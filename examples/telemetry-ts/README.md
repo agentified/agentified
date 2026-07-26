@@ -1,6 +1,6 @@
 # `examples/telemetry-ts` — emit `ratel.*` telemetry with OpenTelemetry (TypeScript)
 
-Shows how to emit Ratel's telemetry vocabulary through the standard [OpenTelemetry JS SDK](https://opentelemetry.io/docs/languages/js/) using [`@ratel-ai/telemetry`](../../src/telemetry/ts/README.md) for constants and OTLP config resolution. Ratel telemetry *is* OpenTelemetry ([ADR-0007](../../docs/adr/0007-telemetry-two-streams.md)): the vocabulary package provides the `ratel.*` constants and value enums, and ships no transport and no bootstrap — the host builds and owns the providers.
+Shows how to emit Ratel's telemetry vocabulary through the standard [OpenTelemetry JS SDK](https://opentelemetry.io/docs/languages/js/) using [`@ratel-ai/telemetry`](../../src/telemetry/ts/README.md) for the constants and the content-capture gate. Ratel telemetry *is* OpenTelemetry ([ADR-0007](../../docs/adr/0007-telemetry-two-streams.md)): the vocabulary package provides the `ratel.*` constants and value enums, and ships no transport and no bootstrap — the host builds and owns the providers.
 
 The trace-only offline demo emits one realistic trace — a `ratel.search` span followed by an `execute_tool` span under a root agent-turn span — and prints it with a `ConsoleSpanExporter`. The production path adds a `LoggerProvider` so the content-bearing Logs EventRecords go out too.
 
@@ -25,7 +25,7 @@ pnpm -F @ratel-ai/example-telemetry start
 
 - **The vocabulary is just constants.** `RATEL_SEARCH`, `EXECUTE_TOOL`, `RATEL_ORIGIN`, `GEN_AI_TOOL_NAME`, … are `import`ed from `@ratel-ai/telemetry` and set as attributes on stock OTel spans. The `Origin` / `SearchTarget` value enums carry the exact wire strings.
 - **Tool calls are standard `gen_ai` spans.** The invocation is an `execute_tool` span (so any OTel backend understands it), enriched with `ratel.*` attributes — not a bespoke Ratel span.
-- **The host owns the providers.** `resolveOtlpConfig()` (pure, shown in the output) resolves trace and Logs URLs plus auth; the example feeds those into its own `NodeTracerProvider` + `LoggerProvider`, built exactly like the offline one with OTLP batch processors swapped in for the console exporter. It builds them only when `RATEL_OTLP_ENDPOINT` is set; the offline demo above needs neither.
+- **The host owns the providers, and their config.** `@ratel-ai/telemetry` carries no exporter settings, so the example resolves its own endpoint and auth (two small helpers at the top of `src/index.ts`, shown resolving in the output) and feeds them into its own `NodeTracerProvider` + `LoggerProvider`, built exactly like the offline one with OTLP batch processors swapped in for the console exporter. It builds them only when `RATEL_OTLP_ENDPOINT` is set; the offline demo above needs neither.
 - **A real host registers those providers globally.** The example threads them into its emitter instead, to stay side-effect-free. Call `tracerProvider.register()` and `logs.setGlobalLoggerProvider(loggerProvider)` in your own app: `@ratel-ai/sdk` emits into the global providers.
 - **Content capture is gated.** `contentCaptureMode()` reads `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT`).
 

@@ -365,7 +365,7 @@ def test_top_level_lazy_accessor_resolves_the_otlp_surface() -> None:
 
 class TestSetContentCapture:
     """Programmatic override of the content-capture gate. Mirrors the TS
-    `setContentCapture` suite in src/telemetry/ts/src/config.test.ts."""
+    `setContentCapture` suite in src/telemetry/ts/src/content-capture.test.ts."""
 
     def test_wins_over_an_explicitly_set_env_in_either_direction(self) -> None:
         set_content_capture(ContentCapture.NO_CONTENT)

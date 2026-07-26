@@ -1,96 +1,13 @@
 /**
- * Pure OTLP config resolution + the content-capture gate for the `ratel.*`
- * telemetry vocabulary. No OpenTelemetry SDK import (ADR-0007): these helpers only
- * resolve endpoint/auth precedence and parse the capture env var, so they stay
- * weight-free for the three consumers that need the vocabulary without the
- * exporter — the SDK (emit side), the server (read side), and edge/serverless
- * emitters. The host owns the exporter and feeds it what `resolveOtlpConfig()`
- * returns.
+ * The content-capture gate for the `ratel.*` telemetry vocabulary. No OpenTelemetry
+ * SDK import (ADR-0007): this only parses the capture env var and holds the
+ * programmatic override, so it stays weight-free for the three consumers that need
+ * the vocabulary without an exporter — the SDK (emit side), the server (read side),
+ * and edge/serverless emitters. Endpoint and auth resolution is the host's job: it
+ * owns the provider, so it configures its own OTLP exporters.
  */
 
 import { CAPTURE_CONTENT_ENV } from "./index.js";
-
-/**
- * Env var whose value is the OTLP traces endpoint.
- */
-export const OTLP_ENDPOINT_ENV = "RATEL_OTLP_ENDPOINT";
-
-/** Env var whose value is the default Ratel API key. */
-export const API_KEY_ENV = "RATEL_API_KEY";
-
-/** `service.name` used when the caller does not pass one. */
-export const DEFAULT_SERVICE_NAME = "ratel";
-
-/**
- * {@link resolveOtlpConfig} resolves the endpoint from
- * `RATEL_OTLP_ENDPOINT` and auth from `RATEL_API_KEY`, with explicit
- * `{ endpoint, apiKey }` values taking precedence over the environment. An
- * explicit `apiKey` sets the Bearer header; the
- * `RATEL_API_KEY` fallback only applies when neither `apiKey` nor an explicit
- * `Authorization` header is given, so ambient env never overrides an auth header
- * the caller passed on purpose.
- */
-export interface InitOptions {
-  /** `service.name` resource attribute. Defaults to {@link DEFAULT_SERVICE_NAME}. */
-  serviceName?: string;
-  /** Ratel API key; sent as `Authorization: Bearer <apiKey>`. Defaults to `RATEL_API_KEY`. */
-  apiKey?: string;
-  /** Full OTLP traces URL (incl. `/v1/traces`). Defaults to `RATEL_OTLP_ENDPOINT`. */
-  endpoint?: string;
-  /** Full OTLP logs URL. Defaults to the sibling `/v1/logs` URL derived from {@link endpoint}. */
-  logsEndpoint?: string;
-  /** Extra headers merged onto the request. An explicit `Authorization` here is kept over the `RATEL_API_KEY` env fallback. */
-  headers?: Record<string, string>;
-}
-
-/** Resolved exporter configuration; the pure core of the OTLP exporter, exposed for testing. */
-export interface ResolvedOtlpConfig {
-  url: string;
-  logsUrl: string;
-  headers: Record<string, string>;
-  serviceName: string;
-}
-
-/**
- * Resolve {@link InitOptions} into concrete exporter config. Pure and
- * env-injectable so the endpoint/auth precedence is testable without a network.
- */
-export function resolveOtlpConfig(
-  opts: InitOptions = {},
-  env: Record<string, string | undefined> = process.env,
-): ResolvedOtlpConfig {
-  const url = opts.endpoint ?? env[OTLP_ENDPOINT_ENV];
-  if (!url) {
-    throw new Error(
-      `ratel telemetry init: no endpoint. Pass { endpoint } or set ${OTLP_ENDPOINT_ENV} ` +
-        `(use { apiKey } or ${API_KEY_ENV} for Bearer auth).`,
-    );
-  }
-  const headers: Record<string, string> = { ...opts.headers };
-  // An explicit apiKey sets the Bearer header (code-level config wins). The RATEL_API_KEY
-  // env fallback applies only when the caller passed neither apiKey nor an Authorization
-  // header, so ambient env never clobbers auth the caller set on purpose.
-  if (opts.apiKey) {
-    headers.Authorization = `Bearer ${opts.apiKey}`;
-  } else if (env[API_KEY_ENV] && !hasAuthorizationHeader(headers)) {
-    headers.Authorization = `Bearer ${env[API_KEY_ENV]}`;
-  }
-  return {
-    url,
-    logsUrl: opts.logsEndpoint ?? deriveLogsUrl(url),
-    headers,
-    serviceName: opts.serviceName ?? DEFAULT_SERVICE_NAME,
-  };
-}
-
-function deriveLogsUrl(tracesUrl: string): string {
-  return tracesUrl.replace(/\/v1\/traces(?=\/?(?:[?#]|$))/, "/v1/logs");
-}
-
-/** Whether the caller already supplied an `Authorization` header (any casing). */
-function hasAuthorizationHeader(headers: Record<string, string>): boolean {
-  return Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
-}
 
 /**
  * Message/tool content capture modes for

@@ -25,13 +25,10 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 import {
-  API_KEY_ENV,
   contentCaptureMode,
-  DEFAULT_SERVICE_NAME,
   EXECUTE_TOOL,
   GEN_AI_OPERATION_NAME,
   GEN_AI_TOOL_NAME,
-  OTLP_ENDPOINT_ENV,
   Origin,
   RATEL_ORIGIN,
   RATEL_SEARCH,
@@ -43,10 +40,29 @@ import {
   RATEL_TOOL_ARGS_SIZE_BYTES,
   RATEL_UPSTREAM_SERVER,
   RATEL_UPSTREAM_TRANSPORT,
-  resolveOtlpConfig,
   SearchTarget,
   SEMCONV_VERSION,
 } from "@ratel-ai/telemetry";
+
+/**
+ * Endpoint and auth are the host's to resolve: `@ratel-ai/telemetry` is vocabulary
+ * only and carries no exporter config. The names and the two helpers below are all
+ * of it, and they are what you swap for your own configuration source (a secrets
+ * manager, the standard `OTEL_EXPORTER_OTLP_*` vars, a config file, ...).
+ */
+const ENDPOINT_ENV = "RATEL_OTLP_ENDPOINT";
+const API_KEY_ENV = "RATEL_API_KEY";
+const SERVICE_NAME = "ratel-telemetry-example";
+
+/** The Logs endpoint is the traces URL's sibling: `/v1/traces` -> `/v1/logs`. */
+function deriveLogsUrl(tracesUrl: string): string {
+  return tracesUrl.replace(/\/v1\/traces(?=\/?(?:[?#]|$))/, "/v1/logs");
+}
+
+/** Bearer auth when a key is configured; no header at all when it is not. */
+function authHeaders(apiKey: string | undefined): Record<string, string> {
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
 
 /**
  * Emit one realistic Ratel trace: a `ratel.search` (capability search) span
@@ -116,7 +132,7 @@ async function main(): Promise<void> {
 
   // --- The runnable demo: emit spans to the console (no network) ---
   const provider = new NodeTracerProvider({
-    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: "ratel-telemetry-example" }),
+    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: SERVICE_NAME }),
     spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
   });
   const tracer = provider.getTracer("@ratel-ai/example-telemetry");
@@ -127,27 +143,27 @@ async function main(): Promise<void> {
   await provider.shutdown();
 
   // --- Production wiring: traces + EventRecords exported to Ratel over OTLP ---
-  // `resolveOtlpConfig` is pure (no network), so we can show how endpoint + auth
-  // resolve without sending anything:
-  const cfg = resolveOtlpConfig({ apiKey: "sk-demo", endpoint: "https://cloud.ratel.sh/v1/traces" });
-  console.log("\n--- how options resolve -> exporter config (illustrative demo values) ---");
-  console.log(`  url:         ${cfg.url}`);
-  console.log(`  logsUrl:     ${cfg.logsUrl}`);
-  console.log(`  serviceName: ${cfg.serviceName} (default ${DEFAULT_SERVICE_NAME})`);
-  console.log(`  headers:     ${Object.keys(cfg.headers).join(", ") || "(none)"}`);
+  // Endpoint and auth are plain host configuration; shown here with demo values so the
+  // derivation is visible without sending anything:
+  const demoUrl = "https://cloud.ratel.sh/v1/traces";
+  const demoHeaders = authHeaders("sk-demo");
+  console.log("\n--- exporter config the host resolves (illustrative demo values) ---");
+  console.log(`  url:         ${demoUrl}`);
+  console.log(`  logsUrl:     ${deriveLogsUrl(demoUrl)}`);
+  console.log(`  serviceName: ${SERVICE_NAME}`);
+  console.log(`  headers:     ${Object.keys(demoHeaders).join(", ") || "(none)"}`);
 
   // The host owns the providers. Same construction as the offline demo, with OTLP batch
   // processors in place of the console one, plus a LoggerProvider for the EventRecord
   // stream. Both are threaded into `emitRatelTrace` rather than registered globally.
-  const endpoint = process.env[OTLP_ENDPOINT_ENV];
+  const endpoint = process.env[ENDPOINT_ENV];
   if (endpoint) {
-    const { url, logsUrl, headers, serviceName } = resolveOtlpConfig({
-      serviceName: "ratel-telemetry-example",
-    });
-    const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName });
+    const logsUrl = deriveLogsUrl(endpoint);
+    const headers = authHeaders(process.env[API_KEY_ENV]);
+    const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: SERVICE_NAME });
     const tracerProvider = new NodeTracerProvider({
       resource,
-      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url, headers }))],
+      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: endpoint, headers }))],
     });
     const loggerProvider = new LoggerProvider({
       resource,
@@ -156,7 +172,7 @@ async function main(): Promise<void> {
       ],
     });
 
-    console.log(`\n--- ${OTLP_ENDPOINT_ENV} set — exporting a real trace to ${endpoint} ---`);
+    console.log(`\n--- ${ENDPOINT_ENV} set — exporting a real trace to ${endpoint} ---`);
     console.log(`--- and a ratel.search.results EventRecord to ${logsUrl} ---`);
     emitRatelTrace(
       tracerProvider.getTracer("@ratel-ai/example-telemetry"),
@@ -169,7 +185,7 @@ async function main(): Promise<void> {
     }
   } else {
     console.log(
-      `\n(set ${OTLP_ENDPOINT_ENV} — and optionally ${API_KEY_ENV} — to export a real trace over OTLP)`,
+      `\n(set ${ENDPOINT_ENV} — and optionally ${API_KEY_ENV} — to export a real trace over OTLP)`,
     );
   }
 

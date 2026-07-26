@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // Regression guard for the tree-shakeable split (ADR-0007): `@ratel-ai/telemetry`
-// is the pure `ratel.*` vocabulary + config/gate and MUST stay OTel-free, so the
+// is the pure `ratel.*` vocabulary + capture gate and MUST stay OTel-free, so the
 // SDK (emit side), the server (read side), and edge/serverless emitters can take
 // it without pulling the OpenTelemetry SDK. This asserts the boundary at the two
 // places that would silently re-couple it: a runtime dependency, or an import in

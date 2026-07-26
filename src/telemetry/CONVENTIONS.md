@@ -276,10 +276,9 @@ against the v1.42.0 table above.
 ## Exporter initialization surface (recorded; implemented in the Python helper)
 
 Python `init()` is sugar over the standard OTel SDK plus the `ratel.*` constants: no transport, no
-FFI, no schema crate. TypeScript has no counterpart: the host owns the OTel providers, and
-`@ratel-ai/telemetry` stays vocabulary plus the pure `resolveOtlpConfig()`, which resolves endpoint
-and auth from `RATEL_OTLP_ENDPOINT` / `RATEL_API_KEY` for the host to feed its own exporters. The
-asymmetry is deliberate (ADR-0007).
+FFI, no schema crate. TypeScript has no counterpart and no exporter configuration either: the host
+owns the OTel providers, so it resolves its own endpoint and auth, and `@ratel-ai/telemetry` stays
+vocabulary plus the content-capture gate. The asymmetry is deliberate (ADR-0007).
 
 Turnkey initialization:
 

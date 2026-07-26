@@ -10,7 +10,6 @@ import {
   GEN_AI_TOOL_CALL_RESULT,
   GEN_AI_TOOL_NAME,
   Origin,
-  OTLP_ENDPOINT_ENV,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
   RATEL_ORIGIN,
@@ -41,13 +40,18 @@ describe("ratel telemetry vocabulary", () => {
     expect(CAPTURE_CONTENT_ENV).toBe("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT");
   });
 
-  it("exports the dedicated OTLP endpoint env var", () => {
-    expect(OTLP_ENDPOINT_ENV).toBe("RATEL_OTLP_ENDPOINT");
-  });
-
-  it("does not export the removed RATEL_URL endpoint config", async () => {
+  it("exports no exporter configuration: the host resolves its own endpoint and auth", async () => {
     const telemetry = await import("./index.js");
-    expect(telemetry).not.toHaveProperty("ENDPOINT_ENV");
+    // The vocabulary carries the constants plus the capture gate, nothing about transport.
+    for (const removed of [
+      "ENDPOINT_ENV",
+      "OTLP_ENDPOINT_ENV",
+      "API_KEY_ENV",
+      "DEFAULT_SERVICE_NAME",
+      "resolveOtlpConfig",
+    ]) {
+      expect(telemetry).not.toHaveProperty(removed);
+    }
   });
 
   it("names the ratel.* spans per the pin", () => {
