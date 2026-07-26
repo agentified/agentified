@@ -2,10 +2,9 @@ name: Verify install
 
 # Per-unit install smoke tests (ADR-0008). Each release unit — core (crate),
 # sdk-ts (npm), sdk-py (PyPI), the framework adapters vercel-ai-sdk + mastra (npm),
-# and the four telemetry units (telemetry-core on crates.io, telemetry-ts +
-# telemetry-ts-otlp on npm, telemetry-py on PyPI) — is verified from its public
-# registry with no repo checkout and no local toolchain state, so a broken publish
-# surfaces here.
+# and the three telemetry units (telemetry-core on crates.io, telemetry-ts on
+# npm, telemetry-py on PyPI) — is verified from its public registry with no repo
+# checkout and no local toolchain state, so a broken publish surfaces here.
 #
 # workflow_dispatch: pick a `unit` and (optionally) a `version` to verify just
 # that one. The daily cron runs `unit: all` at each unit's `latest`.
@@ -17,7 +16,7 @@ on:
         description: Release unit to verify
         type: choice
         default: all
-        options: [all, core, sdk-ts, sdk-py, telemetry-core, telemetry-ts, telemetry-py, telemetry-ts-otlp, vercel-ai-sdk, mastra]
+        options: [all, core, sdk-ts, sdk-py, telemetry-core, telemetry-ts, telemetry-py, vercel-ai-sdk, mastra]
       version:
         description: Version to verify (e.g. 0.2.0-rc.2 or 0.2.0). Only applied when a single unit is selected; ignored for `all`.
         required: false
@@ -363,8 +362,7 @@ jobs:
 
   # The telemetry units are independent single-registry units, each with its own
   # verify leg. Each is pure-language (no per-OS artifact), so one linux leg proves
-  # downstream installability. The vocabulary units' smoke test reads SEMCONV_VERSION;
-  # the exporter (telemetry-ts-otlp) imports init().
+  # downstream installability. Each smoke test reads SEMCONV_VERSION.
   verify-telemetry-ts:
     name: verify telemetry-ts (npm)
     if: github.event_name == 'schedule' || inputs.unit == 'all' || inputs.unit == 'telemetry-ts'
@@ -449,33 +447,3 @@ jobs:
           }
           EOF
           cargo run -q
-
-  verify-telemetry-ts-otlp:
-    name: verify telemetry-ts-otlp (npm)
-    if: github.event_name == 'schedule' || inputs.unit == 'all' || inputs.unit == 'telemetry-ts-otlp'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          set -e
-          if [ "${{ inputs.unit }}" = "telemetry-ts-otlp" ] && [ -n "${{ inputs.version }}" ]; then
-            echo "spec=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "spec=${{ inputs.tag || 'latest' }}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install + smoke-test the package
-        shell: bash
-        # Installing the exporter pulls its @ratel-ai/telemetry dependency, so this
-        # also proves the cross-package resolution. The smoke test imports init().
-        run: |
-          set -e
-          tmp=$(mktemp -d)
-          cd "$tmp"
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund "@ratel-ai/telemetry-otlp@${{ steps.ver.outputs.spec }}"
-          node --input-type=module -e "import { init } from '@ratel-ai/telemetry-otlp'; if (typeof init !== 'function') { console.error('init is not a function', typeof init); process.exit(1); } console.log('OK', typeof init);"

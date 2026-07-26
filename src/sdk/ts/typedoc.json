@@ -11,8 +11,7 @@
   "intentionallyNotExported": ["src/catalog.ts:ExclusiveEmbeddingFields"],
   "externalSymbolLinkMappings": {
     "@ratel-ai/telemetry": {
-      "DEFAULT_SERVICE_NAME": "https://github.com/ratel-ai/ratel/blob/main/src/telemetry/ts/src/config.ts",
-      "contentCaptureMode": "https://github.com/ratel-ai/ratel/blob/main/src/telemetry/ts/src/config.ts"
+      "contentCaptureMode": "https://github.com/ratel-ai/ratel/blob/main/src/telemetry/ts/src/content-capture.ts"
     }
   }
 }

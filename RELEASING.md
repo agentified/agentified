@@ -2,7 +2,7 @@
 
 How a new version of a Ratel package is published. Read end-to-end before cutting a release.
 
-Ratel releases **per unit** (ADR-0008): nine independently-versioned release units, each on
+Ratel releases **per unit** (ADR-0008): eight independently-versioned release units, each on
 its own tag prefix, routed through one `release.yml`. There is no workspace-shared version —
 each unit carries its own version in its own manifest and ships on its own cadence.
 
@@ -16,7 +16,6 @@ each unit carries its own version in its own manifest and ships on its own caden
 | `telemetry-core` | `telemetry-core-v*` | `ratel-ai-telemetry` on crates.io | `src/telemetry/core/Cargo.toml` |
 | `telemetry-ts` | `telemetry-ts-v*` | `@ratel-ai/telemetry` on npm | `src/telemetry/ts/package.json` |
 | `telemetry-py` | `telemetry-py-v*` | `ratel-ai-telemetry` on PyPI | `src/telemetry/python/pyproject.toml` |
-| `telemetry-ts-otlp` | `telemetry-ts-otlp-v*` | `@ratel-ai/telemetry-otlp` on npm | `src/telemetry/ts-otlp/package.json` |
 | `vercel-ai-sdk` | `vercel-ai-sdk-v*` | `@ratel-ai/vercel-ai-sdk` on npm | `src/adapters/ts-vercel-ai-sdk/package.json` |
 | `mastra` | `mastra-v*` | `@ratel-ai/mastra` on npm | `src/adapters/ts-mastra/package.json` |
 
@@ -26,44 +25,40 @@ drafter, and the manual publish helper all read. Adding a future unit is a one-p
 
 The `vercel-ai-sdk` framework adapter is wired into `release.yml`'s triggers and its own
 `publish-vercel-ai-sdk` job (pure-TS, built in CI then published from the package directory,
-like the telemetry npm units), publishing over OIDC via a Trusted Publisher. That path does
+like the `telemetry-ts` job), publishing over OIDC via a Trusted Publisher. That path does
 *not* `pnpm pack`, so unlike the manual helper it rewrites nothing: every `workspace:`
-specifier the adapter ships needs an explicit pin step in the job. Its npm name was bootstrapped by a manual
-first-publish (`scripts/publish-rc.sh --unit vercel-ai-sdk`) before the Trusted Publisher could
-exist. The `release` environment's tag policy must allow `vercel-ai-sdk-v*`, or the publish job
-hangs at the deploy gate.
+specifier the adapter ships needs an explicit pin step in the job. Its npm name was
+bootstrapped by a manual first-publish (`scripts/publish-rc.sh --unit vercel-ai-sdk`) before
+the Trusted Publisher could exist. The `release` environment's tag policy must allow
+`vercel-ai-sdk-v*`, or the publish job hangs at the deploy gate.
 
 The `sdk-ts` unit is internally lockstep: the loader `@ratel-ai/sdk`, its five per-OS native
 packages (`@ratel-ai/sdk-darwin-arm64`, `-darwin-x64`, `-linux-x64-gnu`, `-linux-arm64-gnu`,
 `-win32-x64-msvc`), and the `ratel-sdk-ts-native` crate all move together on one `sdk-ts-v*`
 tag. Likewise `sdk-py` bundles the `ratel-sdk-python-native` crate with the wheel.
 
-The four **telemetry** units are independent single-registry units — a fix to just the npm
+The three **telemetry** units are independent single-registry units — a fix to just the npm
 vocabulary ships on `telemetry-ts-v*` alone. `telemetry-core` (crates.io), `telemetry-ts`
 (npm), and `telemetry-py` (PyPI) carry the shared `ratel.*` vocabulary and its spec +
 conformance fixtures, so they usually move together: tag the same commit with those prefixes
-to release them in one run. `telemetry-ts-otlp` (`@ratel-ai/telemetry-otlp` → npm) is the
-`init()` OTLP exporter, split from the vocabulary so importing the constants stays OTel-free
-(ADR-0007); it tracks only its own source and depends on `@ratel-ai/telemetry` at publish
-time. All four are pure-language, so the manual helper builds them locally (no prebuilt
-artifacts).
+to release them in one run. All three are pure-language, so the manual helper builds them
+locally (no prebuilt artifacts).
 
 The **framework adapters** (`vercel-ai-sdk` → `@ratel-ai/vercel-ai-sdk`, `mastra` →
 `@ratel-ai/mastra`; more to come) are npm-only, pure-language units that peer-depend on
 `@ratel-ai/sdk` via `workspace:^`. `vercel-ai-sdk` additionally depends on
 `@ratel-ai/telemetry` at publish time — a real runtime `dependencies` entry, not a peer, so
 `telemetry-ts` must be released **before** it or the adapter's pinned range names a version
-that is not on npm yet. `mastra` has no such dependency. Like `telemetry-ts-otlp`, the manual
-helper builds and `pnpm pack`s them locally (the pack rewrites every `workspace:` specifier,
-peer and runtime alike, to a concrete range); they need no prebuilt artifact.
+that is not on npm yet. `mastra` has no such dependency. Like `telemetry-ts`, the manual
+helper builds them locally, then `pnpm pack`s them (the pack rewrites every `workspace:`
+specifier, peer and runtime alike, to a concrete range); they need no prebuilt artifact.
 
 `@ratel-ai/mcp-server` ships from a sibling repo, [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp), on its own cadence.
 
 ## How the release pipeline is wired
 
 - **`release.yml`** — fires on any `core-v*` / `sdk-ts-v*` / `sdk-py-v*` / `telemetry-core-v*` /
-  `telemetry-ts-v*` / `telemetry-py-v*` / `telemetry-ts-otlp-v*` / `mastra-v*` /
-  `vercel-ai-sdk-v*` tag push (and
+  `telemetry-ts-v*` / `telemetry-py-v*` / `mastra-v*` / `vercel-ai-sdk-v*` tag push (and
   supports `workflow_dispatch` with `dry_run: true` for rehearsal). Its first job,
   `tag-version-check`, runs [`scripts/check-release-tag.mjs`](scripts/check-release-tag.mjs) to
   route the tag to its unit and verify **only that unit's** manifests + CHANGELOG carry the
@@ -136,17 +131,20 @@ rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
 - `ratel-ai-core` (crates.io) and `ratel-ai` (PyPI) names are registered.
 - Trusted Publishers are configured on the 6 SDK npm packages, the `ratel-ai-core` crate, the
   `ratel-ai` PyPI project, and the `@ratel-ai/vercel-ai-sdk` npm name — each pointing at this
-  repo / `release.yml` / the `release` environment. **The 4 telemetry names
-  (`@ratel-ai/telemetry` + `@ratel-ai/telemetry-otlp` on npm, `ratel-ai-telemetry` on PyPI +
-  crates.io) and the `@ratel-ai/mastra` npm name are not yet registered** — they are added at
-  their first-time bootstrap.
+  repo / `release.yml` / the `release` environment. `@ratel-ai/telemetry` is registered on npm
+  (0.1.2, manual first-publish); confirm its Trusted Publisher before the next
+  `telemetry-ts-v*` tag. **The `ratel-ai-telemetry` names (PyPI + crates.io) and the
+  `@ratel-ai/mastra` npm name are not yet registered** — they are added at their first-time
+  bootstrap. `@ratel-ai/telemetry-otlp` is out of the repo and no longer a release unit, but
+  **0.1.1 is still live and undeprecated on npm** — run `npm deprecate "@ratel-ai/telemetry-otlp@*"`
+  with a pointer to the host-owned-provider recipe in the SDK README.
 - A `release` GitHub Environment exists whose **deployment tag policy allows the unit
   prefixes** — `core-v*`, `sdk-ts-v*`, `sdk-py-v*`. Keep the environment *name* `release`
   unchanged (it's what binds the Trusted Publishers); only its tag policy lists the prefixes.
   A tag not matched by the policy hangs the publish job at the deploy gate. **Add
-  `telemetry-core-v*`, `telemetry-ts-v*`, `telemetry-py-v*`, `telemetry-ts-otlp-v*` to the policy
-  before cutting the first telemetry release, and `mastra-v*` + `vercel-ai-sdk-v*` before their
-  first CI-driven adapter release.**
+  `telemetry-core-v*`, `telemetry-ts-v*`, `telemetry-py-v*` to the policy before cutting the
+  first telemetry release, and `mastra-v*` + `vercel-ai-sdk-v*` before their first CI-driven
+  adapter release.**
 
 ### Per-release flow (one unit at a time)
 
@@ -162,10 +160,9 @@ rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
    - `telemetry-core` → `src/telemetry/core/Cargo.toml`.
    - `telemetry-ts` → `src/telemetry/ts/package.json`.
    - `telemetry-py` → `src/telemetry/python/pyproject.toml` (PEP 440 spelling, e.g. `0.1.0rc1`).
-   - `telemetry-ts-otlp` → `src/telemetry/ts-otlp/package.json`.
    - `vercel-ai-sdk` → `src/adapters/ts-vercel-ai-sdk/package.json`.
    - `mastra` → `src/adapters/ts-mastra/package.json`.
-     The four telemetry units and the adapters version independently; bump only the unit(s)
+     The three telemetry units and the adapters version independently; bump only the unit(s)
      you are releasing.
 3. **Update the CHANGELOG:** run the `/changelog` skill (`.claude/skills/changelog/`) for
    `$UNIT`. It drafts entries with [git-cliff](https://git-cliff.org) scoped to the unit,
@@ -222,27 +219,27 @@ Publishers can't be configured for a package that doesn't exist yet. Do this per
    - `sdk-ts` → `build-binaries.yml` (produces the `release-tarballs` artifact).
    - `sdk-py` → `python-binaries.yml` (produces `wheels-*` + sdist).
    - `core` needs no prebuilt artifact — it publishes straight from the repo.
-   - `telemetry-core` / `telemetry-ts` / `telemetry-py` / `telemetry-ts-otlp` / `mastra` /
-     `vercel-ai-sdk` need no prebuilt artifact — they are pure-language, so `publish-rc.sh`
-     builds the crate, npm packages, wheel/sdist, or packed adapter locally.
+   - `telemetry-core` / `telemetry-ts` / `telemetry-py` / `mastra` / `vercel-ai-sdk` need no
+     prebuilt artifact — they are pure-language, so `publish-rc.sh` builds the crate, npm
+     package, wheel/sdist, or packed adapter locally.
 2. Log in locally: `npm login` (npm requires 2FA on the publishing account for a first-publish
    of scoped public packages), `cargo login` for crates.io, and configure twine credentials
-   (`TWINE_USERNAME=__token__` + a PyPI token, or `~/.pypirc`) for PyPI. The four telemetry
-   units together need all three registries (`telemetry-ts` + `telemetry-ts-otlp` → npm,
-   `telemetry-py` → PyPI, `telemetry-core` → crates.io); also `pip install build twine`.
+   (`TWINE_USERNAME=__token__` + a PyPI token, or `~/.pypirc`) for PyPI. The three telemetry
+   units together need all three registries (`telemetry-ts` → npm, `telemetry-py` → PyPI,
+   `telemetry-core` → crates.io); also `pip install build twine`.
 3. Run `scripts/publish-rc.sh --unit <unit> --from-run <run-id>` (omit `--from-run` for
    `core`, the telemetry units, and the adapter units). It reads the unit's version from its
    manifest, finds the tarballs/wheels in the run's artifacts, and publishes — npm
    subpackages → loader for `sdk-ts`, `twine upload --skip-existing` for `sdk-py`, `cargo
-   publish` for `core`, the locally-built npm / npm / wheel / crate for `telemetry-ts` /
-   `telemetry-ts-otlp` / `telemetry-py` / `telemetry-core`, and the pnpm-packed npm tarballs
-   for `mastra` + `vercel-ai-sdk`.
+   publish` for `core`, the locally-built npm / wheel / crate for `telemetry-ts` /
+   `telemetry-py` / `telemetry-core`, and the pnpm-packed npm tarballs for `mastra` +
+   `vercel-ai-sdk`.
    It's idempotent (skips anything already on the registry), so a partial failure is safe to
    resume. First-publish from a laptop ships **without provenance** (that requires GH Actions
    OIDC); that's expected for the bootstrap.
 4. Configure Trusted Publishers on each registry name (npm web UI for the 6 SDK packages +
-   `@ratel-ai/telemetry` + `@ratel-ai/telemetry-otlp` + `@ratel-ai/mastra` +
-   `@ratel-ai/vercel-ai-sdk`, crates.io for `ratel-ai-core` + `ratel-ai-telemetry`, PyPI for
-   `ratel-ai` + `ratel-ai-telemetry`) pointing at `release.yml` in this repo, `release` environment.
+   `@ratel-ai/telemetry` + `@ratel-ai/mastra` + `@ratel-ai/vercel-ai-sdk`, crates.io for
+   `ratel-ai-core` + `ratel-ai-telemetry`, PyPI for `ratel-ai` + `ratel-ai-telemetry`) pointing
+   at `release.yml` in this repo, `release` environment.
 5. Bump to the next version (e.g. `-rc.2`), tag `<unit>-v…`, push — `release.yml` should now
    publish via OIDC with no token errors, validating the trust relationship.

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Per-unit release-tag gate (ADR-0008). A release is cut by pushing a prefixed
 // tag — one of the registered unit prefixes (`core-v*`, `sdk-ts-v*`, `sdk-py-v*`,
-// `telemetry-core-v*`, `telemetry-ts-v*`, `telemetry-py-v*`, `telemetry-ts-otlp-v*`;
-// the set is derived from release-units.mjs, not hard-coded here). This checks that ONLY the tagged
+// `telemetry-core-v*`, `telemetry-ts-v*`, `telemetry-py-v*`; the set is derived
+// from release-units.mjs, not hard-coded here). This checks that ONLY the tagged
 // unit's manifests carry the tag's version and that its CHANGELOG(s) record it —
 // nothing else in the repo has to be in lockstep.
 //

@@ -7,23 +7,18 @@
  * plus the small subset of `gen_ai.*` keys the overlay emits directly on the
  * `execute_tool` span (borrowed verbatim from OpenTelemetry, never renamed).
  *
- * This package is OTel-free (ADR-0007): the OTLP config resolver and the
- * content-capture gate are re-exported from `./config`; the `init()` exporter,
- * which does pull the OpenTelemetry SDK, lives in `@ratel-ai/telemetry-otlp`.
+ * This package is OTel-free (ADR-0007): the only behavior it carries beyond the
+ * constants is the content-capture gate, re-exported from `./content-capture`.
+ * Wiring a provider — endpoint, auth, exporters, processors, flush — is the
+ * host's job.
  */
 
 export {
-  API_KEY_ENV,
   ContentCapture,
   clearContentCapture,
   contentCaptureMode,
-  DEFAULT_SERVICE_NAME,
-  type InitOptions,
-  OTLP_ENDPOINT_ENV,
-  type ResolvedOtlpConfig,
-  resolveOtlpConfig,
   setContentCapture,
-} from "./config.js";
+} from "./content-capture.js";
 
 /**
  * The pinned OpenTelemetry semantic-conventions version this vocabulary tracks
@@ -34,7 +29,7 @@ export const SEMCONV_VERSION = "1.42.0";
 
 /**
  * The ecosystem instrumentation env var gating message/tool content capture.
- * Default off; honored by `init()` rather than a Ratel-invented flag
+ * Default off; the shared ecosystem name rather than a Ratel-invented flag
  * (CONVENTIONS.md § Capture gating). Values: legacy boolean, or the enum
  * `NO_CONTENT` (default) / `SPAN_ONLY` / `EVENT_ONLY` / `SPAN_AND_EVENT`.
  */

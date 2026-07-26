@@ -4,17 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "pnpm -F \"@ratel-ai/telemetry-otlp...\" build && tsx src/index.ts",
+    "start": "pnpm -F \"@ratel-ai/telemetry...\" build && tsx src/index.ts",
     "typecheck": "tsc"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.220.0",
+    "@opentelemetry/exporter-logs-otlp-proto": "^0.220.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
     "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-logs": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
     "@opentelemetry/sdk-trace-node": "^2.9.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
-    "@ratel-ai/telemetry": "workspace:*",
-    "@ratel-ai/telemetry-otlp": "workspace:*"
+    "@ratel-ai/telemetry": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -7,9 +7,9 @@ Date: 2026-07-15
 Accepted
 
 Builds on the framework-neutral capability tools (ADR-0005's `search_capabilities` /
-`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern first shipped
-for `@ratel-ai/telemetry-otlp`. Design source: the reviewed proposal *TS framework adapter
-packages*; this ADR records the SPI that its first phase lands in `@ratel-ai/sdk`.
+`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern. Design
+source: the reviewed proposal *TS framework adapter packages*; this ADR records the SPI that its
+first phase lands in `@ratel-ai/sdk`.
 
 ## Context
 
@@ -143,8 +143,8 @@ adapter is three pure codecs; the core owns all state and every framework-indepe
 
 - **Detection powers error messages only.** A framework-shaped tool — a zod-style schema or a
   dynamic `description` — hitting the native `r.tools.register(...)` throws an actionable error
-  that names the exact adapter package to install, probing known frameworks with the existing
-  `isPeerInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
+  that names the exact adapter package to install, probing known frameworks with
+  `isPackageInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
   it takes its own plain error path rather than the adapter hint.) Detection can't tell *installed*
   from *in use* (Mastra depends on `ai` internally), so it never drives behavior — only the hint.
 

@@ -126,10 +126,10 @@ jobs:
           set -e
           triple="${{ matrix.triple }}"
           pnpm --filter @ratel-ai/sdk exec napi build --release --platform --target ${{ matrix.target }} --manifest-path native/Cargo.toml --output-dir native --js index.cjs --dts index.d.cts
-          # The SDK loader imports @ratel-ai/telemetry (+ the optional-peer
-          # @ratel-ai/telemetry-otlp types), so build those workspace deps' dist/ before
-          # tsc — same as the release workflow. Without it build:ts can't resolve them.
-          pnpm --filter @ratel-ai/telemetry --filter @ratel-ai/telemetry-otlp run build
+          # The SDK loader imports @ratel-ai/telemetry, so build that workspace dep's
+          # dist/ before tsc — same as the release workflow. Without it build:ts can't
+          # resolve it.
+          pnpm --filter @ratel-ai/telemetry run build
           pnpm --filter @ratel-ai/sdk run build:ts
           cp "src/sdk/ts/native/ratel-sdk.$triple.node" "src/sdk/ts/npm/$triple/"
           rm -rf "$RUNNER_TEMP/tgz" && mkdir -p "$RUNNER_TEMP/tgz/loader" "$RUNNER_TEMP/tgz/sub"

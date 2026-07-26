@@ -92,9 +92,21 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
+      '@opentelemetry/api-logs':
+        specifier: ^0.220.0
+        version: 0.220.0
+      '@opentelemetry/exporter-logs-otlp-proto':
+        specifier: ^0.220.0
+        version: 0.220.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/exporter-trace-otlp-proto':
+        specifier: ^0.220.0
+        version: 0.220.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/resources':
         specifier: ^2.9.0
         version: 2.9.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-logs':
+        specifier: ^0.220.0
+        version: 0.220.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base':
         specifier: ^2.9.0
         version: 2.9.0(@opentelemetry/api@1.9.1)
@@ -107,9 +119,6 @@ importers:
       '@ratel-ai/telemetry':
         specifier: workspace:*
         version: link:../../src/telemetry/ts
-      '@ratel-ai/telemetry-otlp':
-        specifier: workspace:*
-        version: link:../../src/telemetry/ts-otlp
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -193,9 +202,6 @@ importers:
       '@ratel-ai/telemetry':
         specifier: workspace:^
         version: link:../../telemetry/ts
-      '@ratel-ai/telemetry-otlp':
-        specifier: workspace:^
-        version: link:../../telemetry/ts-otlp
       '@types/json-schema':
         specifier: ^7.0.15
         version: 7.0.15
@@ -215,6 +221,9 @@ importers:
       '@opentelemetry/sdk-trace-base':
         specifier: ^2.9.0
         version: 2.9.0(@opentelemetry/api@1.9.1)
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.12.2
       typedoc:
         specifier: ^0.28.20
         version: 0.28.20(typescript@5.9.3)
@@ -248,49 +257,6 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.12.2
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.5
-        version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(vite@8.0.10(@types/node@24.12.2)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.9.0))
-
-  src/telemetry/ts-otlp:
-    dependencies:
-      '@opentelemetry/api-logs':
-        specifier: ^0.220.0
-        version: 0.220.0
-      '@opentelemetry/exporter-logs-otlp-proto':
-        specifier: ^0.220.0
-        version: 0.220.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/exporter-trace-otlp-proto':
-        specifier: ^0.220.0
-        version: 0.220.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/resources':
-        specifier: ^2.9.0
-        version: 2.9.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-logs':
-        specifier: ^0.220.0
-        version: 0.220.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-trace-base':
-        specifier: ^2.9.0
-        version: 2.9.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-trace-node':
-        specifier: ^2.9.0
-        version: 2.9.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/semantic-conventions':
-        specifier: ^1.41.1
-        version: 1.41.1
-      '@ratel-ai/telemetry':
-        specifier: workspace:^
-        version: link:../ts
-    devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.4.13
-        version: 2.4.13
-      '@opentelemetry/api':
-        specifier: ^1.9.1
-        version: 1.9.1
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

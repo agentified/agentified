@@ -453,12 +453,14 @@ async def test_ratel_skill_load_span(exporter: Any) -> None:
 
 
 # --- configure_telemetry content-capture options -----------------------------
-# Mirror of the TS `configureTelemetry content-capture options` suite
-# (src/sdk/ts/src/telemetry.test.ts). configure_telemetry sets the programmatic
-# capture override (module state in ratel_ai_telemetry, read by content_capture_mode)
-# and its returned handle's shutdown() clears it. OpenTelemetry forbids overriding the
-# global provider once set (this module registers one at import), so init() itself is
-# stubbed out; the override still applies to spans captured by the shared provider.
+# Mirror of the TS `setContentCapture` / `clearContentCapture` case
+# (src/sdk/ts/src/telemetry.test.ts), which drives the override directly since TS dropped
+# configureTelemetry when the host took over the OpenTelemetry provider.
+# configure_telemetry sets the programmatic capture override (module state in
+# ratel_ai_telemetry, read by content_capture_mode) and its returned handle's shutdown()
+# clears it. OpenTelemetry forbids overriding the global provider once set (this module
+# registers one at import), so init() itself is stubbed out; the override still applies
+# to spans captured by the shared provider.
 
 
 class _FakeProvider:

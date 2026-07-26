@@ -14,6 +14,9 @@ the concept-inventory reference.
 Amended 2026-07-24 to align content capture with the OpenTelemetry Logs Event API and its
 four capture modes.
 
+Amended 2026-07-26 to drop the `@ratel-ai/telemetry-otlp` helper, and the TS OTLP config
+resolver with it, now that the TS host owns the OTel provider and its configuration.
+
 ## Context
 
 Two telemetry surfaces exist for different consumers. A **local** stream feeds the offline
@@ -59,12 +62,12 @@ make Ratel Cloud an island.
   same split. These are Events in the Logs data model, not SpanEvents.
 - **Ratel Cloud ingests stock OTLP** (`http/protobuf` + `Bearer`). No custom wire format or
   auth: a customer who already runs OTel dual-exports to Ratel by adding a second exporter.
-- **Four thin vocabulary/exporter helpers**, with stock OTel transport: `ratel-ai-telemetry`
-  (crates.io; the `ratel.*` constants), `@ratel-ai/telemetry` (npm; constants + config,
-  OTel-free so importing the vocabulary pulls no OTel SDK), `@ratel-ai/telemetry-otlp` (npm;
-  `init()` over the standard OTel SDK plus composable filtering span and log-record processors
-  for coexistence with Langfuse / AI-SDK pipelines), `ratel-ai-telemetry` (PyPI; constants, with
-  `init()` behind the `[otlp]` extra). Shared conformance fixtures assert every helper
+- **Three thin vocabulary helpers**, with stock OTel transport: `ratel-ai-telemetry`
+  (crates.io; the `ratel.*` constants), `@ratel-ai/telemetry` (npm; constants + the
+  content-capture gate, OTel-free so importing the vocabulary pulls no OTel SDK),
+  `ratel-ai-telemetry` (PyPI; constants, with `init()` behind the `[otlp]` extra). The
+  asymmetry is deliberate: in TS the host owns the OTel provider *and* its endpoint/auth
+  configuration, while Python keeps `init()`. Shared conformance fixtures assert every helper
   against the pin so the languages cannot drift.
 
 ### Two streams by design

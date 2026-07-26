@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING:** the OTLP exporter configuration — `resolveOtlpConfig()` with its `InitOptions` / `ResolvedOtlpConfig` types, and the `OTLP_ENDPOINT_ENV`, `API_KEY_ENV`, and `DEFAULT_SERVICE_NAME` constants. This package is now the `ratel.*` vocabulary plus the content-capture gate, nothing else. A host that owns the OpenTelemetry provider already owns the endpoint and auth that feed its exporters, so resolving them here was a second, Ratel-specific config path beside the standard `OTEL_EXPORTER_OTLP_*` one. To migrate, read your own endpoint, derive the Logs URL by replacing the traces URL's terminal `/v1/traces` with `/v1/logs`, and set `Authorization: Bearer <api key>` — see [`examples/telemetry-ts`](../../../examples/telemetry-ts/README.md) for the whole of it.
+
+### Changed
+
+- The companion `@ratel-ai/telemetry-otlp` package is gone: TypeScript hosts own the OpenTelemetry provider and build the OTLP exporters and span/log-record processors themselves. The `ratel.*` constants, the value enums, `SEMCONV_VERSION`, and the content-capture gate are unchanged.
+
 ## [0.1.3] - 2026-07-24
 
 ### Added
@@ -41,5 +49,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
-- `init()` lives in [`@ratel-ai/telemetry-otlp`](../ts-otlp/README.md), not this package: importing `@ratel-ai/telemetry` pulls no OpenTelemetry SDK (ADR-0015), so the SDK (emit), the server (read), and edge/serverless emitters take the `ratel.*` vocabulary weight-free. This package keeps the constants plus the pure `resolveOtlpConfig` / `contentCaptureMode`; callers of `init()` install `@ratel-ai/telemetry-otlp` and import it from there.
+- `init()` lives in `@ratel-ai/telemetry-otlp`, not this package: importing `@ratel-ai/telemetry` pulls no OpenTelemetry SDK (ADR-0015), so the SDK (emit), the server (read), and edge/serverless emitters take the `ratel.*` vocabulary weight-free. This package keeps the constants plus the pure `resolveOtlpConfig` / `contentCaptureMode`; callers of `init()` install `@ratel-ai/telemetry-otlp` and import it from there.
 - Released as an independent npm unit under the `telemetry-ts-v*` tag prefix.
