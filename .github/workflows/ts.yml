@@ -111,16 +111,29 @@ jobs:
         run: pnpm --filter @ratel-ai/vercel-ai-sdk typecheck
       - name: Test
         run: pnpm --filter @ratel-ai/vercel-ai-sdk test
-      - name: Pack the adapter and the SDK
+      # `@ratel-ai/telemetry` is packed alongside them because both tarballs turn
+      # their `workspace:^` on it into a hard `^<workspace version>` — a version
+      # that only reaches npm at release time, so a registry-only install of the
+      # other two ETARGETs on every unreleased bump. (`@ratel-ai/telemetry-otlp`
+      # needs no tarball: it is an *optional* peer, so npm never asks for it.)
+      # The build step above already covers all three — `...` selects the
+      # adapter's whole dependency closure, in topological order.
+      - name: Pack the adapter, the SDK, and the telemetry vocabulary
         run: |
           mkdir -p /tmp/ratel-pack
           pnpm --filter @ratel-ai/sdk exec pnpm pack --pack-destination /tmp/ratel-pack
+          pnpm --filter @ratel-ai/telemetry exec pnpm pack --pack-destination /tmp/ratel-pack
           pnpm --filter @ratel-ai/vercel-ai-sdk exec pnpm pack --pack-destination /tmp/ratel-pack
       # A consumer install sees only the tarball manifests (peers, exports, d.ts) —
       # no workspace links — so this catches packaging drift the in-repo checks
       # can't: peer ranges rejecting the row's `ai`, missing dist types, exports
       # misrouting. `--omit=optional` skips the SDK's platform-binary optionals
       # (irrelevant to a type-level check and unpublished at workspace versions).
+      # `--save-exact` writes the row into the manifest as the version it is, so
+      # every later install in this directory is measured against `7.0.0` rather
+      # than against `^7.0.0` — which any of them may satisfy with the ceiling.
+      # The one install that used to do exactly that is pinned now, so this is
+      # the standing guard, not the fix.
       - name: Typecheck a packed consumer
         id: packed-consumer
         run: |
@@ -129,8 +142,10 @@ jobs:
           cp /tmp/ratel-pack/*.tgz "$tmp"
           cd "$tmp"
           npm init -y >/dev/null
-          npm install --no-audit --no-fund --omit=optional \
-            typescript@5 "ai@${AI_SDK_VERSION}" ./ratel-ai-sdk-*.tgz ./ratel-ai-vercel-ai-sdk-*.tgz
+          # The digit anchor keeps this off a future `ratel-ai-telemetry-otlp-*.tgz`.
+          npm install --no-audit --no-fund --omit=optional --save-exact \
+            typescript@5 "ai@${AI_SDK_VERSION}" \
+            ./ratel-ai-sdk-*.tgz ./ratel-ai-telemetry-[0-9]*.tgz ./ratel-ai-vercel-ai-sdk-*.tgz
           cat > consumer.mts <<'TS'
           import { ratel } from "@ratel-ai/sdk";
           import { aiSdk } from "@ratel-ai/vercel-ai-sdk";
@@ -156,12 +171,14 @@ jobs:
           npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 consumer.mts
           echo "otel=$(ls node_modules/@ai-sdk/otel >/dev/null 2>&1 && echo yes || echo no)" >> "$GITHUB_OUTPUT"
           echo "dir=$tmp" >> "$GITHUB_OUTPUT"
-      # The integration is deliberately NOT on the root entrypoint and its peers
-      # are optional, so a host that never asks for telemetry must not resolve
-      # `@ai-sdk/otel` at all — it pins its own exact `ai@7`, and a second `ai` in
-      # one program redeclares `AI_SDK_DEFAULT_PROVIDER` (TS2403) in the host's
-      # build. This asserts the absence; the v7 step below asserts it still works
-      # when asked for.
+      # `@ai-sdk/otel` pins its own exact `ai@7`, and a second `ai` in one program
+      # redeclares `AI_SDK_DEFAULT_PROVIDER` (TS2403) in the host's build, so a
+      # host that never asks for telemetry must not pull it in. npm never installs
+      # an optional peer, so what this probe actually proves is narrow: the
+      # DECLARATION is still optional. It fires when someone promotes `@ai-sdk/otel`
+      # to a required peer or a hard dependency — not when the root entrypoint
+      # starts importing it. That second claim is enforced by `packagesReachableFrom`
+      # in src/adapters/ts-vercel-ai-sdk/src/package-layout.test.ts.
       - name: Assert the integration stays off the default resolution path
         run: |
           test "${{ steps.packed-consumer.outputs.otel }}" = "no" \
@@ -174,12 +191,32 @@ jobs:
         run: |
           set -e
           cd "${{ steps.packed-consumer.outputs.dir }}"
-          npm install --no-audit --no-fund --omit=optional @ai-sdk/otel @opentelemetry/api
+          # `@ai-sdk/otel@1.0.N` hard-depends on exactly `ai@7.0.N`, so the row's
+          # `ai` dictates the emitter release and an unpinned install brings its
+          # own. It hard-pins `@opentelemetry/api` too, so naming that here would
+          # only add an unpinned range that can fork the API singleton.
+          # The step gate is `7.`, wider than this rule: a `7.1.x` row has no
+          # established pairing, so say so instead of building `1.0.7.1.0`.
+          case "$AI_SDK_VERSION" in
+            7.0.*) otel_ver="1.0.${AI_SDK_VERSION#7.0.}" ;;
+            *) echo "no @ai-sdk/otel pairing known for ai@${AI_SDK_VERSION} — the 1.0.N <-> 7.0.N rule covers ai@7.0.x only"; exit 1 ;;
+          esac
+          npm install --no-audit --no-fund --omit=optional "@ai-sdk/otel@${otel_ver}"
+          # The dangerous case is one `ai`, silently the wrong one: a caret spec
+          # deduped up to the ceiling leaves a single copy that typechecks clean,
+          # so the floor row passes having tested the ceiling. (Two nested copies
+          # do fail the tsc below — `--skipLibCheck` skips `.d.ts` internals, not
+          # the duplicate `Telemetry` identities that reach the checked file.)
+          resolved=$(find "$PWD/node_modules" -path '*node_modules/ai/package.json' -exec node -p "require(process.argv[1]).version" {} \;)
+          test "$resolved" = "$AI_SDK_VERSION" \
+            || { echo "expected exactly one ai@${AI_SDK_VERSION}, found: $(echo "$resolved" | tr '\n' ' ')"; exit 1; }
           cat > telemetry-consumer.mts <<'TS'
           import { RatelOtelIntegration } from "@ratel-ai/vercel-ai-sdk/otel";
           import { registerTelemetry, type Telemetry } from "ai";
 
-          const integration: Telemetry = new RatelOtelIntegration();
+          // Every `Telemetry` member is optional, so a bare annotation is satisfied
+          // by `class Empty {}`. `Required` is what turns a dropped hook into TS2741.
+          const integration: Required<Telemetry> = new RatelOtelIntegration();
           registerTelemetry(integration);
           TS
           npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 telemetry-consumer.mts

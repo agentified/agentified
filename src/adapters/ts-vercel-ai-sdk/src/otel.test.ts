@@ -7,12 +7,18 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { RATEL_ORIGIN } from "@ratel-ai/telemetry";
+import { Origin, RATEL_ORIGIN } from "@ratel-ai/telemetry";
 import * as ai from "ai";
 import { generateText, type LanguageModel, tool } from "ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { RatelOtelIntegration } from "./otel.js";
+import {
+  aiSdkMajor,
+  MockLanguageModelV2,
+  type ModelCall,
+  usage,
+} from "./test-support/mock-model.js";
 
 // The integration seam (`registerTelemetry`, `telemetry.integrations`) is ai@7
 // only, and the compat matrix runs this suite against ai@5 and ai@6 too. A
@@ -20,17 +26,13 @@ import { RatelOtelIntegration } from "./otel.js";
 // so those rows can skip the suite instead of erroring on it.
 const registerTelemetry = (ai as { registerTelemetry?: (...integrations: unknown[]) => void })
   .registerTelemetry;
-// Skip on the row identity, never on feature detection: a self-fulfilling
-// `skipIf(!seamFound)` would silently skip all of this on a v7 row the day `ai`
-// moves the seam, and report green. Matches `generate-text.test.ts`.
-const aiSdkMajor = Number.parseInt(process.env.AI_SDK_VERSION ?? "7", 10);
 
 /**
  * The integration is verified the way a host deployment wires it: the *test*
  * owns the provider, registers an in-memory exporter on it, and reads the spans
  * back. `RatelOtelIntegration` never registers a provider and never exports —
- * it only creates spans onto whatever provider is globally active (plan
- * decision 1). No network, no Ratel Cloud import.
+ * it only creates spans onto whatever provider is globally active. No network,
+ * no Ratel Cloud import.
  */
 let exporter: InMemorySpanExporter;
 
@@ -52,8 +54,6 @@ afterEach(() => {
   trace.disable();
   context.disable();
 });
-
-const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
 /**
  * `OpenTelemetry`'s own internals. TypeScript's `private` is erased, so these
@@ -98,25 +98,25 @@ const TELEMETRY_MEMBERS = [
   "onError",
 ] as const;
 
-interface ModelCall {
-  prompt: unknown[];
+const IN_TOOL_SPAN = "inside tool execute";
+const IN_MODEL_SPAN = "inside model call";
+
+/**
+ * Opens {@link IN_MODEL_SPAN} from inside `doGenerate` — the one place reached
+ * only by the context `executeLanguageModelCall` activates.
+ */
+class ChildSpanningModel extends MockLanguageModelV2 {
+  async doGenerate(options: ModelCall): Promise<unknown> {
+    emitChildSpan(IN_MODEL_SPAN);
+    return super.doGenerate(options);
+  }
 }
 
-class MockLanguageModelV2 {
-  readonly specificationVersion = "v2";
-  readonly provider = "mock-provider";
-  readonly modelId = "mock-model";
-  readonly supportedUrls = {};
-
-  constructor(private readonly generateResults: unknown[] = []) {}
-
-  async doGenerate(options: ModelCall): Promise<unknown> {
-    const index = this.callCount++;
-    void options;
-    return this.generateResults[index];
-  }
-
-  private callCount = 0;
+/** A span opened from inside the AI SDK's own work, so it records whatever parented it. */
+function emitChildSpan(name: string): void {
+  trace.getTracer("host-work").startActiveSpan(name, (span) => {
+    span.end();
+  });
 }
 
 function textReply(text: string): unknown {
@@ -147,9 +147,34 @@ function toolCallThenText(toolName: string, input: unknown): unknown[] {
   ];
 }
 
+/** A tool-calling step in which both the model and the tool open a child span. */
+function runToolCallingStep(): Promise<unknown> {
+  return generateText({
+    model: new ChildSpanningModel(
+      toolCallThenText("lookup", { q: "ratel" }),
+    ) as unknown as LanguageModel,
+    tools: {
+      lookup: tool({
+        description: "Look something up.",
+        inputSchema: z.object({ q: z.string() }),
+        execute: async () => {
+          emitChildSpan(IN_TOOL_SPAN);
+          return { hit: true };
+        },
+      }),
+    },
+    prompt: "look up ratel",
+    telemetry: { integrations: [new RatelOtelIntegration()] },
+  });
+}
+
 /** Every span the run produced, in export order. */
 function spans(): ReadableSpan[] {
   return exporter.getFinishedSpans();
+}
+
+function spanNamed(name: string): ReadableSpan | undefined {
+  return spans().find((span) => span.name === name);
 }
 
 describe.skipIf(aiSdkMajor < 7)("RatelOtelIntegration", () => {
@@ -174,6 +199,84 @@ describe.skipIf(aiSdkMajor < 7)("RatelOtelIntegration", () => {
     }
   });
 
+  it("keeps a host enrichSpan's attributes next to ratel.origin", async () => {
+    await generateText({
+      model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
+      prompt: "hello",
+      telemetry: {
+        integrations: [
+          new RatelOtelIntegration({ enrichSpan: () => ({ "deployment.environment": "staging" }) }),
+        ],
+      },
+    });
+
+    // Taking the hook over instead of composing with it costs the host every
+    // attribute it wired, with no way back: the emitter is private and a second
+    // integration would duplicate the spans rather than enrich them.
+    const produced = spans();
+    expect(produced.length).toBeGreaterThan(0);
+    for (const span of produced) {
+      expect(span.attributes["deployment.environment"]).toBe("staging");
+      expect(span.attributes[RATEL_ORIGIN]).toBe("agent");
+    }
+  });
+
+  it("keeps ratel.origin when a host enrichSpan writes that key too", async () => {
+    await generateText({
+      model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
+      prompt: "hello",
+      telemetry: {
+        integrations: [
+          new RatelOtelIntegration({ enrichSpan: () => ({ [RATEL_ORIGIN]: "direct" }) }),
+        ],
+      },
+    });
+
+    // Merge order is the contract: `ratel.origin` is Ratel vocabulary, so a host
+    // hook that happens to write it must not decide what the overlay reports.
+    const produced = spans();
+    expect(produced.length).toBeGreaterThan(0);
+    expect(produced.every((span) => span.attributes[RATEL_ORIGIN] === "agent")).toBe(true);
+  });
+
+  it("keeps ratel.origin when a host enrichSpan throws", async () => {
+    await generateText({
+      model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
+      prompt: "hello",
+      telemetry: {
+        integrations: [
+          new RatelOtelIntegration({
+            enrichSpan: () => {
+              throw new Error("host bug");
+            },
+          }),
+        ],
+      },
+    });
+
+    // The emitter's own try/catch discards the whole return value, so composing
+    // through it unguarded would let a host bug strip the one attribute this
+    // class exists to add — from every span, with emission still succeeding.
+    const produced = spans();
+    expect(produced.length).toBeGreaterThan(0);
+    expect(produced.every((span) => span.attributes[RATEL_ORIGIN] === "agent")).toBe(true);
+  });
+
+  it("stamps the origin the caller asked for instead of the agent default", async () => {
+    await generateText({
+      model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
+      prompt: "hello",
+      telemetry: { integrations: [new RatelOtelIntegration({ origin: Origin.Direct })] },
+    });
+
+    // `embed` / `embedMany` / `rerank` are host-driven, not synthesized by an
+    // agent loop, so `agent` is only a default. This also pins the constructor's
+    // merge order: reverse the spread and the host hook could strip the key.
+    const produced = spans();
+    expect(produced.length).toBeGreaterThan(0);
+    expect(produced.every((span) => span.attributes[RATEL_ORIGIN] === "direct")).toBe(true);
+  });
+
   it("leaves the AI SDK's own gen_ai.* semantics intact", async () => {
     await generateText({
       model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
@@ -192,33 +295,35 @@ describe.skipIf(aiSdkMajor < 7)("RatelOtelIntegration", () => {
     );
   });
 
-  it("forwards the execute* context hooks so tool spans nest under the run", async () => {
-    await generateText({
-      model: new MockLanguageModelV2(
-        toolCallThenText("lookup", { q: "ratel" }),
-      ) as unknown as LanguageModel,
-      tools: {
-        lookup: tool({
-          description: "Look something up.",
-          inputSchema: z.object({ q: z.string() }),
-          execute: async () => ({ hit: true }),
-        }),
-      },
-      prompt: "look up ratel",
-      telemetry: { integrations: [new RatelOtelIntegration()] },
-    });
+  it("nests the whole run under one root, tool span included", async () => {
+    await runToolCallingStep();
 
-    // `executeTool` / `executeLanguageModelCall` are context wrappers, not event
-    // callbacks: drop them and the tool span silently reparents to the root (or
-    // becomes a second root), which no attribute assertion would catch.
     const produced = spans();
     const roots = produced.filter((span) => span.parentSpanContext === undefined);
     expect(roots.map((span) => span.name)).toEqual(["invoke_agent mock-model"]);
 
     const step = produced.find((span) => span.name.startsWith("step "));
-    const toolSpan = produced.find((span) => span.name === "execute_tool lookup");
     expect(step).toBeDefined();
-    expect(toolSpan?.parentSpanContext?.spanId).toBe(step?.spanContext().spanId);
+    expect(spanNamed("execute_tool lookup")?.parentSpanContext?.spanId).toBe(
+      step?.spanContext().spanId,
+    );
+  });
+
+  it("runs tool and model work inside the context each execute* wrapper activates", async () => {
+    await runToolCallingStep();
+
+    // `executeTool` / `executeLanguageModelCall` are context wrappers, not event
+    // callbacks. Dropping one loses no event and moves no AI SDK span — it
+    // silently unparents everything the host's own code opens underneath, so
+    // only a span opened from inside that code can catch it.
+    const toolSpan = spanNamed("execute_tool lookup");
+    const modelSpan = spanNamed("chat mock-model");
+    expect(toolSpan).toBeDefined();
+    expect(modelSpan).toBeDefined();
+    expect(spanNamed(IN_TOOL_SPAN)?.parentSpanContext?.spanId).toBe(toolSpan?.spanContext().spanId);
+    expect(spanNamed(IN_MODEL_SPAN)?.parentSpanContext?.spanId).toBe(
+      modelSpan?.spanContext().spanId,
+    );
   });
 
   it("emits onto a caller-supplied tracer instead of the global one", async () => {

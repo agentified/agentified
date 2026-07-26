@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 interface PackageManifest {
   private?: boolean;
   license?: string;
+  files?: string[];
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
@@ -18,27 +20,72 @@ const manifest = JSON.parse(
 
 /**
  * Every package `entry` can pull in: walks relative imports transitively and
- * collects the bare specifiers found along the way. Reads `from "…"` clauses
- * only, so a package named in prose doesn't count as a dependency.
+ * collects the bare specifiers found along the way. Specifiers resolve against
+ * the importing file, not against `src/` — flattening them means a nested
+ * `./aisdk.js` reads the wrong file, and the walk reports whatever that one
+ * imports instead of missing it, which is a false green rather than an error.
  */
 function packagesReachableFrom(entry: string): Set<string> {
   const visited = new Set<string>();
   const packages = new Set<string>();
-  const queue = [entry];
+  const queue = [new URL(entry, import.meta.url)];
   while (queue.length > 0) {
-    const file = queue.shift() as string;
-    if (visited.has(file)) continue;
-    visited.add(file);
-    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
-    for (const [, specifier] of source.matchAll(/\bfrom\s+"([^"]+)"/g)) {
+    const file = queue.shift() as URL;
+    if (visited.has(file.href)) continue;
+    visited.add(file.href);
+    for (const specifier of specifiersIn(file)) {
       if (specifier.startsWith(".")) {
-        queue.push(specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts"));
+        queue.push(new URL(specifier.replace(/\.js$/, ".ts"), file));
       } else {
         packages.add(specifier);
       }
     }
   }
   return packages;
+}
+
+/**
+ * Every module specifier `file` names, parsed rather than matched. A regex over
+ * the source has to decide what is code and what is prose, and gets it wrong in
+ * both directions: `from "…"` alone misses a bare `import "x"` and a dynamic
+ * `import("x")`, while widening it to catch those starts matching the `import`
+ * examples in this package's own docblocks. Stripping comments first only moves
+ * the problem — `"https://"` in a string reads as a line comment and swallows a
+ * real import to its right. The parser knows which is which.
+ */
+function specifiersIn(file: URL): string[] {
+  const source = ts.createSourceFile(
+    file.pathname,
+    readFileSync(file, "utf8"),
+    ts.ScriptTarget.ESNext,
+    true,
+  );
+  const specifiers: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier !== undefined &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specifiers.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments[0] !== undefined &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specifiers.push(node.arguments[0].text);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      // `import("@ai-sdk/otel").Foo` never runs, but it still drags the package
+      // into the host's *type* graph — which is where the duplicate-`ai` TS2403
+      // this whole test guards against actually fires.
+      const literal = node.argument.literal;
+      if (ts.isStringLiteral(literal)) specifiers.push(literal.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return specifiers;
 }
 
 describe("published vercel-ai-sdk dependency layout", () => {
@@ -99,6 +146,18 @@ describe("published vercel-ai-sdk dependency layout", () => {
 
     // ...and the integration's graph is the thing that legitimately reaches them.
     expect(packagesReachableFrom("otel.ts")).toContain("@ai-sdk/otel");
+  });
+
+  it("keeps the test doubles out of the build", () => {
+    // `files: ["dist"]` publishes whatever `tsc` emits, and `src/test-support/`
+    // is ordinary non-test source as far as the compiler is concerned — the
+    // `*.test.ts` exclude does not cover it. Drop this entry and the mock model
+    // ships in the tarball with every suite still green.
+    const tsconfig = JSON.parse(
+      readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"),
+    ) as { exclude?: string[] };
+    expect(tsconfig.exclude).toContain("src/test-support/**/*");
+    expect(manifest.files).toContain("dist");
   });
 
   it("dev-pins the exact AI SDK release selected for this verification run", () => {

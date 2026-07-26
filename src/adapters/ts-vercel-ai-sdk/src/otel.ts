@@ -2,11 +2,30 @@ import { type EnrichSpan, OpenTelemetry, type OpenTelemetryOptions } from "@ai-s
 import { Origin, RATEL_ORIGIN } from "@ratel-ai/telemetry";
 
 /**
- * {@link RatelOtelIntegration} options: every `@ai-sdk/otel` knob except
- * `enrichSpan`, which the integration owns — stamping the `ratel.*` overlay is
- * the whole reason to pick it over the bare emitter.
+ * Re-exported so `origin` is spellable without depending on `@ratel-ai/telemetry`
+ * directly: it is *this* package's runtime dependency, and an isolated
+ * `node_modules` (pnpm's default, Yarn PnP) keeps a host off its resolution path.
+ * The bare `"agent"` / `"direct"` literals are assignable too.
  */
-export type RatelOtelIntegrationOptions = Omit<OpenTelemetryOptions, "enrichSpan">;
+export { Origin };
+
+/**
+ * {@link RatelOtelIntegration} options: every `@ai-sdk/otel` knob, plus the
+ * `ratel.origin` the overlay stamps.
+ *
+ * `enrichSpan` is composed with, not taken over. Owning it outright would cost
+ * a host every attribute its own hook adds, silently and unrecoverably — the
+ * embedded emitter is private, and registering a second integration to get the
+ * hook back duplicates every `gen_ai.*` span. A host hook that throws loses its
+ * own attributes and nothing else (see {@link hostAttributes}).
+ *
+ * `origin` defaults to `agent`, which is right for a `generateText` loop and
+ * wrong for `embed` / `embedMany` / `rerank` driven straight from host code. It
+ * is fixed per instance, not per span, so a host that makes both kinds of call
+ * varies it with a second integration passed per call through
+ * `telemetry: { integrations: [...] }` — not by re-registering globally.
+ */
+export type RatelOtelIntegrationOptions = OpenTelemetryOptions & { origin?: Origin };
 
 /**
  * `ai@7`'s `Telemetry` contract, taken from the emitter we delegate to rather
@@ -41,15 +60,6 @@ type EmittingTelemetry = Pick<
 >;
 
 /**
- * The `ratel.*` overlay stamped on every AI SDK span. `enrichSpan` runs at span
- * creation and returns attributes rather than mutating the span; it is handed
- * the `spanType`, `operationId`, `callId`, and `runtimeContext`, so per-span-kind
- * and per-call attributes are reachable here when there is a vocabulary for them.
- * Origin is the deliberate baseline.
- */
-const ratelOverlay: EnrichSpan = () => ({ [RATEL_ORIGIN]: Origin.Agent });
-
-/**
  * An `ai@7` telemetry integration that emits the AI SDK's standard `gen_ai.*`
  * spans and adds Ratel's `ratel.*` overlay.
  *
@@ -70,7 +80,7 @@ const ratelOverlay: EnrichSpan = () => ({ [RATEL_ORIGIN]: Origin.Agent });
  * AI SDK spans needs this one; every processor on the shared provider sees the
  * spans either way.
  *
- * **This targets the `ai@7` seam only.** `ai@5` has none; `ai@6` (from `6.0.150`)
+ * **This targets the `ai@7` seam only.** `ai@5` has none; `ai@6` (from `6.0.108`)
  * has an earlier, different one — `registerTelemetryIntegration` with a
  * six-method `TelemetryIntegration` interface — that this class does not
  * implement. On either, pass `experimental_telemetry: { isEnabled: true }` per
@@ -79,8 +89,13 @@ const ratelOverlay: EnrichSpan = () => ({ [RATEL_ORIGIN]: Origin.Agent });
 export class RatelOtelIntegration implements EmittingTelemetry {
   readonly #emitter: OpenTelemetry;
 
-  constructor(options: RatelOtelIntegrationOptions = {}) {
-    this.#emitter = new OpenTelemetry({ ...options, enrichSpan: ratelOverlay });
+  constructor({ origin = Origin.Agent, enrichSpan, ...options }: RatelOtelIntegrationOptions = {}) {
+    this.#emitter = new OpenTelemetry({
+      ...options,
+      // Ratel's keys land last: `ratel.origin` is Ratel vocabulary, so a host
+      // hook that writes it too must not decide what the overlay reports.
+      enrichSpan: (event) => ({ ...hostAttributes(enrichSpan, event), [RATEL_ORIGIN]: origin }),
+    });
   }
 
   // --- context wrappers -----------------------------------------------------
@@ -178,5 +193,20 @@ export class RatelOtelIntegration implements EmittingTelemetry {
   /** @deprecated Superseded upstream by the generic operation-end events. */
   onObjectStepEnd(...args: Parameters<OpenTelemetry["onObjectStepEnd"]>): void {
     this.#emitter.onObjectStepEnd(...args);
+  }
+}
+
+/**
+ * A host `enrichSpan`'s attributes, or none when it throws. The emitter guards
+ * the hook already, but its `catch` drops the *whole* return value — so without
+ * this one a host bug would take `ratel.origin` down with it, on every span,
+ * silently. Composing means owning that blast radius: the host loses only what
+ * the host contributed.
+ */
+function hostAttributes(enrichSpan: EnrichSpan | undefined, event: Parameters<EnrichSpan>[0]) {
+  try {
+    return enrichSpan?.(event);
+  } catch {
+    return undefined;
   }
 }

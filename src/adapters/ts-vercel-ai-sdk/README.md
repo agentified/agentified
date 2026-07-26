@@ -100,11 +100,22 @@ registerTelemetry(new RatelOtelIntegration());
 ```
 
 Install `@ai-sdk/otel` alongside it — it's an optional peer, and the integration embeds its
-`OpenTelemetry` emitter as a private delegate (enriching through that emitter's `enrichSpan`
-hook). Flush and shutdown belong to the host's `NodeSDK`.
+`OpenTelemetry` emitter as a private delegate, stamping `ratel.*` through that emitter's
+`enrichSpan` hook. An `enrichSpan` of your own still runs (see below). Flush and shutdown
+belong to the host's `NodeSDK`.
 
-- **Register exactly one emitting integration.** `RatelOtelIntegration`, Langfuse's
-  `LangfuseVercelAiSdkIntegration`, and the bare `OpenTelemetry` from `@ai-sdk/otel` all
+**Match the `@ai-sdk/otel` patch to your `ai@7.0.N`.** `@ai-sdk/otel` doesn't *peer* `ai`, it
+*depends* on one exact release: every published `1.0.N` pins `ai@7.0.N`, 1:1 across every stable
+`1.0.x`, no exceptions. Install `@ai-sdk/otel@1.0.37` next to `ai@7.0.12` and the resolver nests
+a second `ai@7.0.37` under it — the same two-copies-of-`ai` type graph described below. Your
+build then fails on types that look identical: `TS2345` on the `registerTelemetry` argument
+under the usual `skipLibCheck`, or a pile including `TS2403` without it. The peer here stays
+`^1.0.0` on purpose: the release you need is a function of the `ai` *you* pinned, and no static
+range declared in this package can see that.
+
+- **Register exactly one emitting integration.** `RatelOtelIntegration`,
+  `LangfuseVercelAiSdkIntegration` (from `@langfuse/vercel-ai-sdk` — not the `@langfuse/otel`
+  processor in the snippet above), and the bare `OpenTelemetry` from `@ai-sdk/otel` all
   embed the same emitter, so registering two duplicates every `gen_ai.*` span. Every
   processor on the shared provider sees the spans regardless of which one you pick — but
   only this one adds the `ratel.*` overlay. Per-call `telemetry: { integrations: [...] }`
@@ -115,7 +126,7 @@ hook). Flush and shutdown belong to the host's `NodeSDK`.
   build fails without it ever importing the integration. Importing
   `@ratel-ai/vercel-ai-sdk` costs you nothing if you don't ask for `/otel`.
 - **`RatelOtelIntegration` targets the `ai@7` seam only.** `ai@5` has none at all; `ai@6`
-  (from `6.0.150`) has an *earlier, different* one — `registerTelemetryIntegration` with a
+  (from `6.0.108`) has an *earlier, different* one — `registerTelemetryIntegration` with a
   six-method `TelemetryIntegration` interface, not `registerTelemetry`/`Telemetry` — which
   this class does not implement. On either major, pass
   `experimental_telemetry: { isEnabled: true }` per call instead. The SDK's own `ratel.*`
@@ -124,6 +135,19 @@ hook). Flush and shutdown belong to the host's `NodeSDK`.
   SDK hands `enrichSpan` the `spanType`, `operationId`, `callId`, and `runtimeContext` at
   span creation, so per-span-kind and per-call attributes are already reachable. It's a
   deliberate baseline — the richer experiment vocabulary lands with the work that defines it.
+- **`origin` is selectable, and your `enrichSpan` composes.**
+  `new RatelOtelIntegration({ origin: Origin.Direct })` overrides the `agent` default. `Origin`
+  is re-exported from this entrypoint, so you don't need `@ratel-ai/telemetry` on your own
+  resolution path; the bare `"direct"` / `"agent"` literals work too. `agent` is the honest
+  value for the tool-loop spans that dominate a Ratel agent and the wrong one for `embed` /
+  `embedMany` / `rerank`, which the host calls directly instead of the model synthesizing them
+  mid-loop — that split is why the value is selectable rather than hardcoded. It is fixed per
+  instance, so a host doing both passes a second integration per call via
+  `telemetry: { integrations: [...] }` rather than re-registering globally.
+  Every other option passes through to the embedded emitter, including an `enrichSpan` of your
+  own: it is called and its attributes merged *under* Ratel's, so everything you return lands
+  except `ratel.origin` itself, which the overlay keeps. If your hook throws, you lose your own
+  attributes for that span and nothing else — `ratel.origin` still lands.
 
 ## Limitations
 
