@@ -273,49 +273,44 @@ keys it owns, at the pinned semconv version. This tests "does the helper emit th
 not "do three schemas agree". The `ratel.*` constants are the unit under test; `gen_ai.*` keys are asserted
 against the v1.42.0 table above.
 
-## Exporter initialization surface (recorded; implemented in the helpers)
+## Exporter initialization surface (recorded; implemented in the Python helper)
 
-The TypeScript `startTelemetry()` function (`init()` remains an alias) and Python `init()` are
-sugar over the standard OTel SDK plus the `ratel.*` constants: no transport, no FFI, no schema
-crate. Turnkey initialization:
+Python `init()` is sugar over the standard OTel SDK plus the `ratel.*` constants: no transport, no
+FFI, no schema crate. TypeScript has no counterpart: the host owns the OTel providers, and
+`@ratel-ai/telemetry` stays vocabulary plus the pure `resolveOtlpConfig()`, which resolves endpoint
+and auth from `RATEL_OTLP_ENDPOINT` / `RATEL_API_KEY` for the host to feed its own exporters. The
+asymmetry is deliberate (ADR-0007).
 
-- Resolves the traces endpoint from `RATEL_OTLP_ENDPOINT` in TypeScript and `RATEL_URL` in Python;
-  explicit `endpoint` / `endpoint=` values win over the environment. Resolves auth from
-  `RATEL_API_KEY`; explicit `apiKey` / `api_key=` values win. Custom `headers` compose with either
-  form. An explicit API key sets `Authorization: Bearer ...`; the `RATEL_API_KEY` fallback applies
-  only when neither an explicit API key nor an explicit `Authorization` header is given, so ambient
-  env never clobbers auth the caller set on purpose. The traces endpoint remains the full
-  `/v1/traces` URL; the Logs exporter derives its sibling `/v1/logs` URL.
-  `logsEndpoint` / `logs_endpoint` overrides that derivation.
-- On first setup, accepts `enabled: false` (`enabled=False`) before resolving configuration or
-  registering a provider, returning a no-op handle (in Python this also avoids importing
-  the OTel SDK at all; the TS package statically imports the SDK at module load either way). The
-  composable span and log-record processors have the same switch. If Ratel already owns the global providers,
+Turnkey initialization:
+
+- Resolves the traces endpoint from `RATEL_URL`; an explicit `endpoint=` wins over the environment.
+  Resolves auth from `RATEL_API_KEY`; an explicit `api_key=` wins. Custom `headers` compose with
+  either form. An explicit API key sets `Authorization: Bearer ...`; the `RATEL_API_KEY` fallback
+  applies only when neither an explicit API key nor an explicit `Authorization` header is given, so
+  ambient env never clobbers auth the caller set on purpose. The traces endpoint remains the full
+  `/v1/traces` URL; the Logs exporter derives its sibling `/v1/logs` URL. `logs_endpoint` overrides
+  that derivation.
+- On first setup, accepts `enabled=False` before resolving configuration or registering a provider,
+  returning a no-op handle without importing the OTel SDK at all. The composable span and
+  log-record processors have the same switch. If Ratel already owns the global providers,
   idempotence wins and every later initialization call returns the original handle regardless of options.
-- Exports every span and EventRecord by default on the turnkey path; `spanFilter` (`span_filter`) and
-  `logFilter` (`log_filter`) narrow those sets without requiring callers to construct providers.
+- Exports every span and EventRecord by default on the turnkey path; `span_filter` and `log_filter`
+  narrow those sets without requiring callers to construct providers.
 - Is idempotent to itself: while the Ratel-owned tracer and logger providers are active, repeated calls (including
   module reloads) return the exact original handle and the first call's configuration remains
   authoritative; because that handle is shared, shutting it down stops export for every caller. A
   foreign global tracer or logger provider still raises with processor-based coexistence guidance.
 - Shutdown is terminal: OTel's global providers register once per process, so after the handle's
-  `shutdown()` a later initialization raises rather than return a dead handle (TS callers can
-  call both `trace.disable()` and `logs.disable()` first to re-initialize; Python has no equivalent).
+  `shutdown()` a later initialization raises rather than return a dead handle; Python has no
+  provider-reset escape hatch.
 - Wires OTLP **`http/protobuf`** trace and Logs exporters with sane batching + shared resource defaults; everything else is the
   untouched OTel SDK the caller can configure directly.
-- Exposes the `ratel.*` attribute/span constants so callers emit the vocabulary without stringly-typed keys.
-- Honors `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` for content capture (default off).
 
-A caller who already runs the OTel SDK skips turnkey initialization and adds `ratelSpanProcessor()` plus
-`ratelLogRecordProcessor()` (`ratel_span_processor()` plus `ratel_log_record_processor()` in Python)
-to the host tracer and logger providers. Both default to the `gen_ai.*` / `ratel.*` signal filter
-and can be overridden. Installing `@ratel-ai/telemetry-otlp` or the Python `[otlp]` extra supplies
-the complete exporter/SDK implementation.
+Both the Python and TypeScript helpers expose the `ratel.*` attribute/span constants so callers emit
+the vocabulary without stringly-typed keys, and honor
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` for content capture (default off).
 
-**Composition on the owned provider (TS).** The TS turnkey entry is now `startTelemetry`
-(`init` retained as a back-compat alias). Beyond `spanFilter` and `logFilter`, it accepts host
-`spanProcessors` and `logRecordProcessors` registered alongside Ratel's on the same owned
-providers — each signal fans out to all of its processors — so a greenfield caller dual-exports
-(e.g. to Langfuse) without ceding the global providers to foreign ones. The returned handle adds
-`forceFlush()` (drain every registered processor; for serverless/jobs) beside `shutdown()`.
-Additive per ADR-0007 schema discipline; the Python helper keeps the `init()` surface.
+A Python caller who already runs the OTel SDK skips turnkey initialization and adds
+`ratel_span_processor()` plus `ratel_log_record_processor()` to the host tracer and logger
+providers. Both default to the `gen_ai.*` / `ratel.*` signal filter and can be overridden. The
+`[otlp]` extra supplies the complete exporter/SDK implementation.

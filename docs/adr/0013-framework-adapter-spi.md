@@ -7,9 +7,9 @@ Date: 2026-07-15
 Accepted
 
 Builds on the framework-neutral capability tools (ADR-0005's `search_capabilities` /
-`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern first shipped
-for `@ratel-ai/telemetry-otlp`. Design source: the reviewed proposal *TS framework adapter
-packages*; this ADR records the SPI that its first phase lands in `@ratel-ai/sdk`.
+`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern. Design
+source: the reviewed proposal *TS framework adapter packages*; this ADR records the SPI that its
+first phase lands in `@ratel-ai/sdk`.
 
 ## Context
 

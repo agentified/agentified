@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- The companion `@ratel-ai/telemetry-otlp` package is gone: TypeScript hosts own the OpenTelemetry provider and build the OTLP exporters and span/log-record processors from what `resolveOtlpConfig()` returns. This package's surface is unchanged.
+
 ## [0.1.3] - 2026-07-24
 
 ### Added
@@ -41,5 +45,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
-- `init()` lives in [`@ratel-ai/telemetry-otlp`](../ts-otlp/README.md), not this package: importing `@ratel-ai/telemetry` pulls no OpenTelemetry SDK (ADR-0015), so the SDK (emit), the server (read), and edge/serverless emitters take the `ratel.*` vocabulary weight-free. This package keeps the constants plus the pure `resolveOtlpConfig` / `contentCaptureMode`; callers of `init()` install `@ratel-ai/telemetry-otlp` and import it from there.
+- `init()` lives in `@ratel-ai/telemetry-otlp`, not this package: importing `@ratel-ai/telemetry` pulls no OpenTelemetry SDK (ADR-0015), so the SDK (emit), the server (read), and edge/serverless emitters take the `ratel.*` vocabulary weight-free. This package keeps the constants plus the pure `resolveOtlpConfig` / `contentCaptureMode`; callers of `init()` install `@ratel-ai/telemetry-otlp` and import it from there.
 - Released as an independent npm unit under the `telemetry-ts-v*` tag prefix.

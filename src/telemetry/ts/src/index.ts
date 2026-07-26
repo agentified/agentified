@@ -8,8 +8,8 @@
  * `execute_tool` span (borrowed verbatim from OpenTelemetry, never renamed).
  *
  * This package is OTel-free (ADR-0007): the OTLP config resolver and the
- * content-capture gate are re-exported from `./config`; the `init()` exporter,
- * which does pull the OpenTelemetry SDK, lives in `@ratel-ai/telemetry-otlp`.
+ * content-capture gate are re-exported from `./config`. Wiring a provider —
+ * exporters, processors, flush — is the host's job.
  */
 
 export {
@@ -34,7 +34,7 @@ export const SEMCONV_VERSION = "1.42.0";
 
 /**
  * The ecosystem instrumentation env var gating message/tool content capture.
- * Default off; honored by `init()` rather than a Ratel-invented flag
+ * Default off; the shared ecosystem name rather than a Ratel-invented flag
  * (CONVENTIONS.md § Capture gating). Values: legacy boolean, or the enum
  * `NO_CONTENT` (default) / `SPAN_ONLY` / `EVENT_ONLY` / `SPAN_AND_EVENT`.
  */

@@ -4,8 +4,8 @@
  * resolve endpoint/auth precedence and parse the capture env var, so they stay
  * weight-free for the three consumers that need the vocabulary without the
  * exporter — the SDK (emit side), the server (read side), and edge/serverless
- * emitters. The `init()` exporter that consumes `resolveOtlpConfig()` lives in the
- * separate `@ratel-ai/telemetry-otlp` package.
+ * emitters. The host owns the exporter and feeds it what `resolveOtlpConfig()`
+ * returns.
  */
 
 import { CAPTURE_CONTENT_ENV } from "./index.js";
@@ -22,7 +22,7 @@ export const API_KEY_ENV = "RATEL_API_KEY";
 export const DEFAULT_SERVICE_NAME = "ratel";
 
 /**
- * `init()` (in `@ratel-ai/telemetry-otlp`) resolves the endpoint from
+ * {@link resolveOtlpConfig} resolves the endpoint from
  * `RATEL_OTLP_ENDPOINT` and auth from `RATEL_API_KEY`, with explicit
  * `{ endpoint, apiKey }` values taking precedence over the environment. An
  * explicit `apiKey` sets the Bearer header; the

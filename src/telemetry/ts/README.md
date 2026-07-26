@@ -7,9 +7,7 @@ the pure OTLP config resolver (`resolveOtlpConfig`) and the content-capture gate
 (`contentCaptureMode`). **This package is OTel-free** — importing it pulls no OpenTelemetry
 SDK, so the SDK (emit side), the server (read side), and edge/serverless emitters take the
 vocabulary weight-free ([ADR-0007](../../../docs/adr/0007-telemetry-two-streams.md)).
-The `startTelemetry()` exporter (`init()` remains an alias), which does wire the OTel SDK, lives
-in the companion
-[`@ratel-ai/telemetry-otlp`](../ts-otlp/README.md) package.
+Wiring an OpenTelemetry provider is the host's job; this package never registers one.
 
 `resolveOtlpConfig()` reads the OTLP traces endpoint from `RATEL_OTLP_ENDPOINT` and auth from
 `RATEL_API_KEY`; explicit
@@ -25,7 +23,7 @@ import { trace } from "@opentelemetry/api";
 import { EXECUTE_TOOL, GEN_AI_OPERATION_NAME, GEN_AI_TOOL_NAME, Origin, RATEL_ORIGIN } from "@ratel-ai/telemetry";
 
 // Emit a standard gen_ai `execute_tool` span enriched with the ratel.* overlay,
-// on your own OTel provider — no exporter package needed.
+// on your own OTel provider — the vocabulary adds no transport.
 const span = trace.getTracer("my-agent").startSpan(EXECUTE_TOOL, {
   attributes: {
     [GEN_AI_OPERATION_NAME]: EXECUTE_TOOL,
@@ -36,9 +34,9 @@ const span = trace.getTracer("my-agent").startSpan(EXECUTE_TOOL, {
 span.end();
 ```
 
-Want turnkey OTLP export to Ratel? Add [`@ratel-ai/telemetry-otlp`](../ts-otlp/README.md)
-and call its `startTelemetry()` function (`init()` is its back-compat alias). A complete,
-offline-runnable version (console exporter + a
+Exporting to Ratel: feed the endpoints and headers `resolveOtlpConfig()` returns into your
+own OTLP exporters, on the tracer and logger providers you build and register. A complete,
+offline-runnable host wiring (console exporter + a
 `ratel.search` → `execute_tool` trace) is in
 [`examples/telemetry-ts`](../../../examples/telemetry-ts/README.md).
 
