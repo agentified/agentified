@@ -79,7 +79,11 @@ not an accident of this one.
 ## Consequences
 
 - Interoperable by construction: Ratel-emitted traces land in any OTel backend; existing
-  traces reach Ratel Cloud as a config change.
+  traces reach Ratel Cloud as a config change. Guaranteed as far as the *provider*, not as far
+  as the backend's UI — a vendor span processor applies its own filter after the span has
+  arrived, and a filter keyed on `gen_ai.*` drops the whole `ratel.*` tier silently. So the
+  tier's visibility is a property of the host's per-processor config, which the docs must state
+  rather than assume.
 - The pin is a maintenance obligation (the `gen_ai.*` group churns); `ratel.*` is the only
   vocabulary we design and version, with the same care as the local event schema.
 - Cross-language reuse is built in: TS- and Python-emitted remote spans and EventRecords share
