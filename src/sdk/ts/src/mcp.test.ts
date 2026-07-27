@@ -144,10 +144,11 @@ describe("registerMcpServer", () => {
     await handle.close();
   });
 
-  it("embeds during registration; a broken model surfaces the error from registerMcpServer, but metadata persists", async () => {
+  it("surfaces embed errors from registerMcpServer, leaves metadata, and closes the client", async () => {
     // Embedding now happens inside `catalog.register` (RAT-379/async-register),
     // which `registerMcpServer` awaits — so a broken model surfaces the error
     // right out of `registerMcpServer` itself, not from a later, separate build.
+    const closeSpy = vi.spyOn(Client.prototype, "close").mockResolvedValue(undefined);
     const catalog = new ToolCatalog({
       method: "semantic",
       embedding: { local: "/definitely/missing/ratel-embedding-model" },
@@ -160,18 +161,6 @@ describe("registerMcpServer", () => {
     // Metadata registration happens before the embedding pass inside
     // `catalog.register`, so it persists even though the embed itself failed.
     expect(catalog.has("demo__read_file")).toBe(true);
-  });
-
-  it("closes the MCP client when catalog.register fails", async () => {
-    const closeSpy = vi.spyOn(Client.prototype, "close").mockResolvedValue(undefined);
-    const catalog = new ToolCatalog({
-      method: "semantic",
-      embedding: { local: "/definitely/missing/ratel-embedding-model" },
-    });
-
-    await expect(
-      registerMcpServer(catalog, { name: "demo", transport: fake.clientTransport }),
-    ).rejects.toThrow(/failed to load embedding model/);
     expect(closeSpy).toHaveBeenCalled();
     closeSpy.mockRestore();
   });
@@ -447,6 +436,32 @@ describe("registerMcpServer tools/list pagination", () => {
 
     expect(handle.toolIds).toEqual(["demo__after_empty"]);
     expect(catalog.has("demo__after_empty")).toBe(true);
+
+    await handle.close();
+    await paginated.server.close();
+  });
+
+  it("follows nextCursor when it is an empty string (not omitted)", async () => {
+    const paginated = await startPaginatedFakeMcpServer([
+      { tools: [], nextCursor: "" },
+      {
+        tools: [
+          {
+            name: "after_empty_cursor",
+            description: "tool listed after empty-string cursor",
+            handler: () => ({ ok: true }),
+          },
+        ],
+      },
+    ]);
+    const catalog = new ToolCatalog();
+    const handle = await registerMcpServer(catalog, {
+      name: "demo",
+      transport: paginated.clientTransport,
+    });
+
+    expect(handle.toolIds).toEqual(["demo__after_empty_cursor"]);
+    expect(catalog.has("demo__after_empty_cursor")).toBe(true);
 
     await handle.close();
     await paginated.server.close();
