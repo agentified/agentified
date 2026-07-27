@@ -6,9 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.6.0-rc.0] - 2026-07-27
+
+### Added
+
+- **Adaptive usage ranking (ADR-0014).** A capability search followed by an invoke becomes a weighted edge in an in-memory `IntentGraph`; matched clusters then boost future rankings through a sub-unit RRF arm fused beside BM25/dense retrieval. Clusters carry support counts and are matched per-member lexically (Jaccard) or by centroid cosine on a semantic catalog, labelled by medoid + c-TF-IDF terms, and aged out by recency (a grace window then a half-life) with eviction and a per-cluster member cap. The arm never overrides a strong lexical/dense match — it lifts capabilities usage history supports.
+- `IntentGraph` value type with `protocol/v1` serialization: `to_json` / `from_json` (semantically validated on load, so a malformed or incompatible graph is rejected rather than silently degrading), a `rev` write-counter for save-when-changed persistence and stale-base detection, and `cluster_count`.
+- `rank` (0-based, scale-invariant position) and `fused` (whether the usage arm was mixed into this ranking) on `SearchHit`, so callers can order on `rank` and see when `score` switched from raw BM25/cosine to an RRF scale.
+- Embedding-model-change detection: a graph built under one model is detected against the active model (fingerprint / dimension) and its arm pauses rather than boost on stale centroids; `rebuild_embeddings` re-embeds cluster members under the current model, preserving support and edges.
+
 ### Changed
 
-- `TraceEvent` is now `#[non_exhaustive]`. Downstream `match`es over it must include a `_ =>` arm; in return, future event variants (such as the new `usage_boost`) are non-breaking. In-crate matches and the serde wire form are unaffected.
+- **BREAKING:** `TraceEvent` is now `#[non_exhaustive]`. Downstream `match`es over it must include a `_ =>` arm; in return, future event variants (such as the new `usage_boost`) are non-breaking. In-crate matches and the serde wire form are unaffected.
 
 ## [0.5.0] - 2026-07-20
 

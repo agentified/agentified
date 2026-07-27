@@ -1,6 +1,6 @@
 {
   "name": "@ratel-ai/sdk",
-  "version": "0.5.2",
+  "version": "0.6.0-rc.0",
   "description": "TypeScript SDK for Ratel — context engineering platform for AI agents. BM25 tool retrieval, MCP ingestion, framework-neutral capability tools.",
   "private": false,
   "type": "module",
@@ -83,15 +83,22 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
-    "@ratel-ai/telemetry": "workspace:^",
+    "@ratel-ai/telemetry": "^0.1.2",
     "@types/json-schema": "^7.0.15"
   },
   "peerDependencies": {
-    "@ratel-ai/telemetry-otlp": "workspace:^"
+    "@ratel-ai/telemetry-otlp": "^0.1.1"
   },
   "peerDependenciesMeta": {
     "@ratel-ai/telemetry-otlp": {
       "optional": true
     }
+  },
+  "optionalDependencies": {
+    "@ratel-ai/sdk-darwin-arm64": "0.6.0-rc.0",
+    "@ratel-ai/sdk-darwin-x64": "0.6.0-rc.0",
+    "@ratel-ai/sdk-linux-arm64-gnu": "0.6.0-rc.0",
+    "@ratel-ai/sdk-linux-x64-gnu": "0.6.0-rc.0",
+    "@ratel-ai/sdk-win32-x64-msvc": "0.6.0-rc.0"
   }
 }

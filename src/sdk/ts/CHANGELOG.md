@@ -6,7 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.5.2] - 2026-07-24
+## [0.6.0-rc.0] - 2026-07-27
+
+### Added
+
+- **Experimental adaptive usage ranking (ADR-0014).** `IntentGraph` plus `experimentalEnableAdaptiveRanking`, `experimentalRebuildIntentGraph`, `experimentalDisableAdaptiveRanking`, and `experimentalAdaptiveRankingStatus` on `ToolCatalog` / `SkillCatalog` (and the underlying registries). The catalog learns from each search-then-invoke and boosts future rankings; persist and reload the learning via `IntentGraph.toJson` / `fromJson`, and track writes via `graph.rev`. Shipped behind an `experimental` prefix — the API may change until it graduates.
+- `rank` and `fused` on search hits: order on `rank`, and branch on `fused` to know whether the usage arm changed the ranking.
+- Opt-in recovery after an embedding-model change: `experimentalEnableAdaptiveRanking(graph, { rebuildOnModelChange: true })` re-embeds a paused graph on the next dense search. Default off; explicit `experimentalRebuildIntentGraph()` otherwise. `experimentalAdaptiveRankingStatus` reports the paused/active state and the mismatched model detail.
 
 ### Changed
 
