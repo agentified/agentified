@@ -88,6 +88,8 @@ mod skill_registry;
 mod tool;
 mod tool_registry;
 mod trace;
+mod usage;
+mod usage_learner;
 
 pub use embedding::EmbedderError;
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
@@ -95,8 +97,10 @@ pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;
 pub use skill_registry::{SkillHit, SkillRegistry};
 pub use tool::Tool;
-pub use tool_registry::{SearchHit, ToolRegistry};
+pub use tool_registry::{AdaptiveRankingStatus, SearchHit, ToolRegistry};
 pub use trace::{
     ChurnKind, EmbedderLoadStatus, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace,
     SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceSink,
 };
+pub use usage::{Intent, IntentGraph, IntentGraphError};
+pub use usage_learner::UsageLearner;

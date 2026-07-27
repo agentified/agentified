@@ -15,7 +15,9 @@ loader and source implementations live outside `protocol/`.
 
 - `v1/` — the current major version of the contract: auth, catalog pull-sync, the wire
   shapes, the error model, and the versioning rules, plus its JSON Schemas (`v1/schema/`) and
-  executable conformance vectors (`v1/conformance/`).
+  executable conformance vectors (`v1/conformance/`). It also publishes the `IntentGraph`
+  usage-ranking shape — a producer contract shared by the local learner and Ratel Cloud, not
+  a synced endpoint ([ADR-0014](../docs/adr/0014-adaptive-usage-ranking.md)).
 
 ## Versioning
 

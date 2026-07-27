@@ -184,9 +184,7 @@ async def test_nonempty_skill_async_search_and_busy_registration(
     controlled_embedding_endpoint: tuple[str, threading.Event, threading.Event],
 ) -> None:
     endpoint, request_started, send_response = controlled_embedding_endpoint
-    catalog = SkillCatalog(
-        method="semantic", embedding={"url": endpoint, "model": "test-model"}
-    )
+    catalog = SkillCatalog(method="semantic", embedding={"url": endpoint, "model": "test-model"})
     register = asyncio.create_task(
         catalog.register(Skill(id="auth", name="auth", description="Set up authentication"))
     )

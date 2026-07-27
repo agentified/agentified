@@ -1,4 +1,6 @@
 import {
+  type AdaptiveRankingStatus,
+  IntentGraph,
   type EmbeddingConfig as NativeEmbeddingConfig,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
@@ -9,6 +11,8 @@ import {
 } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { mapEmbedderError } from "./errors.js";
+
+export { IntentGraph };
 
 /** Normalize the public string|object form into the native config the binding
  * expects (a string is the local-path `spec`, validated in core). */
@@ -28,6 +32,9 @@ function toNativeEmbedding(
  */
 export class ToolRegistry {
   private readonly native: NativeToolRegistry;
+  #warnOnModelMismatch = true;
+  #adaptiveWarned = false;
+  #rebuildOnModelChange = false;
   private readonly eager: boolean;
 
   /**
@@ -85,6 +92,7 @@ export class ToolRegistry {
     } catch (error) {
       throw mapEmbedderError(error);
     }
+    this.#maybeWarnModelMismatch();
   }
 
   /**
@@ -122,6 +130,12 @@ export class ToolRegistry {
     method: SearchMethod,
   ): Promise<SearchHit[]> {
     try {
+      // Guard the await behind the flag so the default path stays synchronous
+      // up to the native call — the pending-dense counter must increment before
+      // control yields, or a following register() would slip past serialization.
+      if (method !== "bm25" && this.#rebuildOnModelChange) {
+        await this.#maybeRebuildOnModelChange();
+      }
       return await this.native.searchWithMethodAsync(query, topK, origin, method);
     } catch (error) {
       throw mapEmbedderError(error);
@@ -141,6 +155,101 @@ export class ToolRegistry {
     this.native.setTraceSink(config);
   }
 
+  /**
+   * Turn on adaptive usage ranking against `graph` (ADR-0014).
+   *
+   * Wires both halves: the registry ranks against the graph, and its trace sink
+   * is decorated with a learner that grows it from search-then-invoke pairs — a
+   * capability the user actually invoked after a query becomes evidence for
+   * similar queries later.
+   *
+   * Pass the **same** {@link IntentGraph} to the tool and skill registries. One
+   * cluster holds both a tool and a skill edge map, so sharing gives one set of
+   * clusters with all the evidence behind it; separate graphs duplicate every
+   * cluster and split the evidence.
+   *
+   * Only queries that match a cluster are affected — anything else ranks exactly
+   * as it would have. With a graph attached, `SearchHit.score` becomes a fusion
+   * score rather than a raw BM25 score, so use `rank` for ordering and
+   * `fused` to detect the scale, not the raw `score`.
+   */
+  experimentalEnableAdaptiveRanking(
+    graph: IntentGraph,
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+  ): void {
+    this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
+    this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
+    this.#adaptiveWarned = false;
+    this.native.enableAdaptiveRanking(graph);
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Re-embed the intent graph's members under the current embedding model and
+   * replace its centroids. Call after changing the model: a graph's centroids
+   * are only comparable to queries from the model that built them, so on a swap
+   * the usage arm pauses until this runs. Members, support, and edges are
+   * preserved — only the centroids move to the new space.
+   */
+  async experimentalRebuildIntentGraph(): Promise<void> {
+    try {
+      await this.native.rebuildIntentGraph();
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+    this.#adaptiveWarned = false;
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Whether adaptive usage ranking is contributing (`"active"`), off
+   * (`"inactive"`), not yet determinable (`"unknown"`), or paused because the
+   * embedding model changed (`"paused: dim mismatch"` / `"paused: model
+   * mismatch"`). Gate on this instead of reading stderr if you prefer.
+   */
+  get experimentalAdaptiveRankingStatus(): AdaptiveRankingStatus {
+    return this.native.adaptiveRankingStatus();
+  }
+
+  /** One-time stderr warning when the attached graph's model no longer matches
+   * the catalog's. A dev-time config error that otherwise silently pauses
+   * ranking — printed unless `warnOnModelMismatch: false`. */
+  #maybeWarnModelMismatch(): void {
+    if (this.#adaptiveWarned || !this.#warnOnModelMismatch) return;
+    const s = this.native.adaptiveRankingStatus();
+    if (!s.status.startsWith("paused")) return;
+    this.#adaptiveWarned = true;
+    const how = s.dimMismatch
+      ? `built with a ${s.built}-dim embedding model but the active model outputs ${s.active} dims`
+      : `built with embedding model '${s.built}' but the active model is '${s.active}'`;
+    console.warn(
+      `ratel: intent graph was ${how}. Adaptive usage ranking is PAUSED — ` +
+        `call experimentalRebuildIntentGraph() to rebuild it with the current model.`,
+    );
+  }
+
+  /** Opt-in auto-recovery (see {@link experimentalEnableAdaptiveRanking}): when the arm is
+   * paused because the graph's model no longer matches, re-embed the graph under
+   * the current model before the dense search. Re-checks each search, so once
+   * rebuilt it stops; a failed rebuild throws `EmbedderError`, exactly as the
+   * dense query itself would. */
+  async #maybeRebuildOnModelChange(): Promise<void> {
+    if (!this.#rebuildOnModelChange) return;
+    if (this.native.adaptiveRankingStatus().status.startsWith("paused")) {
+      await this.experimentalRebuildIntentGraph();
+    }
+  }
+
+  /**
+   * Turn adaptive usage ranking off: ranking returns to the base engine and the
+   * graph stops growing. The graph keeps what it learned, so re-enabling
+   * resumes rather than restarts.
+   */
+  experimentalDisableAdaptiveRanking(): void {
+    this.#rebuildOnModelChange = false;
+    this.native.disableAdaptiveRanking();
+  }
+
   /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */
   drainTraceEvents(): unknown[] {
     return this.native.drainTraceEvents();
@@ -154,6 +263,9 @@ export class ToolRegistry {
  */
 export class SkillRegistry {
   private readonly native: NativeSkillRegistry;
+  #warnOnModelMismatch = true;
+  #adaptiveWarned = false;
+  #rebuildOnModelChange = false;
   private readonly eager: boolean;
 
   /**
@@ -203,6 +315,7 @@ export class SkillRegistry {
     } catch (error) {
       throw mapEmbedderError(error);
     }
+    this.#maybeWarnModelMismatch();
   }
 
   /** Lexical BM25 search over skills — see `ToolRegistry.search`. */
@@ -233,6 +346,12 @@ export class SkillRegistry {
     method: SearchMethod,
   ): Promise<SkillHit[]> {
     try {
+      // Guard the await behind the flag so the default path stays synchronous
+      // up to the native call — the pending-dense counter must increment before
+      // control yields, or a following register() would slip past serialization.
+      if (method !== "bm25" && this.#rebuildOnModelChange) {
+        await this.#maybeRebuildOnModelChange();
+      }
       return await this.native.searchWithMethodAsync(query, topK, origin, method);
     } catch (error) {
       throw mapEmbedderError(error);
@@ -247,6 +366,101 @@ export class SkillRegistry {
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
     this.native.setTraceSink(config);
+  }
+
+  /**
+   * Turn on adaptive usage ranking against `graph` (ADR-0014).
+   *
+   * Wires both halves: the registry ranks against the graph, and its trace sink
+   * is decorated with a learner that grows it from search-then-invoke pairs — a
+   * capability the user actually invoked after a query becomes evidence for
+   * similar queries later.
+   *
+   * Pass the **same** {@link IntentGraph} to the tool and skill registries. One
+   * cluster holds both a tool and a skill edge map, so sharing gives one set of
+   * clusters with all the evidence behind it; separate graphs duplicate every
+   * cluster and split the evidence.
+   *
+   * Only queries that match a cluster are affected — anything else ranks exactly
+   * as it would have. With a graph attached, `SearchHit.score` becomes a fusion
+   * score rather than a raw BM25 score, so use `rank` for ordering and
+   * `fused` to detect the scale, not the raw `score`.
+   */
+  experimentalEnableAdaptiveRanking(
+    graph: IntentGraph,
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+  ): void {
+    this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
+    this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
+    this.#adaptiveWarned = false;
+    this.native.enableAdaptiveRanking(graph);
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Re-embed the intent graph's members under the current embedding model and
+   * replace its centroids. Call after changing the model: a graph's centroids
+   * are only comparable to queries from the model that built them, so on a swap
+   * the usage arm pauses until this runs. Members, support, and edges are
+   * preserved — only the centroids move to the new space.
+   */
+  async experimentalRebuildIntentGraph(): Promise<void> {
+    try {
+      await this.native.rebuildIntentGraph();
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+    this.#adaptiveWarned = false;
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Whether adaptive usage ranking is contributing (`"active"`), off
+   * (`"inactive"`), not yet determinable (`"unknown"`), or paused because the
+   * embedding model changed (`"paused: dim mismatch"` / `"paused: model
+   * mismatch"`). Gate on this instead of reading stderr if you prefer.
+   */
+  get experimentalAdaptiveRankingStatus(): AdaptiveRankingStatus {
+    return this.native.adaptiveRankingStatus();
+  }
+
+  /** One-time stderr warning when the attached graph's model no longer matches
+   * the catalog's. A dev-time config error that otherwise silently pauses
+   * ranking — printed unless `warnOnModelMismatch: false`. */
+  #maybeWarnModelMismatch(): void {
+    if (this.#adaptiveWarned || !this.#warnOnModelMismatch) return;
+    const s = this.native.adaptiveRankingStatus();
+    if (!s.status.startsWith("paused")) return;
+    this.#adaptiveWarned = true;
+    const how = s.dimMismatch
+      ? `built with a ${s.built}-dim embedding model but the active model outputs ${s.active} dims`
+      : `built with embedding model '${s.built}' but the active model is '${s.active}'`;
+    console.warn(
+      `ratel: intent graph was ${how}. Adaptive usage ranking is PAUSED — ` +
+        `call experimentalRebuildIntentGraph() to rebuild it with the current model.`,
+    );
+  }
+
+  /** Opt-in auto-recovery (see {@link experimentalEnableAdaptiveRanking}): when the arm is
+   * paused because the graph's model no longer matches, re-embed the graph under
+   * the current model before the dense search. Re-checks each search, so once
+   * rebuilt it stops; a failed rebuild throws `EmbedderError`, exactly as the
+   * dense query itself would. */
+  async #maybeRebuildOnModelChange(): Promise<void> {
+    if (!this.#rebuildOnModelChange) return;
+    if (this.native.adaptiveRankingStatus().status.startsWith("paused")) {
+      await this.experimentalRebuildIntentGraph();
+    }
+  }
+
+  /**
+   * Turn adaptive usage ranking off: ranking returns to the base engine and the
+   * graph stops growing. The graph keeps what it learned, so re-enabling
+   * resumes rather than restarts.
+   */
+  experimentalDisableAdaptiveRanking(): void {
+    this.#rebuildOnModelChange = false;
+    this.native.disableAdaptiveRanking();
   }
 
   /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */

@@ -15,21 +15,32 @@ pub(crate) const RRF_K: f32 = 60.0;
 /// so a tool the two arms rank differently still has rank signal to fuse.
 pub(crate) const RETRIEVE_DEPTH: usize = 100;
 
-/// Reciprocal Rank Fusion over already-ranked, best-first id lists.
+/// One already-ranked, best-first id list plus the weight its rank positions
+/// carry into the fusion. `1.0` is the baseline the BM25 and dense arms use.
+pub(crate) type WeightedArm<'a> = (&'a [String], f32);
+
+/// Reciprocal Rank Fusion with a **per-arm weight**:
+/// `score(id) = Σ_arms w_arm · 1 / (k + rank_in_arm)`.
 ///
-/// `score(id) = Σ_list 1 / (k + rank_in_list)`, with `rank` 0-based. An id
-/// absent from a list contributes nothing for that list. The result is sorted
-/// best-first with ties broken by `id` ascending — the same `(score desc, id
-/// asc)` contract [`crate::search::bm25_search`] and [`crate::dense_search`]
-/// guarantee, so fused top-K membership is stable across processes regardless of
-/// input order. Empty input yields an empty result.
-pub(crate) fn rrf_fuse(lists: &[&[String]], k: f32) -> Vec<(String, f32)> {
+/// [`rrf_fuse`] is this at `w = 1.0` for every arm. The weight exists for the
+/// usage-ranking arm (ADR-0014), which is deliberately sub-unit: at the same rank
+/// a capability the query lexically matched outranks one only usage history
+/// supports. A sub-unit arm still promotes a deeply-ranked id past another arm's
+/// rank-0 hit, because the id accumulates from both arms — it damps the arm
+/// without disabling it.
+///
+/// Weights scale contributions only; ordering, tie-breaking, and determinism are
+/// unchanged (`(score desc, id asc)`, see [`sort_and_truncate`]). An arm at
+/// weight `0.0` still contributes its ids to the candidate set at score `0.0`,
+/// so muting an arm is not the same as omitting it — callers that want an arm
+/// gone must not pass it.
+pub(crate) fn rrf_fuse_weighted(lists: &[WeightedArm<'_>], k: f32) -> Vec<(String, f32)> {
     use std::collections::HashMap;
 
     let mut scores: HashMap<&str, f32> = HashMap::new();
-    for list in lists {
+    for (list, weight) in lists {
         for (rank, id) in list.iter().enumerate() {
-            *scores.entry(id.as_str()).or_insert(0.0) += 1.0 / (k + rank as f32);
+            *scores.entry(id.as_str()).or_insert(0.0) += weight / (k + rank as f32);
         }
     }
     let mut ranked: Vec<(String, f32)> = scores
@@ -59,6 +70,14 @@ mod tests {
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Fuse at the baseline weight — the plain RRF every arm used before the
+    /// usage arm introduced weighting. Keeps the original behavioural tests
+    /// expressed in terms of unweighted fusion.
+    fn rrf_fuse(lists: &[&[String]], k: f32) -> Vec<(String, f32)> {
+        let weighted: Vec<WeightedArm<'_>> = lists.iter().map(|l| (*l, 1.0)).collect();
+        rrf_fuse_weighted(&weighted, k)
     }
 
     #[test]
@@ -112,6 +131,70 @@ mod tests {
         let forward = rrf_fuse(&[bm25.as_slice(), dense.as_slice()], RRF_K);
         let swapped = rrf_fuse(&[dense.as_slice(), bm25.as_slice()], RRF_K);
         assert_eq!(forward, swapped);
+    }
+
+    #[test]
+    fn baseline_weights_reproduce_the_classic_rrf_scores() {
+        // Adding the weight parameter must not perturb the two-arm hybrid
+        // pipeline: at w=1 the scores are still Σ 1/(60 + rank).
+        let bm25 = ids(&["a", "b"]);
+        let dense = ids(&["b", "a"]);
+        let fused = rrf_fuse_weighted(&[(bm25.as_slice(), 1.0), (dense.as_slice(), 1.0)], RRF_K);
+        // Both ids sit at ranks 0 and 1 once each, so both score 1/60 + 1/61.
+        let expected = 1.0 / 60.0 + 1.0 / 61.0;
+        for (id, score) in &fused {
+            assert!((score - expected).abs() < 1e-6, "{id} scored {score}");
+        }
+    }
+
+    #[test]
+    fn a_zero_weight_arm_contributes_nothing() {
+        let bm25 = ids(&["a", "b"]);
+        let muted = ids(&["z"]);
+        let fused = rrf_fuse_weighted(&[(bm25.as_slice(), 1.0), (muted.as_slice(), 0.0)], RRF_K);
+        // "z" is present (the arm listed it) but scores 0, so it sorts last.
+        assert_eq!(fused.last().map(|(id, _)| id.as_str()), Some("z"));
+        assert_eq!(fused.last().map(|(_, s)| *s), Some(0.0));
+    }
+
+    #[test]
+    fn a_heavier_arm_outvotes_a_lighter_one_at_the_same_rank() {
+        // Rank 0 in the heavy arm beats rank 0 in the light arm.
+        let light = ids(&["lex"]);
+        let heavy = ids(&["usage"]);
+        let fused = rrf_fuse_weighted(&[(light.as_slice(), 1.0), (heavy.as_slice(), 2.0)], RRF_K);
+        assert_eq!(fused.first().map(|(id, _)| id.as_str()), Some("usage"));
+    }
+
+    #[test]
+    fn sub_unit_usage_weight_lets_the_lexical_arm_win_at_equal_rank() {
+        // ADR-0014 ships W < 1: at the SAME rank, a capability the query lexically
+        // matched must outrank one only usage history supports. `c` sits at rank 2 of
+        // the usage arm (w=0.5), `d` at rank 2 of the lexical arm (w=1) — so `d` wins.
+        // At w=1 they would tie and fall back to id order, which is the boundary this
+        // pins. See the risk note in ADR-0014 on W's direction.
+        let lexical = ids(&["a", "b", "d"]);
+        let usage = ids(&["a", "b", "c"]);
+        let fused = rrf_fuse_weighted(&[(lexical.as_slice(), 1.0), (usage.as_slice(), 0.5)], RRF_K);
+        let order: Vec<&str> = fused.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(order, vec!["a", "b", "d", "c"]);
+    }
+
+    #[test]
+    fn a_sub_unit_arm_still_promotes_a_deeply_ranked_id_past_the_lexical_top_hit() {
+        // The headline case: BM25 ranks the wrong tool first and the right one deep.
+        // Even at w=0.5 the usage arm lifts it past rank 0, because the id draws from
+        // BOTH arms. This is why W<1 is still useful — it damps the arm without
+        // disabling it.
+        let mut lexical = vec!["docker_build".to_string()];
+        lexical.extend((0..49).map(|i| format!("filler{i:02}")));
+        lexical.push("gh_run_list".to_string()); // rank 50
+        let usage = ids(&["gh_run_list"]);
+        let fused = rrf_fuse_weighted(&[(lexical.as_slice(), 1.0), (usage.as_slice(), 0.5)], RRF_K);
+        assert_eq!(
+            fused.first().map(|(id, _)| id.as_str()),
+            Some("gh_run_list")
+        );
     }
 
     #[test]

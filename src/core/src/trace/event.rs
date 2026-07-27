@@ -86,8 +86,33 @@ pub struct SkillHitTrace {
 /// name in snake_case (`IndexChurn` → `index_churn`), with the variant's
 /// fields flattened beside it; sinks wrap it in a [`TraceEnvelope`]. All
 /// `took_ms` fields are wall time in milliseconds.
+///
+/// `#[non_exhaustive]` is what makes "new variants are additive" *true* rather
+/// than aspirational: it requires downstream `match`es to carry a `_ =>` arm, so
+/// a future event variant lands there instead of breaking their compile. Two
+/// axes, only the first mechanical:
+///
+/// - **New variant** → non-breaking, enforced here.
+/// - **New field on an existing variant** → non-breaking only if consumers
+///   destructure with a trailing `..` (as this crate always does); variant-level
+///   non-exhaustiveness is intentionally *not* used, since it would also block
+///   downstream from constructing events by literal.
+///
+/// Renames and removals are breaking on both axes.
+///
+/// ```
+/// use ratel_ai_core::TraceEvent;
+/// // A downstream matcher must include `_ =>`, and is then future-proof:
+/// fn kind(e: &TraceEvent) -> &str {
+///     match e {
+///         TraceEvent::Search { .. } => "search",
+///         _ => "other",
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TraceEvent {
     /// A [`crate::ToolRegistry`] search completed (any [`crate::SearchMethod`]).
     /// Carries the query, the requested `top_k`, the ranked `hits` with
@@ -294,6 +319,48 @@ pub enum TraceEvent {
         built: String,
         /// The model now configured.
         active: String,
+    },
+    /// Emitted once when a semantic/hybrid search finds the attached intent
+    /// graph's centroids were built with a *different* embedding model than the
+    /// active one, so cosine across the two spaces would be meaningless. Unlike
+    /// [`Self::EmbedderModelMismatch`] (corpus, fatal), the usage arm merely
+    /// **pauses** — base ranking is unaffected — until the graph is rebuilt. See
+    /// `usage.rs` and ADR-0014.
+    UsageModelMismatch {
+        /// The graph's model — its fingerprint, or its centroid width when the
+        /// mismatch is dimensional.
+        built: String,
+        /// The active model, in the same units as `built`.
+        active: String,
+        /// `true` when the models differ in output dimension, `false` when only
+        /// the model identity differs at the same width (a same-dim swap a length
+        /// check cannot catch).
+        dim_mismatch: bool,
+    },
+    /// Emitted on every search of a registry that has an intent graph attached,
+    /// recording whether usage history contributed to the ranking (ADR-0014).
+    /// A registry with no graph emits nothing, so this event's presence is
+    /// itself the signal that adaptive ranking is switched on.
+    ///
+    /// `intent: None` is the **miss** case: the query matched no cluster and
+    /// ranked exactly as it would have with no graph at all. A rising share of
+    /// misses means the graph no longer covers what is being asked — the cue to
+    /// re-derive it.
+    UsageBoost {
+        /// Id of the matched cluster; `None` when nothing cleared the match
+        /// threshold.
+        intent: Option<String>,
+        /// How well the query matched the cluster — cosine on the dense tier,
+        /// token-overlap share on the lexical one. `0.0` on a miss. Scales
+        /// differ between tiers, so compare within one. Reported so near-misses
+        /// are visible and the threshold can be judged against real traffic.
+        similarity: f64,
+        /// The matched cluster's observation count, which scales the arm's
+        /// weight. `0` on a miss.
+        support: u32,
+        /// How many capability ids the arm contributed to the fusion. `0` on a
+        /// miss.
+        promoted: u32,
     },
     /// Emitted once when an in-process model's pooling could not be detected
     /// (no `1_Pooling/config.json`) and no override was given, so a mode was

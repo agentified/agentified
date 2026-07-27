@@ -14,7 +14,7 @@
 // The catalog's JSON-Schema spelling, re-exported so framework adapters type
 // their CatalogRegistration schemas without a cast.
 export type { JSONSchema7 } from "json-schema";
-export type { SearchHit, Skill, SkillHit, Tool } from "../native/index.cjs";
+export type { AdaptiveRankingStatus, SearchHit, Skill, SkillHit, Tool } from "../native/index.cjs";
 export type {
   CapabilitiesSearchOptions,
   CapabilitySkillHit,
@@ -74,7 +74,8 @@ export type {
   ToolCollection,
 } from "./ratel.js";
 export { ratel } from "./ratel.js";
-export { SkillRegistry, ToolRegistry } from "./registry.js";
+/** Adaptive usage ranking: the shared read model of what users invoke (ADR-0014). */
+export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type { SkillCatalogOptions } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";

@@ -1,7 +1,7 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { SearchHit, Tool } from "../native/index.cjs";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
-import { ToolRegistry } from "./registry.js";
+import { type IntentGraph, ToolRegistry } from "./registry.js";
 import {
   argsSizeBytes,
   errorMessage,
@@ -408,6 +408,46 @@ export class ToolCatalog {
    */
   recordEvent(event: object): void {
     this.registry.recordEvent(event);
+  }
+
+  /**
+   * Turn on adaptive usage ranking against `graph` (ADR-0014): the catalog
+   * ranks against what users have actually invoked after similar queries, and
+   * keeps learning as it is used.
+   *
+   * Pass the same {@link IntentGraph} to a {@link SkillCatalog} so both learn
+   * into one set of clusters.
+   *
+   * Set `rebuildOnModelChange` to auto-recover a model-mismatched graph on the
+   * next dense (semantic/hybrid) search rather than staying paused until you
+   * call {@link experimentalRebuildIntentGraph} yourself. Off by default — the rebuild is an
+   * embedding pass (cost, possible `EmbedderError`, and it mutates the graph).
+   */
+  experimentalEnableAdaptiveRanking(
+    graph: IntentGraph,
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+  ): void {
+    this.registry.experimentalEnableAdaptiveRanking(graph, options);
+  }
+
+  /**
+   * Re-embed the intent graph's members under the current model and replace its
+   * centroids — call after changing the embedding model. Preserves members,
+   * support, and edges. See {@link experimentalEnableAdaptiveRanking}.
+   */
+  async experimentalRebuildIntentGraph(): Promise<void> {
+    await this.registry.experimentalRebuildIntentGraph();
+  }
+
+  /** Whether adaptive usage ranking is active, inactive, or paused by a model
+   * change — see the native `AdaptiveRankingStatus`. */
+  get experimentalAdaptiveRankingStatus() {
+    return this.registry.experimentalAdaptiveRankingStatus;
+  }
+
+  /** Turn adaptive usage ranking off; the graph keeps what it learned. */
+  experimentalDisableAdaptiveRanking(): void {
+    this.registry.experimentalDisableAdaptiveRanking();
   }
 
   /**

@@ -21,12 +21,14 @@ from .capabilities import (
     search_capabilities_tool,
 )
 from .catalog import (
+    AdaptiveRankingStatus,
     EmbeddingModelConfig,
     EmbeddingSpec,
     EndpointEmbeddingConfig,
     ExecutableTool,
     Executor,
     HuggingFaceEmbeddingConfig,
+    IntentGraph,
     LocalEmbeddingConfig,
     OllamaEmbeddingConfig,
     SearchMethod,
@@ -52,6 +54,8 @@ from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
 from .telemetry import configure_telemetry
 
 __all__ = [
+    "AdaptiveRankingStatus",
+    "IntentGraph",
     "GET_SKILL_CONTENT_ID",
     "INVOKE_TOOL_ID",
     "SEARCH_CAPABILITIES_ID",

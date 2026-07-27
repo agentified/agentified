@@ -1,7 +1,7 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { Skill, SkillHit } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { SkillRegistry } from "./registry.js";
+import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
 export type { Skill, SkillHit };
@@ -144,6 +144,46 @@ export class SkillCatalog {
    */
   recordEvent(event: object): void {
     this.registry.recordEvent(event);
+  }
+
+  /**
+   * Turn on adaptive usage ranking against `graph` (ADR-0014): the catalog
+   * ranks against what users have actually invoked after similar queries, and
+   * keeps learning as it is used.
+   *
+   * Pass the same {@link IntentGraph} to a {@link ToolCatalog} so both learn
+   * into one set of clusters.
+   *
+   * Set `rebuildOnModelChange` to auto-recover a model-mismatched graph on the
+   * next dense (semantic/hybrid) search rather than staying paused until you
+   * call {@link experimentalRebuildIntentGraph} yourself. Off by default — the rebuild is an
+   * embedding pass (cost, possible `EmbedderError`, and it mutates the graph).
+   */
+  experimentalEnableAdaptiveRanking(
+    graph: IntentGraph,
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+  ): void {
+    this.registry.experimentalEnableAdaptiveRanking(graph, options);
+  }
+
+  /**
+   * Re-embed the intent graph's members under the current model and replace its
+   * centroids — call after changing the embedding model. Preserves members,
+   * support, and edges. See {@link experimentalEnableAdaptiveRanking}.
+   */
+  async experimentalRebuildIntentGraph(): Promise<void> {
+    await this.registry.experimentalRebuildIntentGraph();
+  }
+
+  /** Whether adaptive usage ranking is active, inactive, or paused by a model
+   * change — see the native `AdaptiveRankingStatus`. */
+  get experimentalAdaptiveRankingStatus() {
+    return this.registry.experimentalAdaptiveRankingStatus;
+  }
+
+  /** Turn adaptive usage ranking off; the graph keeps what it learned. */
+  experimentalDisableAdaptiveRanking(): void {
+    this.registry.experimentalDisableAdaptiveRanking();
   }
 
   /**

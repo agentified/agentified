@@ -14,7 +14,7 @@ the contract is for **networked** sources and their loaders.
 ## Files
 
 - [`schema/`](schema/) — JSON Schemas for the wire shapes (`CatalogSkillWire`, the catalog
-  response, the error body).
+  response, the error body) and for the [intent graph](#intent-graph) (`IntentGraph`).
 - [`conformance/`](conformance/) — the executable conformance vectors and the reference
   verifier that every source and loader MUST pass.
 
@@ -178,5 +178,56 @@ pin the wire shapes.
   stores; no field of any v1 shape can carry one (ADR-0003).
 - **No loopback auth exception in v1.** Every `/v1` request to a networked source requires
   Bearer authentication; `/healthz` remains unauthenticated (ADR-0003).
-- **No suggestion / analytics / ranking surface.** Those APIs are outside this contract; a
-  conforming source is not expected to implement them (ADR-0003).
+- **No suggestion / analytics / ranking *endpoints*.** Those APIs are outside this contract;
+  a conforming source is not expected to implement them (ADR-0003). The
+  [intent graph](#intent-graph) is the one ranking *shape* published here, and it is a
+  producer contract only — no endpoint serves it in v1.
+
+## Intent graph
+
+[`schema/intent-graph.schema.json`](schema/intent-graph.schema.json) specifies the
+**usage-ranking read model** ([ADR-0014](../../docs/adr/0014-adaptive-usage-ranking.md)):
+clusters of past queries, each carrying weighted edges to the capabilities users actually
+invoked after them. A retrieval engine consumes it as an extra ranking arm beside BM25 and
+dense retrieval.
+
+It is specified here for one reason: **two independent producers must agree on it.** The
+in-process local learner in `ratel-ai-core` grows one from the local trace stream; Ratel
+Cloud builds one from hosted traces. Publishing the shape is what keeps either from
+silently becoming the definition — the same reasoning the conformance vectors apply to the
+catalog itself (ADR-0003).
+
+It is **not** a synced wire artifact in v1:
+
+- no endpoint serves it, and it has no ETag / conditional-GET semantics;
+- it carries no secrets, and — like every v1 shape — no field of it can;
+- `members` holds user query text, so a producer's transport and storage choices are
+  governed by that, not by this contract.
+
+Two properties matter to implementers. `members` is the **match key**, so a graph clustered
+lexically (no `centroid`) is fully usable by a consumer that has an embedder, and vice
+versa. And edge weights come from **invocations**, never from what retrieval returned —
+recording a ranker's own output would reinforce its mistakes.
+
+### Persistence & compatibility contract
+
+The graph is held in memory; storing it is the caller's job. Three guarantees make that safe
+to delegate:
+
+- **Change-tracking.** The optional `rev` field is a monotonic write counter — bumped once per
+  mutation, never read during ranking. A caller persists only when `rev` changed since the last
+  save (**save-when-changed**), and before overwriting a stored graph compares its `rev` to the
+  base it loaded — a higher value means another writer got there first (**stale-base
+  detection**). Single-writer is the supported model; `rev` makes a clobber detectable, not
+  merged. Absent `rev` is treated as 0.
+- **Additive evolution.** Within `v: 1`, new fields are optional and a consumer **MUST ignore
+  fields it does not recognize** (the schema is `additionalProperties: true`). An older
+  consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`) loads
+  with a safe default.
+- **Version safety.** A consumer **MUST reject an unrecognized `v`** with a clean error, never a
+  crash or a silent degrade.
+
+Structural fixtures live in [`conformance/vectors.json`](conformance/vectors.json) under
+`graph`, with the consumer rules a conforming implementation MUST follow; `node
+conformance/verify.mjs` checks them — including a graph carrying `rev`, a graph with unknown
+extra fields (which MUST validate), and an unknown version (which MUST be rejected).

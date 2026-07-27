@@ -16,7 +16,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -108,6 +108,69 @@ export function ifNoneMatchMatches(headerValue, currentEtag) {
   });
 }
 
+// ---- intent graph (ADR-0013) ----------------------------------------------
+
+// Structural validation of an intent graph against schema/intent-graph.schema.json.
+// Hand-rolled rather than run through a JSON Schema library so this file keeps its
+// node-builtins-only property; the schema remains normative and this mirrors it.
+// Returns a list of human-readable violations (empty === valid).
+export function validateGraph(doc) {
+  const errs = [];
+  const isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);
+  const isInt = (x) => typeof x === 'number' && Number.isInteger(x);
+
+  if (!isObj(doc)) return ['graph must be an object'];
+  if (doc.v !== 1) errs.push(`v must be 1, got ${JSON.stringify(doc.v)}`);
+  if (!(isInt(doc.built_from_ts) && doc.built_from_ts >= 0)) {
+    errs.push(`built_from_ts must be a non-negative integer, got ${JSON.stringify(doc.built_from_ts)}`);
+  }
+  if (doc.model !== undefined && !(typeof doc.model === 'string' && doc.model.length > 0)) {
+    errs.push(`model, when present, must be a non-empty string, got ${JSON.stringify(doc.model)}`);
+  }
+  if (doc.rev !== undefined && !(isInt(doc.rev) && doc.rev >= 0)) {
+    errs.push(`rev, when present, must be a non-negative integer, got ${JSON.stringify(doc.rev)}`);
+  }
+  if (!Array.isArray(doc.intents)) return errs.concat('intents must be an array');
+
+  const seen = new Set();
+  for (const [i, it] of doc.intents.entries()) {
+    const at = `intents[${i}]`;
+    if (!isObj(it)) { errs.push(`${at} must be an object`); continue; }
+
+    if (!(typeof it.id === 'string' && it.id.length > 0)) errs.push(`${at}.id must be a non-empty string`);
+    else if (seen.has(it.id)) errs.push(`${at}.id "${it.id}" is duplicated`);
+    else seen.add(it.id);
+
+    if (typeof it.label !== 'string') errs.push(`${at}.label must be a string`);
+    if (!Array.isArray(it.terms) || !it.terms.every((t) => typeof t === 'string')) {
+      errs.push(`${at}.terms must be an array of strings`);
+    }
+    // `members` is the match key: a row without it can never be matched.
+    if (!Array.isArray(it.members) || it.members.length < 1 || !it.members.every((m) => typeof m === 'string')) {
+      errs.push(`${at}.members must be a non-empty array of strings`);
+    }
+    // Optional — absent when the producer clustered lexically.
+    if (it.centroid !== undefined) {
+      if (!Array.isArray(it.centroid) || it.centroid.length < 1 || !it.centroid.every((n) => typeof n === 'number')) {
+        errs.push(`${at}.centroid, when present, must be a non-empty array of numbers`);
+      }
+    }
+    if (!(isInt(it.support) && it.support >= 1)) {
+      errs.push(`${at}.support must be an integer >= 1, got ${JSON.stringify(it.support)}`);
+    }
+    for (const key of ['tools', 'skills']) {
+      const edges = it[key];
+      if (!isObj(edges)) { errs.push(`${at}.${key} must be an object`); continue; }
+      for (const [id, w] of Object.entries(edges)) {
+        if (!(typeof w === 'number' && w > 0)) {
+          errs.push(`${at}.${key}["${id}"] must be a number > 0, got ${JSON.stringify(w)}`);
+        }
+      }
+    }
+  }
+  return errs;
+}
+
 // ---- vector runner ---------------------------------------------------------
 
 function buildInm(kind, current, other) {
@@ -172,6 +235,18 @@ function main() {
     if (status !== v.expect) failures.push(`inm/${v.name}: header=${JSON.stringify(header)} -> ${status}, expected ${v.expect}`);
   }
 
+  // Intent-graph structural vectors (ADR-0013). No expectations to regenerate:
+  // validity is derived from the schema, not from a committed hash.
+  const graph = doc.graph ?? { valid: [], invalid: [] };
+  for (const v of graph.valid ?? []) {
+    const errs = validateGraph(v.doc);
+    if (errs.length) failures.push(`graph/valid/${v.name}: expected valid, got [${errs.join('; ')}]`);
+  }
+  for (const v of graph.invalid ?? []) {
+    const errs = validateGraph(v.doc);
+    if (!errs.length) failures.push(`graph/invalid/${v.name}: expected rejection (${v.because}), but it validated`);
+  }
+
   if (update) {
     writeFileSync(VECTORS_PATH, JSON.stringify(doc, null, 2) + '\n', 'utf8');
     console.log(`updated ${doc.etag.length} etag expectations in vectors.json`);
@@ -184,8 +259,14 @@ function main() {
     for (const f of failures) console.error('  - ' + f);
     process.exit(1);
   }
-  const n = (doc.etag?.length ?? 0) + (doc.inm?.length ?? 0) + (doc.equalEtags?.length ?? 0) + (doc.distinctEtags?.length ?? 0);
-  console.log(`OK — ${n} conformance checks passed (${doc.etag.length} etag, ${doc.inm.length} if-none-match, ${(doc.equalEtags ?? []).length} equal-groups, ${(doc.distinctEtags ?? []).length} distinct-groups).`);
+  const g = (graph.valid ?? []).length + (graph.invalid ?? []).length;
+  const n = (doc.etag?.length ?? 0) + (doc.inm?.length ?? 0) + (doc.equalEtags?.length ?? 0) + (doc.distinctEtags?.length ?? 0) + g;
+  console.log(`OK — ${n} conformance checks passed (${doc.etag.length} etag, ${doc.inm.length} if-none-match, ${(doc.equalEtags ?? []).length} equal-groups, ${(doc.distinctEtags ?? []).length} distinct-groups, ${g} intent-graph).`);
 }
 
-main();
+// Only run the suite when invoked as a script. The helpers above (`etagOf`,
+// `resolve`, `ifNoneMatchMatches`, `validateGraph`) are exported for reuse, and
+// importing them must not print a report or exit the host process.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
