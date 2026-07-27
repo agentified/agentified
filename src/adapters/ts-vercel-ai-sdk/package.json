@@ -1,11 +1,22 @@
 {
   "name": "@ratel-ai/vercel-ai-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Vercel AI SDK adapter for Ratel — adapts the context-engineering core to the AI SDK's (ai@5-7) tool and message shapes, with per-turn recall helpers.",
   "private": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./otel": {
+      "types": "./dist/otel.d.ts",
+      "default": "./dist/otel.js"
+    },
+    "./package.json": "./package.json"
+  },
   "license": "MIT",
   "author": "Agentified",
   "homepage": "https://github.com/ratel-ai/ratel",
@@ -45,14 +56,33 @@
     "access": "public",
     "provenance": true
   },
+  "dependencies": {
+    "@ratel-ai/telemetry": "workspace:^"
+  },
   "peerDependencies": {
+    "@ai-sdk/otel": "^1.0.0",
+    "@opentelemetry/api": "^1.9.0",
     "@ratel-ai/sdk": "workspace:^",
     "ai": "^5.0.0 || ^6.0.0 || ^7.0.0"
   },
+  "peerDependenciesMeta": {
+    "@ai-sdk/otel": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@ai-sdk/otel": "1.0.37",
     "@biomejs/biome": "^2.4.13",
+    "@langfuse/otel": "^5.9.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
     "@ratel-ai/sdk": "workspace:^",
-    "ai": "7.0.33",
+    "@ratel-ai/telemetry": "workspace:^",
+    "ai": "7.0.37",
     "typescript": "^5.6.0",
     "vitest": "^4.1.5",
     "zod": "^4.4.3"

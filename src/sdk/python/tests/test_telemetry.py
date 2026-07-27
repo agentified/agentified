@@ -9,14 +9,22 @@ host deployment would wire it. These tests need the OpenTelemetry SDK
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
+import tomllib
 
 pytest.importorskip("opentelemetry.sdk.trace", reason="OpenTelemetry SDK not installed")
 pytest.importorskip("ratel_ai_telemetry", reason="ratel-ai telemetry vocabulary not installed")
 
-from opentelemetry import trace  # noqa: E402
+from opentelemetry import _logs, trace  # noqa: E402
+from opentelemetry.sdk._logs import LoggerProvider  # noqa: E402
+from opentelemetry.sdk._logs.export import (  # noqa: E402
+    InMemoryLogRecordExporter,
+    SimpleLogRecordProcessor,
+)
 from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
@@ -42,6 +50,10 @@ _EXPORTER = InMemorySpanExporter()
 _PROVIDER = TracerProvider()
 _PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
 trace.set_tracer_provider(_PROVIDER)
+_LOG_EXPORTER = InMemoryLogRecordExporter()
+_LOG_PROVIDER = LoggerProvider()
+_LOG_PROVIDER.add_log_record_processor(SimpleLogRecordProcessor(_LOG_EXPORTER))
+_logs.set_logger_provider(_LOG_PROVIDER)
 
 
 @pytest.fixture()
@@ -49,6 +61,7 @@ def exporter(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The shared in-memory exporter, cleared so each test sees only its own spans."""
     monkeypatch.delenv(CAPTURE_ENV, raising=False)
     _EXPORTER.clear()
+    _LOG_EXPORTER.clear()
     return _EXPORTER
 
 
@@ -65,6 +78,23 @@ def _read_file() -> ExecutableTool:
 
 def _spans_named(exp: Any, name: str) -> list[Any]:
     return [s for s in exp.get_finished_spans() if s.name == name]
+
+
+INFERENCE_DETAILS = "gen_ai.client.inference.operation.details"
+SEARCH_RESULTS = "ratel.search.results"
+
+
+def _event_named(span: Any, name: str) -> Any:
+    """The single span event with the given name, or None."""
+    return next((e for e in span.events if e.name == name), None)
+
+
+def _log_events_named(name: str) -> list[Any]:
+    return [
+        readable.log_record
+        for readable in _LOG_EXPORTER.get_finished_logs()
+        if readable.log_record.event_name == name
+    ]
 
 
 @pytest.mark.asyncio
@@ -91,6 +121,7 @@ async def test_content_not_captured_by_default(exporter: Any) -> None:
     attrs = _spans_named(exporter, "execute_tool read_file")[0].attributes
     assert "gen_ai.tool.call.arguments" not in attrs
     assert "gen_ai.tool.call.result" not in attrs
+    assert _log_events_named("ratel.tool.execution.details") == []
 
 
 @pytest.mark.asyncio
@@ -102,9 +133,199 @@ async def test_content_captured_when_gate_set(
     await catalog.register(_read_file())
     await catalog.invoke("read_file", {"path": "/p"})
 
-    attrs = _spans_named(exporter, "execute_tool read_file")[0].attributes
+    span = _spans_named(exporter, "execute_tool read_file")[0]
+    attrs = span.attributes
     assert attrs["gen_ai.tool.call.arguments"] == '{"path": "/p"}'
     assert "contents of /p" in attrs["gen_ai.tool.call.result"]
+    # Dual emission: the structured EventRecord is present too.
+    assert _event_named(span, INFERENCE_DETAILS) is None
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.tool.call.arguments"] == {"path": "/p"}
+    assert event.attributes["gen_ai.tool.call.result"] == {"contents": "contents of /p"}
+    assert event.trace_id == span.context.trace_id
+    assert event.span_id == span.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_emits_content_event_under_event_only(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    await catalog.invoke("read_file", {"path": "/p"})
+
+    span = _spans_named(exporter, "execute_tool read_file")[0]
+    # Content rides the event, not span attributes.
+    assert "gen_ai.tool.call.arguments" not in span.attributes
+    assert "gen_ai.tool.call.result" not in span.attributes
+
+    assert _event_named(span, INFERENCE_DETAILS) is None
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.operation.name"] == "execute_tool"
+    assert event.attributes["gen_ai.tool.name"] == "read_file"
+    assert event.attributes["gen_ai.tool.call.arguments"] == {"path": "/p"}
+    assert event.attributes["gen_ai.tool.call.result"] == {"contents": "contents of /p"}
+    assert "gen_ai.input.messages" not in event.attributes
+    assert "gen_ai.output.messages" not in event.attributes
+
+
+@pytest.mark.asyncio
+async def test_real_mcp_result_is_normalized_for_span_and_event(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp_types = pytest.importorskip("mcp.types", reason="MCP requires Python 3.10+")
+    monkeypatch.setenv(CAPTURE_ENV, "SPAN_AND_EVENT")
+    result = mcp_types.CallToolResult(
+        content=[mcp_types.TextContent(type="text", text="done")],
+        structuredContent={"ok": True},
+        isError=False,
+    )
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="mcp__call",
+            name="call",
+            description="Return a real MCP result model.",
+            execute=lambda _args: result,
+        )
+    )
+
+    await catalog.invoke("mcp__call", {})
+
+    span = _spans_named(exporter, "execute_tool mcp__call")[0]
+    normalized = {
+        "content": [{"type": "text", "text": "done"}],
+        "structuredContent": {"ok": True},
+        "isError": False,
+    }
+    assert json.loads(span.attributes["gen_ai.tool.call.result"]) == normalized
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    event_result = event.attributes["gen_ai.tool.call.result"]
+    assert not isinstance(event_result, str)
+    assert json.loads(json.dumps(event_result)) == normalized
+
+
+@pytest.mark.asyncio
+async def test_unserializable_result_cannot_break_tool_execution(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+
+    class BrokenModel:
+        def model_dump(self, **_kwargs: Any) -> Any:
+            raise ValueError("cannot dump")
+
+    result = BrokenModel()
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="broken_result",
+            name="broken_result",
+            description="Return an unserializable result.",
+            execute=lambda _args: result,
+        )
+    )
+
+    assert await catalog.invoke("broken_result", {}) is result
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.tool.call.result"] is None
+
+
+@pytest.mark.asyncio
+async def test_unserializable_arguments_cannot_mask_tool_failure(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+
+    def boom(_args: dict[str, Any]) -> Any:
+        raise RuntimeError("business failure")
+
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(id="boom", name="boom", description="throws", execute=boom)
+    )
+
+    with pytest.raises(RuntimeError, match="business failure"):
+        await catalog.invoke("boom", cyclic)
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.tool.call.arguments"] is None
+    assert "gen_ai.tool.call.result" not in event.attributes
+
+
+@pytest.mark.asyncio
+async def test_heterogeneous_arrays_remain_lossless_in_event_attributes(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+
+    await catalog.invoke("read_file", {"values": [1, "two", True]})
+
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.tool.call.arguments"] == {
+        "values": {
+            "ratel.type": "array",
+            "ratel.items": {"0": 1, "1": "two", "2": True},
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_only_emits_no_content_event(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "SPAN_ONLY")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    await catalog.invoke("read_file", {"path": "/p"})
+
+    span = _spans_named(exporter, "execute_tool read_file")[0]
+    assert span.attributes["gen_ai.tool.call.arguments"] == '{"path": "/p"}'
+    assert _event_named(span, INFERENCE_DETAILS) is None
+    assert _log_events_named("ratel.tool.execution.details") == []
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_no_content_emits_neither(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "NO_CONTENT")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    await catalog.invoke("read_file", {"path": "/p"})
+
+    span = _spans_named(exporter, "execute_tool read_file")[0]
+    assert "gen_ai.tool.call.arguments" not in span.attributes
+    assert _event_named(span, INFERENCE_DETAILS) is None
+    assert _log_events_named("ratel.tool.execution.details") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_tool_emits_arguments_without_result_under_event_only(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+
+    def boom(_args: dict[str, Any]) -> Any:
+        raise RuntimeError("kaboom")
+
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(id="boom", name="boom", description="throws", execute=boom)
+    )
+    with pytest.raises(RuntimeError, match="kaboom"):
+        await catalog.invoke("boom", {"x": 1})
+
+    span = _spans_named(exporter, "execute_tool boom")[0]
+    assert span.status.status_code == StatusCode.ERROR
+    assert _event_named(span, INFERENCE_DETAILS) is None
+    event = _log_events_named("ratel.tool.execution.details")[0]
+    assert event.attributes["gen_ai.tool.call.arguments"] == {"x": 1}
+    assert "gen_ai.tool.call.result" not in event.attributes
 
 
 @pytest.mark.asyncio
@@ -157,9 +378,68 @@ async def test_ratel_search_span_skill_with_query(
     await skills.register(Skill(id="pdf", name="pdf", description="fill pdf forms", body="b"))
     skills.search("pdf", 3)
 
-    attrs = _spans_named(exporter, "ratel.search")[0].attributes
-    assert attrs["ratel.search.target"] == "skill"
-    assert attrs["ratel.search.query"] == "pdf"
+    span = _spans_named(exporter, "ratel.search")[0]
+    assert span.attributes["ratel.search.target"] == "skill"
+    assert span.attributes["ratel.search.query"] == "pdf"
+    # SPAN_ONLY: query on the span, no results event.
+    assert _event_named(span, SEARCH_RESULTS) is None
+    assert _log_events_named(SEARCH_RESULTS) == []
+
+
+async def test_ratel_search_query_on_results_event_under_event_only(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    catalog.search("read file", 5, "agent")
+
+    span = _spans_named(exporter, "ratel.search")[0]
+    assert "ratel.search.query" not in span.attributes  # content off the span
+    assert _event_named(span, SEARCH_RESULTS) is None
+    event = _log_events_named(SEARCH_RESULTS)[0]
+    assert event.attributes["ratel.search.query"] == "read file"
+
+
+async def test_ratel_search_query_on_both_under_span_and_event(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "SPAN_AND_EVENT")
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    catalog.search("read file", 5, "agent")
+
+    span = _spans_named(exporter, "ratel.search")[0]
+    assert span.attributes["ratel.search.query"] == "read file"
+    assert _event_named(span, SEARCH_RESULTS) is None
+    assert _log_events_named(SEARCH_RESULTS)[0].attributes["ratel.search.query"] == "read file"
+
+
+@pytest.mark.asyncio
+async def test_host_owned_provider_receives_spans_without_configure_telemetry(
+    exporter: Any,
+) -> None:
+    """The base-SDK contract (ADR-0007): with a host-registered OTel provider and no
+    configure_telemetry() call, the SDK's spans flow to that provider. This module's
+    TracerProvider is exactly such a host-owned provider."""
+    catalog = ToolCatalog()
+    await catalog.register(_read_file())
+    await catalog.invoke("read_file", {"path": "/tmp/x"})
+
+    assert len(_spans_named(exporter, "execute_tool read_file")) == 1
+
+
+def test_base_sdk_depends_on_the_vocabulary_so_host_owned_otel_works() -> None:
+    """Regression for the host-owned base path: emission imports the ratel_ai_telemetry
+    vocabulary, so the base install must ship it (not only the [otlp] extra). Otherwise a
+    host bringing its own OpenTelemetry provider on a base install gets no Ratel spans —
+    contradicting the documented behavior. The vocabulary is OTel-free, so this keeps the
+    base install lightweight (the [otlp] extra still adds the exporter/OTel SDK)."""
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    base_deps = pyproject["project"]["dependencies"]
+    assert any(dep.startswith("ratel-ai-telemetry") for dep in base_deps), (
+        f"base dependencies must include ratel-ai-telemetry; got {base_deps}"
+    )
 
 
 async def test_ratel_skill_load_span(exporter: Any) -> None:
@@ -173,12 +453,14 @@ async def test_ratel_skill_load_span(exporter: Any) -> None:
 
 
 # --- configure_telemetry content-capture options -----------------------------
-# Mirror of the TS `configureTelemetry content-capture options` suite
-# (src/sdk/ts/src/telemetry.test.ts). configure_telemetry sets the programmatic
-# capture override (module state in ratel_ai_telemetry, read by content_capture_mode)
-# and its returned handle's shutdown() clears it. OpenTelemetry forbids overriding the
-# global provider once set (this module registers one at import), so init() itself is
-# stubbed out; the override still applies to spans captured by the shared provider.
+# Mirror of the TS `setContentCapture` / `clearContentCapture` case
+# (src/sdk/ts/src/telemetry.test.ts), which drives the override directly since TS dropped
+# configureTelemetry when the host took over the OpenTelemetry provider.
+# configure_telemetry sets the programmatic capture override (module state in
+# ratel_ai_telemetry, read by content_capture_mode) and its returned handle's shutdown()
+# clears it. OpenTelemetry forbids overriding the global provider once set (this module
+# registers one at import), so init() itself is stubbed out; the override still applies
+# to spans captured by the shared provider.
 
 
 class _FakeProvider:
@@ -365,3 +647,72 @@ async def test_raises_on_garbage_capture_content_before_wiring_the_exporter(
     assert await _invoke_and_read_args(exporter) == '{"path": "/p"}'
     monkeypatch.delenv(CAPTURE_ENV, raising=False)
     assert await _invoke_and_read_args(exporter) is None
+
+
+# --- configure_telemetry default span filtering (RS-15) ----------------------
+# configure_telemetry (the high-level SDK path) must default to the ratel.*/gen_ai.*
+# signal filter and require export_all_spans to forward everything. The filter lives
+# inside init()'s provider (which never exports in-process), so init() is stubbed to
+# capture exactly the span_filter configure_telemetry hands it.
+
+
+class _FakeSpan:
+    """Minimal ReadableSpan stand-in: ratel_signal_filter reads name + attributes."""
+
+    def __init__(self, name: str, attributes: dict[str, Any]) -> None:
+        self.name = name
+        self.attributes = attributes
+
+
+class _FakeLogRecord:
+    """Minimal ReadWriteLogRecord stand-in for ratel_event_filter."""
+
+    def __init__(self, event_name: str | None) -> None:
+        self.log_record = type("_LogRecord", (), {"event_name": event_name})()
+
+
+@pytest.fixture()
+def capturing_init(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace init() with one that records the kwargs configure_telemetry passes."""
+    captured: dict[str, Any] = {}
+
+    def _init(**kwargs: Any) -> _FakeProvider:
+        captured.update(kwargs)
+        return _FakeProvider()
+
+    monkeypatch.setattr("ratel_ai_telemetry.otlp.init", _init)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_configure_telemetry_defaults_to_the_signal_filter(
+    capturing_init: dict[str, Any],
+) -> None:
+    handle = configure_telemetry()
+    try:
+        span_filter = capturing_init["span_filter"]
+        assert span_filter is not None
+        assert span_filter(_FakeSpan("ratel.search", {})) is True
+        assert (
+            span_filter(_FakeSpan("execute_tool x", {"gen_ai.operation.name": "execute_tool"}))
+            is True
+        )
+        # An unrelated framework/HTTP span carries no gen_ai/ratel signal -> dropped.
+        assert span_filter(_FakeSpan("GET /api", {"http.method": "GET"})) is False
+        log_filter = capturing_init["log_filter"]
+        assert log_filter(_FakeLogRecord("ratel.search.results")) is True
+        assert log_filter(_FakeLogRecord("app.started")) is False
+    finally:
+        handle.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_configure_telemetry_export_all_spans_forwards_everything(
+    capturing_init: dict[str, Any],
+) -> None:
+    handle = configure_telemetry(export_all_spans=True)
+    try:
+        # None -> init()'s accept-all turnkey default.
+        assert capturing_init["span_filter"] is None
+    finally:
+        handle.shutdown()

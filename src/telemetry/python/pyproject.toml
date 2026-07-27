@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ratel-ai-telemetry"
-version = "0.1.2"
-description = "Ratel telemetry conventions — the ratel.* overlay on OpenTelemetry gen_ai spans. init() helper and constants for the Ratel context engineering platform."
+version = "0.1.3"
+description = "Ratel telemetry conventions — the ratel.* overlay on OpenTelemetry gen_ai spans and EventRecords."
 readme = "README.md"
 license = { file = "LICENSE.md" }
 authors = [{ name = "Agentified" }]

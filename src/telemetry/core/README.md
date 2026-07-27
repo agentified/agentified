@@ -1,7 +1,7 @@
 # `ratel-ai-telemetry` (Rust)
 
 The `ratel.*` telemetry vocabulary as typed Rust constants: attribute keys, span
-and event names, and the value enums (`Origin`, `SearchTarget`, `AuthOutcome`).
+and Logs EventRecord names, and the value enums (`Origin`, `SearchTarget`, `AuthOutcome`).
 Codifies the Tier 2 overlay of [`../CONVENTIONS.md`](../CONVENTIONS.md) so callers
 emit the convention without stringly-typed keys, plus the pinned semconv version
 (`SEMCONV_VERSION`) and the content-capture gate env var.

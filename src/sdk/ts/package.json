@@ -38,7 +38,7 @@
     "ratel"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.6.0"
   },
   "files": [
     "dist",
@@ -75,7 +75,9 @@
     "@biomejs/biome": "^2.4.13",
     "@napi-rs/cli": "^3.6.0",
     "@opentelemetry/context-async-hooks": "^2.9.0",
+    "@opentelemetry/sdk-logs": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
+    "@types/node": "^24.0.0",
     "typedoc": "^0.28.20",
     "typescript": "^5.6.0",
     "vitest": "^4.1.5"
@@ -83,15 +85,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.220.0",
     "@ratel-ai/telemetry": "workspace:^",
     "@types/json-schema": "^7.0.15"
-  },
-  "peerDependencies": {
-    "@ratel-ai/telemetry-otlp": "workspace:^"
-  },
-  "peerDependenciesMeta": {
-    "@ratel-ai/telemetry-otlp": {
-      "optional": true
-    }
   }
 }

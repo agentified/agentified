@@ -18,9 +18,9 @@ import {
   ToolCatalog,
   type TraceSinkConfig,
 } from "./catalog.js";
+import { isPackageInstalled } from "./package-resolution.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
-import { isPeerInstalled } from "./telemetry.js";
 
 /** Construction options for {@link ratel}. Shared by every adapter view of the core. */
 export interface RatelConfig {
@@ -510,7 +510,7 @@ function assertNativeTool(tool: ExecutableTool): void {
     (typeof schema === "object" &&
       schema !== null &&
       (schema._def !== undefined || typeof schema.safeParse === "function"));
-  if (frameworkShaped) throw unadaptedError(isPeerInstalled);
+  if (frameworkShaped) throw unadaptedError(isPackageInstalled);
   if (typeof candidate.id !== "string") {
     throw new TypeError(
       `ratel: tools.register() expects each ExecutableTool to have a string \`id\`; got ${typeof candidate.id}`,
@@ -546,7 +546,7 @@ function assertAdapter(adapter: RatelAdapter): void {
  * adapt-first message. Exported (module-internal, not re-exported from the
  * package) so the detected-framework branch is testable with an injected probe.
  *
- * @param isInstalled - Peer-resolution probe (the real {@link isPeerInstalled}).
+ * @param isInstalled - Package-resolution probe (the real {@link isPackageInstalled}).
  * @returns The error to throw.
  */
 export function unadaptedError(isInstalled: (specifier: string) => boolean): Error {

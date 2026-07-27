@@ -46,15 +46,16 @@ RATEL_UPSTREAM_REGISTER: Final = "ratel.upstream.register"
 RATEL_AUTH_FLOW: Final = "ratel.auth.flow"
 
 # ---------------------------------------------------------------------------
-# Span event names (CONVENTIONS.md)
+# EventRecord names (CONVENTIONS.md)
 # ---------------------------------------------------------------------------
 
-#: ratel.search.results — Opt-In event carrying hit ids + scores + per-stage BM25
-#: timing; gated like content. The ratel.search span itself carries only counts.
+#: ratel.search.results — Opt-In search-content event; gated like content.
 RATEL_SEARCH_RESULTS: Final = "ratel.search.results"
 
-#: gen_ai.client.inference.operation.details — the event that carries message text
-#: and tool-call content (never span attributes). Borrowed from gen_ai (Tier 1).
+#: ratel.tool.execution.details — Opt-In structured tool arguments/result event.
+RATEL_TOOL_EXECUTION_DETAILS: Final = "ratel.tool.execution.details"
+
+#: gen_ai.client.inference.operation.details — inference request/response content.
 GEN_AI_INFERENCE_DETAILS: Final = "gen_ai.client.inference.operation.details"
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,19 @@ GEN_AI_TOOL_CALL_ARGUMENTS: Final = "gen_ai.tool.call.arguments"
 #: gen_ai.tool.call.result — tool result (Opt-In content, gated).
 GEN_AI_TOOL_CALL_RESULT: Final = "gen_ai.tool.call.result"
 
+# Tier 1 content, carried on the gen_ai.client.inference.operation.details
+# EventRecord (never span attributes; CONVENTIONS.md § Tier 1 content). Each
+# holds a structured v1.42.0 message list ({role, parts[], name?}).
+
+#: gen_ai.system_instructions — the system prompt as a bare parts[] (Opt-In content).
+GEN_AI_SYSTEM_INSTRUCTIONS: Final = "gen_ai.system_instructions"
+
+#: gen_ai.input.messages — the input message list (Opt-In content).
+GEN_AI_INPUT_MESSAGES: Final = "gen_ai.input.messages"
+
+#: gen_ai.output.messages — generated outputs; every message includes finish_reason.
+GEN_AI_OUTPUT_MESSAGES: Final = "gen_ai.output.messages"
+
 
 class Origin(str, Enum):
     """Whether a ratel.* span was a direct library call or synthesized by the agent
@@ -163,11 +177,17 @@ _OTLP_EXPORTS: Final = frozenset(
         "OtlpConfig",
         "API_KEY_ENV",
         "ENDPOINT_ENV",
+        "OTLP_ENDPOINT_ENV",
+        "LEGACY_ENDPOINT_ENV",
         "DEFAULT_SERVICE_NAME",
+        "ratel_event_filter",
+        "ratel_log_exporter",
+        "ratel_log_record_processor",
         "ratel_signal_filter",
         "ratel_span_exporter",
         "ratel_span_processor",
         "SpanFilter",
+        "LogFilter",
         "TelemetryHandle",
     }
 )
@@ -191,7 +211,10 @@ __all__ = [
     "CAPTURE_CONTENT_ENV",
     "EXECUTE_TOOL",
     "GEN_AI_INFERENCE_DETAILS",
+    "GEN_AI_INPUT_MESSAGES",
     "GEN_AI_OPERATION_NAME",
+    "GEN_AI_OUTPUT_MESSAGES",
+    "GEN_AI_SYSTEM_INSTRUCTIONS",
     "GEN_AI_TOOL_CALL_ARGUMENTS",
     "GEN_AI_TOOL_CALL_ID",
     "GEN_AI_TOOL_CALL_RESULT",
@@ -208,6 +231,7 @@ __all__ = [
     "RATEL_SKILL_ID",
     "RATEL_SKILL_LOAD",
     "RATEL_TOOL_ARGS_SIZE_BYTES",
+    "RATEL_TOOL_EXECUTION_DETAILS",
     "RATEL_UPSTREAM_REGISTER",
     "RATEL_UPSTREAM_SERVER",
     "RATEL_UPSTREAM_TOOL_COUNT",
@@ -228,10 +252,16 @@ __all__ = [
     "OtlpConfig",
     "API_KEY_ENV",
     "ENDPOINT_ENV",
+    "OTLP_ENDPOINT_ENV",
+    "LEGACY_ENDPOINT_ENV",
     "DEFAULT_SERVICE_NAME",
+    "ratel_event_filter",
+    "ratel_log_exporter",
+    "ratel_log_record_processor",
     "ratel_signal_filter",
     "ratel_span_exporter",
     "ratel_span_processor",
     "SpanFilter",
+    "LogFilter",
     "TelemetryHandle",
 ]

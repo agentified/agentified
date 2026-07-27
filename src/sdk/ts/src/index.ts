@@ -79,15 +79,9 @@ export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type { SkillCatalogOptions } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
-// OpenTelemetry export of the ratel.*/gen_ai.* funnel. The SDK always emits
-// spans to the active OTel provider; `configureTelemetry` is optional sugar
-// that wires a Ratel-owned OTLP exporter (needs the peer @ratel-ai/telemetry-otlp).
-// `ContentCapture`/`setContentCapture`/`clearContentCapture` (re-exported from
-// @ratel-ai/telemetry) control the message/tool content-capture gate programmatically.
-export type { ConfigureTelemetryOptions, InitOptions, TelemetryHandle } from "./telemetry.js";
-export {
-  ContentCapture,
-  clearContentCapture,
-  configureTelemetry,
-  setContentCapture,
-} from "./telemetry.js";
+// OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel
+// provider the host has registered and never registers one itself — delivery is the host's
+// `new NodeSDK({ spanProcessors })`. `ContentCapture`/`setContentCapture`/
+// `clearContentCapture` (re-exported from @ratel-ai/telemetry) control the message/tool
+// content-capture gate programmatically.
+export { ContentCapture, clearContentCapture, setContentCapture } from "./telemetry.js";

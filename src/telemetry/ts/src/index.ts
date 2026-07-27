@@ -7,23 +7,18 @@
  * plus the small subset of `gen_ai.*` keys the overlay emits directly on the
  * `execute_tool` span (borrowed verbatim from OpenTelemetry, never renamed).
  *
- * This package is OTel-free (ADR-0007): the OTLP config resolver and the
- * content-capture gate are re-exported from `./config`; the `init()` exporter,
- * which does pull the OpenTelemetry SDK, lives in `@ratel-ai/telemetry-otlp`.
+ * This package is OTel-free (ADR-0007): the only behavior it carries beyond the
+ * constants is the content-capture gate, re-exported from `./content-capture`.
+ * Wiring a provider — endpoint, auth, exporters, processors, flush — is the
+ * host's job.
  */
 
 export {
-  API_KEY_ENV,
   ContentCapture,
   clearContentCapture,
   contentCaptureMode,
-  DEFAULT_SERVICE_NAME,
-  type InitOptions,
-  OTLP_ENDPOINT_ENV,
-  type ResolvedOtlpConfig,
-  resolveOtlpConfig,
   setContentCapture,
-} from "./config.js";
+} from "./content-capture.js";
 
 /**
  * The pinned OpenTelemetry semantic-conventions version this vocabulary tracks
@@ -34,7 +29,7 @@ export const SEMCONV_VERSION = "1.42.0";
 
 /**
  * The ecosystem instrumentation env var gating message/tool content capture.
- * Default off; honored by `init()` rather than a Ratel-invented flag
+ * Default off; the shared ecosystem name rather than a Ratel-invented flag
  * (CONVENTIONS.md § Capture gating). Values: legacy boolean, or the enum
  * `NO_CONTENT` (default) / `SPAN_ONLY` / `EVENT_ONLY` / `SPAN_AND_EVENT`.
  */
@@ -66,18 +61,20 @@ export const RATEL_UPSTREAM_REGISTER = "ratel.upstream.register";
 export const RATEL_AUTH_FLOW = "ratel.auth.flow";
 
 // ---------------------------------------------------------------------------
-// Span event names (CONVENTIONS.md)
+// EventRecord names (CONVENTIONS.md)
 // ---------------------------------------------------------------------------
 
 /**
- * `ratel.search.results` — Opt-In event carrying hit ids + scores + per-stage
- * BM25 timing; gated like content. The `ratel.search` span itself carries only counts.
+ * `ratel.search.results` — Opt-In search-content event; gated like content.
  */
 export const RATEL_SEARCH_RESULTS = "ratel.search.results";
 
+/** `ratel.tool.execution.details` — Opt-In structured tool arguments/result event. */
+export const RATEL_TOOL_EXECUTION_DETAILS = "ratel.tool.execution.details";
+
 /**
- * `gen_ai.client.inference.operation.details` — the event that carries message
- * text and tool-call content (never span attributes). Borrowed from gen_ai (Tier 1).
+ * `gen_ai.client.inference.operation.details` — the event that carries inference
+ * request and response content. Borrowed from gen_ai (Tier 1).
  */
 export const GEN_AI_INFERENCE_DETAILS = "gen_ai.client.inference.operation.details";
 
@@ -140,6 +137,19 @@ export const GEN_AI_TOOL_CALL_ARGUMENTS = "gen_ai.tool.call.arguments";
 
 /** `gen_ai.tool.call.result` — tool result (Opt-In content, gated). */
 export const GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result";
+
+// Tier 1 content, carried on the `gen_ai.client.inference.operation.details`
+// EventRecord (never span attributes; CONVENTIONS.md § Tier 1 content). Each
+// holds a structured v1.42.0 message list (`{ role, parts[], name? }`).
+
+/** `gen_ai.system_instructions` — the system prompt as a bare `parts[]` (Opt-In content). */
+export const GEN_AI_SYSTEM_INSTRUCTIONS = "gen_ai.system_instructions";
+
+/** `gen_ai.input.messages` — the input message list (Opt-In content). */
+export const GEN_AI_INPUT_MESSAGES = "gen_ai.input.messages";
+
+/** `gen_ai.output.messages` — generated outputs; every message includes `finish_reason`. */
+export const GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages";
 
 // ---------------------------------------------------------------------------
 // Enum wire values (CONVENTIONS.md, Tier 2)

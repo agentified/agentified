@@ -6,11 +6,10 @@ Ratel keeps the model's tool list small and stable: instead of advertising every
 
 ## Install
 
-The adapter is currently a release candidate. Until its first GA promotes npm's `latest`
-tag, install the compatible `rc` pair explicitly:
+Install the compatible GA pair:
 
 ```bash
-pnpm add @ratel-ai/sdk@rc @ratel-ai/vercel-ai-sdk@rc ai@^7
+pnpm add @ratel-ai/sdk@^0.5.3 @ratel-ai/vercel-ai-sdk@^0.2.0 ai@^7
 ```
 
 ## Usage
@@ -77,6 +76,124 @@ Both inject the same synthetic `search_capabilities` call/result pair; they diff
 
 Rule of thumb: for a long-lived multi-turn agent that already persists `responseMessages`, `appendRecall` keeps recalls inside the cached prefix across turns. For a one-shot or stateless call — or when you'd rather not store recall pairs in your history — `prepareStep` is the lighter drop-in. Both are shipped so a host can measure `cachedInputTokens` on its own traffic and pick.
 
+## Telemetry: `RatelOtelIntegration` (`ai@7`)
+
+Emission and delivery are separate concerns. `@ratel-ai/sdk` already emits its own
+`ratel.*` spans onto the global OTel tracer with no wiring at all. This integration adds
+the *other* half on `ai@7`: the AI SDK's standard `gen_ai.*` spans, with Ratel's `ratel.*`
+overlay stamped on each one. The entrypoint requires `@ratel-ai/vercel-ai-sdk@0.2.0` or newer;
+`0.1.0` and its release candidates ship no `./otel`.
+
+It only **creates** spans, onto a provider **you** own. It never registers a provider and
+never exports, so whatever processors you already run receive them:
+
+```ts
+import { isDefaultExportSpan, LangfuseSpanProcessor } from "@langfuse/otel";
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { RatelOtelIntegration } from "@ratel-ai/vercel-ai-sdk/otel";
+import { registerTelemetry } from "ai";
+
+const sdk = new NodeSDK({
+  spanProcessors: [
+    new LangfuseSpanProcessor({
+      // Required, not polish. Langfuse's default filter keeps a span only when it carries a
+      // gen_ai.* attribute or comes from a scope it already knows; "@ratel-ai/sdk" is on
+      // neither list, so the SDK's ratel.* spans are dropped *after* reaching this processor.
+      shouldExportSpan: ({ otelSpan }) =>
+        isDefaultExportSpan(otelSpan) || otelSpan.instrumentationScope.name === "@ratel-ai/sdk",
+    }),
+  ],
+});
+sdk.start();
+
+registerTelemetry(new RatelOtelIntegration());
+```
+
+The provider fans spans out; the active host context correlates them. AI SDK runs
+`prepareStep` before activating its own step span, so retrieval there inherits the
+surrounding request or agent-operation span. HTTP auto-instrumentation normally supplies one.
+For a job or other uninstrumented entrypoint, create it explicitly:
+
+```ts
+import { trace } from "@opentelemetry/api";
+
+await trace.getTracer("my-app").startActiveSpan("agent turn", async (span) => {
+  try {
+    await generateText({ model, tools: r.modelTools(), prompt, prepareStep: r.prepareStep });
+  } finally {
+    span.end();
+  }
+});
+```
+
+Install `@ai-sdk/otel` alongside it — it's an optional peer, and the integration embeds its
+`OpenTelemetry` emitter as a private delegate, stamping `ratel.*` through that emitter's
+`enrichSpan` hook. An `enrichSpan` of your own still runs (see below). Flush and shutdown
+belong to the host's `NodeSDK`.
+
+That predicate is the only non-obvious line, and it is about *delivery*, not emission. The
+provider hands every span to every processor; each destination then decides what to keep, after
+the span has arrived. Without the widening a host sees its `gen_ai.*` traces and its tool calls
+land in Langfuse and reasonably concludes the wiring works, while `ratel.search`,
+`ratel.skill.load`, `ratel.upstream.register` and `ratel.auth.flow` are discarded with no error
+anywhere. Key it on **scope**, never on a `ratel.` name prefix: this integration's emitter and
+`@ratel-ai/sdk` both produce a span named `execute_tool <tool name>`, and `gen_ai.*` attributes
+appear on both, so `otel.scope.name` is the only thing that says who emitted what — `gen_ai`
+for the AI SDK's emitter, `@ratel-ai/sdk` for the SDK's own. The behaviour is pinned in
+[`src/coexistence.test.ts`](src/coexistence.test.ts); the span inventory and the other host
+wirings are in [`src/telemetry/`](../../telemetry/README.md#emission-is-not-delivery).
+
+**Match the `@ai-sdk/otel` patch to your `ai@7.0.N`.** `@ai-sdk/otel` doesn't *peer* `ai`, it
+*depends* on one exact release: every published `1.0.N` pins `ai@7.0.N`, 1:1 across every stable
+`1.0.x`, no exceptions. Install `@ai-sdk/otel@1.0.37` next to `ai@7.0.12` and the resolver nests
+a second `ai@7.0.37` under it — the same two-copies-of-`ai` type graph described below. Your
+build then fails on types that look identical: `TS2345` on the `registerTelemetry` argument
+under the usual `skipLibCheck`, or a pile including `TS2403` without it. The peer here stays
+`^1.0.0` on purpose: the release you need is a function of the `ai` *you* pinned, and no static
+range declared in this package can see that.
+
+- **Register exactly one emitting integration.** `RatelOtelIntegration`,
+  `LangfuseVercelAiSdkIntegration` (from `@langfuse/vercel-ai-sdk` — not the `@langfuse/otel`
+  processor in the snippet above), and the bare `OpenTelemetry` from `@ai-sdk/otel` all
+  embed the same emitter, so registering two duplicates every `gen_ai.*` span. Every
+  processor on the shared provider sees the spans regardless of which one you pick — but
+  only this one adds the `ratel.*` overlay. Per-call `telemetry: { integrations: [...] }`
+  overrides the global registration for that call.
+- **It's a separate entrypoint on purpose.** `@ai-sdk/otel` depends on an exact `ai@7`, so
+  exporting it from the package root would pull a second `ai` into every `ai@5`/`ai@6`
+  host's type graph — where two copies redeclare `AI_SDK_DEFAULT_PROVIDER` and the host's
+  build fails without it ever importing the integration. Importing
+  `@ratel-ai/vercel-ai-sdk` costs you nothing if you don't ask for `/otel`.
+- **`RatelOtelIntegration` targets the `ai@7` seam only.** `ai@5` has none at all; `ai@6`
+  (from `6.0.108`) has an *earlier, different* one — `registerTelemetryIntegration` with a
+  six-method `TelemetryIntegration` interface, not `registerTelemetry`/`Telemetry` — which
+  this class does not implement. On either major, pass
+  `experimental_telemetry: { isEnabled: true }` per call instead. The SDK's own `ratel.*`
+  spans are unaffected and still need no wiring.
+- **Enrichment is per-emitter, not per-span.** `enrichSpan` is a hook on the embedded emitter,
+  so it reaches exactly the spans that emitter creates and nothing else. The SDK's own
+  `ratel.*` spans and its `execute_tool <tool name>` span come from a different tracer and are
+  never touched by it — including when they carry `gen_ai.*` attributes of their own, which
+  `execute_tool` does. Selecting spans by attribute prefix and expecting the overlay on them
+  is asserting something untrue; select by scope.
+- **What lands on each span, for now, is `ratel.origin`.** Not a limit of the hook: the AI
+  SDK hands `enrichSpan` the `spanType`, `operationId`, `callId`, and `runtimeContext` at
+  span creation, so per-span-kind and per-call attributes are already reachable. It's a
+  deliberate baseline — the richer experiment vocabulary lands with the work that defines it.
+- **`origin` is selectable, and your `enrichSpan` composes.**
+  `new RatelOtelIntegration({ origin: Origin.Direct })` overrides the `agent` default. `Origin`
+  is re-exported from this entrypoint, so you don't need `@ratel-ai/telemetry` on your own
+  resolution path; the bare `"direct"` / `"agent"` literals work too. `agent` is the honest
+  value for the tool-loop spans that dominate a Ratel agent and the wrong one for `embed` /
+  `embedMany` / `rerank`, which the host calls directly instead of the model synthesizing them
+  mid-loop — that split is why the value is selectable rather than hardcoded. It is fixed per
+  instance, so a host doing both passes a second integration per call via
+  `telemetry: { integrations: [...] }` rather than re-registering globally.
+  Every other option passes through to the embedded emitter, including an `enrichSpan` of your
+  own: it is called and its attributes merged *under* Ratel's, so everything you return lands
+  except `ratel.origin` itself, which the overlay keeps. If your hook throws, you lose your own
+  attributes for that span and nothing else — `ratel.origin` still lands.
+
 ## Limitations
 
 - **Persist the response messages** (`await result.responseMessages` on `ai@7`; `(await result.response).messages` on `ai@5`/`ai@6`, which have no `responseMessages`). Recall fires only when the last message is the user's turn. If you drop the accumulated response messages between turns, turn *N+1* loses turn *N*'s tool calls and results — standard AI SDK message hygiene, load-bearing here.
@@ -93,7 +210,7 @@ Peer range: **`ai@^5.0.0 || ^6.0.0 || ^7.0.0`** — one shared code path, no per
 Approval (`needsApproval`) is available on AI SDK 6+, while per-tool `contextSchema` is AI
 SDK 7-only. When present, both stay on the native passthrough path.
 
-Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.33` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Releases between floor and latest are covered by the range, not row-verified.
+Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.37` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Every row also asserts that consumer resolved **no** `@ai-sdk/otel`; the v7 rows additionally install it and typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface. Releases between floor and latest are covered by the range, not row-verified.
 
 - **`ai@4` is excluded.** The v5 release reshaped the tool and message surface the adapter speaks (`inputSchema`/`ModelMessage`-era shapes); `ai@4` predates it and would need a different adapter, not a wider range.
 - **Breaking-change policy:** narrowing the supported-majors peer range (dropping a major) is a breaking change of this adapter and ships as a major (post-1.0) with a changelog callout — never a patch or minor. Widening the range to a new `ai` major is additive.
@@ -101,7 +218,8 @@ Each supported major is verified in CI at two exact releases — its floor and i
 ## Package shape
 
 - Package name: `@ratel-ai/vercel-ai-sdk`
-- Pure TypeScript, **zero runtime dependencies** — the adapter is glue. `ai@^5.0.0 || ^6.0.0 || ^7.0.0` and `@ratel-ai/sdk` are peers the host already installs.
+- Two entrypoints: `.` (the adapter) and `./otel` (the `ai@7` telemetry integration).
+- Pure TypeScript, and the adapter itself is still glue: `ai@^5.0.0 || ^6.0.0 || ^7.0.0` and `@ratel-ai/sdk` are peers the host already installs, and `@ai-sdk/otel` / `@opentelemetry/api` are *optional* peers only `./otel` needs. Its one runtime dependency is `@ratel-ai/telemetry`, the zero-dependency `ratel.*` constants package that `./otel` imports unconditionally — a peer there could go unmet or unhoisted and break the import at load time, which no typecheck would catch.
 - MIT ([ADR-0009](../../../docs/adr/0009-licensing.md)); member of the pnpm workspace; `publishConfig` provenance on.
 
 ## Build & test

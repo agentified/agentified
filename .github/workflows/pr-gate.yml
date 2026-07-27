@@ -118,6 +118,15 @@ jobs:
             PY="arch -x86_64 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
           fi
           $PY -c "import platform; print('e2e interpreter machine:', platform.machine())"
+          # ratel-ai hard-depends on the ratel-ai-telemetry vocabulary, which lives in
+          # this repo and releases on its own tag (telemetry-py-v*). Between an in-repo
+          # version bump and that release the floor isn't on PyPI yet, so resolving it
+          # from the index fails every leg. Install the monorepo sibling first, mirroring
+          # the Node leg below (which pre-builds its @ratel-ai/telemetry workspace dep)
+          # and the local-source pin examples/pydantic-ai already carries for the same
+          # unreleased floor. Resolution against the real index stays covered by
+          # verify-install.yml, which installs the published wheel from PyPI.
+          $PY -m pip install ./src/telemetry/python
           $PY -m pip install src/sdk/python/dist/*.whl
           $PY e2e/python/run_e2e.py
 
@@ -126,10 +135,10 @@ jobs:
           set -e
           triple="${{ matrix.triple }}"
           pnpm --filter @ratel-ai/sdk exec napi build --release --platform --target ${{ matrix.target }} --manifest-path native/Cargo.toml --output-dir native --js index.cjs --dts index.d.cts
-          # The SDK loader imports @ratel-ai/telemetry (+ the optional-peer
-          # @ratel-ai/telemetry-otlp types), so build those workspace deps' dist/ before
-          # tsc — same as the release workflow. Without it build:ts can't resolve them.
-          pnpm --filter @ratel-ai/telemetry --filter @ratel-ai/telemetry-otlp run build
+          # The SDK loader imports @ratel-ai/telemetry, so build that workspace dep's
+          # dist/ before tsc — same as the release workflow. Without it build:ts can't
+          # resolve it.
+          pnpm --filter @ratel-ai/telemetry run build
           pnpm --filter @ratel-ai/sdk run build:ts
           cp "src/sdk/ts/native/ratel-sdk.$triple.node" "src/sdk/ts/npm/$triple/"
           rm -rf "$RUNNER_TEMP/tgz" && mkdir -p "$RUNNER_TEMP/tgz/loader" "$RUNNER_TEMP/tgz/sub"

@@ -11,41 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { aiSdk } from "./aisdk.js";
-
-interface ModelCall {
-  prompt: unknown[];
-}
-
-class MockLanguageModelV2 {
-  readonly specificationVersion = "v2";
-  readonly provider = "mock-provider";
-  readonly modelId = "mock-model";
-  readonly supportedUrls = {};
-  readonly doGenerateCalls: ModelCall[] = [];
-  readonly doStreamCalls: ModelCall[] = [];
-
-  constructor(
-    private readonly generateResults: unknown[] = [],
-    private readonly streamResults: unknown[] = [],
-  ) {}
-
-  async doGenerate(options: ModelCall): Promise<unknown> {
-    const index = this.doGenerateCalls.push(options) - 1;
-    return this.generateResults[index];
-  }
-
-  async doStream(options: ModelCall): Promise<unknown> {
-    const index = this.doStreamCalls.push(options) - 1;
-    return this.streamResults[index];
-  }
-}
-
-const usage = {
-  inputTokens: 1,
-  outputTokens: 1,
-  totalTokens: 2,
-};
-const aiSdkMajor = Number.parseInt(process.env.AI_SDK_VERSION ?? "7", 10);
+import { aiSdkMajor, MockLanguageModelV2, usage } from "./test-support/mock-model.js";
 
 describe("AI SDK loop integration", () => {
   it.skipIf(aiSdkMajor < 6)(

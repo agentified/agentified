@@ -28,8 +28,8 @@ for the authoritative set; the current eight units are:
 | `telemetry-core` | `ratel-ai-telemetry` (crates.io) | `src/telemetry/core/CHANGELOG.md` |
 | `telemetry-ts` | `@ratel-ai/telemetry` (npm) | `src/telemetry/ts/CHANGELOG.md` |
 | `telemetry-py` | `ratel-ai-telemetry` (PyPI) | `src/telemetry/python/CHANGELOG.md` |
-| `telemetry-ts-otlp` | `@ratel-ai/telemetry-otlp` (npm) | `src/telemetry/ts-otlp/CHANGELOG.md` |
 | `vercel-ai-sdk` | `@ratel-ai/vercel-ai-sdk` (npm) | `src/adapters/ts-vercel-ai-sdk/CHANGELOG.md` |
+| `mastra` | `@ratel-ai/mastra` (npm) | `src/adapters/ts-mastra/CHANGELOG.md` |
 
 `@ratel-ai/mcp-server` lives in [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp) and maintains its own CHANGELOG there.
 

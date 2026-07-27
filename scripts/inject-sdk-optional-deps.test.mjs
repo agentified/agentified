@@ -9,8 +9,8 @@ import { injectSdkOptionalDeps } from "./inject-sdk-optional-deps.mjs";
 const PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64-gnu", "linux-arm64-gnu", "win32-x64-msvc"];
 
 // A minimal repo tree: the SDK loader + 5 platform packages, plus the sibling
-// telemetry manifests the loader's workspace: deps resolve against.
-function makeRepo({ version = "0.4.0-rc.2", loader = {}, teleVer = "0.1.0-rc.3", otlpVer = "0.1.0-rc.4" } = {}) {
+// telemetry manifest the loader's workspace: deps resolve against.
+function makeRepo({ version = "0.4.0-rc.2", loader = {}, teleVer = "0.1.0-rc.3" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ratel-inject-"));
   const write = (rel, obj) => {
     const abs = join(root, rel);
@@ -22,7 +22,6 @@ function makeRepo({ version = "0.4.0-rc.2", loader = {}, teleVer = "0.1.0-rc.3",
     write(`src/sdk/ts/npm/${t}/package.json`, { name: `@ratel-ai/sdk-${t}`, version });
   }
   write("src/telemetry/ts/package.json", { name: "@ratel-ai/telemetry", version: teleVer });
-  write("src/telemetry/ts-otlp/package.json", { name: "@ratel-ai/telemetry-otlp", version: otlpVer });
   return root;
 }
 
@@ -43,21 +42,19 @@ test("injects the five platform packages as optionalDependencies at the loader v
   }
 });
 
-test("rewrites workspace: deps and peerDeps to caret ranges on the sibling versions", () => {
+test("rewrites workspace: deps and peerDeps to caret ranges on the sibling version", () => {
   const root = makeRepo({
     loader: {
       dependencies: { "@modelcontextprotocol/sdk": "^1.29.0", "@ratel-ai/telemetry": "workspace:^" },
-      peerDependencies: { "@ratel-ai/telemetry-otlp": "workspace:^" },
-      peerDependenciesMeta: { "@ratel-ai/telemetry-otlp": { optional: true } },
+      peerDependencies: { "@ratel-ai/telemetry": "workspace:^" },
     },
     teleVer: "0.1.0-rc.3",
-    otlpVer: "0.1.0-rc.4",
   });
   try {
     injectSdkOptionalDeps(root);
     const pkg = loaderPkg(root);
     assert.equal(pkg.dependencies["@ratel-ai/telemetry"], "^0.1.0-rc.3");
-    assert.equal(pkg.peerDependencies["@ratel-ai/telemetry-otlp"], "^0.1.0-rc.4");
+    assert.equal(pkg.peerDependencies["@ratel-ai/telemetry"], "^0.1.0-rc.3");
     // Untouched non-workspace deps stay verbatim.
     assert.equal(pkg.dependencies["@modelcontextprotocol/sdk"], "^1.29.0");
     // No workspace: specifier may survive anywhere.

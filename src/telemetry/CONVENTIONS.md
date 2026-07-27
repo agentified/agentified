@@ -1,8 +1,9 @@
 # Ratel telemetry conventions
 
 The wire contract for Ratel's **remote** telemetry. Ratel telemetry *is* OpenTelemetry:
-LLM calls are `gen_ai.*` spans, Ratel's capability/skill funnel is a `ratel.*` overlay on the
-same traces, and ingest is stock OTLP. This document is what every consumer (Ratel Cloud,
+LLM calls are `gen_ai.*` spans with content-bearing Logs EventRecords, Ratel's
+capability/skill funnel is a `ratel.*` overlay on the same traces, and ingest is stock OTLP.
+This document is what every consumer (Ratel Cloud,
 dashboards, a self-hosted receiver) reads against; the per-language helpers under
 `core/`, `ts/`, `python/` codify the `ratel.*` half as constants.
 
@@ -35,12 +36,12 @@ helper, and note the move in a superseding ADR if the shape (not just keys) chan
 
 | Tier | Namespace | Owner | Carries |
 |---|---|---|---|
-| Base | `gen_ai.*` | OpenTelemetry (pinned v1.42.0) | the LLM call: operation, provider, model, params, usage, finish; message/tool content on the details event |
-| Overlay | `ratel.*` | this repo | the capability/skill funnel (the ADR-0007 local event set + the ADR-0005 skill events) as spans + attributes on the same trace |
+| Base | `gen_ai.*` | OpenTelemetry (pinned v1.42.0) | the LLM call: operation, provider, model, params, usage, finish; inference content on the details EventRecord |
+| Overlay | `ratel.*` | this repo | the capability/skill funnel as spans, attributes, and content EventRecords correlated through the active host context |
 
 `gen_ai.*` is adopted **verbatim**, not one key renamed or re-nested. `ratel.*` is the only vocabulary
-Ratel designs and versions. A Ratel-instrumented agent and a plain-`gen_ai.*` agent land in the same trace,
-told apart by namespace and joined on trace/span id.
+Ratel designs and versions. A Ratel-instrumented agent and a plain-`gen_ai.*` agent running under the
+same active host span land in one trace, told apart by namespace and joined on trace/span id.
 
 `ratel.*` follows ADR-0007's schema discipline: **adding** a span or attribute is non-breaking; **renaming or
 removing** one is breaking and needs a superseding note.
@@ -96,11 +97,14 @@ lossily folding it into `content_filter`.
 (to `input_tokens`), `gen_ai.usage.completion_tokens` (to `output_tokens`), `gen_ai.prompt` / `gen_ai.completion`
 (to messages), `gen_ai.openai.request.seed` (to `request.seed`).
 
-### Tier 1 content: on events, never span attributes
+### Tier 1 inference content: on OpenTelemetry EventRecords
 
 Message text and tool-call arguments ride the **`gen_ai.client.inference.operation.details`** event
-(`gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`), never span attributes.
-Locked by ADR-0007: attributes are size-bounded and message content is not.
+(`gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`) for an LLM inference
+operation, never span attributes. Tool-execution and search content follow the separate two-channel
+capture table below. This is an OpenTelemetry Event in the **Logs data model**, not a
+SpanEvent. Maps and arrays MUST be recorded as structured AnyValue values, not JSON strings. Locked by
+ADR-0007: span attributes are size-bounded and message content is not.
 
 Message shape (v1.42.0): `{ role, parts[], name? }`; output messages also carry `finish_reason`.
 Roles: `system | user | assistant | tool` (open). `system_instructions` is a bare `parts[]` (no role wrapper).
@@ -126,19 +130,54 @@ convention `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Note this is an
 convention, not a semconv-v1.42.0 attribute. Honor it rather than inventing a Ratel flag. Values:
 legacy boolean, or the enum `NO_CONTENT` (default) | `SPAN_ONLY` | `EVENT_ONLY` | `SPAN_AND_EVENT`.
 
+The four values select **two independent channels** — span attributes and Logs EventRecords — and every
+content-bearing helper honors both, so a mode is truthful (no mode silently drops content it names):
+
+| Value | Span attributes | OTel Logs EventRecords |
+|---|---|---|
+| `NO_CONTENT` (default) | — | — |
+| `SPAN_ONLY` | yes | — |
+| `EVENT_ONLY` | — | yes |
+| `SPAN_AND_EVENT` | yes | yes (both) |
+
+- **Span-attribute channel** (`SPAN_ONLY`/`SPAN_AND_EVENT`): tool content on `gen_ai.tool.call.arguments`
+  / `gen_ai.tool.call.result`; search text on `ratel.search.query`.
+- **EventRecord channel** (`EVENT_ONLY`/`SPAN_AND_EVENT`): tool content on a
+  `ratel.tool.execution.details` event carrying structured `gen_ai.tool.call.arguments` and, on
+  success, `gen_ai.tool.call.result`, plus `gen_ai.operation.name = execute_tool` and
+  `gen_ai.tool.name`; search text on a `ratel.search.results` event carrying
+  `ratel.search.query`. The search event carries only the query — hit ids/scores/BM25 timing live
+  on the local trace stream, not the OTLP glue.
+
+`gen_ai.output.messages` is reserved for model-generated outputs; every output message requires
+`finish_reason`. A tool execution result is therefore never encoded as an output message.
+
+**Python 3.9 compatibility.** OpenTelemetry Python 1.41 rejects heterogeneous AnyValue arrays.
+Rather than silently replace such content with `null`, the Python SDK encodes only those arrays
+as `{"ratel.type": "array", "ratel.items": {"0": ..., "1": ...}}`. The indexed map is
+lossless and order-preserving; homogeneous arrays retain their normal array shape.
+
 ---
 
 ## Tier 2: the Ratel funnel (`ratel.*`)
 
 The local trace event set (ADR-0007) plus the skill events (ADR-0005) are the mapping source: search, invoke (start/end/error), skill search/invoke,
-upstream-MCP ingest, auth / `needs_auth`. Each becomes a span (or attributes on a `gen_ai` span) under `ratel.*`.
+upstream-MCP ingest, auth / `needs_auth`. Each becomes a span, attributes on a `gen_ai` span,
+or a content-bearing Logs EventRecord under `ratel.*`.
 
 **Errors** use standard OTel span status (`ERROR`) + `error.type` and the exception event, not a bespoke
 `ratel.*.error` attribute. **Origin** (agent-synthesized vs direct library call) is a shared attribute:
 
 | Attribute | Type | On | Values |
 |---|---|---|---|
-| `ratel.origin` | enum | search, invoke | `direct \| agent` |
+| `ratel.origin` | enum | search, invoke, and third-party `gen_ai.*` spans a framework adapter overlays | `direct \| agent` |
+
+On Ratel's own spans the emitter knows which case it is. On the overlay case it cannot: a
+framework adapter (`@ratel-ai/vercel-ai-sdk/otel`) stamps `ratel.origin` onto `gen_ai.*` spans
+another library created, so the value is host-selectable there and defaults to `agent` — right
+for the tool-loop spans an agent synthesizes, wrong for host-driven `embed` / `rerank` calls.
+It is selected per adapter instance, not per span, so a host making both kinds of call marks
+the direct ones by passing a second, `direct`-configured instance on those calls.
 
 ### `ratel.search`: capability search (unifies `search`, `gateway_search`, `skill_search`)
 
@@ -150,8 +189,11 @@ upstream-MCP ingest, auth / `needs_auth`. Each becomes a span (or attributes on 
 | `ratel.search.query` | string | **content, gated** like message content; may hold user/agent text |
 | `ratel.origin` | enum | `direct \| agent` |
 
-Hit ids + scores (and per-stage BM25 timing) ride an Opt-In span event **`ratel.search.results`**, gated with
-the same content flag; the span itself carries only counts.
+The search text rides an Opt-In Logs EventRecord **`ratel.search.results`** (as
+`ratel.search.query`), gated under the event channel. The span's non-content fields carry counts;
+`SPAN_ONLY` and `SPAN_AND_EVENT` additionally put the gated query on the span. Hit ids + scores +
+per-stage BM25 timing live on the local trace stream (the SDK's OTLP glue does not have them at the
+span boundary), not this remote event.
 
 ### tool invocation: `execute_tool` span + `ratel.*`
 
@@ -168,8 +210,10 @@ already understands it) enriched with `ratel.*`:
 | `ratel.origin` | enum | `direct \| agent` |
 
 Span duration is the invoke latency; failure sets span status `ERROR`. Tool arguments/results are Opt-In
-content on the span attributes `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` (distinct from the
-`tool_call_response` message part's `response` field above), gated like messages.
+content: on the span attributes `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` under the
+span-attribute channel, and/or as structured attributes on the
+`ratel.tool.execution.details` Logs EventRecord under the EventRecord channel — gated like messages,
+per the two-channel table in § Tier 1 content.
 
 > **Decided (2026-07-05):** invoke is modelled as an `execute_tool` span enriched with `ratel.*`, for
 > OTel-backend interop, not a pure `ratel.invoke` span. The considered alternative (a pure `ratel.invoke`
@@ -223,52 +267,51 @@ machinery existed to stop three hand-mirrored schemas from drifting; with one bo
 retirement of the cross-mirror fixtures.
 
 Conformance is re-scoped to **contract-against-the-pin**: a shared fixture set of
-`(known input -> expected emitted keys/values)`, asserted per language against an in-memory span/event
-exporter. Each helper, given a fixture, must emit the exact `gen_ai.*` keys this spec pins and the `ratel.*`
+`(known input -> expected emitted keys/values)`, asserted per language against in-memory span and
+Logs EventRecord exporters. Each helper, given a fixture, must emit the exact `gen_ai.*` keys this spec pins and the `ratel.*`
 keys it owns, at the pinned semconv version. This tests "does the helper emit the convention correctly",
 not "do three schemas agree". The `ratel.*` constants are the unit under test; `gen_ai.*` keys are asserted
 against the v1.42.0 table above.
 
-## `init()` surface (recorded; implemented in the helpers)
+## Exporter initialization surface (recorded; implemented in the Python helper)
 
-Each helper is `init()` sugar over the standard OTel SDK plus the `ratel.*` constants: no transport, no FFI,
-no schema crate. `init()`:
+Python `init()` is sugar over the standard OTel SDK plus the `ratel.*` constants: no transport, no
+FFI, no schema crate. TypeScript has no counterpart and no exporter configuration either: the host
+owns the OTel providers, so it resolves its own endpoint and auth, and `@ratel-ai/telemetry` stays
+vocabulary plus the content-capture gate. The asymmetry is deliberate (ADR-0007).
 
-- Resolves the endpoint from `RATEL_OTLP_ENDPOINT` in TypeScript and `RATEL_URL` in Python;
-  explicit `endpoint` / `endpoint=` values win over the environment. Resolves auth from
-  `RATEL_API_KEY`; explicit `apiKey` / `api_key=` values win. Custom `headers` compose with either
-  form. An explicit API key sets `Authorization: Bearer ...`; the `RATEL_API_KEY` fallback applies
-  only when neither an explicit API key nor an explicit `Authorization` header is given, so ambient
-  env never clobbers auth the caller set on purpose.
-- On first setup, accepts `enabled: false` (`enabled=False`) before resolving configuration or
-  registering a provider, returning a no-op shutdown handle (in Python this also avoids importing
-  the OTel SDK at all; the TS package statically imports the SDK at module load either way). The
-  composable span-processor has the same switch. If Ratel already owns the global provider,
-  idempotence wins and every later `init()` call returns the original handle regardless of options.
-- Exports every span by default on the turnkey path; `spanFilter` (`span_filter`) narrows that set
-  without requiring callers to construct their own provider.
-- Is idempotent to itself: while the Ratel-owned provider is active, repeated calls (including
+Turnkey initialization:
+
+- Resolves the traces endpoint from `RATEL_OTLP_ENDPOINT`, falling back to the superseded
+  `RATEL_URL` with a `DeprecationWarning` (that var also selects the SDK's catalog source per
+  ADR-0003, so it no longer doubles as the OTLP destination); an explicit `endpoint=` wins over
+  both. Resolves auth from `RATEL_API_KEY`; an explicit `api_key=` wins. Custom `headers` compose with
+  either form. An explicit API key sets `Authorization: Bearer ...`; the `RATEL_API_KEY` fallback
+  applies only when neither an explicit API key nor an explicit `Authorization` header is given, so
+  ambient env never clobbers auth the caller set on purpose. The traces endpoint remains the full
+  `/v1/traces` URL; the Logs exporter derives its sibling `/v1/logs` URL. `logs_endpoint` overrides
+  that derivation.
+- On first setup, accepts `enabled=False` before resolving configuration or registering a provider,
+  returning a no-op handle without importing the OTel SDK at all. The composable span and
+  log-record processors have the same switch. If Ratel already owns the global providers,
+  idempotence wins and every later initialization call returns the original handle regardless of options.
+- Exports every span and EventRecord by default on the turnkey path; `span_filter` and `log_filter`
+  narrow those sets without requiring callers to construct providers.
+- Is idempotent to itself: while the Ratel-owned tracer and logger providers are active, repeated calls (including
   module reloads) return the exact original handle and the first call's configuration remains
   authoritative; because that handle is shared, shutting it down stops export for every caller. A
-  foreign global provider still raises with processor-based coexistence guidance.
-- Shutdown is terminal: OTel's global provider registers once per process, so after the handle's
-  `shutdown()` a later `init()` raises rather than return a dead handle (TS callers can
-  `trace.disable()` first to re-initialize; Python has no equivalent).
-- Wires an OTLP **`http/protobuf`** exporter with sane batching + resource defaults; everything else is the
+  foreign global tracer or logger provider still raises with processor-based coexistence guidance.
+- Shutdown is terminal: OTel's global providers register once per process, so after the handle's
+  `shutdown()` a later initialization raises rather than return a dead handle; Python has no
+  provider-reset escape hatch.
+- Wires OTLP **`http/protobuf`** trace and Logs exporters with sane batching + shared resource defaults; everything else is the
   untouched OTel SDK the caller can configure directly.
-- Exposes the `ratel.*` attribute/span constants so callers emit the vocabulary without stringly-typed keys.
-- Honors `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` for content capture (default off).
 
-A caller who already runs the OTel SDK skips `init()` and adds `ratelSpanProcessor()` /
-`ratel_span_processor()` to that provider. The processor defaults to the `gen_ai.*` / `ratel.*`
-signal filter and can be overridden. Installing `@ratel-ai/telemetry-otlp` or the Python `[otlp]`
-extra supplies the complete exporter/SDK implementation; callers do not assemble the individual
-OpenTelemetry packages themselves.
+Both the Python and TypeScript helpers expose the `ratel.*` attribute/span constants so callers emit
+the vocabulary without stringly-typed keys, and honor
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` for content capture (default off).
 
-**Composition on the owned provider (TS).** The TS turnkey entry is now `startTelemetry`
-(`init` retained as a back-compat alias). Beyond `spanFilter`, it accepts host `spanProcessors`
-registered alongside Ratel's on the same owned provider — one span stream fans out to all of
-them, each applying its own filter — so a greenfield caller dual-exports (e.g. to Langfuse)
-without ceding the global provider to a foreign one. The returned handle adds `forceFlush()`
-(drain every registered processor; for serverless/jobs) beside `shutdown()`. Additive per
-ADR-0007 schema discipline; the Python helper keeps the `init()` surface until it follows.
+A Python caller who already runs the OTel SDK skips turnkey initialization and adds
+`ratel_span_processor()` plus `ratel_log_record_processor()` to the host tracer and logger
+providers. Both default to the `gen_ai.*` / `ratel.*` signal filter and can be overridden. The
+`[otlp]` extra supplies the complete exporter/SDK implementation.

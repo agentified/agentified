@@ -7,9 +7,12 @@ Date: 2026-07-15
 Accepted
 
 Builds on the framework-neutral capability tools (ADR-0005's `search_capabilities` /
-`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern first shipped
-for `@ratel-ai/telemetry-otlp`. Design source: the reviewed proposal *TS framework adapter
-packages*; this ADR records the SPI that its first phase lands in `@ratel-ai/sdk`.
+`invoke_tool` / `get_skill_content` funnel) and the optional-peer detection pattern. Design
+source: the reviewed proposal *TS framework adapter packages*; this ADR records the SPI that its
+first phase lands in `@ratel-ai/sdk`.
+
+Amended 2026-07-26 to record the subpath-entrypoint + optional-peer rule for adapter
+capabilities whose dependency the host base can't take (see Consequences).
 
 ## Context
 
@@ -143,8 +146,8 @@ adapter is three pure codecs; the core owns all state and every framework-indepe
 
 - **Detection powers error messages only.** A framework-shaped tool — a zod-style schema or a
   dynamic `description` — hitting the native `r.tools.register(...)` throws an actionable error
-  that names the exact adapter package to install, probing known frameworks with the existing
-  `isPeerInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
+  that names the exact adapter package to install, probing known frameworks with
+  `isPackageInstalled`. (A merely missing `id` is a malformed *native* tool, not a framework one, so
   it takes its own plain error path rather than the adapter hint.) Detection can't tell *installed*
   from *in use* (Mastra depends on `ai` internally), so it never drives behavior — only the hint.
 
@@ -168,6 +171,18 @@ to the executor path is the optional opaque context argument described above.
   adapter packages: the attribute is a vocabulary addition across the Rust/TS/Python telemetry
   triple (ADR-0007) and lands with the first adapter that emits it, not with the core SPI. The
   `name` field is carried on the SPI now so adapters supply it from day one.
+- An adapter capability that needs a dependency the whole host base can't take goes on its **own
+  subpath entrypoint, behind an optional peer** — never on the root entry. `@ratel-ai/vercel-ai-sdk`
+  set the precedent with `./otel` (`RatelOtelIntegration`, which overlays `ratel.origin` onto the
+  AI SDK's own `gen_ai.*` spans): `@ai-sdk/otel` depends on an *exact* `ai@7`, so a required peer
+  or a root re-export drags a second `ai` into an `ai@5`/`ai@6` host's type graph, where the two
+  copies redeclare `AI_SDK_DEFAULT_PROVIDER` and break the host's build with TS2403 — without the
+  host ever importing the capability. Optional and off-root are therefore both correctness
+  requirements, not style, and the compat matrix asserts a packed consumer resolves no
+  `@ai-sdk/otel`. Adding such a subpath is additive; the peer range on the root entry is
+  unchanged. A capability like this only *creates* spans onto a provider the host owns, never
+  registering or exporting one, which keeps it composable with whatever processors the host
+  already runs.
 - Late-registered *passthroughs* are the one thing an already-exposed set can't pick up (they are
   plain framework tools, not catalog entries); surfacing them requires re-taking `modelTools()` — a
   visible, deliberate prompt-cache bust rather than an implicit mutation.

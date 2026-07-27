@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import threading
 from typing import Any
 
 import pytest
@@ -12,6 +13,8 @@ from ratel_ai_telemetry.otlp import (
     API_KEY_ENV,
     DEFAULT_SERVICE_NAME,
     ENDPOINT_ENV,
+    LEGACY_ENDPOINT_ENV,
+    OTLP_ENDPOINT_ENV,
     ContentCapture,
     clear_content_capture,
     content_capture_mode,
@@ -90,6 +93,20 @@ class TestResolveOtlpConfig:
         assert cfg.headers == {"x-custom": "1"}
         assert "Authorization" not in cfg.headers
 
+    def test_derives_the_otlp_logs_url_from_the_full_traces_url(self) -> None:
+        cfg = resolve_otlp_config(endpoint="http://localhost:4318/v1/traces", env={})
+
+        assert cfg.logs_url == "http://localhost:4318/v1/logs"
+
+    def test_explicit_logs_endpoint_overrides_the_derived_url(self) -> None:
+        cfg = resolve_otlp_config(
+            endpoint="http://traces.example/v1/traces",
+            logs_endpoint="http://logs.example/custom",
+            env={},
+        )
+
+        assert cfg.logs_url == "http://logs.example/custom"
+
     def test_explicit_endpoint_wins_over_ratel_url(self) -> None:
         cfg = resolve_otlp_config(
             endpoint="https://explicit/v1/traces",
@@ -108,6 +125,62 @@ class TestResolveOtlpConfig:
     def test_raises_when_no_endpoint_and_no_ratel_url(self) -> None:
         with pytest.raises(ValueError, match=ENDPOINT_ENV):
             resolve_otlp_config(api_key="k", env={})
+
+
+class TestOtlpEndpointEnvMigration:
+    """RATEL_URL also selects the SDK's catalog source (ADR-0003), so the OTLP endpoint
+    moved to its own RATEL_OTLP_ENDPOINT (TS did this in @ratel-ai/telemetry 0.2.0).
+    Python keeps reading the legacy var so existing installs are untouched by a patch."""
+
+    def test_reads_the_dedicated_otlp_endpoint_var(self) -> None:
+        cfg = resolve_otlp_config(env={OTLP_ENDPOINT_ENV: "https://otlp/v1/traces"})
+        assert cfg.url == "https://otlp/v1/traces"
+
+    def test_endpoint_env_names_the_dedicated_var(self) -> None:
+        # The exported constant is the name callers set; it must be the new spelling,
+        # and the legacy name stays available under its own constant.
+        assert OTLP_ENDPOINT_ENV == "RATEL_OTLP_ENDPOINT"
+        assert ENDPOINT_ENV == OTLP_ENDPOINT_ENV
+        assert LEGACY_ENDPOINT_ENV == "RATEL_URL"
+
+    def test_dedicated_var_wins_over_the_legacy_var(self) -> None:
+        cfg = resolve_otlp_config(
+            env={
+                OTLP_ENDPOINT_ENV: "https://new/v1/traces",
+                LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces",
+            },
+        )
+        assert cfg.url == "https://new/v1/traces"
+
+    def test_falls_back_to_the_legacy_var_with_a_deprecation_warning(self) -> None:
+        with pytest.warns(DeprecationWarning, match=OTLP_ENDPOINT_ENV):
+            cfg = resolve_otlp_config(env={LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces"})
+        assert cfg.url == "https://legacy/v1/traces"
+
+    def test_explicit_endpoint_wins_over_both_vars_without_warning(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            cfg = resolve_otlp_config(
+                endpoint="https://explicit/v1/traces",
+                env={
+                    OTLP_ENDPOINT_ENV: "https://new/v1/traces",
+                    LEGACY_ENDPOINT_ENV: "https://legacy/v1/traces",
+                },
+            )
+        assert cfg.url == "https://explicit/v1/traces"
+
+    def test_missing_endpoint_error_names_the_dedicated_var(self) -> None:
+        with pytest.raises(ValueError, match=OTLP_ENDPOINT_ENV):
+            resolve_otlp_config(api_key="k", env={})
+
+    def test_the_dedicated_var_does_not_warn(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            resolve_otlp_config(env={OTLP_ENDPOINT_ENV: "https://otlp/v1/traces"})
 
 
 class TestContentCaptureMode:
@@ -130,6 +203,26 @@ class TestContentCaptureMode:
 
 
 class TestInit:
+    def test_registers_an_otlp_logs_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opentelemetry import _logs
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+        forwarded: list[str | None] = []
+        monkeypatch.setattr(
+            BatchLogRecordProcessor,
+            "on_emit",
+            lambda _self, record: forwarded.append(record.log_record.event_name),
+        )
+        handle = init(endpoint="http://localhost:4318/v1/traces")
+        try:
+            _logs.get_logger(__name__).emit(event_name="ratel.search.results")
+        finally:
+            handle.shutdown()
+
+        assert forwarded == ["ratel.search.results"]
+
     def test_disabled_init_is_a_noop_without_config_or_otel(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -192,6 +285,19 @@ class TestInit:
         finally:
             handle.shutdown()
 
+    def test_repeated_init_rejects_a_lost_logger_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opentelemetry import _logs
+
+        handle = init(endpoint="http://localhost:4318/v1/traces")
+        monkeypatch.setattr(_logs, "get_logger_provider", lambda: object())
+        try:
+            with pytest.raises(RuntimeError, match="LoggerProvider"):
+                init()
+        finally:
+            handle.shutdown()
+
     def test_init_after_shutdown_raises_instead_of_returning_the_dead_handle(self) -> None:
         # Shutdown is terminal: OTel's global provider is set-once, so a later init() must fail
         # loud rather than hand back a provider whose exporter is already stopped.
@@ -202,28 +308,58 @@ class TestInit:
         with pytest.raises(RuntimeError, match="already shut down"):
             init(enabled=True)
 
-    def test_race_loser_returns_a_ratel_owned_winner(
+    def test_concurrent_init_waits_until_both_providers_are_ready(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # If another thread's init() wins the set-once registration, the loser must honor
-        # idempotence and return that Ratel-owned winner, not raise the foreign-provider error.
-        from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry import _logs
 
-        import ratel_ai_telemetry.otlp as otlp
+        original_set_logger_provider = _logs.set_logger_provider
+        first_at_logger_registration = threading.Event()
+        allow_logger_registration = threading.Event()
+        second_started = threading.Event()
+        second_done = threading.Event()
+        handles: list[Any] = []
+        failures: list[BaseException] = []
 
-        original_set_provider = trace.set_tracer_provider
-        winner = TracerProvider()
-        setattr(winner, otlp._PROVIDER_HANDLE_ATTR, winner)  # marked as Ratel-owned
+        def delayed_set_logger_provider(provider: object) -> None:
+            first_at_logger_registration.set()
+            assert allow_logger_registration.wait(timeout=5)
+            original_set_logger_provider(provider)
 
-        def install_winner(_provider: object) -> None:
-            original_set_provider(winner)
+        def initialize(*, second: bool = False) -> None:
+            if second:
+                second_started.set()
+            try:
+                handles.append(init(endpoint="http://localhost:4318/v1/traces"))
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                if second:
+                    second_done.set()
 
-        monkeypatch.setattr(trace, "set_tracer_provider", install_winner)
+        monkeypatch.setattr(_logs, "set_logger_provider", delayed_set_logger_provider)
+        first = threading.Thread(target=initialize)
+        second = threading.Thread(target=initialize, kwargs={"second": True})
+        first.start()
         try:
-            assert init(endpoint="http://localhost:4318/v1/traces") is winner
+            assert first_at_logger_registration.wait(timeout=5)
+            second.start()
+            assert second_started.wait(timeout=5)
+            assert not second_done.wait(timeout=0.1)
+            allow_logger_registration.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+            assert failures == []
+            assert len(handles) == 2
+            assert handles[0] is handles[1]
+            assert _logs.get_logger_provider().__class__.__name__ == "LoggerProvider"
         finally:
-            winner.shutdown()
+            allow_logger_registration.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+            if handles:
+                handles[0].shutdown()
 
     def test_reloaded_module_recognizes_the_owned_provider(self) -> None:
         import ratel_ai_telemetry.otlp as otlp
@@ -287,7 +423,7 @@ def test_top_level_lazy_accessor_resolves_the_otlp_surface() -> None:
 
 class TestSetContentCapture:
     """Programmatic override of the content-capture gate. Mirrors the TS
-    `setContentCapture` suite in src/telemetry/ts/src/config.test.ts."""
+    `setContentCapture` suite in src/telemetry/ts/src/content-capture.test.ts."""
 
     def test_wins_over_an_explicitly_set_env_in_either_direction(self) -> None:
         set_content_capture(ContentCapture.NO_CONTENT)

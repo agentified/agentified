@@ -13,6 +13,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - **Experimental adaptive usage ranking (ADR-0014).** `IntentGraph` plus `experimental_enable_adaptive_ranking`, `experimental_rebuild_intent_graph`, `experimental_disable_adaptive_ranking`, and `experimental_adaptive_ranking_status` on `ToolCatalog` / `SkillCatalog`. The catalog learns from each search-then-invoke and boosts future rankings; persist and reload via `IntentGraph.to_json` / `from_json`, and track writes via `graph.rev`. Shipped behind an `experimental_` prefix — the API may change until it graduates.
 - `rank` and `fused` on search hits: order on `rank`, and branch on `fused` to know whether the usage arm changed the ranking.
 - Opt-in recovery after an embedding-model change: `experimental_enable_adaptive_ranking(graph, rebuild_on_model_change=True)` re-embeds a paused graph on the next dense search. Default off; explicit `experimental_rebuild_intent_graph()` otherwise. `experimental_adaptive_ranking_status` returns an `AdaptiveRankingStatus` that carries the paused/active state and the mismatched-model detail.
+## [0.5.2] - 2026-07-26
+
+### Changed
+
+- `configure_telemetry(endpoint=...)` now defaults to `RATEL_OTLP_ENDPOINT`, falling back to the superseded `RATEL_URL` with a `DeprecationWarning`. `RATEL_URL` also selects the catalog source (ADR-0003), so it no longer doubles as the OTLP destination. Resolution lives in `ratel-ai-telemetry>=0.1.3`; nothing breaks here, a `RATEL_URL`-only install keeps exporting to the same endpoint.
+
+### Fixed
+
+- Emit content capture as structured OpenTelemetry Logs `EventRecord`s, keep tool results out of inference-output messages, and export those records through `configure_telemetry()`.
+- Serialize real MCP `CallToolResult` values into telemetry instead of recording an empty string.
+- Preserve heterogeneous JSON arrays losslessly despite OpenTelemetry Python 1.41's
+  homogeneous-array limitation.
+- Ship and require the OTel-free telemetry vocabulary version that defines the EventRecord
+  contract, so base installs emit into host-owned OpenTelemetry providers.
+
+## [0.5.1] - 2026-07-24
 
 ### Changed
 

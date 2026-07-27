@@ -60,7 +60,12 @@ For cross-cutting choices, write an ADR in `docs/adr/` — Nygard format (`Statu
 
 ## Releases
 
-Independently-versioned units publish from this repo (ADR-0008): `ratel-ai-core` (crates.io, `core-v*`), `@ratel-ai/sdk` + its per-OS packages (npm, `sdk-ts-v*`), `ratel-ai` (PyPI, `sdk-py-v*`), and the four telemetry units — `ratel-ai-telemetry` (crates.io, `telemetry-core-v*`), `@ratel-ai/telemetry` (npm, `telemetry-ts-v*`), `ratel-ai-telemetry` (PyPI, `telemetry-py-v*`), and the `init()` exporter `@ratel-ai/telemetry-otlp` (npm, `telemetry-ts-otlp-v*`). Each has a `CHANGELOG.md` in its package directory and its own tag prefix. `@ratel-ai/mcp-server` publishes independently from [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp).
+Independently-versioned units publish from this repo (ADR-0008): `ratel-ai-core` (crates.io, `core-v*`), `@ratel-ai/sdk` + its per-OS packages (npm, `sdk-ts-v*`), `ratel-ai` (PyPI, `sdk-py-v*`), the three telemetry units — `ratel-ai-telemetry` (crates.io, `telemetry-core-v*`), `@ratel-ai/telemetry` (npm, `telemetry-ts-v*`), and `ratel-ai-telemetry` (PyPI, `telemetry-py-v*`) — and the two framework adapters, `@ratel-ai/vercel-ai-sdk` (npm, `vercel-ai-sdk-v*`) and `@ratel-ai/mastra` (npm, `mastra-v*`). Eight in total; [`scripts/release-units.mjs`](scripts/release-units.mjs) is the single source of truth. Each has a `CHANGELOG.md` in its package directory and its own tag prefix. `@ratel-ai/mcp-server` publishes independently from [ratel-ai/ratel-mcp](https://github.com/ratel-ai/ratel-mcp).
+
+Two rules the unit list doesn't show:
+
+- **Publish in dependency order.** `@ratel-ai/telemetry` before `@ratel-ai/sdk`, and `@ratel-ai/sdk` before either adapter. `workspace:^` specifiers are rewritten to a concrete `^X.Y.Z` at pack time, so a tag cut out of order publishes an immutable version whose dependency is not on the registry yet. The publish jobs check the pinned range against npm and fail before publishing rather than after.
+- **At 0.x, a breaking change takes a MINOR bump** (`0.4.1` → `0.5.0`), never a major and never a patch. Removing or narrowing a public surface is what makes a change breaking; adding to it is not, however large the addition.
 
 To cut a release — one unit at a time; see [RELEASING.md](RELEASING.md) for the full flow:
 

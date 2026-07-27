@@ -10,6 +10,10 @@ Compacted 2026-07 from pre-compaction ADR-0008 (per-package CHANGELOGs, 2026-05-
 ADR-0016 (per-package versions and releases, 2026-07-04), and ADR-0018 (defer the CLI,
 2026-07-04).
 
+Amended 2026-07-26 to drop the `telemetry-ts-otlp` unit with the `@ratel-ai/telemetry-otlp`
+package, to record the `mastra` adapter unit, and to generalize the cross-unit publish order
+(it binds `sdk-ts` too, not only the adapters) with its PyPI pre-release caveat.
+
 ## Context
 
 The repo once released everything in lockstep on one `v*` tag: one bump shipped every
@@ -37,8 +41,8 @@ publish helpers read:
 | `telemetry-core` | `telemetry-core-v*` | `ratel-ai-telemetry` on crates.io |
 | `telemetry-ts` | `telemetry-ts-v*` | `@ratel-ai/telemetry` on npm |
 | `telemetry-py` | `telemetry-py-v*` | `ratel-ai-telemetry` on PyPI |
-| `telemetry-ts-otlp` | `telemetry-ts-otlp-v*` | `@ratel-ai/telemetry-otlp` on npm |
 | `vercel-ai-sdk` | `vercel-ai-sdk-v*` | `@ratel-ai/vercel-ai-sdk` on npm |
+| `mastra` | `mastra-v*` | `@ratel-ai/mastra` on npm |
 
 The `sdk-ts` unit is **internally lockstep**: the loader, its five per-OS native packages,
 and the `ts-native` crate must share a version, because the loader's `optionalDependencies`
@@ -47,20 +51,35 @@ throws on divergence before publish. This is the only lockstep left, and it is a
 invariant, not a coupling convenience. Versions diverge across units by design; cross-unit
 compatibility is expressed by dependency ranges, not a shared semver.
 
-The `vercel-ai-sdk` framework adapter is an independent, pure-TypeScript unit. It peers on
-`@ratel-ai/sdk`; its release therefore changes only the adapter version while the packed
-artifact replaces the workspace peer with the compatible published SDK range.
-It is a temporary implementation exception to the OIDC route: the npm package is already
-bootstrapped, but each version is still published with `scripts/publish-rc.sh --unit
-vercel-ai-sdk --tag <rc|latest>` after its version tag is pushed. It joins `release.yml` only
-after its trigger, publish job, environment tag policy, and Trusted Publisher are configured.
+Publish order across npm units is load-bearing rather than tidy. Every `workspace:^` specifier
+is replaced with a concrete published range at pack time, and npm installs peers
+automatically, so a range naming a version the registry does not have is an `ETARGET` at
+install time and not a warning — for a runtime dependency and a peer alike. npm versions are
+immutable, so publishing out of order ships a permanently uninstallable release. The order is
+`telemetry-ts` → `sdk-ts` → {`vercel-ai-sdk`, `mastra`}: `sdk-ts` takes `@ratel-ai/telemetry`
+as a runtime dependency, and both adapters peer on `@ratel-ai/sdk` (`vercel-ai-sdk` also
+depends on `@ratel-ai/telemetry` at runtime). Each of the three dependent publish jobs
+verifies its pinned range resolves on npm and fails before publishing; nothing downstream
+catches it, since the preflight `npm publish --dry-run` packs locally, `tag-version-check`
+inspects only the tagged unit, and `verify-install` runs after the publish is already
+immutable. PyPI adds a stricter case: `ratel-ai` floors `ratel-ai-telemetry>=0.1.3`, and under
+PEP 440 that does not admit `0.1.3rc1` even with `--pre`, so an RC of `sdk-py` requires
+telemetry-py at GA rather than at a matching RC.
+
+The `vercel-ai-sdk` framework adapter is an independent, pure-TypeScript unit. Its release
+changes only the adapter version, while both workspace specifiers are replaced with the
+compatible published ranges.
+It publishes over OIDC from `release.yml`'s `publish-vercel-ai-sdk` job. That job publishes the
+package directory, not a `pnpm pack` tarball, so the substitution is explicit pin steps in the
+job rather than something the pack step does for free. Only the first publish went through
+`scripts/publish-rc.sh --unit vercel-ai-sdk`, to bootstrap the npm name before a Trusted
+Publisher could exist.
 
 ### One `release.yml`, routed by prefix
 
 For OIDC-wired units, a single `release.yml` fires on the prefix set and routes the tag to its
 unit: only that unit's manifests and CHANGELOG are checked (`tag-version-check`), only its
-build/publish jobs run. The adapter follows the manual exception above until it is wired into
-this same workflow. Splitting into per-unit workflow files would de-register every Trusted
+build/publish jobs run. Splitting into per-unit workflow files would de-register every Trusted
 Publisher. The `release` environment keeps its name; only its deployment tag policy lists
 the prefixes (a repo-settings change, invisible in git, that must move together with the
 trigger).
@@ -70,8 +89,8 @@ trigger).
 Every release ships as `-rc.N` first and is promoted to GA only after the RC is exercised.
 RCs publish under the npm `rc` dist-tag / PEP 440 pre-release; GA under `latest`. No
 long-lived registry tokens anywhere. A new unit's first publish is a one-time manual push
-(a Trusted Publisher cannot bind to a package that does not exist yet). The adapter's
-temporary recurring manual path above remains the sole exception until its OIDC wiring lands.
+(a Trusted Publisher cannot bind to a package that does not exist yet); every release after
+that goes through the workflow.
 
 ### Per-package CHANGELOGs, skill-curated, workflow-gated
 
@@ -81,7 +100,6 @@ through the repo-local `/changelog` skill; commit-prefix discipline (`feat`/`fix
 `refactor`/`perf` appear, `docs`/`chore`/`ci` do not) is load-bearing for draft quality. At
 GA, existing `X.Y.Z-rc.*` sections collapse into a single `X.Y.Z` section. For workflow-wired
 units, the CI gate blocks publish if the tagged unit's CHANGELOG lacks the version heading.
-The adapter follows the same convention manually until it joins the workflow.
 
 ### No first-party CLI
 

@@ -11,9 +11,8 @@ name: Release
 #   telemetry-core-v* -> ratel-ai-telemetry on crates.io
 #   telemetry-ts-v*   -> @ratel-ai/telemetry on npm
 #   telemetry-py-v*   -> ratel-ai-telemetry on PyPI
-#   telemetry-ts-otlp-v* -> @ratel-ai/telemetry-otlp on npm (the init() exporter)
-#     The telemetry helpers release independently (one registry each; otlp is the
-#     npm exporter split from the vocabulary); tag the same commit to ship together.
+#     The telemetry helpers release independently (one registry each); tag the
+#     same commit to ship together.
 #   mastra-v* -> @ratel-ai/mastra on npm (framework adapter, peers the SDK)
 #   vercel-ai-sdk-v* -> @ratel-ai/vercel-ai-sdk on npm (framework adapter, peers the SDK)
 
@@ -26,7 +25,6 @@ on:
       - 'telemetry-core-v*'
       - 'telemetry-ts-v*'
       - 'telemetry-py-v*'
-      - 'telemetry-ts-otlp-v*'
       - 'mastra-v*'
       - 'vercel-ai-sdk-v*'
   workflow_dispatch:
@@ -191,15 +189,26 @@ jobs:
           cp src/sdk/ts/artifacts/index.cjs src/sdk/ts/native/index.cjs
           cp src/sdk/ts/artifacts/index.d.cts src/sdk/ts/native/index.d.cts
       - name: Build TS loader
-        # The SDK loader imports @ratel-ai/telemetry (and the optional-peer
-        # @ratel-ai/telemetry-otlp types), so build those workspace deps' dist/
-        # before tsc. The native binary is already downloaded from artifacts, so
+        # The SDK loader imports @ratel-ai/telemetry, so build that workspace dep's
+        # dist/ before tsc. The native binary is already downloaded from artifacts, so
         # build only the TS loader (build:ts), not the native crate.
         run: |
-          pnpm --filter @ratel-ai/telemetry --filter @ratel-ai/telemetry-otlp run build
+          pnpm --filter @ratel-ai/telemetry run build
           pnpm --filter @ratel-ai/sdk run build:ts
       - name: Inject optionalDependencies into SDK loader package.json
         run: node scripts/inject-sdk-optional-deps.mjs
+      # inject-sdk-optional-deps rewrites the `workspace:^` @ratel-ai/telemetry runtime dep
+      # to `^<workspace version>` without contacting npm, and the preflight below packs
+      # locally — so nothing else catches a range the registry cannot satisfy. A
+      # `sdk-ts-v*` tag cut before its `telemetry-ts-v*` would publish an immutable
+      # version whose dependency 404s for every consumer. Mirrors the vercel-ai-sdk job.
+      - name: Verify the pinned @ratel-ai/telemetry range is on npm
+        shell: bash
+        run: |
+          set -e
+          tele_ver=$(node -p "require('./src/telemetry/ts/package.json').version")
+          npm view "@ratel-ai/telemetry@^${tele_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/telemetry@^${tele_ver} is not on npm — publish telemetry-ts before sdk-ts"; exit 1; }
       # Preflight: dry-run every npm publish BEFORE any real push, so a packaging
       # error fails the job before a single (immutable) version goes live. The
       # subpackages → loader order is the install-time dependency order.
@@ -398,8 +407,8 @@ jobs:
         if: ${{ !inputs.dry_run }}
 
   # The telemetry units are independent single-registry units, each on its own tag
-  # prefix (telemetry-ts-v* / telemetry-py-v* / telemetry-core-v* / telemetry-ts-otlp-v*)
-  # and its own Trusted Publisher — exactly like core / sdk-ts / sdk-py.
+  # prefix (telemetry-ts-v* / telemetry-py-v* / telemetry-core-v*) and its own
+  # Trusted Publisher — exactly like core / sdk-ts / sdk-py.
   publish-telemetry-ts:
     name: Publish @ratel-ai/telemetry to npm
     needs: [tag-version-check]
@@ -524,70 +533,6 @@ jobs:
             exit 1
           fi
 
-  publish-telemetry-ts-otlp:
-    name: Publish @ratel-ai/telemetry-otlp to npm
-    needs: [tag-version-check]
-    if: needs.tag-version-check.outputs.unit == 'telemetry-ts-otlp'
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
-      - name: Verify npm CLI version
-        shell: bash
-        run: |
-          set -e
-          npm --version
-          # Trusted Publishers requires npm CLI 11.5.1+
-          node -e "const v = require('child_process').execSync('npm --version').toString().trim(); const [maj, min, patch] = v.split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && patch < 1)))) { console.error('npm CLI ' + v + ' < 11.5.1 (required for Trusted Publishers)'); process.exit(1); } console.log('npm ' + v + ' OK');"
-      - name: Install
-        run: pnpm install --frozen-lockfile
-      # Build the exporter and its @ratel-ai/telemetry workspace dependency (topo order).
-      - name: Build TS
-        run: pnpm --filter "@ratel-ai/telemetry-otlp..." run build
-      # npm keeps `workspace:` specifiers verbatim, so pin the dep to the concrete
-      # co-released @ratel-ai/telemetry version before publishing (ephemeral CI edit;
-      # not committed). Keeps the npm-OIDC dir publish + provenance identical to the
-      # other units rather than switching to `pnpm publish`.
-      - name: Pin the @ratel-ai/telemetry dependency for publish
-        shell: bash
-        run: |
-          set -e
-          tele_ver=$(node -p "require('./src/telemetry/ts/package.json').version")
-          TELE_VER="$tele_ver" node -e "const fs=require('fs'); const f='./src/telemetry/ts-otlp/package.json'; const p=require(f); p.dependencies['@ratel-ai/telemetry']='^'+process.env.TELE_VER; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
-          echo "pinned @ratel-ai/telemetry -> $(node -p "require('./src/telemetry/ts-otlp/package.json').dependencies['@ratel-ai/telemetry']")"
-      # Preflight dry-run BEFORE the real (immutable) publish, mirroring the SDK job.
-      - name: Preflight — dry-run npm publish
-        shell: bash
-        env:
-          DIST_TAG: ${{ needs.tag-version-check.outputs.dist_tag }}
-        run: (cd src/telemetry/ts-otlp && npm publish --access public --tag "$DIST_TAG" --dry-run)
-      - name: Publish
-        shell: bash
-        env:
-          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
-          DIST_TAG: ${{ needs.tag-version-check.outputs.dist_tag }}
-        run: |
-          set -e
-          name=$(node -p "require('./src/telemetry/ts-otlp/package.json').name")
-          ver=$(node -p "require('./src/telemetry/ts-otlp/package.json').version")
-          # Idempotent: skip if this exact name@version is already live (npm is immutable).
-          if [ -z "$DRY_RUN" ] && [ "$(npm view "$name@$ver" version 2>/dev/null)" = "$ver" ]; then
-            echo "::notice::$name@$ver already published — skipping"
-          else
-            (cd src/telemetry/ts-otlp && npm publish --provenance --access public --tag "$DIST_TAG" $DRY_RUN)
-          fi
-
   publish-mastra:
     name: Publish @ratel-ai/mastra to npm
     needs: [tag-version-check]
@@ -636,6 +581,11 @@ jobs:
           sdk_ver=$(node -p "require('./src/sdk/ts/package.json').version")
           SDK_VER="$sdk_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-mastra/package.json'; const p=require(f); const v='^'+process.env.SDK_VER; p.peerDependencies['@ratel-ai/sdk']=v; p.devDependencies['@ratel-ai/sdk']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
           echo "pinned @ratel-ai/sdk -> $(node -p "const p=require('./src/adapters/ts-mastra/package.json'); p.peerDependencies['@ratel-ai/sdk'] + ' (peer), ' + p.devDependencies['@ratel-ai/sdk'] + ' (dev)'")"
+          # npm installs peers automatically, so a range the registry can't satisfy is an
+          # ETARGET for every consumer rather than a warning. Same check as the
+          # vercel-ai-sdk job: publish sdk-ts first or fail before the immutable publish.
+          npm view "@ratel-ai/sdk@^${sdk_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/sdk@^${sdk_ver} is not on npm — publish sdk-ts before mastra"; exit 1; }
       # Preflight dry-run BEFORE the real (immutable) publish, mirroring the SDK job.
       - name: Preflight — dry-run npm publish
         shell: bash
@@ -692,7 +642,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src/sdk/ts/native
-      # Build the adapter and its @ratel-ai/sdk workspace dependency (topo order).
+      # Build the adapter and its @ratel-ai/sdk + @ratel-ai/telemetry workspace
+      # dependencies (topo order).
       - name: Build TS
         run: pnpm --filter "@ratel-ai/vercel-ai-sdk..." run build
       # npm keeps `workspace:` specifiers verbatim, so pin the @ratel-ai/sdk peer AND
@@ -706,6 +657,29 @@ jobs:
           sdk_ver=$(node -p "require('./src/sdk/ts/package.json').version")
           SDK_VER="$sdk_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-vercel-ai-sdk/package.json'; const p=require(f); const v='^'+process.env.SDK_VER; p.peerDependencies['@ratel-ai/sdk']=v; p.devDependencies['@ratel-ai/sdk']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
           echo "pinned @ratel-ai/sdk -> $(node -p "const p=require('./src/adapters/ts-vercel-ai-sdk/package.json'); p.peerDependencies['@ratel-ai/sdk'] + ' (peer), ' + p.devDependencies['@ratel-ai/sdk'] + ' (dev)'")"
+          # A peer is not the soft constraint it used to be: npm installs peers
+          # automatically, so a range the registry can't satisfy is an ETARGET for
+          # every consumer, not a warning. Same immutability, same release ordering.
+          npm view "@ratel-ai/sdk@^${sdk_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/sdk@^${sdk_ver} is not on npm — publish sdk-ts before vercel-ai-sdk"; exit 1; }
+      # Same treatment for the @ratel-ai/telemetry *runtime* dep: left alone, npm ships
+      # the literal `workspace:^`, which no consumer can resolve — the adapter is then
+      # uninstallable, not merely mis-ranged.
+      #
+      # Then check the pinned range actually resolves on npm, because nothing else will:
+      # the preflight dry-run packs locally without contacting the registry, tag-version-check
+      # only inspects the tagged unit, and verify-install runs after an immutable publish.
+      # A `vercel-ai-sdk-v*` tag cut before its `telemetry-ts-v*` would otherwise ship a
+      # permanently uninstallable version. Release telemetry-ts first.
+      - name: Pin the @ratel-ai/telemetry runtime and dev dependencies for publish
+        shell: bash
+        run: |
+          set -e
+          tele_ver=$(node -p "require('./src/telemetry/ts/package.json').version")
+          TELE_VER="$tele_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-vercel-ai-sdk/package.json'; const p=require(f); const v='^'+process.env.TELE_VER; p.dependencies['@ratel-ai/telemetry']=v; p.devDependencies['@ratel-ai/telemetry']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
+          echo "pinned @ratel-ai/telemetry -> $(node -p "const p=require('./src/adapters/ts-vercel-ai-sdk/package.json'); p.dependencies['@ratel-ai/telemetry'] + ' (runtime), ' + p.devDependencies['@ratel-ai/telemetry'] + ' (dev)'")"
+          npm view "@ratel-ai/telemetry@^${tele_ver}" version >/dev/null 2>&1 \
+            || { echo "::error::@ratel-ai/telemetry@^${tele_ver} is not on npm — publish telemetry-ts before vercel-ai-sdk"; exit 1; }
       # Preflight dry-run BEFORE the real (immutable) publish, mirroring the SDK job.
       - name: Preflight — dry-run npm publish
         shell: bash
@@ -738,7 +712,6 @@ jobs:
       - publish-telemetry-ts
       - publish-telemetry-py
       - publish-telemetry-core
-      - publish-telemetry-ts-otlp
       - publish-mastra
       - publish-vercel-ai-sdk
     # Exactly one unit's publish job runs; the rest are skipped. Run when the tag
@@ -753,7 +726,6 @@ jobs:
               || needs.publish-telemetry-ts.result == 'success'
               || needs.publish-telemetry-py.result == 'success'
               || needs.publish-telemetry-core.result == 'success'
-              || needs.publish-telemetry-ts-otlp.result == 'success'
               || needs.publish-mastra.result == 'success'
               || needs.publish-vercel-ai-sdk.result == 'success') }}
     runs-on: ubuntu-latest

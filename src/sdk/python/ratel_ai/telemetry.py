@@ -6,22 +6,25 @@ The catalog / capability-tool / skill / MCP paths call these helpers to open a s
 each operation, alongside the local `record_event` stream (untouched). Span names
 and attribute keys come from the OTel-free `ratel_ai_telemetry` vocabulary.
 
-Emission is **transparent and optional**: the OpenTelemetry API and the vocabulary
-are imported lazily. If neither is installed (the base `ratel-ai` install), every
-helper is a straight pass-through — zero overhead, no spans. Installing
-`ratel-ai[otlp]` (or having OpenTelemetry present) lights emission up; spans then go
-to whatever provider is registered, exactly as a host deployment wires it. Content
-(`ratel.search.query`, tool args/result) rides span attributes only when the
-ecosystem capture gate is on (default off).
+Emission is **transparent and optional**: the `ratel_ai_telemetry` vocabulary ships
+with the base install (it is OTel-free), but the OpenTelemetry API is imported lazily.
+Without OpenTelemetry present, every helper is a straight pass-through — zero overhead,
+no spans. A host that registers its own OpenTelemetry provider (or installs
+`ratel-ai[otlp]`) lights emission up; spans then go to whatever provider is registered,
+exactly as a host deployment wires it. Content (`ratel.search.query`, tool args/result,
+and the content events) is emitted only when the ecosystem capture gate is on (default
+off).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from enum import Enum
 from typing import Any, TypeVar
 
 try:
+    from opentelemetry import _logs as _otel_logs
     from opentelemetry import trace as _otel_trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
     from ratel_ai_telemetry import (
@@ -36,11 +39,13 @@ try:
         RATEL_SEARCH,
         RATEL_SEARCH_HIT_COUNT,
         RATEL_SEARCH_QUERY,
+        RATEL_SEARCH_RESULTS,
         RATEL_SEARCH_TARGET,
         RATEL_SEARCH_TOP_K,
         RATEL_SKILL_ID,
         RATEL_SKILL_LOAD,
         RATEL_TOOL_ARGS_SIZE_BYTES,
+        RATEL_TOOL_EXECUTION_DETAILS,
         RATEL_UPSTREAM_REGISTER,
         RATEL_UPSTREAM_SERVER,
         RATEL_UPSTREAM_TOOL_COUNT,
@@ -56,8 +61,8 @@ except ModuleNotFoundError:
 
 _TRACER_NAME = "ratel-ai"
 
-#: `ratel.search.target` values (mirror `SearchTarget` without a hard import at the
-#: call sites, so the catalog modules stay dependency-free when telemetry is absent).
+#: `ratel.search.target` values (mirror `SearchTarget` so catalog call sites stay
+#: decoupled from the telemetry vocabulary module).
 SEARCH_TARGET_TOOL = "tool"
 SEARCH_TARGET_SKILL = "skill"
 
@@ -68,9 +73,43 @@ def _tracer() -> Any:
     return _otel_trace.get_tracer(_TRACER_NAME)
 
 
+def _logger() -> Any:
+    return _otel_logs.get_logger(_TRACER_NAME)
+
+
 def _capture_content_on_span() -> bool:
     mode = content_capture_mode()
     return mode in (ContentCapture.SPAN_ONLY, ContentCapture.SPAN_AND_EVENT)
+
+
+def _capture_content_on_event() -> bool:
+    mode = content_capture_mode()
+    return mode in (ContentCapture.EVENT_ONLY, ContentCapture.SPAN_AND_EVENT)
+
+
+#: Sentinel distinguishing "no result" (error path) from a result that is falsy/None.
+_UNSET: Any = object()
+
+
+def _add_tool_content_event(tool_id: str, args: Any, result: Any = _UNSET) -> None:
+    """Emit structured tool arguments and result as an OpenTelemetry EventRecord."""
+    attributes = {
+        GEN_AI_OPERATION_NAME: EXECUTE_TOOL,
+        GEN_AI_TOOL_NAME: tool_id,
+        GEN_AI_TOOL_CALL_ARGUMENTS: _safe_log_value(args),
+    }
+    if result is not _UNSET:
+        attributes[GEN_AI_TOOL_CALL_RESULT] = _safe_log_value(result)
+    _logger().emit(event_name=RATEL_TOOL_EXECUTION_DETAILS, attributes=attributes)
+
+
+def _add_search_results_event(query: str) -> None:
+    """Emit the Opt-In ``ratel.search.results`` EventRecord carrying the search text.
+
+    Hit ids/scores/BM25 timing are local-stream only; the OTLP glue carries the gated
+    query it has (CONVENTIONS.md § ratel.search).
+    """
+    _logger().emit(event_name=RATEL_SEARCH_RESULTS, attributes={RATEL_SEARCH_QUERY: query})
 
 
 def _args_size_bytes(args: Any) -> int:
@@ -82,9 +121,46 @@ def _args_size_bytes(args: Any) -> int:
 
 def _safe_json(value: Any) -> str:
     try:
-        return json.dumps(value)
+        return json.dumps(_normalize_content(value))
     except Exception:
         return ""
+
+
+def _safe_log_value(value: Any) -> Any:
+    try:
+        return _normalize_content(value)
+    except Exception:
+        return None
+
+
+def _normalize_content(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _normalize_content(
+                model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+        except TypeError:
+            return _normalize_content(model_dump())
+    if isinstance(value, Enum):
+        return _normalize_content(value.value)
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_content(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = [_normalize_content(item) for item in value]
+        item_types = {type(item) for item in items if item is not None}
+        if len(item_types) > 1:
+            # OTel Python 1.41 (the last Python 3.9-compatible line) rejects mixed-type
+            # AnyValue arrays and silently replaces them with null. Preserve the JSON value
+            # losslessly as a typed, indexed map until that SDK limitation can be removed.
+            return {
+                "ratel.type": "array",
+                "ratel.items": {str(index): item for index, item in enumerate(items)},
+            }
+        return items
+    if value is None or isinstance(value, (str, bool, int, float, bytes)):
+        return value
+    return str(value)
 
 
 async def trace_execute_tool(
@@ -109,9 +185,16 @@ async def trace_execute_tool(
         if _capture_content_on_span():
             span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, _safe_json(args))
         # start_as_current_span records the exception + sets ERROR status on raise.
-        result = await run()
+        try:
+            result = await run()
+        except BaseException:
+            if _capture_content_on_event():
+                _add_tool_content_event(tool_id, args)
+            raise
         if _capture_content_on_span():
             span.set_attribute(GEN_AI_TOOL_CALL_RESULT, _safe_json(result))
+        if _capture_content_on_event():
+            _add_tool_content_event(tool_id, args, result=result)
         span.set_status(Status(StatusCode.OK))
         return result
 
@@ -138,6 +221,8 @@ def trace_search(
             span.set_attribute(RATEL_SEARCH_QUERY, query)
         hits = run()
         span.set_attribute(RATEL_SEARCH_HIT_COUNT, len(hits))  # type: ignore[arg-type]
+        if _capture_content_on_event():
+            _add_search_results_event(query)
         span.set_status(Status(StatusCode.OK))
         return hits
 
@@ -160,6 +245,8 @@ async def trace_search_async(
             span.set_attribute(RATEL_SEARCH_QUERY, query)
         hits = await run()
         span.set_attribute(RATEL_SEARCH_HIT_COUNT, len(hits))  # type: ignore[arg-type]
+        if _capture_content_on_event():
+            _add_search_results_event(query)
         span.set_status(Status(StatusCode.OK))
         return hits
 
@@ -250,18 +337,20 @@ def configure_telemetry(
     *,
     api_key: str | None = None,
     endpoint: str | None = None,
+    logs_endpoint: str | None = None,
     headers: dict[str, str] | None = None,
     service_name: str | None = None,
     capture_content: ContentCapture | str | None = None,
     include_span_and_events: bool | None = None,
+    export_all_spans: bool = False,
 ) -> Any:
-    """Register a Ratel-owned OTLP exporter (convenience wiring for the greenfield case).
+    """Register Ratel-owned OTLP trace and Logs exporters for the greenfield case.
 
-    Ships the spans this SDK emits to Ratel Cloud (or any OTLP endpoint) by
+    Ships the spans and EventRecords this SDK emits to Ratel Cloud (or any OTLP endpoint) by
     delegating to `ratel_ai_telemetry.init`, which needs the OpenTelemetry SDK —
     install it with ``pip install 'ratel-ai[otlp]'``. A host already running its
-    own OpenTelemetry provider should skip this (the SDK's spans flow to that
-    provider) and add `ratel_span_processor` from `ratel_ai_telemetry`.
+    own OpenTelemetry providers should skip this (SDK telemetry flows to them) and add
+    both `ratel_span_processor` and `ratel_log_record_processor`.
 
     ``capture_content`` / ``include_span_and_events`` opt into message/tool content
     capture in code via `set_content_capture`: ``capture_content`` sets an exact mode,
@@ -275,11 +364,18 @@ def configure_telemetry(
 
     Args:
         api_key: Ratel Cloud API key override; defaults to ``RATEL_API_KEY``.
-        endpoint: OTLP endpoint override; defaults to ``RATEL_URL``.
+        endpoint: OTLP endpoint override; defaults to ``RATEL_OTLP_ENDPOINT``, then
+            the superseded ``RATEL_URL`` (which warns).
+        logs_endpoint: OTLP logs endpoint override; defaults to the sibling
+            ``/v1/logs`` URL derived from `endpoint`.
         headers: Extra headers sent with every export request.
         service_name: ``service.name`` resource attribute; defaults per `init`.
         capture_content: Exact content-capture mode to set (see above).
         include_span_and_events: Boolean sugar for `capture_content` (see above).
+        export_all_spans: Export every span, not just the ``gen_ai.*``/``ratel.*``
+            signal. Default False: this high-level path defaults to
+            ``ratel_signal_filter`` so unrelated HTTP/database/application spans are
+            not shipped to Ratel (privacy + cost). Set True to forward all spans.
 
     Returns:
         A per-call shutdown handle (``handle.shutdown()`` / ``handle.force_flush()``),
@@ -294,13 +390,25 @@ def configure_telemetry(
             any exporter is wired, so a bad option has no side effects.
     """
     try:
-        from ratel_ai_telemetry import clear_content_capture, init, set_content_capture
+        from ratel_ai_telemetry import (
+            clear_content_capture,
+            init,
+            ratel_event_filter,
+            ratel_signal_filter,
+            set_content_capture,
+        )
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without the extra
         raise ModuleNotFoundError(
             "configure_telemetry() needs the OpenTelemetry exporter. Install the extra: "
             "pip install 'ratel-ai[otlp]' — or register your own OpenTelemetry provider, "
-            "since the SDK emits ratel.*/gen_ai.* spans to whatever provider is active."
+            "since the SDK emits ratel.*/gen_ai.* telemetry to whichever providers are active."
         ) from exc
+
+    # High-level config defaults to the ratel.*/gen_ai.* signal filter, so unrelated
+    # application spans are not shipped (privacy + cost); opt in to all spans explicitly.
+    # init() itself keeps its accept-all turnkey default (CONVENTIONS.md § init() surface).
+    span_filter = None if export_all_spans else ratel_signal_filter
+    log_filter = ratel_event_filter
 
     capture = _resolve_capture_override(capture_content, include_span_and_events)
     if capture is None:
@@ -308,7 +416,13 @@ def configure_telemetry(
         # return shape (a per-call handle delegating to the shared provider) matches the
         # capture path below, rather than leaking init()'s shared handle directly.
         handle = init(
-            api_key=api_key, endpoint=endpoint, headers=headers, service_name=service_name
+            api_key=api_key,
+            endpoint=endpoint,
+            logs_endpoint=logs_endpoint,
+            headers=headers,
+            service_name=service_name,
+            span_filter=span_filter,
+            log_filter=log_filter,
         )
         return _TelemetryHandle(handle, handle.shutdown)
 
@@ -318,7 +432,13 @@ def configure_telemetry(
     generation = set_content_capture(capture)
     try:
         provider = init(
-            api_key=api_key, endpoint=endpoint, headers=headers, service_name=service_name
+            api_key=api_key,
+            endpoint=endpoint,
+            logs_endpoint=logs_endpoint,
+            headers=headers,
+            service_name=service_name,
+            span_filter=span_filter,
+            log_filter=log_filter,
         )
     except BaseException:
         clear_content_capture(generation)

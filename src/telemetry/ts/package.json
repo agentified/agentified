@@ -1,7 +1,7 @@
 {
   "name": "@ratel-ai/telemetry",
-  "version": "0.1.2",
-  "description": "Ratel telemetry conventions — the ratel.* overlay on OpenTelemetry gen_ai spans. The OTel-free vocabulary + OTLP config for the Ratel context engineering platform (the init() exporter is @ratel-ai/telemetry-otlp).",
+  "version": "0.2.0",
+  "description": "Ratel telemetry conventions — the ratel.* overlay on OpenTelemetry gen_ai spans and EventRecords. OTel-free vocabulary + content-capture gate.",
   "private": false,
   "type": "module",
   "main": "./dist/index.js",
@@ -47,6 +47,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.220.0",
+    "@opentelemetry/sdk-logs": "^0.220.0",
     "@opentelemetry/sdk-trace-base": "^2.9.0",
     "@opentelemetry/sdk-trace-node": "^2.9.0",
     "@types/node": "^24.0.0",

@@ -37,14 +37,14 @@ pub const RATEL_UPSTREAM_REGISTER: &str = "ratel.upstream.register";
 pub const RATEL_AUTH_FLOW: &str = "ratel.auth.flow";
 
 // ---------------------------------------------------------------------------
-// Span event names (CONVENTIONS.md)
+// EventRecord names (CONVENTIONS.md)
 // ---------------------------------------------------------------------------
 
-/// `ratel.search.results` — Opt-In event carrying hit ids + scores + per-stage
-/// BM25 timing; gated like content. The `ratel.search` span itself carries only counts.
+/// `ratel.search.results` — Opt-In search-content event; gated like content.
 pub const RATEL_SEARCH_RESULTS: &str = "ratel.search.results";
-/// `gen_ai.client.inference.operation.details` — the event that carries message
-/// text and tool-call content (never span attributes). Borrowed from gen_ai (Tier 1).
+/// `ratel.tool.execution.details` — Opt-In structured tool arguments/result event.
+pub const RATEL_TOOL_EXECUTION_DETAILS: &str = "ratel.tool.execution.details";
+/// `gen_ai.client.inference.operation.details` — inference request/response content.
 pub const GEN_AI_INFERENCE_DETAILS: &str = "gen_ai.client.inference.operation.details";
 
 // ---------------------------------------------------------------------------
@@ -92,6 +92,17 @@ pub const GEN_AI_TOOL_CALL_ID: &str = "gen_ai.tool.call.id";
 pub const GEN_AI_TOOL_CALL_ARGUMENTS: &str = "gen_ai.tool.call.arguments";
 /// `gen_ai.tool.call.result` — tool result (Opt-In content, gated).
 pub const GEN_AI_TOOL_CALL_RESULT: &str = "gen_ai.tool.call.result";
+
+// Tier 1 content, carried on the `gen_ai.client.inference.operation.details`
+// EventRecord (never span attributes; CONVENTIONS.md § Tier 1 content). Each
+// holds a structured v1.42.0 message list (`{ role, parts[], name? }`).
+
+/// `gen_ai.system_instructions` — the system prompt as a bare `parts[]` (Opt-In content).
+pub const GEN_AI_SYSTEM_INSTRUCTIONS: &str = "gen_ai.system_instructions";
+/// `gen_ai.input.messages` — the input message list (Opt-In content).
+pub const GEN_AI_INPUT_MESSAGES: &str = "gen_ai.input.messages";
+/// `gen_ai.output.messages` — generated outputs; every message includes `finish_reason`.
+pub const GEN_AI_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
 
 /// Whether a `ratel.*` span was a direct library call or synthesized by the
 /// agent inside its loop. Emitted as the `ratel.origin` attribute; mirrors the
@@ -218,12 +229,33 @@ mod tests {
     }
 
     #[test]
-    fn span_event_names_match_the_pin() {
+    fn event_record_names_match_the_pin() {
         assert_eq!(RATEL_SEARCH_RESULTS, "ratel.search.results");
+        assert_eq!(RATEL_TOOL_EXECUTION_DETAILS, "ratel.tool.execution.details");
         assert_eq!(
             GEN_AI_INFERENCE_DETAILS,
             "gen_ai.client.inference.operation.details"
         );
+    }
+
+    #[test]
+    fn gen_ai_content_message_keys_match_the_pin() {
+        // Tier 1 content carried on the inference-details event (CONVENTIONS.md
+        // § Tier 1 content): borrowed verbatim from gen_ai, never renamed.
+        assert_eq!(GEN_AI_SYSTEM_INSTRUCTIONS, "gen_ai.system_instructions");
+        assert_eq!(GEN_AI_INPUT_MESSAGES, "gen_ai.input.messages");
+        assert_eq!(GEN_AI_OUTPUT_MESSAGES, "gen_ai.output.messages");
+        for key in [
+            GEN_AI_SYSTEM_INSTRUCTIONS,
+            GEN_AI_INPUT_MESSAGES,
+            GEN_AI_OUTPUT_MESSAGES,
+        ] {
+            assert!(key.starts_with("gen_ai."), "{key} is not under gen_ai.*");
+            assert!(
+                !key.starts_with("ratel."),
+                "{key} must not be renamed into ratel.*"
+            );
+        }
     }
 
     #[test]
@@ -306,6 +338,9 @@ mod tests {
             GEN_AI_TOOL_CALL_ID,
             GEN_AI_TOOL_CALL_ARGUMENTS,
             GEN_AI_TOOL_CALL_RESULT,
+            GEN_AI_SYSTEM_INSTRUCTIONS,
+            GEN_AI_INPUT_MESSAGES,
+            GEN_AI_OUTPUT_MESSAGES,
         ];
         let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
         assert_eq!(unique.len(), keys.len(), "duplicate attribute key");
@@ -327,8 +362,12 @@ mod tests {
 
     #[test]
     fn event_names_are_unique() {
-        // Same copy-paste risk for the two span-event names.
-        let names = [RATEL_SEARCH_RESULTS, GEN_AI_INFERENCE_DETAILS];
+        // Same copy-paste risk for the EventRecord names.
+        let names = [
+            RATEL_SEARCH_RESULTS,
+            RATEL_TOOL_EXECUTION_DETAILS,
+            GEN_AI_INFERENCE_DETAILS,
+        ];
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "duplicate event name");
     }

@@ -1,5 +1,18 @@
+import { isSpanContextValid, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
 import { describe, expect, it } from "vitest";
-import { type SearchHit, type Skill, SkillRegistry, type Tool, ToolRegistry } from "./index.js";
+import * as sdk from "./index.js";
+import {
+  ContentCapture,
+  clearContentCapture,
+  type SearchHit,
+  type Skill,
+  SkillRegistry,
+  setContentCapture,
+  type Tool,
+  ToolCatalog,
+  ToolRegistry,
+} from "./index.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 
 const readFile: Tool = {
@@ -205,5 +218,54 @@ describe("SkillRegistry removed methods", () => {
     expect(registry.registerMany).toBeUndefined();
     expect(registry.buildEmbeddings).toBeUndefined();
     expect(registry.rebuildEmbeddings).toBeUndefined();
+  });
+});
+
+/**
+ * Telemetry v2: the SDK ships no provider bootstrap. Hosts own the OTel provider
+ * (`new NodeSDK({ spanProcessors })`), so the bootstrap entry points and the
+ * optional-peer machinery behind them are gone. Emission and the content-capture
+ * gate stay: they are the SDK's actual telemetry surface.
+ */
+describe("removed telemetry bootstrap", () => {
+  const surface = sdk as unknown as Record<string, unknown>;
+
+  it("no longer exports the bootstrap entry points", () => {
+    expect(surface.startTelemetry).toBeUndefined();
+    expect(surface.configureTelemetry).toBeUndefined();
+  });
+
+  it("keeps the content-capture gate", () => {
+    expect(typeof sdk.setContentCapture).toBe("function");
+    expect(typeof sdk.clearContentCapture).toBe("function");
+    expect(sdk.ContentCapture).toBeDefined();
+  });
+});
+
+/**
+ * The other half of "the host owns the provider", stated positively. The
+ * `no provider configured` case in telemetry.test.ts calls `trace.disable()`
+ * first, so it passes even against an SDK that registers one; this case never
+ * touches the OTel globals, so it fails the moment the SDK does.
+ */
+describe("host-owned OTel providers", () => {
+  it("leaves the global providers at the OTel no-op default after driving the SDK", async () => {
+    const catalog = new ToolCatalog();
+    await catalog.register({ ...readFile, execute: async () => ({ contents: "contents" }) });
+    setContentCapture(ContentCapture.SpanAndEvent); // so the EventRecord path runs too
+    try {
+      catalog.search("read file", 1);
+      await catalog.invoke("read_file", { path: "/x" });
+    } finally {
+      clearContentCapture();
+    }
+
+    // Both probes are indirect on purpose: a provider registered without processors
+    // still yields a non-recording span and a disabled logger. What it cannot fake is
+    // a real span context, or the forceFlush an SDK LoggerProvider has and the API's
+    // default proxy does not.
+    const span = trace.getTracer("probe").startSpan("probe");
+    expect(isSpanContextValid(span.spanContext())).toBe(false);
+    expect((logs.getLoggerProvider() as { forceFlush?: unknown }).forceFlush).toBeUndefined();
   });
 });

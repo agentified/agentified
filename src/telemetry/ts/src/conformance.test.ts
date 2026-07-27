@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
+import { type LogAttributes, logs } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { describe, expect, it } from "vitest";
 import {
   EXECUTE_TOOL,
-  GEN_AI_INFERENCE_DETAILS,
   GEN_AI_OPERATION_NAME,
   GEN_AI_TOOL_CALL_ARGUMENTS,
   GEN_AI_TOOL_CALL_ID,
@@ -22,6 +27,7 @@ import {
   RATEL_SKILL_ID,
   RATEL_SKILL_LOAD,
   RATEL_TOOL_ARGS_SIZE_BYTES,
+  RATEL_TOOL_EXECUTION_DETAILS,
   RATEL_UPSTREAM_REGISTER,
   RATEL_UPSTREAM_SERVER,
   RATEL_UPSTREAM_TOOL_COUNT,
@@ -61,17 +67,27 @@ const ATTR_KEY: Record<string, string> = {
 // Logical event id -> the event-name constant under test.
 const EVENT_NAME: Record<string, string> = {
   ratel_search_results: RATEL_SEARCH_RESULTS,
-  gen_ai_inference_details: GEN_AI_INFERENCE_DETAILS,
+  ratel_tool_execution_details: RATEL_TOOL_EXECUTION_DETAILS,
 };
+
+interface EventFixture {
+  event: string;
+  attributes: Record<string, unknown>;
+}
+
+interface ExpectedEvent {
+  name: string;
+  attributes: Record<string, unknown>;
+}
 
 interface Fixture {
   name: string;
   span: string;
-  set: Record<string, string | number>;
-  add_events?: string[];
+  set: Record<string, unknown>;
+  emit_events?: EventFixture[];
   expect_name: string;
-  expect_attributes: Record<string, string | number>;
-  expect_events?: string[];
+  expect_attributes: Record<string, unknown>;
+  expect_events?: ExpectedEvent[];
 }
 
 interface FixtureFile {
@@ -83,30 +99,45 @@ const fixtures: FixtureFile = JSON.parse(
   readFileSync(new URL("../../conformance/fixtures.json", import.meta.url), "utf8"),
 );
 
-function emit(fixture: Fixture): {
+async function emit(fixture: Fixture): Promise<{
   name: string;
   attributes: Record<string, unknown>;
-  events: string[];
-} {
+  events: ExpectedEvent[];
+}> {
   const exporter = new InMemorySpanExporter();
   const provider = new NodeTracerProvider({
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   });
   const tracer = provider.getTracer("conformance");
+  const logExporter = new InMemoryLogRecordExporter();
+  const loggerProvider = new LoggerProvider({
+    processors: [new SimpleLogRecordProcessor({ exporter: logExporter })],
+  });
+  logs.setGlobalLoggerProvider(loggerProvider);
+  const logger = logs.getLogger("conformance");
   const span = tracer.startSpan(SPAN_NAME[fixture.span]);
   for (const [field, value] of Object.entries(fixture.set)) {
-    span.setAttribute(ATTR_KEY[field], value);
+    span.setAttribute(ATTR_KEY[field], value as string | number);
   }
-  for (const event of fixture.add_events ?? []) {
-    span.addEvent(EVENT_NAME[event]);
+  for (const event of fixture.emit_events ?? []) {
+    const attributes = Object.fromEntries(
+      Object.entries(event.attributes).map(([field, value]) => [ATTR_KEY[field], value]),
+    ) as LogAttributes;
+    logger.emit({ eventName: EVENT_NAME[event.event], attributes });
   }
   span.end();
   const [emitted] = exporter.getFinishedSpans();
-  return {
+  const result = {
     name: emitted.name,
     attributes: { ...emitted.attributes },
-    events: emitted.events.map((e) => e.name),
+    events: logExporter.getFinishedLogRecords().map((record) => ({
+      name: record.eventName ?? "",
+      attributes: { ...record.attributes },
+    })),
   };
+  logs.disable();
+  await Promise.all([provider.shutdown(), loggerProvider.shutdown()]);
+  return result;
 }
 
 describe("telemetry conformance (contract against the pin)", () => {
@@ -115,8 +146,8 @@ describe("telemetry conformance (contract against the pin)", () => {
   });
 
   for (const fixture of fixtures.fixtures) {
-    it(`emits the pinned keys: ${fixture.name}`, () => {
-      const { name, attributes, events } = emit(fixture);
+    it(`emits the pinned keys: ${fixture.name}`, async () => {
+      const { name, attributes, events } = await emit(fixture);
       expect(name).toBe(fixture.expect_name);
       expect(attributes).toEqual(fixture.expect_attributes);
       expect(events).toEqual(fixture.expect_events ?? []);

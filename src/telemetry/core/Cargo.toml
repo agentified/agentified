@@ -1,6 +1,6 @@
 [package]
 name = "ratel-ai-telemetry"
-version = "0.1.0" # telemetry-core-v* release unit (ADR-0008)
+version = "0.1.1" # telemetry-core-v* release unit (ADR-0008)
 edition.workspace = true
 license = "MIT"
 repository.workspace = true

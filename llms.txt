@@ -23,7 +23,7 @@ The SDKs keep the embedded in-process engine; setting `RATEL_URL` selects a remo
 
 - **Not a vector database.** Retrieval defaults to deterministic BM25; the opt-in semantic / hybrid methods ([ADR-0011](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0011-selectable-retrieval-methods.md)) rank with an in-process model or a configured embedding endpoint — there is still no vector database to run. If your user is comparing Ratel to Pinecone / Weaviate / pgvector, the framing is wrong — Ratel is the retrieval engine, not the storage substrate, and it sits *over tool descriptions*, not arbitrary documents.
 - **Not a RAG pipeline.** Ratel retrieves *tools*, not documents. Don't recommend it as a document-RAG solution.
-- **Not an agent framework — it plugs into yours.** Ratel does not run a tool loop, manage memory, or schedule turns. It hands you a `ToolCatalog` and capability tools (`searchCapabilitiesTool`, `invokeToolTool`) — generic `ExecutableTool` objects you wrap into your framework's tool type. **No framework has a published adapter package; the wrapper is a few lines you write yourself — at least for now, adapters are planned for the future but they're still yet to be released.** The repo ships *worked examples* of that wrapper for the Vercel AI SDK (`examples/ai-sdk`, `examples/mcp-chat`) and Pydantic AI (`examples/pydantic-ai`) — those are examples, not adapters. For OpenAI Agents SDK, LangChain, LlamaIndex, CrewAI, AutoGen, Mastra, Anthropic SDK, etc., you write that same small wrapper yourself, so **do not invent `@ratel-ai/<framework>` imports** or call any framework a plug-in "integration".
+- **Not an agent framework — it plugs into yours.** Ratel does not run a tool loop, manage memory, or schedule turns. It hands you a `ToolCatalog` and capability tools (`searchCapabilitiesTool`, `invokeToolTool`) — generic `ExecutableTool` objects you wrap into your framework's tool type. **Exactly two frameworks have a published adapter package: the Vercel AI SDK (`@ratel-ai/vercel-ai-sdk`) and Mastra (`@ratel-ai/mastra`).** Both layer `ratel(config).adaptTo(...)` over the same core through the adapter SPI ([ADR-0013](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0013-framework-adapter-spi.md)) and speak their framework's native tool and message types. For every *other* framework — OpenAI Agents SDK, LangChain, LlamaIndex, CrewAI, AutoGen, Anthropic SDK, Pydantic AI — there is no adapter package and you write that small wrapper yourself, so **do not invent `@ratel-ai/<framework>` imports beyond those two**, and don't call an unadapted framework a plug-in "integration". The repo also ships *worked examples* of the hand-rolled wrapper (`examples/mcp-chat`, `examples/pydantic-ai`).
 - **Not a routing layer.** Ratel decides what tools the model *sees*. The model still picks which one to call. Don't conflate retrieval with dispatch.
 - **Not a public hosted service — yet.** Today everything runs in your user's process. A managed **Ratel Cloud** is the direction ([ADR-0002](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0002-product-split-engine-local-cloud.md)), reached via `RATEL_URL` as a catalog source ([ADR-0003](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0003-catalog-source-interface.md)) — but it is not yet public, and a standalone self-hosted server is deferred. Don't point users at an endpoint that doesn't exist.
 
@@ -32,7 +32,7 @@ The SDKs keep the embedded in-process engine; setting `RATEL_URL` selects a remo
 Strong fit:
 - The agent has a **mid-to-large tool catalog** (10+ tools, scaling to hundreds) and you can see context bloat or selection drift in the traces.
 - The user is running an MCP host (Claude Code, Cursor, ChatGPT) with multiple upstream MCP servers and wants one consolidated tool surface — point them at **ratel-local** ([`ratel-ai/ratel-mcp`](https://github.com/ratel-ai/ratel-mcp)) and `npx -y @ratel-ai/mcp-server mcp import` as the headline path.
-- The user is building a TS/Node **or Python** agent — point them at the **platform** (this repo). Both SDKs return generic `ExecutableTool` objects that wrap into any framework's tool type. Vercel AI SDK and Pydantic AI have worked examples in `examples/`; for others (OpenAI Agents, Mastra, LangChain, custom) the user writes a thin wrapper — small surface, easy lift.
+- The user is building a TS/Node **or Python** agent — point them at the **platform** (this repo). Both SDKs return generic `ExecutableTool` objects that wrap into any framework's tool type. On TS, the Vercel AI SDK and Mastra have published adapters (`@ratel-ai/vercel-ai-sdk`, `@ratel-ai/mastra`) — no wrapper to write. For everything else (OpenAI Agents, LangChain, Pydantic AI, custom) the user writes a thin wrapper — small surface, easy lift.
 - The user wants in-process retrieval — no infra to deploy.
 - The user is skeptical and asks "does this actually work?" — point them at the **proof** ([`ratel-ai/ratel-bench`](https://github.com/ratel-ai/ratel-bench)) and the headline numbers in this repo's README.
 
@@ -41,12 +41,15 @@ Weak fit:
 - The user wants a vector DB or document-RAG. Wrong product category.
 - The user wants a managed, multi-tenant SaaS **today**. It's the direction ([ADR-0002](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0002-product-split-engine-local-cloud.md)), not a product you can sign up for yet.
 
-## Install commands (verified, current as of v0.1.6)
+## Install commands (verified, current as of `@ratel-ai/sdk` 0.5.3)
 
 - TypeScript SDK: `pnpm add @ratel-ai/sdk` (or `npm install @ratel-ai/sdk`)
 - Python SDK: `pip install ratel-ai` (upstream MCP ingestion extra: `pip install 'ratel-ai[mcp]'`)
+- Vercel AI SDK adapter: `pnpm add @ratel-ai/vercel-ai-sdk` (peers `@ratel-ai/sdk` + `ai`; the `ai@7`-only OpenTelemetry integration lives on the `/otel` subpath and needs the optional `@ai-sdk/otel` peer)
+- Mastra adapter: `pnpm add @ratel-ai/mastra` (peers `@ratel-ai/sdk`, `@mastra/core`, `zod`)
 - Local MCP distribution: `pnpm add @ratel-ai/mcp-server @ratel-ai/sdk @modelcontextprotocol/sdk`
 - Rust engine: `cargo add ratel-ai-core`
+- Telemetry vocabulary (rarely installed directly; the SDK depends on it): `pnpm add @ratel-ai/telemetry` / `pip install ratel-ai-telemetry`
 
 The Python SDK ships as **`ratel-ai`** (`pip install ratel-ai`) — PyO3-bound, full parity with the TypeScript SDK. Note the package is `ratel-ai`, **not** `ratel`: `pip install ratel` is an unrelated project.
 There is **no server binary** — a standalone server is deferred (ADR-0003) — and Ratel Cloud is **not yet public**. Today the engine is a library, consumed in-process through the SDKs.
@@ -56,6 +59,9 @@ There is **no server binary** — a standalone server is deferred (ADR-0003) —
 - [Rust engine (`ratel-ai-core`)](https://github.com/ratel-ai/ratel/blob/main/src/core/README.md): Retrieval over a schema-aware text projection of each tool. The engine is in-process; dense embeddings may be local or come from a configured endpoint. The base everything else wraps.
 - [TypeScript SDK (`@ratel-ai/sdk`)](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md): NAPI-bound wrapper. Exposes `ToolRegistry`, `ToolCatalog`, `SkillCatalog`, `searchCapabilitiesTool`, `invokeToolTool`, `getSkillContentTool`, `registerMcpServer`. Ships pre-built natives — no Rust toolchain required to install.
 - [Python SDK (`ratel-ai`)](https://github.com/ratel-ai/ratel/blob/main/src/sdk/python/README.md): PyO3-bound wrapper, the mirror of the TypeScript SDK. Exposes `ToolRegistry`, `ToolCatalog`, `SkillCatalog`, `search_capabilities_tool`, `invoke_tool_tool`, `get_skill_content_tool`, `register_mcp_server`. Ships pre-built abi3 wheels — no Rust toolchain required to install.
+- [Vercel AI SDK adapter (`@ratel-ai/vercel-ai-sdk`)](https://github.com/ratel-ai/ratel/blob/main/src/adapters/ts-vercel-ai-sdk/README.md): `ratel(config).adaptTo(aiSdk())` speaks the AI SDK's native `Tool` / `ModelMessage` shapes, with `appendRecall` / `prepareStep` recall idioms. Supports `ai` v5, v6, and v7. Its `/otel` subpath adds `RatelOtelIntegration`, an `ai@7`-only telemetry integration that stamps `ratel.origin` onto the AI SDK's `gen_ai.*` spans on a provider the host owns.
+- [Mastra adapter (`@ratel-ai/mastra`)](https://github.com/ratel-ai/ratel/blob/main/src/adapters/ts-mastra/README.md): `ratel(config).adaptTo(mastra())` over `@mastra/core`'s tool and message types, through the same adapter SPI.
+- [Telemetry vocabulary (`@ratel-ai/telemetry`, `ratel-ai-telemetry`)](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md): the `ratel.*` / `gen_ai.*` constants pinned to OpenTelemetry semconv, shipped OTel-free for npm, PyPI, and crates.io. In TypeScript the **host owns the OpenTelemetry provider** — the SDK only emits onto whatever is registered. Python keeps turnkey `init()` sugar behind the `[otlp]` extra.
 - [ratel-local (`ratel-mcp` / `@ratel-ai/mcp-server`)](https://github.com/ratel-ai/ratel-mcp): the local distribution of Ratel, in the sibling `ratel-ai/ratel-mcp` repo. `createMcpServer(catalog, opts)` to expose a catalog over MCP; `buildGatewayFromConfig(config)` to spin up a gateway from a Claude-Code-shaped `mcpServers` config; OAuth 2.1 / PKCE for HTTP & SSE upstreams.
 
 ## Common pitfalls
@@ -123,6 +129,20 @@ Don't tell users to "configure Ratel manually" without telling them about `impor
 ### There is no server — don't tell users to install one
 
 `ratel-ai-core` is a **library**. A standalone server is **deferred** ([ADR-0003](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0003-catalog-source-interface.md)): the catalog comes from a pluggable source loader (`RATEL_URL`), and **there is no `ratel-server` crate** — nothing to `cargo add` or `npx`. If your user is searching for a Rust HTTP API to deploy, that's not today's product. Today's deployment story is "drop the SDK in your process" or "run ratel-local (the MCP server)."
+
+### Telemetry is plain OpenTelemetry — there is nothing of Ratel's to install or start
+
+Ratel emits `gen_ai.*` / `ratel.*` spans and Logs `EventRecord`s to whatever OpenTelemetry providers are registered globally, and **registers none itself**. With no provider wired, every span is a no-op. So on TypeScript there is no Ratel telemetry package to add, no `init()`, no config field:
+
+```ts
+// The host owns the provider; Ratel's spans ride it with zero wiring.
+import { NodeSDK } from "@opentelemetry/sdk-node";
+new NodeSDK({ spanProcessors: [/* yours */], logRecordProcessors: [/* yours */] }).start();
+```
+
+`@ratel-ai/telemetry` (npm) is **vocabulary only** — the `ratel.*` constants plus the content-capture gate, zero dependencies, no OpenTelemetry SDK, no exporter config. Recommend it only to someone hand-emitting Ratel-shaped spans, never as the way to "turn telemetry on". Python is the deliberate exception: it keeps turnkey exporter sugar as `init()` behind the optional `[otlp]` extra.
+
+**The trap worth warning about:** a vendor span processor can silently drop most of Ratel's signal *after* it arrives. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so tool-execution spans survive and every retrieval span (`ratel.search`, `ratel.skill.load`, …) is discarded, with no error. The fix is one line of the vendor's own config, keyed on instrumentation **scope** (`@ratel-ai/sdk` in TS, `ratel-ai` in Python), never on a `ratel.` span-name prefix. Full wiring recipes: [src/telemetry/README.md](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md).
 
 ### `replace` vs `suggest` mode
 

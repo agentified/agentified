@@ -11,6 +11,12 @@ re-founding, 2026-07-04). Pre-compaction ADR-0013 (a bespoke cloud telemetry sch
 `961985d` but never published) was fully superseded by 0015 and is dropped; that SHA remains
 the concept-inventory reference.
 
+Amended 2026-07-24 to align content capture with the OpenTelemetry Logs Event API and its
+four capture modes.
+
+Amended 2026-07-26 to drop the `@ratel-ai/telemetry-otlp` helper, and the TS OTLP config
+resolver with it, now that the TS host owns the OTel provider and its configuration.
+
 ## Context
 
 Two telemetry surfaces exist for different consumers. A **local** stream feeds the offline
@@ -54,18 +60,19 @@ make Ratel Cloud an island.
 - **Two tiers, layered not forked**: `gen_ai.*` adopted verbatim (never renamed or re-nested)
   plus `ratel.*`, the vocabulary we own: the gateway / skill funnel expressed as OTel
   spans and attributes, joinable with any `gen_ai.*` trace by trace/span id.
-- **Message and tool-call content rides the `gen_ai.client.inference.operation.details`
-  event, never span attributes**: content is unbounded and PII-heavy; events are the
-  sanctioned channel and are gated opt-in, so volume and privacy are governed independently
-  of the metrics spans.
+- **Content capture uses the OTel-defined span/EventRecord channels and stays default-off**:
+  inference messages ride the standard `gen_ai.client.inference.operation.details` EventRecord;
+  tool arguments/results ride `gen_ai.tool.call.*` span attributes in span modes and the
+  structured `ratel.tool.execution.details` EventRecord in event modes; search text follows the
+  same split. These are Events in the Logs data model, not SpanEvents.
 - **Ratel Cloud ingests stock OTLP** (`http/protobuf` + `Bearer`). No custom wire format or
   auth: a customer who already runs OTel dual-exports to Ratel by adding a second exporter.
-- **Four thin helper packages**, no transport or schema of our own: `ratel-ai-telemetry`
-  (crates.io; the `ratel.*` constants), `@ratel-ai/telemetry` (npm; constants + config,
-  OTel-free so importing the vocabulary pulls no OTel SDK), `@ratel-ai/telemetry-otlp` (npm;
-  `init()` over the standard OTel SDK plus a composable filtering span-processor for
-  coexistence with Langfuse / AI-SDK pipelines), `ratel-ai-telemetry` (PyPI; constants, with
-  `init()` behind the `[otlp]` extra). Shared conformance fixtures assert every helper
+- **Three thin vocabulary helpers**, with stock OTel transport: `ratel-ai-telemetry`
+  (crates.io; the `ratel.*` constants), `@ratel-ai/telemetry` (npm; constants + the
+  content-capture gate, OTel-free so importing the vocabulary pulls no OTel SDK),
+  `ratel-ai-telemetry` (PyPI; constants, with `init()` behind the `[otlp]` extra). The
+  asymmetry is deliberate: in TS the host owns the OTel provider *and* its endpoint/auth
+  configuration, while Python keeps `init()`. Shared conformance fixtures assert every helper
   against the pin so the languages cannot drift.
 
 ### Two streams by design
@@ -77,14 +84,19 @@ not an accident of this one.
 ## Consequences
 
 - Interoperable by construction: Ratel-emitted traces land in any OTel backend; existing
-  traces reach Ratel Cloud as a config change.
+  traces reach Ratel Cloud as a config change. Guaranteed as far as the *provider*, not as far
+  as the backend's UI — a vendor span processor applies its own filter after the span has
+  arrived, and a filter keyed on `gen_ai.*` drops the whole `ratel.*` tier silently. So the
+  tier's visibility is a property of the host's per-processor config, which the docs must state
+  rather than assume.
 - The pin is a maintenance obligation (the `gen_ai.*` group churns); `ratel.*` is the only
   vocabulary we design and version, with the same care as the local event schema.
-- Cross-language reuse is built in: TS- and Python-emitted local events share one schema, so
-  a single reranker trains on the union.
+- Cross-language reuse is built in: TS- and Python-emitted remote spans and EventRecords share
+  one contract, while their local events continue to share the core-owned schema.
 - Rejected: a bespoke unified schema and per-language clients (duplicates a ratified
   standard; the pre-compaction 0013 built exactly this and it was deleted unpublished);
-  content on span attributes (attribute limits reject unbounded text); forking `gen_ai.*`
+  inference-message content on span attributes (attribute limits reject unbounded text);
+  forking `gen_ai.*`
   into a Ratel namespace (re-breaks the interop the standard buys); tracking semconv
   `latest` (unreviewed breaks); converging local and remote now (opposite reliability and
   offline constraints).

@@ -3,5 +3,4 @@ packages:
   - 'src/adapters/ts-vercel-ai-sdk'
   - 'src/adapters/ts-mastra'
   - 'src/telemetry/ts'
-  - 'src/telemetry/ts-otlp'
   - 'examples/*'

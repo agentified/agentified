@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-26
+
+### Added
+
+- `GEN_AI_SYSTEM_INSTRUCTIONS`, `GEN_AI_INPUT_MESSAGES`, `GEN_AI_OUTPUT_MESSAGES`,
+  `RATEL_TOOL_EXECUTION_DETAILS`, distinct Logs endpoint resolution, and composable
+  `ratel_log_record_processor`, `ratel_log_exporter`, and `ratel_event_filter` helpers.
+- `OTLP_ENDPOINT_ENV` (`RATEL_OTLP_ENDPOINT`), the dedicated OTLP traces endpoint variable, and `LEGACY_ENDPOINT_ENV` (`RATEL_URL`) naming the superseded one. `RATEL_URL` also selects the SDK's catalog source (ADR-0003), so overloading it as the OTLP destination conflated two unrelated destinations; TypeScript made the same move in `@ratel-ai/telemetry` 0.2.0.
+
+### Changed
+
+- `init()` now owns and shuts down matched tracer and logger providers.
+- Define content events as structured OpenTelemetry Logs `EventRecord`s and reserve inference output messages for model outputs with `finish_reason`.
+- `resolve_otlp_config()` resolves the endpoint as explicit `endpoint=` > `RATEL_OTLP_ENDPOINT` > `RATEL_URL`, and the missing-endpoint error names the new variable. Nothing breaks here: a `RATEL_URL`-only install keeps working and raises a `DeprecationWarning` naming the replacement. `ENDPOINT_ENV` stays exported and now equals `OTLP_ENDPOINT_ENV`, so code that sets `os.environ[ENDPOINT_ENV]` targets the new variable automatically. The `RATEL_URL` fallback is scheduled for removal in the next minor.
+- `RATEL_ORIGIN` is now specified for third-party `gen_ai.*` spans a framework adapter overlays, not just Ratel's own search/invoke spans. The constant, its `direct | agent` values, and `SEMCONV_VERSION` are unchanged; only the shared vocabulary spec widened (`CONVENTIONS.md`).
+
 ## [0.1.2] - 2026-07-11
 
 ### Added

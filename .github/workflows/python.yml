@@ -25,11 +25,10 @@ jobs:
       - name: Create venv + install dev tools
         run: |
           uv venv --python 3.11 .venv
-          # opentelemetry-sdk + the local vocabulary let the OTel emission tests
-          # (test_telemetry.py, ADR-0007) run rather than skip; both are optional at
-          # runtime (base SDK stays dependency-free).
+          # opentelemetry-sdk lets the OTel emission tests run rather than skip. The base
+          # SDK carries only the OTel-free vocabulary; the SDK/exporter remains optional.
           uv pip install --python .venv maturin pytest pytest-asyncio ruff mypy \
-            opentelemetry-sdk -e ../../telemetry/python
+            mcp opentelemetry-sdk -e ../../telemetry/python
       - name: Build native extension
         run: .venv/bin/maturin develop
       - name: Lint

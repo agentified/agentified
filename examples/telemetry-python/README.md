@@ -1,8 +1,10 @@
 # `examples/telemetry-python` — emit `ratel.*` telemetry with OpenTelemetry (Python)
 
-The Python mirror of [`examples/telemetry-ts`](../telemetry-ts/README.md): how to emit Ratel's telemetry vocabulary through the standard [OpenTelemetry Python SDK](https://opentelemetry.io/docs/languages/python/) using [`ratel-ai-telemetry`](../../src/telemetry/python/README.md). Ratel telemetry *is* OpenTelemetry ([ADR-0007](../../docs/adr/0007-telemetry-two-streams.md)): the package ships no transport and no schema, just the `ratel.*` constants and value enums you set as span attributes, plus an `init()` helper that wires the OTLP exporter.
+The Python mirror of [`examples/telemetry-ts`](../telemetry-ts/README.md): how to emit Ratel's telemetry vocabulary through the standard [OpenTelemetry Python SDK](https://opentelemetry.io/docs/languages/python/) using [`ratel-ai-telemetry`](../../src/telemetry/python/README.md). The package supplies the `ratel.*` vocabulary plus optional standard OTLP trace and Logs wiring.
 
-The demo emits one realistic trace — a `ratel.search` (capability search) span followed by an `execute_tool` span enriched with the `ratel.*` overlay, both under a root agent-turn span so they share one trace — and prints it with a `ConsoleSpanExporter`, so it runs offline with no collector and no API key.
+The mirror is not exact, by design: in TS the host builds and owns the OTel providers, while Python keeps `init()` wiring both exporters.
+
+The trace-only offline demo emits one realistic trace — a `ratel.search` span followed by an `execute_tool` span under a root agent-turn span — and prints it with a `ConsoleSpanExporter`. Production `init()` additionally exports content-bearing Logs EventRecords.
 
 ## Setup
 
@@ -15,7 +17,7 @@ uv run main.py
 To export a real trace instead of printing, set the endpoint and run again:
 
 ```bash
-export RATEL_URL=https://cloud.ratel.sh/v1/traces
+export RATEL_OTLP_ENDPOINT=https://cloud.ratel.sh/v1/traces
 export RATEL_API_KEY=sk-...          # optional; sent as Authorization: Bearer
 uv run main.py
 ```
@@ -24,7 +26,7 @@ uv run main.py
 
 - **The vocabulary is just constants.** `RATEL_SEARCH`, `EXECUTE_TOOL`, `RATEL_ORIGIN`, `GEN_AI_TOOL_NAME`, … are imported from `ratel_ai_telemetry` and set as attributes on stock OTel spans. `Origin` / `SearchTarget` are `str`-enums, so each member equals its exact wire string (`Origin.AGENT.value == "agent"`, and `Origin.AGENT` is itself usable as an attribute value).
 - **Tool calls are standard `gen_ai` spans.** The invocation is an `execute_tool` span (so any OTel backend understands it), enriched with `ratel.*` attributes — not a bespoke Ratel span.
-- **`init()` is optional sugar.** `resolve_otlp_config()` (pure, shown in the output) resolves `RATEL_URL` + `RATEL_API_KEY`; `init()` wires an OTLP `http/protobuf` exporter and returns a shutdown handle. The example calls it once with `enabled=bool(os.environ.get("RATEL_URL"))`, so the disabled path needs no env gate or error handling. A caller already running the OTel SDK adds `ratel_span_processor()` instead.
+- **`init()` is optional sugar.** `resolve_otlp_config()` resolves trace and Logs URLs plus auth; `init()` wires both OTLP exporters and returns one shutdown handle. The example calls it once with `enabled=bool(os.environ.get(OTLP_ENDPOINT_ENV))`, so the disabled path needs no env gate or error handling. The endpoint comes from `RATEL_OTLP_ENDPOINT`; the superseded `RATEL_URL` still resolves and warns. A host already running OTel adds both `ratel_span_processor()` and `ratel_log_record_processor()`.
 - **Content capture is gated.** `content_capture_mode()` reads `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT`).
 
 ## Layout

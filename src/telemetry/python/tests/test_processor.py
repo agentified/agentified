@@ -11,6 +11,9 @@ import pytest
 from ratel_ai_telemetry.otlp import (
     ENDPOINT_ENV,
     init,
+    ratel_event_filter,
+    ratel_log_exporter,
+    ratel_log_record_processor,
     ratel_signal_filter,
     ratel_span_exporter,
     ratel_span_processor,
@@ -22,6 +25,20 @@ ENDPOINT = "http://localhost:4318/v1/traces"
 def span(name: str, attributes: dict[str, Any] | None = None) -> Any:
     # The filter reads only a span's name + attribute keys, so a minimal shape suffices.
     return SimpleNamespace(name=name, attributes=attributes or {})
+
+
+def event(event_name: str | None = None) -> Any:
+    return SimpleNamespace(
+        log_record=SimpleNamespace(event_name=event_name, attributes={})
+    )
+
+
+class TestRatelEventFilter:
+    def test_forwards_only_gen_ai_and_ratel_event_records(self) -> None:
+        assert ratel_event_filter(event("ratel.search.results"))
+        assert ratel_event_filter(event("gen_ai.client.inference.operation.details"))
+        assert not ratel_event_filter(event("app.started"))
+        assert not ratel_event_filter(event())
 
 
 class TestRatelSignalFilter:
@@ -49,6 +66,13 @@ class TestRatelSpanExporter:
         monkeypatch.delenv(ENDPOINT_ENV, raising=False)
         with pytest.raises(ValueError, match=ENDPOINT_ENV):
             ratel_span_exporter(api_key="k")
+
+
+class TestRatelLogExporter:
+    def test_builds_an_otlp_logs_exporter(self) -> None:
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+
+        assert isinstance(ratel_log_exporter(endpoint=ENDPOINT), OTLPLogExporter)
 
 
 class TestRatelSpanProcessor:
@@ -96,6 +120,30 @@ class TestRatelSpanProcessor:
         assert forwarded == ["ai.generate_text"]
 
 
+class TestRatelLogRecordProcessor:
+    def test_forwards_only_signal_events_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+        forwarded: list[str | None] = []
+        monkeypatch.setattr(
+            BatchLogRecordProcessor,
+            "on_emit",
+            lambda _self, record: forwarded.append(record.log_record.event_name),
+        )
+        processor = ratel_log_record_processor(endpoint=ENDPOINT)
+        processor.on_emit(event("ratel.search.results"))
+        processor.on_emit(event("gen_ai.client.inference.operation.details"))
+        processor.on_emit(event("app.started"))
+        processor.shutdown()
+
+        assert forwarded == [
+            "ratel.search.results",
+            "gen_ai.client.inference.operation.details",
+        ]
+
+
 class TestInitGuard:
     def test_raises_pointing_at_the_processor_when_a_provider_is_registered(self) -> None:
         from opentelemetry import trace
@@ -105,10 +153,20 @@ class TestInitGuard:
         with pytest.raises(RuntimeError, match="ratel_span_processor"):
             init(endpoint=ENDPOINT)
 
+    def test_rejects_a_foreign_logger_provider(self) -> None:
+        from opentelemetry import _logs
+        from opentelemetry.sdk._logs import LoggerProvider
+
+        _logs.set_logger_provider(LoggerProvider())
+        with pytest.raises(RuntimeError, match="ratel_log_record_processor"):
+            init(endpoint=ENDPOINT)
+
 
 def test_new_processor_surface_is_importable_top_level() -> None:
     """The coexistence surface resolves through the lazy top-level accessor (ADR-0007)."""
     import ratel_ai_telemetry
+    from ratel_ai_telemetry.otlp import ratel_log_record_processor as otlp_log_processor
     from ratel_ai_telemetry.otlp import ratel_span_processor as otlp_processor
 
     assert ratel_ai_telemetry.ratel_span_processor is otlp_processor
+    assert ratel_ai_telemetry.ratel_log_record_processor is otlp_log_processor

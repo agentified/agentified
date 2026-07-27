@@ -30,4 +30,4 @@ Splitting `tools.py` and `agent.py` keeps the catalog declarative and the loop r
 
 ## Why it's a separate package
 
-Examples don't ship in `ratel-ai` — keeping them out of the published wheel keeps the public API surface narrow and dependency-free. This example pulls `pydantic-ai` only here.
+Examples don't ship in `ratel-ai` — keeping them out of the published wheel keeps the public API surface narrow and OTel-SDK-free. This example pulls `pydantic-ai` only here.

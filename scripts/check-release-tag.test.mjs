@@ -33,18 +33,14 @@ function makeRepo(version = "0.2.0", pyVersion = version) {
   write("src/sdk/python/pyproject.toml", `[project]\nname = "ratel-ai"\nversion = "${pyVersion}"\n`);
   write("src/sdk/python/native/Cargo.toml", cargo("ratel-sdk-python-native"));
   write("src/sdk/python/CHANGELOG.md", changelog(version));
-  // telemetry: four independent units — three vocabulary (crate / npm / PyPI) + the
-  // npm exporter — each tagged and gated separately (telemetry-core-v* /
-  // telemetry-ts-v* / telemetry-py-v* / telemetry-ts-otlp-v*).
+  // telemetry: three independent vocabulary units (crate / npm / PyPI), each tagged
+  // and gated separately (telemetry-core-v* / telemetry-ts-v* / telemetry-py-v*).
   write("src/telemetry/ts/package.json", json("@ratel-ai/telemetry"));
   write("src/telemetry/ts/CHANGELOG.md", changelog(version));
   write("src/telemetry/python/pyproject.toml", `[project]\nname = "ratel-ai-telemetry"\nversion = "${pyVersion}"\n`);
   write("src/telemetry/python/CHANGELOG.md", changelog(version));
   write("src/telemetry/core/Cargo.toml", cargo("ratel-ai-telemetry"));
   write("src/telemetry/core/CHANGELOG.md", changelog(version));
-  // telemetry-ts-otlp: the npm exporter unit, split from the vocabulary package.
-  write("src/telemetry/ts-otlp/package.json", json("@ratel-ai/telemetry-otlp"));
-  write("src/telemetry/ts-otlp/CHANGELOG.md", changelog(version));
   // vercel-ai-sdk: the Vercel AI SDK framework adapter — an independent npm unit.
   write("src/adapters/ts-vercel-ai-sdk/package.json", json("@ratel-ai/vercel-ai-sdk"));
   write("src/adapters/ts-vercel-ai-sdk/CHANGELOG.md", changelog(version));
@@ -59,11 +55,10 @@ test("parseTag splits prefix and version for every unit", () => {
   assert.deepEqual(parseTag("core-v0.2.0"), { unit: "core", version: "0.2.0" });
   assert.deepEqual(parseTag("sdk-ts-v0.2.0"), { unit: "sdk-ts", version: "0.2.0" });
   assert.deepEqual(parseTag("sdk-py-v1.4.0-rc.2"), { unit: "sdk-py", version: "1.4.0-rc.2" });
-  // telemetry is independent units (three vocabulary + the npm exporter), each on its own prefix.
+  // telemetry is three independent vocabulary units, each on its own prefix.
   assert.deepEqual(parseTag("telemetry-core-v0.1.0-rc.1"), { unit: "telemetry-core", version: "0.1.0-rc.1" });
   assert.deepEqual(parseTag("telemetry-ts-v0.1.0"), { unit: "telemetry-ts", version: "0.1.0" });
   assert.deepEqual(parseTag("telemetry-py-v0.2.0-rc.2"), { unit: "telemetry-py", version: "0.2.0-rc.2" });
-  assert.deepEqual(parseTag("telemetry-ts-otlp-v0.1.0-rc.3"), { unit: "telemetry-ts-otlp", version: "0.1.0-rc.3" });
   assert.deepEqual(parseTag("vercel-ai-sdk-v0.1.0-rc.1"), { unit: "vercel-ai-sdk", version: "0.1.0-rc.1" });
   assert.deepEqual(parseTag("mastra-v0.1.0-rc.1"), { unit: "mastra", version: "0.1.0-rc.1" });
 });
@@ -71,7 +66,7 @@ test("parseTag splits prefix and version for every unit", () => {
 test("parseTag rejects the old lockstep tag and unknown prefixes", () => {
   assert.equal(parseTag("v0.2.0"), null);
   assert.equal(parseTag("server-v0.1.0"), null); // not (yet) a registered unit
-  assert.equal(parseTag("telemetry-v0.1.0"), null); // the bundled tag was split into telemetry-core/js/py + telemetry-ts-otlp
+  assert.equal(parseTag("telemetry-v0.1.0"), null); // the bundled tag was split into telemetry-core/js/py
   assert.equal(parseTag("sdk-ts-0.2.0"), null); // missing the -v
   assert.equal(parseTag("core-vX.Y.Z"), null); // non-semver
 });
@@ -201,34 +196,6 @@ test("telemetry-py accepts the PEP 440 normalized form in pyproject", () => {
     const r = checkReleaseTag("telemetry-py-v0.1.0-rc.1", { root: repo.root });
     assert.equal(r.ok, true, r.errors.join("; "));
     assert.equal(r.unit, "telemetry-py");
-  } finally {
-    repo.cleanup();
-  }
-});
-
-test("telemetry-ts-otlp tag passes when the npm exporter package + its changelog match", () => {
-  const repo = makeRepo("0.1.0-rc.3");
-  try {
-    const r = checkReleaseTag("telemetry-ts-otlp-v0.1.0-rc.3", { root: repo.root });
-    assert.equal(r.ok, true, r.errors.join("; "));
-    assert.equal(r.unit, "telemetry-ts-otlp");
-    assert.equal(r.distTag, "rc");
-  } finally {
-    repo.cleanup();
-  }
-});
-
-test("telemetry-ts-otlp releases independently of the vocabulary units' drift", () => {
-  // The npm vocabulary lags at 0.0.9 while the exporter is at 0.1.0 — an exporter
-  // release must not be blocked by the separate vocabulary unit.
-  const repo = makeRepo("0.1.0");
-  try {
-    repo.write(
-      "src/telemetry/ts/package.json",
-      JSON.stringify({ name: "@ratel-ai/telemetry", version: "0.0.9" }, null, 2),
-    );
-    const r = checkReleaseTag("telemetry-ts-otlp-v0.1.0", { root: repo.root });
-    assert.equal(r.ok, true, r.errors.join("; "));
   } finally {
     repo.cleanup();
   }

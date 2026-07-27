@@ -5,6 +5,8 @@ description = "Ratel + Pydantic AI — BM25 tool filtering before the agent run"
 requires-python = ">=3.10"
 dependencies = [
     "ratel-ai",
+    # Direct so uv applies the local source to ratel-ai's unreleased telemetry floor.
+    "ratel-ai-telemetry>=0.1.3",
     "pydantic-ai>=1.0",
 ]
 
@@ -15,8 +17,9 @@ dev = [
 ]
 
 [tool.uv.sources]
-# Use the local SDK from this monorepo rather than PyPI.
+# Use the local SDK and its unreleased telemetry floor from this monorepo.
 ratel-ai = { path = "../../src/sdk/python" }
+ratel-ai-telemetry = { path = "../../src/telemetry/python" }
 
 [tool.pytest.ini_options]
 # `test_agent.py` drives the agent with an async `run`; auto mode runs the

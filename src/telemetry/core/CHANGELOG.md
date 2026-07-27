@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-26
+
+### Added
+
+- `GEN_AI_SYSTEM_INSTRUCTIONS`, `GEN_AI_INPUT_MESSAGES`, `GEN_AI_OUTPUT_MESSAGES`, and
+  `RATEL_TOOL_EXECUTION_DETAILS` EventRecord constants.
+
+### Changed
+
+- Clarify that content events use the OpenTelemetry Logs Event API and that inference output messages require `finish_reason`.
+- `RATEL_ORIGIN` is now specified for third-party `gen_ai.*` spans that a framework adapter overlays, not just Ratel's own search/invoke spans. The constant, its `direct | agent` values, and `SEMCONV_VERSION` are unchanged; only the shared vocabulary spec widened (`CONVENTIONS.md`).
+
 ## [0.1.0] - 2026-07-06
 
 ### Added

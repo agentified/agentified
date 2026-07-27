@@ -25,24 +25,30 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# Base SDK (ToolRegistry, ToolCatalog, capability tools) has no runtime deps.
-dependencies = []
+# The base SDK's only Python runtime dependency is the OTel-free ratel.*/gen_ai.*
+# vocabulary (constants only, no OpenTelemetry SDK).
+# The base SDK emits telemetry to whatever OTel providers a host registers (ADR-0007), and
+# that emission reads these constants — so the vocabulary must ship with the base
+# install, mirroring the TS SDK's hard dep on @ratel-ai/telemetry. Without it, a host
+# bringing its own OpenTelemetry on a base install would get no Ratel telemetry. It stays a
+# no-op until OpenTelemetry is present (the host's own, or the [otlp] extra below).
+dependencies = ["ratel-ai-telemetry>=0.1.3"]
 
 [project.optional-dependencies]
 # register_mcp_server() ingests upstream MCP servers via the official client.
 # Lazily imported, so the base SDK installs without it. Requires Python >=3.10.
 mcp = ["mcp>=1.0"]
-# OpenTelemetry export of the ratel.*/gen_ai.* funnel (ADR-0007). The base SDK
-# emits spans to whatever OTel provider is active and is a no-op without one, so it
-# stays dependency-free; this extra pulls the vocabulary + the OTLP exporter so
-# configure_telemetry() can ship spans to Ratel Cloud. Lazily imported.
-otlp = ["ratel-ai-telemetry[otlp]>=0.1.1"]
+# OpenTelemetry export of the ratel.*/gen_ai.* funnel (ADR-0007). The base install
+# already carries the OTel-free vocabulary above; this extra adds the OTLP exporter +
+# OpenTelemetry SDK so configure_telemetry() can ship traces and Logs to Ratel Cloud.
+otlp = ["ratel-ai-telemetry[otlp]>=0.1.3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "mypy>=1.11",
     "maturin>=1.7,<2.0",
+    "mcp>=1.0; python_version >= '3.10'",
 ]
 
 [project.urls]

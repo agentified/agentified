@@ -24,6 +24,7 @@ from ratel_ai_telemetry import (
     RATEL_SKILL_ID,
     RATEL_SKILL_LOAD,
     RATEL_TOOL_ARGS_SIZE_BYTES,
+    RATEL_TOOL_EXECUTION_DETAILS,
     RATEL_UPSTREAM_REGISTER,
     RATEL_UPSTREAM_SERVER,
     RATEL_UPSTREAM_TOOL_COUNT,
@@ -50,8 +51,9 @@ def test_names_the_ratel_spans_per_the_pin() -> None:
     assert RATEL_AUTH_FLOW == "ratel.auth.flow"
 
 
-def test_names_the_span_events_per_the_pin() -> None:
+def test_names_the_event_records_per_the_pin() -> None:
     assert RATEL_SEARCH_RESULTS == "ratel.search.results"
+    assert RATEL_TOOL_EXECUTION_DETAILS == "ratel.tool.execution.details"
     assert GEN_AI_INFERENCE_DETAILS == "gen_ai.client.inference.operation.details"
 
 
