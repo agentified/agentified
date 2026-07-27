@@ -1,6 +1,6 @@
-# 14. Facts: constant grounding content with a transcript-derived re-injection gate
+# 14. Facts: constant grounding content with a content-presence re-injection gate
 
-Date: 2026-07-20
+Date: 2026-07-27
 
 ## Status
 
@@ -42,9 +42,9 @@ re-gates the always-on facts behind relevance, reinventing the very thing that a
 ## Decision
 
 **Introduce `Fact` as a third registered primitive, parallel to `Tool` and `Skill`, split into an
-always-on and a retrieval-gated tier by a `pin` mode; and gate its injection with a stateless,
-transcript-derived freshness check so a fact is (re-)injected only when it is absent, changed, or
-buried — never merely because a turn elapsed.**
+always-on and a retrieval-gated tier by a `pin` mode; and gate its injection with a stateless
+content-presence check so a fact is (re-)injected only when it is absent from the window or has
+changed — never merely because a turn elapsed.**
 
 ### Facts as a third registry
 
@@ -55,14 +55,18 @@ content, never indexed. It gets its own `FactRegistry` in `ratel-ai-core` — a 
 `SkillRegistry` (BM25/semantic/hybrid, replace-in-place, `IndexMap` insertion order) — and its own
 `FactCatalog` / native binding in each SDK. Per ADR-0007's "a parallel type lets each capability's
 telemetry stand on its own," facts emit their own `fact_search` / `fact_churn` / `fact_inject` /
-`fact_inject_skip` events rather than borrowing the skill stream.
+`fact_inject_skip` / `fact_snapshot` events rather than borrowing the skill stream.
 
 - **Pinned (`always`)** facts are the push tier: injected every applicable turn, bypassing
   ranking. Kept small — they are paid for on every injection.
 - **Retrieved** (the default) facts are ranked like skills and surfaced only when a query pulls
-  them in. They ride the existing `recall` path as a third bucket in
-  `formatSearchCapabilities`, alongside `tools` and `skills`, with the `body` inline (facts are
-  small — no second `get_*_content` round-trip).
+  them in. They ride the **host-driven** `recall()` path as a third bucket in
+  `runCapabilitiesSearch`, alongside `tools` and `skills`, with the `body` inline (facts are
+  small — no second `get_*_content` round-trip). Two boundaries hold: the search is skipped
+  entirely when the fact catalog is empty, so a host that registered no facts sees zero new
+  behavior (no extra search, no extra `ratel.search` span); and the **model-facing
+  `search_capabilities` tool is unchanged in both SDKs** — facts never enter that stable tool's
+  schema while they are experimental.
 
 ### The re-injection freshness gate: content presence
 
@@ -75,14 +79,13 @@ Injection is a pure decision over three cases, computed by `planInjection`:
 | `mutated` | body edited since injection | current body absent + differs from the one last injected |
 
 The presence signal is **the fact's own body text**: a fact is "fresh" (skipped) when its body
-appears verbatim — a literal substring check, no regex, no parsing — anywhere in the current
-transcript. There is no marker, no tag, no extra token: the injected content is its own record.
-This was a deliberate revision — an earlier design carried a `⟦ratel:fact id=… v=hash⟧` marker
-beside each body, but for short facts the ~20-token marker rivaled the fact itself, it exposed odd
-glyphs to the model, and it answered the wrong question ("did *I* tag this?") instead of the right
-one ("is this information in the window?"). Content presence is also who-put-it-there agnostic: if
-the assistant echoed the fact verbatim, or a summarizing compaction preserved it, the information
-*is* in context and skipping is correct — cases the marker mis-handled.
+appears verbatim — a literal substring check, no regex, no parsing — **within a single transcript
+message**. The scan is per message, not over a joined transcript, because injections render the
+whole body into one message; joining would false-positive when two unrelated messages happen to
+end/start with the halves of a multi-line body. There is no marker, no tag, no extra token: the
+injected content is its own record. Content presence is who-put-it-there agnostic: if the
+assistant echoed the fact verbatim, or a summarizing compaction preserved it, the information *is*
+in context and skipping is correct.
 
 The gate stays in-process with no conversation store: compaction dropping the text naturally
 re-arms injection, and an edited body (no longer found verbatim) naturally re-injects the new
@@ -90,10 +93,17 @@ version. The only session state is a small map of last-injected body per id, use
 classify an absent body as `evicted`/`mutated` rather than `never`. The one contract on hosts:
 render `body` **verbatim** in the appended message — decorate around it, never rewrite it.
 
-A fourth case, `stale` ("present but buried too far back," with a tunable `freshnessWindow`), was
-built and then **removed**: the window had no principled value, and re-injecting on an append-only
-transcript duplicates the buried copy rather than moving it. Recency is `groundSnapshot`'s job —
-it places facts near the end of every call by construction.
+#### Rejected alternatives
+
+- **A transcript marker** (`⟦ratel:fact id=… v=hash⟧` beside each injected body). Rejected: for
+  short facts the ~20-token marker rivals the fact itself, it exposes odd glyphs to the model, and
+  it answers the wrong question ("did *we* tag this?") instead of the right one ("is this
+  information in the window?") — mis-handling exactly the assistant-echo and verbatim-summary
+  cases content presence gets right.
+- **A `stale` verdict** ("present but buried too far back," with a tunable freshness window).
+  Rejected: the window has no principled value, and re-injecting on an append-only transcript
+  duplicates the buried copy rather than moving it. Recency is `groundSnapshot`'s job — it places
+  facts near the end of every call by construction.
 
 ### Two injection modes: `ground` vs `groundSnapshot`
 
@@ -130,7 +140,7 @@ Both modes assemble candidates identically (one shared code path), so they can n
   map is empty, so an absent body reads as `never` rather than `evicted`/`mutated` — the action
   (inject) is identical either way; only the telemetry reason coarsens. (3) A summarizing
   compaction that *rewords* (rather than preserves) a fact's text causes a redundant re-inject;
-  one that preserves it verbatim is now handled correctly — an improvement over the marker design.
+  one that preserves it verbatim is correctly detected as still present.
   (4) Fact ids are constrained to `[A-Za-z0-9._:-]+`; they ride in trace events and structured
   injection payloads — validated at the catalog boundary.
 - **Deciding the tier is the author's job.** The `pin` flag — an enum (`Pin.Always` /
@@ -146,7 +156,10 @@ only through an `experimental` namespace (`experimental.FactCatalog` in TS via `
 experimental`; `ratel_ai.experimental` in Python), never the root export, so any dependence on it is
 explicit at the import site. Constructing a `FactCatalog` logs a one-time warning (silence:
 `RATEL_EXPERIMENTAL_SILENCE`). The `ratel()` touchpoints that can't move off the stable object
-(`r.facts`, `r.ground`, `RatelConfig.factsTopK` / `freshnessWindow`, the recall `facts` bucket) are
-tagged "⚠️ Experimental" in their docs. The freshness gate lives on `FactCatalog.ground` (it owns
-the fact state); `r.ground` is a thin delegate. Graduation is non-breaking: add the stable root
-export, keep the `experimental.*` alias as a deprecated shim, and measure adoption in between.
+(`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`, the recall `facts` bucket)
+are tagged "⚠️ Experimental" in their docs. The freshness gate lives on `FactCatalog.ground` (it
+owns the fact state); `r.ground`/`r.groundSnapshot` are thin delegates. Adapter ergonomics — an
+`appendGrounding` and facts riding `prepareStep` — are deliberately deferred to graduation, so
+experimental API never enters the released adapter packages. Graduation is non-breaking: add the
+stable root export, keep the `experimental.*` alias as a deprecated shim, and measure adoption in
+between.
