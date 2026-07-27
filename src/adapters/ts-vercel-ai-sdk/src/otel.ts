@@ -64,15 +64,31 @@ type EmittingTelemetry = Pick<
  * spans and adds Ratel's `ratel.*` overlay.
  *
  * It **creates** spans onto whatever OTel provider the host has registered; it
- * never registers a provider and never exports. Delivery is the host's: any
- * processor on that provider — Langfuse, a generic OTLP exporter, Ratel Cloud —
+ * never registers a provider and never exports. Delivery is the host's: every
+ * processor on that provider — Langfuse, a generic OTLP exporter, anything else —
  * receives these spans. Wire it once, on a provider you own:
  *
  * ```ts
- * const sdk = new NodeSDK({ spanProcessors: [new LangfuseSpanProcessor()] });
+ * const sdk = new NodeSDK({
+ *   spanProcessors: [
+ *     new LangfuseSpanProcessor({
+ *       // Langfuse's default filter drops the SDK's ratel.* spans after they
+ *       // arrive here, so widen it — by scope, since `execute_tool <tool>` is
+ *       // emitted under both scopes and its name says nothing about the source.
+ *       shouldExportSpan: ({ otelSpan }) =>
+ *         isDefaultExportSpan(otelSpan) ||
+ *         otelSpan.instrumentationScope.name === "@ratel-ai/sdk",
+ *     }),
+ *   ],
+ * });
  * sdk.start();
  * registerTelemetry(new RatelOtelIntegration());
  * ```
+ *
+ * **Enrichment is per-emitter.** `enrichSpan` reaches only the spans this
+ * integration's embedded emitter creates (scope `gen_ai`). The SDK's own
+ * `ratel.*` and `execute_tool <tool>` spans come from a different tracer and are
+ * never enriched here, `gen_ai.*` attributes on them notwithstanding.
  *
  * **Register exactly one emitting integration.** This one, Langfuse's, and the
  * bare `OpenTelemetry` from `@ai-sdk/otel` all embed the same emitter, so

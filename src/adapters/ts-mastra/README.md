@@ -27,6 +27,7 @@ r.tools.register({
 });
 
 const agent = new Agent({
+  id: "assistant",
   name: "assistant",
   instructions: "Help the user with their tasks.",
   model: "openai/gpt-4o-mini",
@@ -60,6 +61,26 @@ It is a no-op — spending no recall-id — when the last message is not a user 
 - **Direct catalog invocation has no Mastra context.** The normal model path through `invoke_tool` forwards Mastra's complete live `ToolExecutionContext` unchanged, including `requestContext`, workspace, agent thread/resource metadata, `mastra`, and `abortSignal`; `requestContextSchema` therefore validates against the caller's real values. The driver-level escape hatch `r.tools.catalog.invoke(id, args)` bypasses a Mastra invocation, so it retains a minimal fallback context (`{ observe }` no-op, a fresh empty `requestContext`, other live fields absent). Pass tools through `modelTools()` when they depend on request-scoped context.
 - **Any Mastra tool schema works.** `ingest` reads Mastra's *already-normalized* input schema, so tools built with zod 3, zod 4, or a raw JSON Schema all catalog correctly — the adapter never re-converts schemas itself. (`zod` is a peer only because the exposed capability tools carry hand-written zod schemas.)
 - **Persist the conversation across turns.** Recall fires only when the last message is the user's turn. Standard Mastra memory hygiene applies; if you rebuild the message history per call, keep the user turn last so recall can find it.
+
+## Telemetry
+
+Ratel's side needs no wiring, here as everywhere: `@ratel-ai/sdk` emits its `ratel.*` spans onto
+whatever OpenTelemetry provider is registered globally and registers none itself, so a host that
+runs a `NodeSDK` at all gets the retrieval and tool-execution spans for free, and with no
+provider they are no-ops. Span inventory and host wiring: [`src/telemetry/`](../../telemetry/README.md).
+
+What is specific to Mastra is that the two streams do **not** share a pipeline. Mastra's AI
+tracing is a private one: it never registers a global provider — so there is no fight with the
+host's `NodeSDK` — but its spans never pass through the host's span processors either, leaving
+over its exporter's own socket instead. Two parallel egress paths, and no shared trace ids unless
+Mastra's own OTel bridge joins the trees. How to wire any of that is Mastra's documentation to
+give, not this adapter's; the one thing worth saying here is that nothing is ambient — an
+un-instrumented Mastra emits nothing to OpenTelemetry, so until its side is wired up, Ratel's
+spans are all a host gets.
+
+Ratel adds nothing to Mastra's stream today. There is no `./otel` entrypoint on this package —
+the `ai@7` integration is specific to the Vercel AI SDK — and no `ratel.*` overlay lands on
+Mastra's spans; Mastra's `spanOutputProcessors` seam is where a processor would stamp one.
 
 ## Package shape
 

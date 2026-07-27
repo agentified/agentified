@@ -130,6 +130,20 @@ Don't tell users to "configure Ratel manually" without telling them about `impor
 
 `ratel-ai-core` is a **library**. A standalone server is **deferred** ([ADR-0003](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0003-catalog-source-interface.md)): the catalog comes from a pluggable source loader (`RATEL_URL`), and **there is no `ratel-server` crate** — nothing to `cargo add` or `npx`. If your user is searching for a Rust HTTP API to deploy, that's not today's product. Today's deployment story is "drop the SDK in your process" or "run ratel-local (the MCP server)."
 
+### Telemetry is plain OpenTelemetry — there is nothing of Ratel's to install or start
+
+Ratel emits `gen_ai.*` / `ratel.*` spans and Logs `EventRecord`s to whatever OpenTelemetry providers are registered globally, and **registers none itself**. With no provider wired, every span is a no-op. So on TypeScript there is no Ratel telemetry package to add, no `init()`, no config field:
+
+```ts
+// The host owns the provider; Ratel's spans ride it with zero wiring.
+import { NodeSDK } from "@opentelemetry/sdk-node";
+new NodeSDK({ spanProcessors: [/* yours */], logRecordProcessors: [/* yours */] }).start();
+```
+
+`@ratel-ai/telemetry` (npm) is **vocabulary only** — the `ratel.*` constants plus the content-capture gate, zero dependencies, no OpenTelemetry SDK, no exporter config. Recommend it only to someone hand-emitting Ratel-shaped spans, never as the way to "turn telemetry on". Python is the deliberate exception: it keeps turnkey exporter sugar as `init()` behind the optional `[otlp]` extra.
+
+**The trap worth warning about:** a vendor span processor can silently drop most of Ratel's signal *after* it arrives. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so tool-execution spans survive and every retrieval span (`ratel.search`, `ratel.skill.load`, …) is discarded, with no error. The fix is one line of the vendor's own config, keyed on instrumentation **scope** (`@ratel-ai/sdk` in TS, `ratel-ai` in Python), never on a `ratel.` span-name prefix. Full wiring recipes: [src/telemetry/README.md](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md).
+
 ### `replace` vs `suggest` mode
 
 Tool injection runs in two modes ([ADR-0004](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0004-retrieval-and-tool-selection.md)):

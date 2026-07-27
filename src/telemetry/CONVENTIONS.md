@@ -37,11 +37,11 @@ helper, and note the move in a superseding ADR if the shape (not just keys) chan
 | Tier | Namespace | Owner | Carries |
 |---|---|---|---|
 | Base | `gen_ai.*` | OpenTelemetry (pinned v1.42.0) | the LLM call: operation, provider, model, params, usage, finish; inference content on the details EventRecord |
-| Overlay | `ratel.*` | this repo | the capability/skill funnel as spans, attributes, and content EventRecords correlated on the same trace |
+| Overlay | `ratel.*` | this repo | the capability/skill funnel as spans, attributes, and content EventRecords correlated through the active host context |
 
 `gen_ai.*` is adopted **verbatim**, not one key renamed or re-nested. `ratel.*` is the only vocabulary
-Ratel designs and versions. A Ratel-instrumented agent and a plain-`gen_ai.*` agent land in the same trace,
-told apart by namespace and joined on trace/span id.
+Ratel designs and versions. A Ratel-instrumented agent and a plain-`gen_ai.*` agent running under the
+same active host span land in one trace, told apart by namespace and joined on trace/span id.
 
 `ratel.*` follows ADR-0007's schema discipline: **adding** a span or attribute is non-breaking; **renaming or
 removing** one is breaking and needs a superseding note.
