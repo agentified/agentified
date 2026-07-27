@@ -16,18 +16,18 @@ catalog.enableAdaptiveRanking(graph); // attach it: learn from usage and boost w
 
 const hits = await catalog.searchAsync(query, 5, "direct", "semantic"); // semantic search, top-5 (dense is async)
 
-hits[0].rank; // 0-based position — order on this, not score
-hits[0].fused; // true once the usage arm boosted the result
+console.log("rank:", hits[0].rank); // 0-based position — order on this, not score
+console.log("fused:", hits[0].fused); // true once the usage arm boosted the result
 
 await catalog.invoke("gh_run_list", {}); // invoke a tool: search + invoke = one observation
 
-graph.clusterCount; // clusters learned
-graph.rev; // write counter — persist only when it changes
+console.log("clusters:", graph.clusterCount); // clusters learned
+console.log("rev:", graph.rev); // write counter — persist only when it changes
 
 const saved = graph.toJson(); // serialize the in-memory graph
 const graph2 = IntentGraph.fromJson(saved); // reload it (invalid graphs are rejected)
 
-catalog.adaptiveRankingStatus.status; // active | inactive | unknown | paused: model mismatch
+console.log("status:", catalog.adaptiveRankingStatus.status); // active | inactive | unknown | paused: model mismatch
 
 await catalog.rebuildIntentGraph(); // re-embed under the current model (recover after a model swap)
 
