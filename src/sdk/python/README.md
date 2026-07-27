@@ -32,6 +32,15 @@ async def retrieve(tools):
 
 `register()` is async for every method (BM25 too); `search()` stays synchronous for BM25 only, and `search_async()` covers all three. To change the endpoint's model or vector dimension, construct a new catalog and re-register.
 
+A `SkillCatalog` also takes a whole reloaded catalog at once with `replace_all()`, for a source that fetches the full set rather than individual changes ([ADR 0014](../../../docs/adr/0014-whole-catalog-skill-reload.md)). The batch *is* the catalog: ids missing from it are removed, including ones registered in-process, so a host that mixes local and remote skills composes the batch itself. It mutates in place, so every holder of the catalog sees the reload without being rebuilt.
+
+```python
+outcome = await catalog.replace_all([*local_skills, *await fetch_remote_skills()])
+print(f"reload: +{outcome.added} -{outcome.removed} ~{outcome.updated}")
+```
+
+Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races a dense operation raises rather than applying half of itself.
+
 ## Install
 
 ```bash

@@ -14,7 +14,14 @@
 // The catalog's JSON-Schema spelling, re-exported so framework adapters type
 // their CatalogRegistration schemas without a cast.
 export type { JSONSchema7 } from "json-schema";
-export type { AdaptiveRankingStatus, SearchHit, Skill, SkillHit, Tool } from "../native/index.cjs";
+export type {
+  AdaptiveRankingStatus,
+  ReplaceOutcome,
+  SearchHit,
+  Skill,
+  SkillHit,
+  Tool,
+} from "../native/index.cjs";
 export type {
   CapabilitiesSearchOptions,
   CapabilitySkillHit,

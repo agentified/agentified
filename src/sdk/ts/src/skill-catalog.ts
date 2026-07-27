@@ -1,10 +1,10 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { Skill, SkillHit } from "../native/index.cjs";
+import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
-export type { Skill, SkillHit };
+export type { ReplaceOutcome, Skill, SkillHit };
 
 /** Construction options for {@link SkillCatalog}. */
 export interface SkillCatalogOptions {
@@ -65,6 +65,45 @@ export class SkillCatalog {
       this.skills.set(skill.id, skill);
     }
     await this.registry.buildDense();
+  }
+
+  /**
+   * Make `skills` the entire content of the catalog: ids absent from the batch
+   * are removed, the rest are added or updated. The whole-catalog counterpart
+   * to {@link SkillCatalog.register}, for a source that reloads a catalog
+   * rather than pushing individual changes. Mutates in place, so every holder
+   * of this catalog — `ratel()`'s `r.skills`, each adapted view, and the
+   * capability tools taken from `modelTools()` — observes the reload without
+   * being rebuilt.
+   *
+   * **Removal is unconditional.** Skills registered in-process are dropped just
+   * like any others, since the batch *is* the catalog. A host that keeps local
+   * skills alongside a remote source composes the batch itself:
+   * `await catalog.replaceAll([...localSkills, ...remoteSkills])`.
+   *
+   * Embedding follows the same two-phase contract as
+   * {@link SkillCatalog.register}: the corpus swap lands first, then the batch
+   * is embedded. Only genuinely new or re-worded skills are embedded — an
+   * unchanged id keeps its vector, so reloading an unchanged catalog costs no
+   * embedding calls at all. If the embedding pass fails, the new corpus is
+   * already live and BM25 still ranks it; semantic search reports
+   * `EmbeddingsNotBuilt` until a later pass succeeds.
+   *
+   * A concurrent dense operation rejects the call outright rather than applying
+   * it half-way, so two overlapping reloads can never blend into one corpus.
+   *
+   * @param skills - The complete catalog contents. A repeated id keeps its last
+   *   entry. An empty array clears the catalog.
+   * @returns What the reload changed, counted by id.
+   */
+  async replaceAll(skills: readonly Skill[]): Promise<ReplaceOutcome> {
+    const outcome = this.registry.replaceAllItems(skills);
+    this.skills.clear();
+    for (const skill of skills) {
+      this.skills.set(skill.id, skill);
+    }
+    await this.registry.buildDense();
+    return outcome;
   }
 
   /**

@@ -146,6 +146,52 @@ describe("ratel() standalone core", () => {
     expect(r.modelTools()[SEARCH_CAPABILITIES_ID]?.description).toBe(before);
   });
 
+  it("propagates a skills.replaceAll() reload through the capability tools taken earlier", async () => {
+    const r = ratel();
+    await r.skills.register([
+      {
+        id: "deploy",
+        name: "deploy",
+        description: "Deploy playbook: rollbacks.",
+        body: "# Deploy",
+      },
+      { id: "auth", name: "auth", description: "Set up login and sessions.", body: "# Auth" },
+    ]);
+    // Taken once, as a host would, and reused across turns.
+    const out = r.modelTools();
+    const before = out[SEARCH_CAPABILITIES_ID]?.description;
+
+    await r.skills.replaceAll([
+      { id: "auth", name: "auth", description: "Set up login and sessions.", body: "# Auth" },
+      {
+        id: "migrations",
+        name: "migrations",
+        description: "Reversible DB migrations.",
+        body: "# M",
+      },
+    ]);
+
+    // The already-exposed tools read the live catalog: no rebuild, no cache bust.
+    expect(r.modelTools()[SEARCH_CAPABILITIES_ID]?.description).toBe(before);
+
+    const dropped = (await out[GET_SKILL_CONTENT_ID]?.execute({ skillId: "deploy" })) as {
+      body?: string;
+      error?: string;
+      isError?: boolean;
+    };
+    expect(dropped.isError).toBe(true);
+    expect(dropped.body).toBeUndefined();
+    expect(dropped.error).toMatch(/unknown skillId: deploy/);
+
+    const added = (await out[GET_SKILL_CONTENT_ID]?.execute({ skillId: "migrations" })) as {
+      body?: string;
+    };
+    expect(added.body).toBe("# M");
+
+    const recalled = await r.recall("roll back a deploy");
+    expect(recalled?.skills.map((skill) => skill.skillId) ?? []).not.toContain("deploy");
+  });
+
   it("throws when a tool shadows a reserved capability-tool id", () => {
     for (const id of CAPABILITY_IDS) {
       expect(() => ratel().tools.register(native(id, "impostor"))).toThrow(/reserved/);

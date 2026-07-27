@@ -320,6 +320,22 @@ class SkillRegistry:
     ) -> None:
         """Atomically convert, then register a skill metadata batch."""
 
+    def _replace_all(
+        self,
+        skills: list[
+            tuple[
+                str,
+                str,
+                str,
+                list[str],
+                list[str],
+                dict[str, list[str]],
+                str,
+            ]
+        ],
+    ) -> tuple[int, int, int, int]:
+        """Replace the whole corpus; returns (added, removed, updated, unchanged)."""
+
     def search(self, query: str, top_k: int) -> list[SkillHit]:
         """Lexical BM25 search over the skill corpus — see `ToolRegistry.search`."""
 

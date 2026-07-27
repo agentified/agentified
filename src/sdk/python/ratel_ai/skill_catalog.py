@@ -30,7 +30,7 @@ from .catalog import (
 )
 from .telemetry import SEARCH_TARGET_SKILL, trace_search, trace_search_async, trace_skill_load
 
-__all__ = ["Skill", "SkillCatalog", "SkillHit", "SkillRegistry"]
+__all__ = ["ReplaceOutcome", "Skill", "SkillCatalog", "SkillHit", "SkillRegistry"]
 
 _DenseResult = TypeVar("_DenseResult")
 
@@ -52,6 +52,21 @@ class Skill:
     # {"stacks": ["react"]} for the push ranker to boost by project context.
     metadata: dict[str, list[str]] = field(default_factory=dict)
     body: str = ""
+
+
+@dataclass(frozen=True)
+class ReplaceOutcome:
+    """What a `replace_all` changed, counted by id.
+
+    `updated` covers any field edit (including a body-only rewrite);
+    `unchanged` ids are identical to what was registered and keep their cached
+    embedding, so a reload that changed nothing costs no embedding calls.
+    """
+
+    added: int = 0
+    removed: int = 0
+    updated: int = 0
+    unchanged: int = 0
 
 
 class SkillRegistry:
@@ -218,6 +233,19 @@ class SkillRegistry:
                 raise TypeError("register requires Skill items")
         self._register_items(skills)
         return self._build_tracked(bool(skills))
+
+    def replace_all(self, skills: Iterable[Skill]) -> Awaitable[ReplaceOutcome]:
+        """Make `skills` the entire corpus — see `SkillCatalog.replace_all`.
+
+        The corpus swap lands **synchronously** (a forgotten `await` never
+        leaves a half-applied reload); the returned awaitable drives only the
+        embedding pass and resolves to the counts. Always `await` the result.
+        """
+        batch = list(skills)
+        if not all(isinstance(skill, Skill) for skill in batch):
+            raise TypeError("replace_all requires Skill items")
+        outcome = self._replace_all_items(batch)
+        return self._outcome_tracked(outcome, bool(batch))
 
     def search(self, query: str, top_k: int) -> list[SkillHit]:
         """Run synchronous, model-free BM25 retrieval."""
@@ -449,6 +477,39 @@ class SkillRegistry:
                 ]
             )
 
+    def _replace_all_items(self, skills: Iterable[Skill]) -> ReplaceOutcome:
+        """Swap the corpus without embedding — the metadata half of `replace_all`."""
+        skills = list(skills)
+        with self._dense_state:
+            self._raise_if_busy()
+            added, removed, updated, unchanged = self._native._replace_all(
+                [
+                    (
+                        skill.id,
+                        skill.name,
+                        skill.description,
+                        skill.tags,
+                        skill.tools,
+                        skill.metadata,
+                        skill.body,
+                    )
+                    for skill in skills
+                ]
+            )
+        return ReplaceOutcome(added, removed, updated, unchanged)
+
+    def _outcome_tracked(
+        self, outcome: ReplaceOutcome, has_items: bool
+    ) -> Awaitable[ReplaceOutcome]:
+        """`_build_tracked`, resolving to the already-computed replace counts."""
+        driver = self._build_tracked(has_items)
+
+        async def _drive() -> ReplaceOutcome:
+            await driver
+            return outcome
+
+        return _drive()
+
     def _raise_if_busy(self) -> None:
         if self._dense_pending:
             raise RuntimeError(_REGISTRY_BUSY)
@@ -506,6 +567,42 @@ class SkillCatalog:
         for skill in batch:
             self._skills[skill.id] = skill
         return self._registry._build_tracked(bool(batch))
+
+    def replace_all(self, skills: Iterable[Skill]) -> Awaitable[ReplaceOutcome]:
+        """Make `skills` the entire content of the catalog.
+
+        Ids absent from the batch are removed, the rest are added or updated —
+        the whole-catalog counterpart to `register`, for a source that reloads a
+        catalog rather than pushing individual changes. Mutates in place, so
+        every holder of this catalog observes the reload without being rebuilt.
+
+        **Removal is unconditional.** Skills registered in-process are dropped
+        just like any others, since the batch *is* the catalog. A host that keeps
+        local skills alongside a remote source composes the batch itself:
+        `await catalog.replace_all([*local_skills, *remote_skills])`.
+
+        Like `register`, the corpus swap lands synchronously and the returned
+        awaitable drives only the embedding pass — which embeds just the new and
+        re-worded skills, so reloading an unchanged catalog costs nothing. If it
+        fails, the new corpus is already live and BM25 still ranks it; semantic
+        search raises until a later pass succeeds. **Always `await` the result.**
+
+        Args:
+            skills: the complete catalog contents. A repeated id keeps its last
+                entry; an empty iterable clears the catalog.
+
+        Returns:
+            An awaitable resolving to the `ReplaceOutcome` counts.
+
+        Raises:
+            TypeError: if any item is not a `Skill`.
+            EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
+            RuntimeError: if a dense operation already owns the registry.
+        """
+        batch = list(skills)
+        awaitable = self._registry.replace_all(batch)
+        self._skills = {skill.id: skill for skill in batch}
+        return awaitable
 
     def search(
         self,

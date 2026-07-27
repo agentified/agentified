@@ -44,7 +44,7 @@ from .catalog import (
 from .compat import SEARCH_TOOLS_ID, search_tools_tool
 from .exceptions import DimensionMismatchError, EmbedderError
 from .mcp import McpServerHandle, register_mcp_server
-from .skill_catalog import Skill, SkillCatalog, SkillRegistry
+from .skill_catalog import ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
 
 # OpenTelemetry export of the ratel.*/gen_ai.* funnel (ADR-0007). The SDK always
@@ -72,6 +72,7 @@ __all__ = [
     "McpServerHandle",
     "OnUnauthorized",
     "OllamaEmbeddingConfig",
+    "ReplaceOutcome",
     "SearchHit",
     "SearchMethod",
     "SearchOrigin",
