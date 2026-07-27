@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "src/core",
-    "src/graph",
     "src/telemetry/core",
     "src/sdk/ts/native",
     "src/sdk/python/native",

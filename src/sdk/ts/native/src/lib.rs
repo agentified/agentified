@@ -465,7 +465,7 @@ impl IntentGraph {
     }
 
     /// Adopt a graph serialized in the `protocol/v1` wire form — produced by
-    /// `ratel-graph build`, by a previous `toJson`, or by Ratel Cloud.
+    /// a previous `toJson` or by Ratel Cloud.
     ///
     /// Throws if the JSON is malformed or declares a schema version this build
     /// does not read (a consumer rejects rather than degrading).

@@ -1658,14 +1658,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratel-ai-graph"
-version = "0.0.0"
-dependencies = [
- "ratel-ai-core",
- "serde_json",
-]
-
-[[package]]
 name = "ratel-ai-telemetry"
 version = "0.1.0"
 

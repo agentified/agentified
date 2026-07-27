@@ -233,9 +233,9 @@ impl IntentGraph {
         }
     }
 
-    /// Adopt a graph in the `protocol/v1` wire form — from `ratel-graph build`,
-    /// a previous `to_json()`, or Ratel Cloud. Raises `ValueError` if it is
-    /// malformed or declares a schema version this build does not read.
+    /// Adopt a graph in the `protocol/v1` wire form — from a previous
+    /// `to_json()` or Ratel Cloud. Raises `ValueError` if it is malformed or
+    /// declares a schema version this build does not read.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
         let graph =
