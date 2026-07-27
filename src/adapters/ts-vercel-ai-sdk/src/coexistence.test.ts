@@ -45,6 +45,8 @@ const registerTelemetry = (ai as { registerTelemetry?: (...integrations: unknown
  */
 const SDK_SCOPE = "@ratel-ai/sdk";
 const AI_SDK_SCOPE = "gen_ai";
+const HOST_SCOPE = "host";
+const HOST_SPAN = "agent request";
 
 const ACCEPT_ALL = () => true;
 
@@ -222,6 +224,16 @@ async function driveMixedWork(): Promise<void> {
   });
 }
 
+async function driveMixedWorkInHostSpan(): Promise<void> {
+  await trace.getTracer(HOST_SCOPE).startActiveSpan(HOST_SPAN, async (span) => {
+    try {
+      await driveMixedWork();
+    } finally {
+      span.end();
+    }
+  });
+}
+
 describe("telemetry coexistence", () => {
   it("fans the SDK's own spans to every processor on the host's provider", async () => {
     const langfuse = langfuseDestination(ACCEPT_ALL);
@@ -287,6 +299,36 @@ describe.skipIf(aiSdkMajor < 7)("telemetry coexistence with the AI SDK integrati
     // The load-bearing assertion for the skip above: on a v7 row this fails
     // loudly if `ai` moves the seam, instead of the suite quietly evaporating.
     expect(typeof registerTelemetry, "ai@7 no longer exports registerTelemetry").toBe("function");
+  });
+
+  it("correlates both span families under the host's active operation span", async () => {
+    const generic = inMemoryDestination();
+    hostProvider(generic);
+    registerTelemetry?.(new RatelOtelIntegration());
+
+    await driveMixedWorkInHostSpan();
+    await provider?.forceFlush();
+
+    const spans = generic.spans();
+    const hostSpan = fromScope(spans, HOST_SCOPE).find((span) => span.name === HOST_SPAN);
+    const searchSpans = fromScope(spans, SDK_SCOPE).filter((span) => span.name === RATEL_SEARCH);
+    const genAiSpans = fromScope(spans, AI_SDK_SCOPE);
+    const traceIds = new Set(
+      [...searchSpans, ...genAiSpans].map((span) => span.spanContext().traceId),
+    );
+
+    expect(hostSpan).toBeDefined();
+    expect(searchSpans).toHaveLength(2);
+    expect(genAiSpans.length).toBeGreaterThan(0);
+    expect(traceIds).toEqual(new Set([hostSpan?.spanContext().traceId]));
+    expect(
+      searchSpans.every(
+        (span) => span.parentSpanContext?.spanId === hostSpan?.spanContext().spanId,
+      ),
+    ).toBe(true);
+    expect(
+      genAiSpans.some((span) => span.parentSpanContext?.spanId === hostSpan?.spanContext().spanId),
+    ).toBe(true);
   });
 
   it("carries the integration's enrichment to every destination", async () => {

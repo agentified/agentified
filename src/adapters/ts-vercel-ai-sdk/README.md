@@ -6,11 +6,10 @@ Ratel keeps the model's tool list small and stable: instead of advertising every
 
 ## Install
 
-The adapter is currently a release candidate. Until its first GA promotes npm's `latest`
-tag, install the compatible `rc` pair explicitly:
+Install the compatible GA pair:
 
 ```bash
-pnpm add @ratel-ai/sdk@rc @ratel-ai/vercel-ai-sdk@rc ai@^7
+pnpm add @ratel-ai/sdk@^0.5.3 @ratel-ai/vercel-ai-sdk@^0.2.0 ai@^7
 ```
 
 ## Usage
@@ -108,6 +107,23 @@ const sdk = new NodeSDK({
 sdk.start();
 
 registerTelemetry(new RatelOtelIntegration());
+```
+
+The provider fans spans out; the active host context correlates them. AI SDK runs
+`prepareStep` before activating its own step span, so retrieval there inherits the
+surrounding request or agent-operation span. HTTP auto-instrumentation normally supplies one.
+For a job or other uninstrumented entrypoint, create it explicitly:
+
+```ts
+import { trace } from "@opentelemetry/api";
+
+await trace.getTracer("my-app").startActiveSpan("agent turn", async (span) => {
+  try {
+    await generateText({ model, tools: r.modelTools(), prompt, prepareStep: r.prepareStep });
+  } finally {
+    span.end();
+  }
+});
 ```
 
 Install `@ai-sdk/otel` alongside it — it's an optional peer, and the integration embeds its
