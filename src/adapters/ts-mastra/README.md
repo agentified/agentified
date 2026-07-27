@@ -64,84 +64,23 @@ It is a no-op — spending no recall-id — when the last message is not a user 
 
 ## Telemetry
 
-Two streams, and — unlike every other host — they do **not** share a pipeline.
+Ratel's side needs no wiring, here as everywhere: `@ratel-ai/sdk` emits its `ratel.*` spans onto
+whatever OpenTelemetry provider is registered globally and registers none itself, so a host that
+runs a `NodeSDK` at all gets the retrieval and tool-execution spans for free, and with no
+provider they are no-ops. Span inventory and host wiring: [`src/telemetry/`](../../telemetry/README.md).
 
-Ratel's half needs no wiring. `@ratel-ai/sdk` emits its `ratel.*` spans onto whatever
-OpenTelemetry provider is registered globally, so a host that runs a `NodeSDK` at all gets the
-retrieval and tool-execution spans for free; with no provider registered they are no-ops. That
-is the same everywhere and is documented in [`src/telemetry/`](../../telemetry/README.md).
+What is specific to Mastra is that the two streams do **not** share a pipeline. Mastra's AI
+tracing is a private one: it never registers a global provider — so there is no fight with the
+host's `NodeSDK` — but its spans never pass through the host's span processors either, leaving
+over its exporter's own socket instead. Two parallel egress paths, and no shared trace ids unless
+Mastra's own OTel bridge joins the trees. How to wire any of that is Mastra's documentation to
+give, not this adapter's; the one thing worth saying here is that nothing is ambient — an
+un-instrumented Mastra emits nothing to OpenTelemetry, so until its side is wired up, Ratel's
+spans are all a host gets.
 
-Mastra's half is a **private pipeline**. Its AI tracing never registers a global provider — so
-there is no fight with the host's `NodeSDK` — but the flip side is that Mastra's spans never
-pass through the host's span processors either. They leave over the exporter's own socket. There
-are two parallel egress paths, not one shared stream, and they do not share trace ids; joining
-the two trees needs Mastra's `bridge` seam (`@mastra/otel-bridge`), not configuration.
-
-Nothing is ambient. An un-instrumented Mastra emits nothing to OpenTelemetry — the `gen_ai.*`
-strings in its bundle are a vendored AI SDK copy that stays off unless asked — so Mastra tracing
-requires wiring `@mastra/observability` explicitly:
-
-```ts
-// pnpm add @mastra/observability @mastra/otel-exporter @opentelemetry/exporter-trace-otlp-proto
-import { Mastra } from "@mastra/core";
-import { Observability } from "@mastra/observability";
-import { OtelExporter } from "@mastra/otel-exporter";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-
-// The host's global provider, carrying Ratel's ratel.* spans (Mastra registers none).
-new NodeSDK({ spanProcessors: [/* your processors */] }).start();
-
-export const app = new Mastra({
-  agents: { assistant },
-  observability: new Observability({
-    configs: {
-      default: {
-        serviceName: "my-agent",
-        exporters: [
-          new OtelExporter({
-            provider: {
-              custom: {
-                endpoint: "https://<your-backend>", // base URL; the per-signal path is appended
-                protocol: "http/protobuf",
-                headers: { authorization: `Bearer ${process.env.BACKEND_API_KEY}` },
-              },
-            },
-            signals: { logs: false }, // unless your backend serves /v1/logs
-          }),
-        ],
-      },
-    },
-  }),
-});
-```
-
-Four things that fail quietly if you improvise:
-
-- **`Observability` is a class from `@mastra/observability`**, a separate package — not
-  `@mastra/core`, and not the `@mastra/core/observability` subpath. Passing a plain config
-  object instead of an instance does not throw: Mastra warns once and installs
-  `NoOpObservability`, and you get no spans at all.
-- **The OTLP exporter is a peer of `@mastra/otel-exporter`, not a dependency.**
-  `protocol: "http/protobuf"` needs `@opentelemetry/exporter-trace-otlp-proto` on your own
-  resolution path; without it the exporter debug-logs and exports nothing. `custom` also
-  defaults to `http/json`, so the explicit `protocol` is load-bearing.
-- **`endpoint` is a base URL, and only a base URL is unambiguous.** The exporter normalizes what
-  you give it — trailing slashes and a trailing `/v1/traces` or `/v1/logs` are stripped, then the
-  path for the signal being exported is appended — so a full traces URL resolves correctly for
-  both signals too. Passing the base is still the form to document, because it is the only one
-  that reads as what it is.
-- **Telemetry raises this adapter's Mastra floor to `@mastra/core >= 1.16`** —
-  `@mastra/observability` and `@mastra/otel-exporter` both peer that, five minors above the
-  `>= 1.11.0` the adapter itself supports. On 1.11–1.15 the adapter works; this wiring does not
-  install.
-
-Verified against `@mastra/core@1.51.0`, `@mastra/observability@1.16.2`,
-`@mastra/otel-exporter@1.3.5`.
-
-Mastra-side enrichment is deferred. Mastra's `spanOutputProcessors` seam is where a processor
-would stamp Ratel's overlay onto Mastra's own spans; Ratel ships none yet, so today the two
-streams stay separate and only Ratel's carries `ratel.*`. There is no `./otel` entrypoint on
-this package — the `ai@7` integration is specific to the Vercel AI SDK.
+Ratel adds nothing to Mastra's stream today. There is no `./otel` entrypoint on this package —
+the `ai@7` integration is specific to the Vercel AI SDK — and no `ratel.*` overlay lands on
+Mastra's spans; Mastra's `spanOutputProcessors` seam is where a processor would stamp one.
 
 ## Package shape
 

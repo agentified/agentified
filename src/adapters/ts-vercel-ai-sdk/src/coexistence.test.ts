@@ -95,10 +95,9 @@ function inMemoryDestination(): Destination {
 
 /**
  * A generic destination that filters with a predicate of the host's own writing.
- * Ratel ships no span filter to pair against Langfuse's — `ratelSignalFilter`
- * went with `@ratel-ai/telemetry-otlp`, and the Cloud processor that replaces it
- * is a later phase — so per-destination filtering on the non-vendor side is
- * exactly this: a few lines wrapping any processor.
+ * Ratel ships no span filter to pair against Langfuse's, so per-destination
+ * filtering on the non-vendor side is exactly this: a few lines wrapping any
+ * processor.
  */
 function filteringDestination(keep: (span: ReadableSpan) => boolean): Destination {
   const exporter = new InMemorySpanExporter();

@@ -135,12 +135,9 @@ Don't tell users to "configure Ratel manually" without telling them about `impor
 Ratel emits `gen_ai.*` / `ratel.*` spans and Logs `EventRecord`s to whatever OpenTelemetry providers are registered globally, and **registers none itself**. With no provider wired, every span is a no-op. So on TypeScript there is no Ratel telemetry package to add, no `init()`, no config field:
 
 ```ts
-// ✅ right — the host owns the provider; Ratel's spans ride it with zero wiring
+// The host owns the provider; Ratel's spans ride it with zero wiring.
 import { NodeSDK } from "@opentelemetry/sdk-node";
 new NodeSDK({ spanProcessors: [/* yours */], logRecordProcessors: [/* yours */] }).start();
-
-// ❌ wrong — none of these exist. startTelemetry / configureTelemetry were removed from
-// @ratel-ai/sdk, and @ratel-ai/telemetry-otlp is discontinued. ratel() has no telemetry option.
 ```
 
 `@ratel-ai/telemetry` (npm) is **vocabulary only** — the `ratel.*` constants plus the content-capture gate, zero dependencies, no OpenTelemetry SDK, no exporter config. Recommend it only to someone hand-emitting Ratel-shaped spans, never as the way to "turn telemetry on". Python is the deliberate exception: it keeps turnkey exporter sugar as `init()` behind the optional `[otlp]` extra.
