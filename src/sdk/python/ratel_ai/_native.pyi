@@ -240,3 +240,109 @@ class SkillRegistry:
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured envelopes — see `ToolRegistry.drain_trace_events`."""
+
+class FactHit:
+    """A single fact search result: the matched fact id and its relevance score.
+
+    The fact analogue of `SearchHit` (`tool_id` → `fact_id`), twin of `SkillHit`.
+    """
+
+    @property
+    def fact_id(self) -> str:
+        """Id of the matched fact, as passed to `register`."""
+
+    @property
+    def score(self) -> float:
+        """Relevance score; higher ranks first.
+
+        Same method-dependent scale as `SearchHit.score`, computed against the
+        fact corpus.
+        """
+
+class FactRegistry:
+    """Private native metadata registry over the fact corpus.
+
+    The grounding-side twin of `SkillRegistry`: a separate index, so facts are
+    ranked independently of tools and skills. Unlike a skill, a fact has no
+    `tools` field and carries a `pin` (`"always"` / `"retrieved"`).
+    """
+
+    def __init__(
+        self,
+        spec: str | None = ...,
+        huggingface: str | None = ...,
+        local: str | None = ...,
+        ollama: str | None = ...,
+        url: str | None = ...,
+        model: str | None = ...,
+        revision: str | None = ...,
+        api_key_env: str | None = ...,
+        query_prefix: str | None = ...,
+        doc_prefix: str | None = ...,
+        pooling: str | None = ...,
+        download: bool | None = ...,
+    ) -> None: ...
+    def register(
+        self,
+        id: str,
+        name: str,
+        description: str,
+        tags: list[str],
+        metadata: dict[str, list[str]],
+        body: str,
+        pin: str,
+    ) -> None:
+        """Register a fact's metadata into the index.
+
+        Replaces in place when `id` is already registered. `tags` are indexed
+        for ranking; `metadata` rides along un-indexed for higher layers; `body`
+        is the injected content, stored but not indexed; `pin` is `"always"` or
+        `"retrieved"` (an unknown value raises `ValueError`).
+        """
+
+    def _register_many(
+        self,
+        facts: list[
+            tuple[
+                str,
+                str,
+                str,
+                list[str],
+                dict[str, list[str]],
+                str,
+                str,
+            ]
+        ],
+    ) -> None:
+        """Atomically convert (validating each `pin`), then register a fact batch."""
+
+    def search(self, query: str, top_k: int) -> list[FactHit]:
+        """Lexical BM25 search over the fact corpus — see `ToolRegistry.search`."""
+
+    def search_with_origin(self, query: str, top_k: int, origin: str) -> list[FactHit]:
+        """BM25 search tagged with who initiated it — see `ToolRegistry.search_with_origin`."""
+
+    def _search_with_method(
+        self, query: str, top_k: int, origin: str, method: str
+    ) -> list[FactHit]:
+        """Private worker-thread search primitive."""
+
+    def _build_embeddings(self) -> None:
+        """Private incremental-build primitive."""
+
+    def _rebuild_embeddings(self) -> None:
+        """Recompute and atomically replace every fact embedding."""
+
+    def record_event(self, event: dict[str, Any]) -> None:
+        """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""
+
+    def set_trace_sink(
+        self,
+        kind: str,
+        session_id: str | None = ...,
+        path: str | None = ...,
+    ) -> None:
+        """Route trace events to a sink — see `ToolRegistry.set_trace_sink`."""
+
+    def drain_trace_events(self) -> list[dict[str, Any]]:
+        """Drain captured envelopes — see `ToolRegistry.drain_trace_events`."""

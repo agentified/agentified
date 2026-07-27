@@ -152,6 +152,7 @@ describe("ratel telemetry vocabulary", () => {
   it("maps ratel.search.target to its wire strings", () => {
     expect(SearchTarget.Tool).toBe("tool");
     expect(SearchTarget.Skill).toBe("skill");
+    expect(SearchTarget.Fact).toBe("fact");
   });
 
   it("maps ratel.auth.outcome to its wire strings", () => {

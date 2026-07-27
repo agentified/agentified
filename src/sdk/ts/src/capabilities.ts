@@ -6,6 +6,7 @@ import type {
   ToolCatalog,
 } from "./catalog.js";
 import { compactDescription } from "./compact.js";
+import type { FactCatalog } from "./fact-catalog.js";
 import type { SkillCatalog } from "./skill-catalog.js";
 import { recordAuthNeeded, upstreamFromToolId } from "./telemetry.js";
 
@@ -23,6 +24,7 @@ export const INVOKE_TOOL_ID = "invoke_tool" as const;
 /** Default `tools` bucket size, and the fallback for an invalid host `search` top-K. */
 export const DEFAULT_TOP_K_TOOLS = 5;
 const DEFAULT_TOP_K_SKILLS = 3;
+const DEFAULT_TOP_K_FACTS = 3;
 const MAX_TOP_K = 50;
 
 /**
@@ -136,6 +138,22 @@ export interface CapabilitySkillHit {
 }
 
 /**
+ * One ranked fact in the `facts` bucket of {@link SearchCapabilitiesResult}.
+ * Unlike a skill, a fact carries its `body` inline — facts are small constant
+ * content, so there is no second round-trip to load it.
+ */
+export interface CapabilityFactHit {
+  /** Fact id, as registered. */
+  factId: string;
+  /** Retrieval score from the fact catalog's search (BM25 by default). */
+  score: number;
+  /** The fact's description, compacted to ~160 chars for the listing. */
+  description: string;
+  /** The fact's content — inline, ready to ground the model. */
+  body: string;
+}
+
+/**
  * Result shape of the `search_capabilities` tool: two independently-ranked
  * buckets with separate top-K budgets. Scores are comparable within a bucket,
  * not across the two (tools and skills are indexed as different text shapes).
@@ -148,6 +166,14 @@ export interface SearchCapabilitiesResult {
   };
   /** Skill hits — playbooks to load via `get_skill_content`. */
   skills: CapabilitySkillHit[];
+  /**
+   * ⚠️ Experimental (facts, ADR-0014). Fact hits — constant grounding content,
+   * ranked from the fact catalog when one is wired in (the recall path passes
+   * it), else `[]`. Each carries its `body` inline. The retrieval-gated tier of
+   * facts; always-on facts are injected separately via the grounding freshness
+   * gate, not here.
+   */
+  facts: CapabilityFactHit[];
 }
 
 /**
@@ -313,8 +339,12 @@ export interface CapabilitiesSearchOptions {
   topKTools?: number;
   /** Max skills bucket size; capped at 50, default 3; invalid values fall back to the default. */
   topKSkills?: number;
+  /** ⚠️ Experimental (facts, ADR-0014). Max facts bucket size; capped at 50, default 3; invalid values fall back to the default. */
+  topKFacts?: number;
   /** Catalog the `skills` bucket is ranked from (and whose declared tool deps ride in). */
   skillCatalog?: SkillCatalog;
+  /** ⚠️ Experimental (facts, ADR-0014). Catalog the `facts` bucket is ranked from; omit it and `facts` is `[]`. */
+  factCatalog?: FactCatalog;
   /**
    * Who initiated the search — stamped on the `gateway_search` trace event and
    * the `ratel.search` span. Default `"agent"` (a model-synthesized call); the
@@ -347,9 +377,11 @@ export async function runCapabilitiesSearch(
 ): Promise<SearchCapabilitiesResult> {
   const kTools = clampTopK(opts.topKTools, DEFAULT_TOP_K_TOOLS);
   const kSkills = clampTopK(opts.topKSkills, DEFAULT_TOP_K_SKILLS);
+  const kFacts = clampTopK(opts.topKFacts, DEFAULT_TOP_K_FACTS);
   const origin = opts.origin ?? "agent";
   const upstreamByName = new Map((opts.upstreamServers ?? []).map((u) => [u.name, u]));
   const skillCatalog = opts.skillCatalog;
+  const factCatalog = opts.factCatalog;
   const startedAt = Date.now();
 
   const toolHits = await toolCatalog.searchAsync(query, kTools, origin);
@@ -420,10 +452,27 @@ export async function runCapabilitiesSearch(
     }
   }
 
+  // Facts rank in their own reserved-budget bucket, like skills. The body rides
+  // inline (facts are small constant content — no get_*_content round-trip).
+  // This is the retrieval-gated tier; always-on facts inject via the grounding
+  // freshness gate, not here.
+  const facts: CapabilityFactHit[] = factCatalog
+    ? (await factCatalog.searchAsync(query, kFacts, origin)).map((h) => {
+        const fact = factCatalog.get(h.factId);
+        return {
+          factId: h.factId,
+          score: h.score,
+          description: compactDescription(fact?.description ?? ""),
+          body: fact?.body ?? "",
+        };
+      })
+    : [];
+
   return {
     // biome-ignore lint/style/noNonNullAssertion: order entries are guaranteed by construction
     tools: { groups: order.map((n) => groups.get(n)!) },
     skills,
+    facts,
   };
 }
 

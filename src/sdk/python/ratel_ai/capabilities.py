@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Union
 
 from .catalog import ExecutableTool, ToolCatalog
+from .fact_catalog import FactCatalog
 from .skill_catalog import SkillCatalog
 from .telemetry import record_auth_needed
 
@@ -27,6 +28,7 @@ INVOKE_TOOL_ID = "invoke_tool"
 
 _DEFAULT_TOP_K_TOOLS = 5
 _DEFAULT_TOP_K_SKILLS = 3
+_DEFAULT_TOP_K_FACTS = 3
 _MAX_TOP_K = 50
 
 
@@ -138,24 +140,31 @@ def _build_search_description(has_skills: bool, upstreams: Sequence[UpstreamServ
 def search_capabilities_tool(
     catalog: ToolCatalog,
     skill_catalog: SkillCatalog | None = None,
+    fact_catalog: FactCatalog | None = None,
     *,
     upstream_servers: Sequence[UpstreamServerInfo] | None = None,
 ) -> ExecutableTool:
-    """Build the `search_capabilities` tool: unified discovery over tools AND skills.
+    """Build the `search_capabilities` tool: unified discovery over tools, skills, and facts.
 
-    The returned tool ranks two independent buckets, each with its own top-K
-    budget — so a relevant skill is never starved out of the results by a large
-    number of matching tools (and the two BM25 corpora are never
+    The returned tool ranks three independent buckets, each with its own top-K
+    budget — so a relevant skill or fact is never starved out of the results by a
+    large number of matching tools (and the BM25 corpora are never
     score-compared). Tools land grouped by upstream server; a matched skill's
-    declared tools are pulled into the tools bucket additively (score 0), so
-    the agent gets the playbook and its toolkit in one turn. The `skills`
-    bucket (and the mention of `get_skill_content` in the description) is only
-    advertised when a non-empty `skill_catalog` is wired in.
+    declared tools are pulled into the tools bucket additively (score 0), so the
+    agent gets the playbook and its toolkit in one turn. Facts have no tools, so
+    nothing is pulled in on their behalf — each fact carries its `body` inline
+    (facts are small constant content, so there is no second round-trip to load
+    it). The `skills` bucket (and the mention of `get_skill_content` in the
+    description) is only advertised when a non-empty `skill_catalog` is wired in.
 
     Args:
         catalog: the tool catalog to search.
         skill_catalog: optional skill catalog, ranked against the same query
             in its own bucket.
+        fact_catalog: ⚠️ Experimental (see `ratel_ai.experimental`) — optional fact
+            catalog, ranked against the same query in its own bucket (the
+            retrieval-gated tier; always-on facts inject via the grounding
+            freshness gate, not here). Omit it and `facts` is `[]`.
         upstream_servers: upstream MCP servers to advertise in the tool
             description and to enrich result server groups with.
 
@@ -170,6 +179,7 @@ def search_capabilities_tool(
         query = input["query"]
         k_tools = _clamp_top_k(input.get("topKTools"), _DEFAULT_TOP_K_TOOLS)
         k_skills = _clamp_top_k(input.get("topKSkills"), _DEFAULT_TOP_K_SKILLS)
+        k_facts = _clamp_top_k(input.get("topKFacts"), _DEFAULT_TOP_K_FACTS)
         started_at = time.monotonic()
         tool_hits = await catalog.search_async(query, k_tools, "agent")
         catalog.record_event(
@@ -243,7 +253,28 @@ def search_capabilities_tool(
                 for tool_id in sk.tools if sk else []:
                     add_tool(tool_id, 0)
 
-        return {"tools": {"groups": [groups[n] for n in order]}, "skills": skills}
+        # Facts rank in their own reserved-budget bucket, like skills. The body
+        # rides inline (facts are small constant content — no get_*_content
+        # round-trip), and facts have no tools, so nothing is pulled into the
+        # tools bucket on their behalf.
+        facts: list[dict[str, Any]] = []
+        if fact_catalog is not None:
+            for fh in await fact_catalog.search_async(query, k_facts, "agent"):
+                fact = fact_catalog.get(fh.fact_id)
+                facts.append(
+                    {
+                        "factId": fh.fact_id,
+                        "score": fh.score,
+                        "description": _compact_description(fact.description) if fact else "",
+                        "body": fact.body if fact else "",
+                    }
+                )
+
+        return {
+            "tools": {"groups": [groups[n] for n in order]},
+            "skills": skills,
+            "facts": facts,
+        }
 
     return ExecutableTool(
         id=SEARCH_CAPABILITIES_ID,
@@ -262,6 +293,11 @@ def search_capabilities_tool(
                     "type": "integer",
                     "minimum": 1,
                     "description": "max skills to return (default 3)",
+                },
+                "topKFacts": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "max facts to return (default 3)",
                 },
             },
             "required": ["query"],
@@ -317,8 +353,21 @@ def search_capabilities_tool(
                         "required": ["skillId", "score", "description"],
                     },
                 },
+                "facts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "factId": {"type": "string"},
+                            "score": {"type": "number"},
+                            "description": {"type": "string"},
+                            "body": {"type": "string"},
+                        },
+                        "required": ["factId", "score", "description", "body"],
+                    },
+                },
             },
-            "required": ["tools", "skills"],
+            "required": ["tools", "skills", "facts"],
         },
         execute=execute,
     )

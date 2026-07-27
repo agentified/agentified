@@ -24,6 +24,18 @@ type SkillBatchItem = (
     HashMap<String, Vec<String>>,
     String,
 );
+// The fact-side twin of `SkillBatchItem`: a fact has no `tools` Vec and adds a
+// `pin` string (parsed into `core::PinMode`), so the shape is
+// (id, name, description, tags, metadata, body, pin).
+type FactBatchItem = (
+    String,
+    String,
+    String,
+    Vec<String>,
+    HashMap<String, Vec<String>>,
+    String,
+    String,
+);
 
 create_exception!(
     _native,
@@ -151,6 +163,27 @@ impl SkillHit {
             "SkillHit(skill_id={:?}, score={})",
             self.skill_id, self.score
         )
+    }
+}
+
+/// A single fact search result: the matched fact id and its relevance score.
+/// The fact analogue of [`SearchHit`] (`tool_id` → `fact_id`), twin of
+/// [`SkillHit`].
+#[pyclass(frozen)]
+pub struct FactHit {
+    /// Id of the matched fact, as passed to `register`.
+    #[pyo3(get)]
+    pub fact_id: String,
+    /// Relevance score; higher ranks first. Same method-dependent scale as
+    /// [`SearchHit::score`], computed against the fact corpus.
+    #[pyo3(get)]
+    pub score: f64,
+}
+
+#[pymethods]
+impl FactHit {
+    fn __repr__(&self) -> String {
+        format!("FactHit(fact_id={:?}, score={})", self.fact_id, self.score)
     }
 }
 
@@ -640,12 +673,263 @@ impl SkillRegistry {
     }
 }
 
+/// Metadata registry over the fact corpus — the grounding-side twin of
+/// [`SkillRegistry`]. A separate index keeps fact ranking independent of tools
+/// and skills. Unlike a skill, a fact has no `tools` field and carries a `pin`
+/// (`"always"` / `"retrieved"`) parsed into `core::PinMode` at registration.
+#[pyclass]
+pub struct FactRegistry {
+    inner: core::FactRegistry,
+    memory_sink: Option<Arc<MemorySink>>,
+}
+
+#[pymethods]
+impl FactRegistry {
+    #[new]
+    #[pyo3(signature = (spec=None, huggingface=None, local=None, ollama=None, url=None, model=None, revision=None, api_key_env=None, query_prefix=None, doc_prefix=None, pooling=None, download=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        spec: Option<String>,
+        huggingface: Option<String>,
+        local: Option<String>,
+        ollama: Option<String>,
+        url: Option<String>,
+        model: Option<String>,
+        revision: Option<String>,
+        api_key_env: Option<String>,
+        query_prefix: Option<String>,
+        doc_prefix: Option<String>,
+        pooling: Option<String>,
+        download: Option<bool>,
+    ) -> PyResult<Self> {
+        let inner = match resolve_embedding(
+            spec,
+            huggingface,
+            local,
+            ollama,
+            url,
+            model,
+            revision,
+            api_key_env,
+            query_prefix,
+            doc_prefix,
+            pooling,
+            download,
+        )? {
+            Some(model) => core::FactRegistry::with_embedding(model),
+            None => core::FactRegistry::new(),
+        };
+        Ok(Self {
+            inner,
+            memory_sink: None,
+        })
+    }
+
+    /// Register a fact's metadata into the index (or replace it in place when
+    /// `id` is already registered). `tags` are indexed for ranking; `metadata`
+    /// rides along un-indexed for higher layers; `body` is the injected content,
+    /// stored but not indexed; `pin` is `"always"` or `"retrieved"` (parsed into
+    /// `core::PinMode` — an unknown value raises `ValueError`).
+    // Mirrors `SkillRegistry::register`, minus the `tools` Vec and plus `pin`.
+    #[allow(clippy::too_many_arguments)]
+    fn register(
+        &mut self,
+        id: String,
+        name: String,
+        description: String,
+        tags: Vec<String>,
+        metadata: HashMap<String, Vec<String>>,
+        body: String,
+        pin: String,
+    ) -> PyResult<()> {
+        let pin = pin
+            .parse::<core::PinMode>()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner.register(core::Fact {
+            id,
+            name,
+            description,
+            tags,
+            metadata,
+            body,
+            pin,
+        });
+        Ok(())
+    }
+
+    /// Register a batch only after every item's full shape (including a valid
+    /// `pin`) has been converted. A bad later `pin` therefore fails before this
+    /// method mutates the registry — no partial registration.
+    fn _register_many(&mut self, facts: Vec<FactBatchItem>) -> PyResult<()> {
+        let facts = facts
+            .into_iter()
+            .map(|(id, name, description, tags, metadata, body, pin)| {
+                let pin = pin
+                    .parse::<core::PinMode>()
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(core::Fact {
+                    id,
+                    name,
+                    description,
+                    tags,
+                    metadata,
+                    body,
+                    pin,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        for fact in facts {
+            self.inner.register(fact);
+        }
+        Ok(())
+    }
+
+    /// Lexical BM25 search over the fact corpus — see [`ToolRegistry::search`].
+    fn search(&self, query: String, top_k: u32) -> Vec<FactHit> {
+        self.inner
+            .search(&query, top_k as usize)
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect()
+    }
+
+    /// BM25 search tagged with who initiated it — see
+    /// [`ToolRegistry::search_with_origin`].
+    fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<FactHit> {
+        let parsed = match origin.as_str() {
+            "agent" => Origin::Agent,
+            _ => Origin::Direct,
+        };
+        self.inner
+            .search_with_origin(&query, top_k as usize, parsed)
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect()
+    }
+
+    /// Private GIL-releasing method search — see [`ToolRegistry::_search_with_method`].
+    fn _search_with_method(
+        &self,
+        py: Python<'_>,
+        query: String,
+        top_k: u32,
+        origin: String,
+        method: String,
+    ) -> PyResult<Vec<FactHit>> {
+        let parsed_origin = match origin.as_str() {
+            "agent" => Origin::Agent,
+            _ => Origin::Direct,
+        };
+        let parsed_method = method
+            .parse::<core::SearchMethod>()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let hits = py
+            .allow_threads(|| {
+                self.inner
+                    .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+            })
+            .map_err(map_embedder_err)?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect())
+    }
+
+    /// See [`ToolRegistry::_build_embeddings`].
+    fn _build_embeddings(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.build_embeddings())
+            .map_err(map_embedder_err)
+    }
+
+    /// Recompute the complete fact embedding cache without holding the GIL.
+    fn _rebuild_embeddings(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.rebuild_embeddings())
+            .map_err(map_embedder_err)
+    }
+
+    /// Record an SDK-layer trace event into the active sink — see
+    /// [`ToolRegistry::record_event`].
+    fn record_event(&self, event: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value: Value = pythonize::depythonize(event)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        let event: TraceEvent = serde_json::from_value(value)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        self.inner.record_event(event);
+        Ok(())
+    }
+
+    /// Route trace events to a sink — see [`ToolRegistry::set_trace_sink`] for
+    /// the kind / session_id / path rules and `ValueError` conditions.
+    #[pyo3(signature = (kind, session_id=None, path=None))]
+    fn set_trace_sink(
+        &mut self,
+        kind: String,
+        session_id: Option<String>,
+        path: Option<String>,
+    ) -> PyResult<()> {
+        match kind.as_str() {
+            "noop" => {
+                self.memory_sink = None;
+                self.inner.set_trace_sink(Arc::new(NoopSink));
+            }
+            "memory" => {
+                let session_id = session_id
+                    .ok_or_else(|| PyValueError::new_err("memory sink requires session_id"))?;
+                let sink = Arc::new(MemorySink::new(session_id));
+                self.memory_sink = Some(sink.clone());
+                self.inner.set_trace_sink(sink);
+            }
+            "jsonl" => {
+                let session_id = session_id
+                    .ok_or_else(|| PyValueError::new_err("jsonl sink requires session_id"))?;
+                let path = path.ok_or_else(|| PyValueError::new_err("jsonl sink requires path"))?;
+                let sink = JsonlSink::new(session_id, &path)
+                    .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
+                self.memory_sink = None;
+                self.inner.set_trace_sink(Arc::new(sink));
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown trace sink kind: {other}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Drain captured envelopes from the active sink — see
+    /// [`ToolRegistry::drain_trace_events`].
+    fn drain_trace_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty(py);
+        let Some(sink) = self.memory_sink.as_ref() else {
+            return Ok(out);
+        };
+        for env in sink.drain() {
+            let obj = pythonize::pythonize(py, &env)
+                .map_err(|e| PyValueError::new_err(format!("serialize trace envelope: {e}")))?;
+            out.append(obj)?;
+        }
+        Ok(out)
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ToolRegistry>()?;
     m.add_class::<SearchHit>()?;
     m.add_class::<SkillRegistry>()?;
     m.add_class::<SkillHit>()?;
+    m.add_class::<FactRegistry>()?;
+    m.add_class::<FactHit>()?;
     m.add("EmbedderError", m.py().get_type::<EmbedderError>())?;
     m.add(
         "DimensionMismatchError",

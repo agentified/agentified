@@ -1,6 +1,6 @@
 <div align="center">
   <h1>ratel-ai-core</h1>
-  <p>In-process tool and skill retrieval for AI agents.</p>
+  <p>In-process tool, skill, and fact retrieval for AI agents.</p>
 
   <p>
     <a href="https://docs.ratel.sh">Docs</a> •
@@ -16,7 +16,7 @@
   </p>
 </div>
 
-`ratel-ai-core` is Ratel's Rust retrieval engine. Register tool or skill metadata once, then rank the catalog for each agent turn. BM25 is the model-free default; semantic and hybrid retrieval use either an in-process model or a configured OpenAI-compatible embedding endpoint. The retrieval engine and cache stay in-process, with no vector database or Ratel service to deploy.
+`ratel-ai-core` is Ratel's Rust retrieval engine. Register tool, skill, or fact metadata once, then rank the catalog for each agent turn. Tools and skills are *pulled* on relevance; facts are constant grounding content the higher layers *push* into the context, always-on or retrieval-gated. BM25 is the model-free default; semantic and hybrid retrieval use either an in-process model or a configured OpenAI-compatible embedding endpoint. The retrieval engine and cache stay in-process, with no vector database or Ratel service to deploy.
 
 This crate owns retrieval and its local trace stream. Tool execution, MCP connections, and authentication integrations live in the SDK and local distribution.
 

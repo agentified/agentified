@@ -593,6 +593,369 @@ impl ToolRegistry {
     }
 }
 
+pub struct FactEmbeddingTask {
+    inner: Arc<RwLock<core::FactRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    operation: EmbeddingOperation,
+    _permit: DenseOperationPermit,
+}
+
+pub struct FactSearchTask {
+    inner: Arc<RwLock<core::FactRegistry>>,
+    dense_gate: Option<Arc<Mutex<()>>>,
+    query: String,
+    top_k: u32,
+    origin: String,
+    method: String,
+    _permit: Option<DenseOperationPermit>,
+}
+
+impl Task for FactEmbeddingTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let _dense = self
+            .dense_gate
+            .lock()
+            .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("fact registry lock poisoned"))?;
+        match self.operation {
+            EmbeddingOperation::Build => registry.build_embeddings(),
+            EmbeddingOperation::Rebuild => registry.rebuild_embeddings(),
+        }
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Task for FactSearchTask {
+    type Output = Vec<FactHit>;
+    type JsValue = Vec<FactHit>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let parsed_origin = match self.origin.as_str() {
+            "agent" => Origin::Agent,
+            _ => Origin::Direct,
+        };
+        let parsed_method: SearchMethod =
+            self.method
+                .parse()
+                .map_err(|e: ratel_ai_core::ParseSearchMethodError| {
+                    napi::Error::from_reason(e.to_string())
+                })?;
+        let _dense = self
+            .dense_gate
+            .as_ref()
+            .map(|gate| {
+                gate.lock()
+                    .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))
+            })
+            .transpose()?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("fact registry lock poisoned"))?;
+        registry
+            .search_with_method(
+                &self.query,
+                self.top_k as usize,
+                parsed_origin,
+                parsed_method,
+            )
+            .map(|hits| {
+                hits.into_iter()
+                    .map(|hit| FactHit {
+                        fact_id: hit.fact_id,
+                        score: hit.score as f64,
+                    })
+                    .collect()
+            })
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Constant grounding content the agent should have on hand — a barbershop's
+/// address and hours, a brand's voice. The push-path twin of `Skill`: name,
+/// description, and tags are indexed for ranking (the retrieval-gated tier);
+/// the `body` is the injected content, never indexed. `pin` splits the tiers.
+#[napi(object)]
+pub struct Fact {
+    /// Unique id, the registry key. Re-registering an existing id replaces the
+    /// entry in place.
+    pub id: String,
+    /// Human-readable name; indexed for ranking both whole and split on
+    /// `snake_case`/`camelCase` boundaries.
+    pub name: String,
+    /// What the fact is about — the main ranking signal (not the content itself).
+    pub description: String,
+    /// Author-declared labels and task phrases; indexed for ranking. Optional
+    /// (defaults to `[]`).
+    pub tags: Option<Vec<String>>,
+    /// Free-form, non-indexed context for higher layers — e.g.
+    /// `{ stacks: ["react"] }` for the push ranker to boost by project context.
+    pub metadata: Option<HashMap<String, Vec<String>>>,
+    /// The content injected into the context on grounding — the payload, never
+    /// indexed for ranking. Optional (defaults to `""`).
+    pub body: Option<String>,
+    /// `"always"` (always-on) or `"retrieved"` (retrieval-gated). Optional
+    /// (defaults to `"retrieved"`); an unknown value throws at registration.
+    pub pin: Option<String>,
+}
+
+/// One ranked fact from a registry search, best-first — the fact twin of
+/// `SkillHit`, with the same score semantics per method.
+#[napi(object)]
+pub struct FactHit {
+    /// Id of the matched fact, as registered.
+    pub fact_id: String,
+    /// Relevance score; higher is better, ties break by id ascending. Scale
+    /// depends on the method (BM25 / cosine / RRF), as on `SearchHit.score`.
+    pub score: f64,
+}
+
+/// Convert a binding [`Fact`] to a core one, parsing the `pin` string (default
+/// `"retrieved"`). An unknown pin value throws — validated at the boundary.
+fn core_fact(fact: Fact) -> napi::Result<core::Fact> {
+    let pin = fact
+        .pin
+        .as_deref()
+        .unwrap_or("retrieved")
+        .parse::<core::PinMode>()
+        .map_err(|e: core::ParsePinModeError| napi::Error::from_reason(e.to_string()))?;
+    Ok(core::Fact {
+        id: fact.id,
+        name: fact.name,
+        description: fact.description,
+        tags: fact.tags.unwrap_or_default(),
+        metadata: fact.metadata.unwrap_or_default(),
+        body: fact.body.unwrap_or_default(),
+        pin,
+    })
+}
+
+/// Node binding over the `ratel-ai-core` fact registry — the fact twin of
+/// `SkillRegistry`, ranking registered facts against a natural-language query.
+/// Fact bodies are stored but never indexed; the SDK's `FactCatalog` injects
+/// them on the grounding path.
+#[napi]
+pub struct FactRegistry {
+    inner: Arc<RwLock<core::FactRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    pending_dense: Arc<AtomicUsize>,
+    memory_sink: Option<Arc<MemorySink>>,
+}
+
+#[napi]
+impl FactRegistry {
+    /// Create an empty registry with a no-op trace sink.
+    #[napi(constructor)]
+    pub fn new(embedding: Option<EmbeddingConfig>) -> napi::Result<Self> {
+        let inner = match resolve_embedding(embedding)? {
+            Some(model) => core::FactRegistry::with_embedding(model),
+            None => core::FactRegistry::new(),
+        };
+        Ok(Self {
+            inner: Arc::new(RwLock::new(inner)),
+            dense_gate: Arc::new(Mutex::new(())),
+            pending_dense: Arc::new(AtomicUsize::new(0)),
+            memory_sink: None,
+        })
+    }
+
+    /// Index a fact, or replace one in place if its id is already registered.
+    /// Omitted optional fields default to empty (`tags`/`metadata`), `""`
+    /// (`body`), and `"retrieved"` (`pin`). An unknown `pin` throws.
+    #[napi]
+    pub fn register(&self, fact: Fact) -> napi::Result<()> {
+        let core_fact = core_fact(fact)?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.register(core_fact);
+        Ok(())
+    }
+
+    /// Index a batch under one registry write lock. An unknown `pin` on any
+    /// item throws before any of the batch is indexed.
+    #[napi]
+    pub fn register_many(&self, facts: Vec<Fact>) -> napi::Result<()> {
+        let core_facts = facts
+            .into_iter()
+            .map(core_fact)
+            .collect::<napi::Result<Vec<_>>>()?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        for fact in core_facts {
+            registry.register(fact);
+        }
+        Ok(())
+    }
+
+    /// Lexical BM25 search over facts — see `ToolRegistry.search` for the
+    /// contract (best-first, ties by id, infallible, traced as `"direct"`).
+    #[napi]
+    pub fn search(&self, query: String, top_k: u32) -> Vec<FactHit> {
+        self.inner
+            .read()
+            .expect("fact registry lock poisoned")
+            .search(&query, top_k as usize)
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect()
+    }
+
+    /// BM25 search with an explicit origin — see `ToolRegistry.searchWithOrigin`.
+    #[napi]
+    pub fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<FactHit> {
+        let parsed = match origin.as_str() {
+            "agent" => Origin::Agent,
+            _ => Origin::Direct,
+        };
+        self.inner
+            .read()
+            .expect("fact registry lock poisoned")
+            .search_with_origin(&query, top_k as usize, parsed)
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect()
+    }
+
+    /// Search with an explicit method — see [`ToolRegistry::search_with_method`].
+    #[napi]
+    pub fn search_with_method(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        method: String,
+    ) -> napi::Result<Vec<FactHit>> {
+        let parsed_origin = match origin.as_str() {
+            "agent" => Origin::Agent,
+            _ => Origin::Direct,
+        };
+        let parsed_method: SearchMethod =
+            method
+                .parse()
+                .map_err(|e: ratel_ai_core::ParseSearchMethodError| {
+                    napi::Error::from_reason(e.to_string())
+                })?;
+        if !matches!(parsed_method, SearchMethod::Bm25) {
+            return Err(napi::Error::from_reason(
+                "semantic and hybrid search are asynchronous; use searchWithMethodAsync() or FactCatalog.searchAsync()",
+            ));
+        }
+        let hits = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("fact registry lock poisoned"))?
+            .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| FactHit {
+                fact_id: hit.fact_id,
+                score: hit.score as f64,
+            })
+            .collect())
+    }
+
+    /// Search on a libuv worker. Supports BM25, semantic, and hybrid methods.
+    #[napi(ts_return_type = "Promise<Array<FactHit>>")]
+    pub fn search_with_method_async(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        method: String,
+    ) -> AsyncTask<FactSearchTask> {
+        let is_dense = matches!(method.as_str(), "semantic" | "dense" | "hybrid");
+        AsyncTask::new(FactSearchTask {
+            inner: self.inner.clone(),
+            dense_gate: is_dense.then(|| self.dense_gate.clone()),
+            query,
+            top_k,
+            origin,
+            method,
+            _permit: is_dense.then(|| DenseOperationPermit::new(self.pending_dense.clone())),
+        })
+    }
+
+    /// See `ToolRegistry.build_embeddings`.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn build_embeddings(&self) -> AsyncTask<FactEmbeddingTask> {
+        AsyncTask::new(FactEmbeddingTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            operation: EmbeddingOperation::Build,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Recompute the full fact corpus and atomically replace the dense cache.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn rebuild_embeddings(&self) -> AsyncTask<FactEmbeddingTask> {
+        AsyncTask::new(FactEmbeddingTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            operation: EmbeddingOperation::Rebuild,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Record a custom event on the local trace stream — see
+    /// `ToolRegistry.recordEvent`. The `fact_inject` / `fact_inject_skip`
+    /// grounding events ride this. Throws on an object that doesn't parse as a
+    /// known trace event.
+    #[napi]
+    pub fn record_event(&self, event: Value) -> napi::Result<()> {
+        let event: TraceEvent = serde_json::from_value(event)
+            .map_err(|e| napi::Error::from_reason(format!("invalid trace event: {e}")))?;
+        self.inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("fact registry lock poisoned"))?
+            .record_event(event);
+        Ok(())
+    }
+
+    /// Replace the trace sink — see `ToolRegistry.setTraceSink`.
+    #[napi]
+    pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
+        let (sink, memory) = build_trace_sink(config)?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(sink);
+        drop(registry);
+        self.memory_sink = memory;
+        Ok(())
+    }
+
+    /// Drain captured envelopes from the active sink. Returns `[]` unless the
+    /// active sink is "memory".
+    #[napi]
+    pub fn drain_trace_events(&self) -> Vec<Value> {
+        let Some(sink) = self.memory_sink.as_ref() else {
+            return Vec::new();
+        };
+        sink.drain()
+            .into_iter()
+            .filter_map(|env| serde_json::to_value(&env).ok())
+            .collect()
+    }
+}
+
 /// A reusable playbook: instructions the agent *reads* and follows, in
 /// contrast to a `Tool` it executes. Name, description, and tags are indexed
 /// for ranking; the `body` is the dispatch payload, deliberately excluded from

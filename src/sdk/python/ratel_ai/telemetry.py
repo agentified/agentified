@@ -65,6 +65,7 @@ _TRACER_NAME = "ratel-ai"
 #: decoupled from the telemetry vocabulary module).
 SEARCH_TARGET_TOOL = "tool"
 SEARCH_TARGET_SKILL = "skill"
+SEARCH_TARGET_FACT = "fact"
 
 T = TypeVar("T")
 

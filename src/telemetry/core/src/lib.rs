@@ -53,7 +53,7 @@ pub const GEN_AI_INFERENCE_DETAILS: &str = "gen_ai.client.inference.operation.de
 
 /// `ratel.origin` — direct library call vs agent-synthesized (shared attribute).
 pub const RATEL_ORIGIN: &str = "ratel.origin";
-/// `ratel.search.target` — `tool` or `skill` (see [`SearchTarget`]).
+/// `ratel.search.target` — `tool`, `skill`, or `fact` (see [`SearchTarget`]).
 pub const RATEL_SEARCH_TARGET: &str = "ratel.search.target";
 /// `ratel.search.top_k` — requested result count.
 pub const RATEL_SEARCH_TOP_K: &str = "ratel.search.top_k";
@@ -127,13 +127,15 @@ impl Origin {
 }
 
 /// What a `ratel.search` span was searching. Emitted as `ratel.search.target`;
-/// folds capability-tool search and skill search into one span shape.
+/// folds capability-tool search, skill search, and fact search into one span shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchTarget {
     /// The span searched the tool catalog — wire value `tool`.
     Tool,
     /// The span searched the skill catalog — wire value `skill`.
     Skill,
+    /// The span searched the fact catalog — wire value `fact`.
+    Fact,
 }
 
 impl SearchTarget {
@@ -142,6 +144,7 @@ impl SearchTarget {
         match self {
             SearchTarget::Tool => "tool",
             SearchTarget::Skill => "skill",
+            SearchTarget::Fact => "fact",
         }
     }
 }
@@ -188,6 +191,7 @@ mod tests {
     fn search_target_maps_to_wire_strings() {
         assert_eq!(SearchTarget::Tool.as_str(), "tool");
         assert_eq!(SearchTarget::Skill.as_str(), "skill");
+        assert_eq!(SearchTarget::Fact.as_str(), "fact");
     }
 
     #[test]

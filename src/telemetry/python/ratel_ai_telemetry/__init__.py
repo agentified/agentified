@@ -65,7 +65,7 @@ GEN_AI_INFERENCE_DETAILS: Final = "gen_ai.client.inference.operation.details"
 #: ratel.origin — direct library call vs agent-synthesized (shared attribute).
 RATEL_ORIGIN: Final = "ratel.origin"
 
-#: ratel.search.target — "tool" or "skill" (see SearchTarget).
+#: ratel.search.target — "tool", "skill", or "fact" (see SearchTarget).
 RATEL_SEARCH_TARGET: Final = "ratel.search.target"
 
 #: ratel.search.top_k — requested result count.
@@ -146,10 +146,11 @@ class Origin(str, Enum):
 
 class SearchTarget(str, Enum):
     """What a ratel.search span was searching. Carried by ratel.search.target; folds
-    capability-tool search and skill search into one span shape."""
+    capability-tool search, skill search, and fact search into one span shape."""
 
     TOOL = "tool"
     SKILL = "skill"
+    FACT = "fact"
 
 
 class AuthOutcome(str, Enum):

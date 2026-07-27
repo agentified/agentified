@@ -10,14 +10,17 @@
 //!
 //! # Mental model
 //!
-//! Two registries hold the corpus, one per capability kind:
+//! Three registries hold the corpus, one per capability kind:
 //!
 //! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints described by a
 //!   name, a description, and JSON schemas.
 //! - [`SkillRegistry`] indexes [`Skill`]s — reusable instruction playbooks
-//!   whose body is dispatched on demand.
+//!   whose body is dispatched on demand (a *pull*).
+//! - [`FactRegistry`] indexes [`Fact`]s — constant grounding content whose body
+//!   the higher layers *push* into the context, always-on or retrieval-gated
+//!   per [`PinMode`].
 //!
-//! Both rank a query with one of three engines, selected by [`SearchMethod`]:
+//! All rank a query with one of three engines, selected by [`SearchMethod`]:
 //!
 //! - [`SearchMethod::Bm25`] (default) — lexical BM25. Needs no model and
 //!   never fails; [`ToolRegistry::search`] and [`SkillRegistry::search`] use
@@ -78,6 +81,9 @@ mod dense_cache;
 mod dense_search;
 mod embedding;
 mod embedding_config;
+mod fact;
+mod fact_indexing;
+mod fact_registry;
 mod fusion;
 mod indexing;
 mod method;
@@ -91,12 +97,14 @@ mod trace;
 
 pub use embedding::EmbedderError;
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
+pub use fact::{Fact, ParsePinModeError, PinMode};
+pub use fact_registry::{FactHit, FactRegistry};
 pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;
 pub use skill_registry::{SkillHit, SkillRegistry};
 pub use tool::Tool;
 pub use tool_registry::{SearchHit, ToolRegistry};
 pub use trace::{
-    ChurnKind, EmbedderLoadStatus, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace,
-    SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceSink,
+    ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, JsonlSink, MemorySink, NoopSink,
+    Origin, SearchHitTrace, SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceSink,
 };
