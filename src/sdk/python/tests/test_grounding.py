@@ -71,6 +71,18 @@ def test_treats_empty_body_as_trivially_present() -> None:
     assert decision == InjectionDecision("a", False, "fresh")
 
 
+def test_body_split_across_two_messages_is_not_falsely_present() -> None:
+    # Two unrelated messages ending/starting with the halves of a multi-line
+    # body must NOT reconstruct it across the message boundary.
+    body = "12 Baker Street\nLondon NW1, open daily."
+    (decision,) = plan_injection(
+        [cand("shop-address", body)],
+        ["it's on 12 Baker Street", "London NW1, open daily. Come say hi!"],
+    )
+    assert decision.inject is True
+    assert decision.reason == "never"
+
+
 def test_matches_bodies_that_span_lines_within_one_message() -> None:
     multiline = "Line one of the policy.\nLine two of the policy."
     (decision,) = plan_injection([cand("a", multiline)], [f"intro\n{multiline}\noutro"])

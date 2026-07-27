@@ -100,13 +100,15 @@ export interface InjectionDecision {
  * @returns One {@link InjectionDecision} per candidate, in the same order.
  */
 export function planInjection(input: PlanInjectionInput): InjectionDecision[] {
-  // One haystack, one substring scan per candidate. Bodies are injected as
-  // (part of) a single message, so a per-message join can't split them.
-  const haystack = input.transcript.join("\n");
+  // Per-message scan: a body counts as present only when contained within a
+  // single message — matching how injections render (one message carries the
+  // whole body). Scanning a joined haystack instead would false-positive when
+  // two unrelated messages happen to end/start with the two halves of a
+  // multi-line body.
   const previous = input.previouslyInjected;
 
   return input.candidates.map((candidate): InjectionDecision => {
-    if (candidate.body === "" || haystack.includes(candidate.body)) {
+    if (candidate.body === "" || input.transcript.some((m) => m.includes(candidate.body))) {
       return { id: candidate.id, inject: false, reason: "fresh" };
     }
     const lastInjected = previous?.get(candidate.id);

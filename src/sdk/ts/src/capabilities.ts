@@ -455,18 +455,21 @@ export async function runCapabilitiesSearch(
   // Facts rank in their own reserved-budget bucket, like skills. The body rides
   // inline (facts are small constant content — no get_*_content round-trip).
   // This is the retrieval-gated tier; always-on facts inject via the grounding
-  // freshness gate, not here.
-  const facts: CapabilityFactHit[] = factCatalog
-    ? (await factCatalog.searchAsync(query, kFacts, origin)).map((h) => {
-        const fact = factCatalog.get(h.factId);
-        return {
-          factId: h.factId,
-          score: h.score,
-          description: compactDescription(fact?.description ?? ""),
-          body: fact?.body ?? "",
-        };
-      })
-    : [];
+  // freshness gate, not here. Gated on a NON-EMPTY catalog (unlike skills):
+  // facts are experimental, so a host that registered none must see zero new
+  // behavior — no extra search, no third `ratel.search` span.
+  const facts: CapabilityFactHit[] =
+    factCatalog && factCatalog.size() > 0
+      ? (await factCatalog.searchAsync(query, kFacts, origin)).map((h) => {
+          const fact = factCatalog.get(h.factId);
+          return {
+            factId: h.factId,
+            score: h.score,
+            description: compactDescription(fact?.description ?? ""),
+            body: fact?.body ?? "",
+          };
+        })
+      : [];
 
   return {
     // biome-ignore lint/style/noNonNullAssertion: order entries are guaranteed by construction

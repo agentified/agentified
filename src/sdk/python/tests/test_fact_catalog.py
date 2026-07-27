@@ -3,7 +3,8 @@
 `FactCatalog.ground` is the Python home of the freshness gate (the TS SDK also
 exposes it as `ratel().ground`, which delegates to the catalog). The pure
 planner is covered in `test_grounding.py`; here we exercise the stateful catalog
-method and the facts bucket via `search_capabilities_tool(..., fact_catalog=...)`.
+method (the facts surface is host-driven only — the model-facing
+`search_capabilities` tool stays fact-free, in verbatim parity with the TS SDK).
 """
 
 import warnings
@@ -12,7 +13,6 @@ from dataclasses import replace
 import pytest
 
 import ratel_ai.fact_catalog
-from ratel_ai import ToolCatalog, search_capabilities_tool
 from ratel_ai.catalog import TraceSinkConfig
 from ratel_ai.experimental import ExperimentalWarning, Fact, FactCatalog, Pin
 
@@ -77,6 +77,14 @@ async def test_re_registers_an_id_in_place() -> None:
     assert catalog.pinned() == []  # adopted the new pin
 
 
+async def test_rejects_an_id_with_a_trailing_newline() -> None:
+    # Python's `$` matches before a trailing newline; the pattern anchors with
+    # `\Z` so "shop-address\n" is rejected like any other out-of-set character.
+    catalog = FactCatalog()
+    with pytest.raises(ValueError, match="must match"):
+        await catalog.register(Fact(id="shop-address\n", name="n", description="d"))
+
+
 async def test_rejects_an_id_with_characters_outside_the_allowed_set() -> None:
     catalog = FactCatalog()
     with pytest.raises(ValueError, match="must match"):
@@ -104,42 +112,6 @@ async def test_register_accepts_a_flat_tuple() -> None:
     registry = catalog._registry
     await registry.register("hours", "hours", "opening hours", ["time"], {}, "9-5", "always")
     assert registry.search("opening hours", 5)[0].fact_id == "hours"
-
-
-# --- facts bucket in search_capabilities (the recall analogue) ------------
-
-
-async def test_search_capabilities_surfaces_facts_with_body_inline() -> None:
-    tools = ToolCatalog()
-    facts = FactCatalog()
-    await facts.register(cancellation)
-    search = search_capabilities_tool(tools, fact_catalog=facts)
-    result = await search.execute({"query": "how do I cancel and get a refund"})
-    assert any(f["factId"] == "cancellation" for f in result["facts"])
-    hit = next(f for f in result["facts"] if f["factId"] == "cancellation")
-    assert "full refund" in hit["body"]
-    assert set(hit) == {"factId", "score", "description", "body"}
-
-
-async def test_search_capabilities_empty_facts_bucket_when_no_fact_catalog() -> None:
-    tools = ToolCatalog()
-    search = search_capabilities_tool(tools)
-    result = await search.execute({"query": "totally unrelated query about rockets"})
-    assert result["facts"] == []
-
-
-async def test_search_capabilities_clamps_top_k_facts() -> None:
-    tools = ToolCatalog()
-    facts = FactCatalog()
-    await facts.register(
-        [
-            Fact(id="f1", name="f1", description="cancel a booking and get a refund"),
-            Fact(id="f2", name="f2", description="reschedule a booking appointment"),
-        ]
-    )
-    search = search_capabilities_tool(tools, fact_catalog=facts)
-    result = await search.execute({"query": "cancel or reschedule a booking", "topKFacts": 1})
-    assert len(result["facts"]) == 1
 
 
 # --- Pin enum -------------------------------------------------------------

@@ -62,6 +62,17 @@ describe("planInjection (content-presence gate)", () => {
     expect(d).toEqual({ id: "a", inject: false, reason: "fresh" });
   });
 
+  it("does not falsely match a body split across two messages", () => {
+    // Two unrelated messages ending/starting with the halves of a multi-line
+    // body must NOT reconstruct it across the message boundary.
+    const body = "12 Baker Street\nLondon NW1, open daily.";
+    const [d] = planInjection({
+      candidates: [cand("shop-address", body)],
+      transcript: ["it's on 12 Baker Street", "London NW1, open daily. Come say hi!"],
+    });
+    expect(d).toEqual({ id: "shop-address", inject: true, reason: "never" });
+  });
+
   it("matches bodies that span lines within one message", () => {
     const multiline = "Line one of the policy.\nLine two of the policy.";
     const [d] = planInjection({

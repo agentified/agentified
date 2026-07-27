@@ -111,13 +111,14 @@ def plan_injection(
     Returns:
         One `InjectionDecision` per candidate, in the same order.
     """
-    # One haystack, one substring scan per candidate. Bodies are injected as
-    # (part of) a single message, so a per-message join can't split them.
-    haystack = "\n".join(transcript)
-
+    # Per-message scan: a body counts as present only when contained within a
+    # single message — matching how injections render (one message carries the
+    # whole body). Scanning a joined haystack instead would false-positive when
+    # two unrelated messages happen to end/start with the two halves of a
+    # multi-line body.
     decisions: list[InjectionDecision] = []
     for candidate in candidates:
-        if candidate.body == "" or candidate.body in haystack:
+        if candidate.body == "" or any(candidate.body in message for message in transcript):
             decisions.append(InjectionDecision(candidate.id, False, "fresh"))
             continue
         last = previously_injected.get(candidate.id) if previously_injected is not None else None
@@ -170,7 +171,7 @@ class GroundingSnapshotItem:
     pin: PinTier
 
 
-FACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+FACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+\Z")
 """The set of fact ids a catalog accepts.
 
 Ids ride in trace events and in structured injection payloads (the adapter

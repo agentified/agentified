@@ -258,6 +258,44 @@ describe("ratel().ground — the freshness gate", () => {
   });
 });
 
+describe("ratel().recall — zero impact when no facts are registered", () => {
+  it("skips the fact search entirely on an empty catalog (no fact_search span/event)", async () => {
+    const r = ratel({ trace: { kind: "memory", sessionId: "t" } });
+    await r.tools.register({
+      id: "t1",
+      name: "t1",
+      description: "read a file from disk",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      execute: () => ({}),
+    });
+    await r.recall("read a file");
+    const events = r.facts.drainTraceEvents() as Array<{ type: string }>;
+    expect(events.filter((e) => e.type === "fact_search")).toEqual([]);
+  });
+
+  it("adapted views share the core's fact catalog and grounding state", async () => {
+    const r = ratel();
+    const view = r.adaptTo({
+      name: "test-adapter",
+      ingest: () => "passthrough" as const,
+      expose: (tool: unknown) => tool,
+      recallMessages: () => [],
+    });
+    expect(view.facts).toBe(r.facts);
+    await r.facts.register(address);
+    const first = await view.ground("hi", []);
+    expect(first.inject.map((i) => i.id)).toContain("shop-address");
+    // Grounding again through the CORE with the rendered transcript skips —
+    // one shared injected-body state across both views.
+    const second = await r.ground(
+      "hi",
+      first.inject.map((i) => i.body),
+    );
+    expect(second.skipped).toContain("shop-address");
+  });
+});
+
 describe("ratel().recall — facts bucket", () => {
   it("surfaces relevant facts in the recall result with the body inline", async () => {
     const r = ratel();

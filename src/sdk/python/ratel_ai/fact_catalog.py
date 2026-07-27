@@ -100,7 +100,7 @@ class Pin(str, Enum):
 
 def _clamp_facts_top_k(value: int | None) -> int:
     """Clamp a facts top-K to [1, 50], falling back to the default for junk."""
-    if not isinstance(value, int) or value < 1:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return _DEFAULT_FACTS_TOP_K
     return min(value, _MAX_TOP_K)
 
