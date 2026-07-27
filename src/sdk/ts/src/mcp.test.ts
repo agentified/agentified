@@ -162,6 +162,20 @@ describe("registerMcpServer", () => {
     expect(catalog.has("demo__read_file")).toBe(true);
   });
 
+  it("closes the MCP client when catalog.register fails", async () => {
+    const closeSpy = vi.spyOn(Client.prototype, "close").mockResolvedValue(undefined);
+    const catalog = new ToolCatalog({
+      method: "semantic",
+      embedding: { local: "/definitely/missing/ratel-embedding-model" },
+    });
+
+    await expect(
+      registerMcpServer(catalog, { name: "demo", transport: fake.clientTransport }),
+    ).rejects.toThrow(/failed to load embedding model/);
+    expect(closeSpy).toHaveBeenCalled();
+    closeSpy.mockRestore();
+  });
+
   it("makes upstream tools discoverable via catalog.search using their description", async () => {
     const catalog = new ToolCatalog();
     const handle = await registerMcpServer(catalog, {
