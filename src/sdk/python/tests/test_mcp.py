@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from ratel_ai import EmbedderError, ToolCatalog, TraceSinkConfig, register_mcp_server
+from ratel_ai.mcp import McpToolsListError
 
 
 @pytest.fixture
@@ -291,8 +292,9 @@ async def test_register_mcp_server_rejects_repeated_next_cursor(skip_mcp_import_
     )
     catalog = ToolCatalog()
 
-    with pytest.raises(Exception, match=r"repeated nextCursor"):
+    with pytest.raises(McpToolsListError, match=r"repeated nextCursor") as exc_info:
         await register_mcp_server(catalog, name="demo", session=session)
+    assert exc_info.value.code == "RepeatedCursor"
     assert not catalog.has("demo__stuck")
 
 
@@ -322,8 +324,9 @@ async def test_register_mcp_server_rejects_when_page_cap_exceeded(skip_mcp_impor
     session = _PaginatedFakeSession(resolve)
     catalog = ToolCatalog()
 
-    with pytest.raises(Exception, match=r"exceeded 64 pages"):
+    with pytest.raises(McpToolsListError, match=r"exceeded 64 pages") as exc_info:
         await register_mcp_server(catalog, name="demo", session=session)
+    assert exc_info.value.code == "PaginationExceeded"
     assert not catalog.has("demo__endless")
 
 

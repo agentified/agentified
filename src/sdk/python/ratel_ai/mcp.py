@@ -1,9 +1,9 @@
 """Upstream MCP ingestion — the Python mirror of `src/sdk/ts/src/mcp.ts`.
 
-`register_mcp_server` lists an upstream MCP server's tools, registers each into a
-`ToolCatalog` under a namespaced id (`<server>__<tool>`), and wires each executor
-to the upstream `call_tool`. It emits the same `upstream_*` trace **event types**
-the TS SDK emits (ADR-0007).
+`register_mcp_server` lists every paginated upstream MCP `tools/list` page (no live
+refresh), registers each tool into a `ToolCatalog` under a namespaced id
+(`<server>__<tool>`), and wires each executor to the upstream `call_tool`. It emits
+the same `upstream_*` trace **event types** the TS SDK emits (ADR-0007).
 
 The `mcp` package is an optional dependency (`pip install ratel-ai[mcp]`) and is
 imported lazily, so the base SDK installs without it.
@@ -27,10 +27,24 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .catalog import ExecutableTool, ToolCatalog
 from .telemetry import trace_upstream_register
+
+_MCP_LIST_MAX_PAGES = 64
+
+McpToolsListErrorCode = Literal["RepeatedCursor", "PaginationExceeded"]
+
+
+class McpToolsListError(Exception):
+    """Raised when MCP `tools/list` pagination is invalid or exceeds the page cap."""
+
+    def __init__(self, message: str, code: McpToolsListErrorCode) -> None:
+        """Set the error message and pagination failure code."""
+        super().__init__(message)
+        self.code = code
+        self.name = "McpToolsListError"
 
 
 def _require_mcp() -> None:
@@ -43,13 +57,86 @@ def _require_mcp() -> None:
         ) from err
 
 
+def _next_cursor(result: Any) -> str | None:
+    nc = getattr(result, "next_cursor", None)
+    if nc is None:
+        nc = getattr(result, "nextCursor", None)
+    return nc
+
+
+def _paginated_list_params(cursor: str) -> Any:
+    try:
+        from mcp.types import PaginatedRequestParams
+
+        return PaginatedRequestParams(cursor=cursor)
+    except ImportError:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(cursor=cursor)
+
+
+async def _fetch_tools_page(session: Any, cursor: str | None) -> Any:
+    if cursor is None:
+        return await session.list_tools()
+    return await session.list_tools(params=_paginated_list_params(cursor))
+
+
+async def _list_all_mcp_tools(session: Any) -> list[Any]:
+    tools: list[Any] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    for _ in range(_MCP_LIST_MAX_PAGES):
+        result = await _fetch_tools_page(session, cursor)
+        tools.extend(result.tools)
+        next_cursor = _next_cursor(result)
+        # MCP: only absent nextCursor ends pagination ("" is a valid cursor).
+        if next_cursor is None:
+            return tools
+        if next_cursor in seen_cursors:
+            raise McpToolsListError(
+                "MCP tools/list returned a repeated nextCursor",
+                "RepeatedCursor",
+            )
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    raise McpToolsListError(
+        f"MCP tools/list exceeded {_MCP_LIST_MAX_PAGES} pages",
+        "PaginationExceeded",
+    )
+
+
+def _build_registered_mcp_tools(
+    catalog: ToolCatalog,
+    session: Any,
+    name: str,
+    tools: list[Any],
+) -> tuple[list[str], list[ExecutableTool]]:
+    tool_ids: list[str] = []
+    registered: list[ExecutableTool] = []
+    for tool in tools:
+        tool_id = f"{name}__{tool.name}"
+        registered.append(
+            ExecutableTool(
+                id=tool_id,
+                name=tool.name,
+                description=getattr(tool, "description", None) or "",
+                input_schema=getattr(tool, "inputSchema", None) or {},
+                output_schema=getattr(tool, "outputSchema", None) or {"type": "object"},
+                execute=_make_executor(catalog, session, name, tool_id, tool.name),
+            )
+        )
+        tool_ids.append(tool_id)
+    return tool_ids, registered
+
+
 @dataclass
 class McpServerHandle:
     """What `register_mcp_server` returns: the registration's outcome.
 
     Attributes:
-        tool_ids: the namespaced `<server>__<tool>` ids registered into the
-            catalog, in upstream listing order.
+        tool_ids: namespaced `<server>__<tool>` ids in upstream list order (all
+            pages). Duplicate tool names may appear more than once;
+            `ToolCatalog.register` keeps the last row per id.
         server_instructions: the `instructions` value passed to
             `register_mcp_server` (the caller reads it from its own
             `initialize` result), or `None`.
@@ -92,14 +179,14 @@ async def register_mcp_server(
     Raises:
         ImportError: if the optional `mcp` package is not installed
             (`pip install 'ratel-ai[mcp]'`).
+        McpToolsListError: if `tools/list` repeats a cursor or exceeds the page cap.
     """
     _require_mcp()
 
     # The whole registration (list + ingest) is one `ratel.upstream.register` span;
     # per-tool invocations later get their own `execute_tool` spans (ADR-0007).
     async def _run(report_tool_count: Callable[[int], None]) -> McpServerHandle:
-        list_result = await session.list_tools()
-        tools = list_result.tools
+        tools = await _list_all_mcp_tools(session)
         report_tool_count(len(tools))
         catalog.record_event(
             {
@@ -110,21 +197,7 @@ async def register_mcp_server(
             }
         )
 
-        tool_ids: list[str] = []
-        registered: list[ExecutableTool] = []
-        for tool in tools:
-            tool_id = f"{name}__{tool.name}"
-            registered.append(
-                ExecutableTool(
-                    id=tool_id,
-                    name=tool.name,
-                    description=getattr(tool, "description", None) or "",
-                    input_schema=getattr(tool, "inputSchema", None) or {},
-                    output_schema=getattr(tool, "outputSchema", None) or {"type": "object"},
-                    execute=_make_executor(catalog, session, name, tool_id, tool.name),
-                )
-            )
-            tool_ids.append(tool_id)
+        tool_ids, registered = _build_registered_mcp_tools(catalog, session, name, tools)
         await catalog.register(registered)
 
         return McpServerHandle(
