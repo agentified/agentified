@@ -64,7 +64,7 @@ describe("adaptive usage ranking", () => {
   it("learns from use and then ranks better", async () => {
     const catalog = await buildCatalog();
     const graph = new IntentGraph();
-    catalog.enableAdaptiveRanking(graph);
+    catalog.experimentalEnableAdaptiveRanking(graph);
 
     expect(graph.clusterCount).toBe(0);
 
@@ -82,7 +82,7 @@ describe("adaptive usage ranking", () => {
     const baseline = ids((await buildCatalog()).search("read a file from disk", 5));
 
     const catalog = await buildCatalog();
-    catalog.enableAdaptiveRanking(new IntentGraph());
+    catalog.experimentalEnableAdaptiveRanking(new IntentGraph());
     await useIt(catalog, "why is the build broken", "gh_run_list");
     await useIt(catalog, "is the build broken again", "gh_run_list");
     await useIt(catalog, "the build broken on main", "gh_run_list");
@@ -95,7 +95,7 @@ describe("adaptive usage ranking", () => {
     // restart keeps what previous runs discovered.
     const first = await buildCatalog();
     const graph = new IntentGraph();
-    first.enableAdaptiveRanking(graph);
+    first.experimentalEnableAdaptiveRanking(graph);
     await useIt(first, "why is the build broken", "gh_run_list");
     await useIt(first, "is the build broken again", "gh_run_list");
     await useIt(first, "the build broken on main", "gh_run_list");
@@ -104,7 +104,7 @@ describe("adaptive usage ranking", () => {
     expect(restored.clusterCount).toBe(1);
 
     const second = await buildCatalog();
-    second.enableAdaptiveRanking(restored);
+    second.experimentalEnableAdaptiveRanking(restored);
     const order = ids(second.search("why is the build broken", 5));
     expect(order.indexOf("gh_run_list")).toBeLessThan(order.indexOf("docker_build"));
   });
@@ -114,7 +114,7 @@ describe("adaptive usage ranking", () => {
     // changed, and detect a writer that moved past your base.
     const catalog = await buildCatalog();
     const graph = new IntentGraph();
-    catalog.enableAdaptiveRanking(graph);
+    catalog.experimentalEnableAdaptiveRanking(graph);
     expect(graph.rev).toBe(0);
 
     await useIt(catalog, "why is the build broken", "gh_run_list");
@@ -141,12 +141,12 @@ describe("adaptive usage ranking", () => {
   it("stops learning and ranking when disabled, keeping what it knows", async () => {
     const catalog = await buildCatalog();
     const graph = new IntentGraph();
-    catalog.enableAdaptiveRanking(graph);
+    catalog.experimentalEnableAdaptiveRanking(graph);
     await useIt(catalog, "why is the build broken", "gh_run_list");
     await useIt(catalog, "is the build broken again", "gh_run_list");
     await useIt(catalog, "the build broken on main", "gh_run_list");
 
-    catalog.disableAdaptiveRanking();
+    catalog.experimentalDisableAdaptiveRanking();
     const order = ids(catalog.search("why is the build broken", 5));
     expect(order[0]).toBe("docker_build");
 
@@ -172,8 +172,8 @@ describe("adaptive usage ranking", () => {
         body: "# steps",
       },
     ]);
-    tools.enableAdaptiveRanking(graph);
-    skills.enableAdaptiveRanking(graph);
+    tools.experimentalEnableAdaptiveRanking(graph);
+    skills.experimentalEnableAdaptiveRanking(graph);
 
     await useIt(tools, "why is the build broken", "gh_run_list");
     skills.search("why is the build broken", 5);
@@ -204,8 +204,8 @@ describe("adaptive usage ranking", () => {
         body: "# steps",
       },
     ]);
-    tools.enableAdaptiveRanking(graph);
-    skills.enableAdaptiveRanking(graph);
+    tools.experimentalEnableAdaptiveRanking(graph);
+    skills.experimentalEnableAdaptiveRanking(graph);
 
     // Fan-out ordering: both searches (same query) before any invoke.
     tools.search("why is the build broken", 5);
@@ -223,7 +223,7 @@ describe("adaptive usage ranking", () => {
   it("exposes rank and fused so callers avoid the scale-shifting score", async () => {
     const catalog = await buildCatalog();
     const graph = new IntentGraph();
-    catalog.enableAdaptiveRanking(graph);
+    catalog.experimentalEnableAdaptiveRanking(graph);
 
     // No evidence yet: raw scores, unfused.
     const cold = catalog.search("why is the build broken", 5);
@@ -266,7 +266,7 @@ describe("adaptive usage ranking", () => {
 
   it("keeps writing to a configured jsonl sink after enabling adaptive ranking", async () => {
     const { catalog, size } = await jsonlCatalog();
-    catalog.enableAdaptiveRanking(new IntentGraph());
+    catalog.experimentalEnableAdaptiveRanking(new IntentGraph());
 
     const before = size();
     catalog.search("anything", 5);
@@ -275,7 +275,7 @@ describe("adaptive usage ranking", () => {
 
   it("keeps writing to a configured jsonl sink after disabling adaptive ranking", async () => {
     const { catalog, size } = await jsonlCatalog();
-    catalog.disableAdaptiveRanking(); // clobbered the sink even when never enabled
+    catalog.experimentalDisableAdaptiveRanking(); // clobbered the sink even when never enabled
 
     const before = size();
     catalog.search("anything", 5);
@@ -306,11 +306,11 @@ describe("rebuildOnModelChange", () => {
     const reg = new ToolRegistry();
     const state = { status: "paused: model mismatch" };
     (reg as unknown as { native: unknown }).native = fakeNative(state);
-    reg.enableAdaptiveRanking(new IntentGraph(), {
+    reg.experimentalEnableAdaptiveRanking(new IntentGraph(), {
       rebuildOnModelChange: true,
       warnOnModelMismatch: false,
     });
-    const rebuild = vi.spyOn(reg, "rebuildIntentGraph").mockResolvedValue();
+    const rebuild = vi.spyOn(reg, "experimentalRebuildIntentGraph").mockResolvedValue();
 
     await reg.searchWithMethodAsync("anything", 5, "direct", "semantic");
     expect(rebuild).toHaveBeenCalledOnce();
@@ -321,8 +321,8 @@ describe("rebuildOnModelChange", () => {
     (reg as unknown as { native: unknown }).native = fakeNative({
       status: "paused: model mismatch",
     });
-    reg.enableAdaptiveRanking(new IntentGraph(), { warnOnModelMismatch: false });
-    const rebuild = vi.spyOn(reg, "rebuildIntentGraph").mockResolvedValue();
+    reg.experimentalEnableAdaptiveRanking(new IntentGraph(), { warnOnModelMismatch: false });
+    const rebuild = vi.spyOn(reg, "experimentalRebuildIntentGraph").mockResolvedValue();
 
     await reg.searchWithMethodAsync("anything", 5, "direct", "semantic");
     expect(rebuild).not.toHaveBeenCalled();
@@ -331,8 +331,8 @@ describe("rebuildOnModelChange", () => {
   it("does nothing when the arm is active", async () => {
     const reg = new ToolRegistry();
     (reg as unknown as { native: unknown }).native = fakeNative({ status: "active" });
-    reg.enableAdaptiveRanking(new IntentGraph(), { rebuildOnModelChange: true });
-    const rebuild = vi.spyOn(reg, "rebuildIntentGraph").mockResolvedValue();
+    reg.experimentalEnableAdaptiveRanking(new IntentGraph(), { rebuildOnModelChange: true });
+    const rebuild = vi.spyOn(reg, "experimentalRebuildIntentGraph").mockResolvedValue();
 
     await reg.searchWithMethodAsync("anything", 5, "direct", "semantic");
     expect(rebuild).not.toHaveBeenCalled();
@@ -342,12 +342,12 @@ describe("rebuildOnModelChange", () => {
     const reg = new ToolRegistry();
     const state = { status: "paused: model mismatch" };
     (reg as unknown as { native: unknown }).native = fakeNative(state);
-    reg.enableAdaptiveRanking(new IntentGraph(), {
+    reg.experimentalEnableAdaptiveRanking(new IntentGraph(), {
       rebuildOnModelChange: true,
       warnOnModelMismatch: false,
     });
     // A successful rebuild flips status to active, so the second search skips it.
-    const rebuild = vi.spyOn(reg, "rebuildIntentGraph").mockImplementation(async () => {
+    const rebuild = vi.spyOn(reg, "experimentalRebuildIntentGraph").mockImplementation(async () => {
       state.status = "active";
     });
 
@@ -361,18 +361,18 @@ describe("rebuildOnModelChange", () => {
     (reg as unknown as { native: unknown }).native = fakeNative({
       status: "paused: model mismatch",
     });
-    reg.enableAdaptiveRanking(new IntentGraph(), {
+    reg.experimentalEnableAdaptiveRanking(new IntentGraph(), {
       rebuildOnModelChange: true,
       warnOnModelMismatch: false,
     });
-    const rebuild = vi.spyOn(reg, "rebuildIntentGraph").mockResolvedValue();
+    const rebuild = vi.spyOn(reg, "experimentalRebuildIntentGraph").mockResolvedValue();
 
     await reg.searchWithMethodAsync("anything", 5, "direct", "semantic");
     expect(rebuild).toHaveBeenCalledOnce();
   });
 });
 
-describe("rebuildIntentGraph error mapping (#6)", () => {
+describe("experimentalRebuildIntentGraph error mapping (#6)", () => {
   it("surfaces an embedding failure as a typed EmbedderError", async () => {
     const catalog = new ToolCatalog({
       method: "semantic",
@@ -396,11 +396,11 @@ describe("rebuildIntentGraph error mapping (#6)", () => {
         ],
       }),
     );
-    catalog.enableAdaptiveRanking(graph, { warnOnModelMismatch: false });
+    catalog.experimentalEnableAdaptiveRanking(graph, { warnOnModelMismatch: false });
 
     // Rebuild re-embeds the member under the missing model → load failure. The
-    // sibling paths already map this; rebuildIntentGraph must too.
-    const error = await catalog.rebuildIntentGraph().catch((e: unknown) => e);
+    // sibling paths already map this; experimentalRebuildIntentGraph must too.
+    const error = await catalog.experimentalRebuildIntentGraph().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(EmbedderError);
   });
 });
@@ -476,13 +476,13 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
     const catalog = await semanticCatalog();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      catalog.enableAdaptiveRanking(staleModelGraph());
-      expect(catalog.adaptiveRankingStatus.status).toBe("paused: model mismatch");
+      catalog.experimentalEnableAdaptiveRanking(staleModelGraph());
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
       expect(warn).toHaveBeenCalledOnce();
-      expect(warn.mock.calls[0]?.[0]).toContain("rebuildIntentGraph()");
+      expect(warn.mock.calls[0]?.[0]).toContain("experimentalRebuildIntentGraph()");
 
-      await catalog.rebuildIntentGraph();
-      expect(catalog.adaptiveRankingStatus.status).toBe("active");
+      await catalog.experimentalRebuildIntentGraph();
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
     } finally {
       warn.mockRestore();
     }
@@ -492,8 +492,8 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
     const catalog = await semanticCatalog();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      catalog.enableAdaptiveRanking(staleModelGraph(), { warnOnModelMismatch: false });
-      expect(catalog.adaptiveRankingStatus.status).toBe("paused: model mismatch");
+      catalog.experimentalEnableAdaptiveRanking(staleModelGraph(), { warnOnModelMismatch: false });
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
@@ -504,13 +504,13 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
     // End to end with a real model: a stale-model graph pauses, but the first
     // dense search rebuilds it under the active model — no manual rebuild call.
     const catalog = await semanticCatalog();
-    catalog.enableAdaptiveRanking(staleModelGraph(), {
+    catalog.experimentalEnableAdaptiveRanking(staleModelGraph(), {
       warnOnModelMismatch: false,
       rebuildOnModelChange: true,
     });
-    expect(catalog.adaptiveRankingStatus.status).toBe("paused: model mismatch");
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
 
     await catalog.searchAsync("why is the build broken", 5, "direct", "semantic");
-    expect(catalog.adaptiveRankingStatus.status).toBe("active");
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
   });
 });

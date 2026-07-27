@@ -34,7 +34,7 @@ test/adaptive.test.ts model-free assertion that learning promotes the real tool 
 
 ## How it works, in three calls
 
-- `catalog.enableAdaptiveRanking(graph)` — attach a shared `IntentGraph`; the catalog now learns from every `search` followed by an `invoke`.
+- `catalog.experimentalEnableAdaptiveRanking(graph)` — attach a shared `IntentGraph`; the catalog now learns from every `search` followed by an `invoke`.
 - `graph.toJson()` / `IntentGraph.fromJson(...)` — the graph lives in memory, so this is how learning outlives the process. Persist the bytes wherever you keep state. **Sensitive:** they contain the raw text of past user queries (the cluster `members`) — treat a saved graph like your query/telemetry log (restrict permissions, keep it out of version control and images).
 - `graph.rev` — a monotonic write counter. Persist only when it changed since your last save (**save-when-changed**), and compare it to a stored graph's `rev` before overwriting to catch a concurrent writer (**stale-base detection**). Single-writer is the supported model.
 
@@ -55,9 +55,9 @@ auto, before search : paused: model mismatch
 auto, after search  : active
 ```
 
-- `catalog.adaptiveRankingStatus.status` — `"paused: model mismatch"` after the swap; gate on this instead of reading stderr.
-- `await catalog.rebuildIntentGraph()` — re-embeds every cluster's members under the current model; support and edges survive, only centroids move. Throws `EmbedderError` if the model can't load.
-- `enableAdaptiveRanking(graph, { rebuildOnModelChange: true })` — opt in and the **next dense search** recovers for you. Recovery is lazy (`enable` is sync, the rebuild is async), so the status stays `paused` until that first search. Off by default because a rebuild is an embedding pass — cost, possible failure, and it mutates the graph.
+- `catalog.experimentalAdaptiveRankingStatus.status` — `"paused: model mismatch"` after the swap; gate on this instead of reading stderr.
+- `await catalog.experimentalRebuildIntentGraph()` — re-embeds every cluster's members under the current model; support and edges survive, only centroids move. Throws `EmbedderError` if the model can't load.
+- `experimentalEnableAdaptiveRanking(graph, { rebuildOnModelChange: true })` — opt in and the **next dense search** recovers for you. Recovery is lazy (`enable` is sync, the rebuild is async), so the status stays `paused` until that first search. Off by default because a rebuild is an embedding pass — cost, possible failure, and it mutates the graph.
 
 ## Why it's a separate workspace package
 

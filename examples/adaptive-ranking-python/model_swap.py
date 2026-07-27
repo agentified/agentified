@@ -8,7 +8,7 @@ skip notice and exits cleanly if the model can't be loaded.
 
 Centroids are tied to the model that built them, so a persisted graph loaded
 under a *different* model can't be cosine-compared — the boost **pauses** instead
-of ranking across incompatible vector spaces. ``rebuild_intent_graph()`` re-embeds
+of ranking across incompatible vector spaces. ``experimental_rebuild_intent_graph()`` re-embeds
 the graph under the current model; ``rebuild_on_model_change=True`` does that
 automatically on the next dense search. The TypeScript mirror is
 ``examples/adaptive-ranking-ts/src/model-swap.ts``.
@@ -55,7 +55,7 @@ async def main() -> None:
     # 1. Learn on the current model, then persist — and pretend a different model
     #    produced it, the state you'd reload after upgrading your embedder.
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     for query, invoked in SESSION:
         await learn(catalog, query, invoked)
     saved = swap_model(graph.to_json())
@@ -64,24 +64,24 @@ async def main() -> None:
     #    the arm pauses (base ranking is untouched) rather than boost on garbage.
     catalog = await semantic_catalog()
     stale = IntentGraph.from_json(saved)
-    catalog.enable_adaptive_ranking(stale, warn_on_model_mismatch=False)
-    print(f"after a model swap  : {catalog.adaptive_ranking_status}")
+    catalog.experimental_enable_adaptive_ranking(stale, warn_on_model_mismatch=False)
+    print(f"after a model swap  : {catalog.experimental_adaptive_ranking_status}")
 
     # 3a. Manual recovery: re-embed every cluster under the current model.
-    await catalog.rebuild_intent_graph()
-    print(f"after rebuild       : {catalog.adaptive_ranking_status}")
+    await catalog.experimental_rebuild_intent_graph()
+    print(f"after rebuild       : {catalog.experimental_adaptive_ranking_status}")
 
     # 3b. Or opt in and let the next dense search recover for you. Recovery is
     #     lazy (enable is sync, rebuild is async), so status stays paused until
     #     that first search.
     catalog = await semantic_catalog()
     stale = IntentGraph.from_json(saved)
-    catalog.enable_adaptive_ranking(
+    catalog.experimental_enable_adaptive_ranking(
         stale, warn_on_model_mismatch=False, rebuild_on_model_change=True
     )
-    print(f"auto, before search : {catalog.adaptive_ranking_status}")
+    print(f"auto, before search : {catalog.experimental_adaptive_ranking_status}")
     await catalog.search_async(QUERY, 5, method="semantic")
-    print(f"auto, after search  : {catalog.adaptive_ranking_status}")
+    print(f"auto, after search  : {catalog.experimental_adaptive_ranking_status}")
 
 
 if __name__ == "__main__":

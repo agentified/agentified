@@ -102,7 +102,7 @@ wheels = [
 
 [[package]]
 name = "ratel-ai"
-version = "0.5.0"
+version = "0.5.1"
 source = { directory = "../../src/sdk/python" }
 
 [package.metadata]

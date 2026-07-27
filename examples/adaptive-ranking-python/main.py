@@ -28,7 +28,7 @@ async def main() -> None:
 
     # 2. Attach a graph and learn from the session's search -> invoke pairs.
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     for query, invoked in SESSION:
         await learn(catalog, query, invoked)
     print(f"  after learning  : {' > '.join(top_ids(catalog, QUERY))}   (rev={graph.rev})")
@@ -41,7 +41,7 @@ async def main() -> None:
     # 4. Reload into a fresh catalog — a restart keeps what earlier runs discovered.
     restored_catalog = await build_catalog()
     restored = IntentGraph.from_json(saved)
-    restored_catalog.enable_adaptive_ranking(restored)
+    restored_catalog.experimental_enable_adaptive_ranking(restored)
     print(f"  after reload    : {' > '.join(top_ids(restored_catalog, QUERY))}   (rev={restored.rev})")
 
     # 5. `rev` drives save-when-changed: learn once more, then persist only because

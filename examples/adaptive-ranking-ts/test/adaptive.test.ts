@@ -20,7 +20,7 @@ async function main() {
   assert.equal(topIds(catalog, QUERY)[0], "docker_build", "expected BM25 to rank docker_build first");
 
   const graph = new IntentGraph();
-  catalog.enableAdaptiveRanking(graph);
+  catalog.experimentalEnableAdaptiveRanking(graph);
   assert.equal(graph.rev, 0, "a fresh graph has rev 0");
   for (const { query, invoked } of SESSION) await learn(catalog, query, invoked);
 
@@ -36,7 +36,7 @@ async function main() {
   const restored = IntentGraph.fromJson(graph.toJson());
   assert.equal(restored.rev, graph.rev, "rev must survive the wire form");
   const fresh = await buildCatalog();
-  fresh.enableAdaptiveRanking(restored);
+  fresh.experimentalEnableAdaptiveRanking(restored);
   const afterReload = topIds(fresh, QUERY);
   assert.ok(
     afterReload.indexOf("gh_run_list") < afterReload.indexOf("docker_build"),

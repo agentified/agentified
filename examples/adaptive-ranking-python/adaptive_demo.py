@@ -16,7 +16,7 @@ async def main():
 
     graph = IntentGraph()  # define the intent graph
 
-    catalog.enable_adaptive_ranking(graph)  # attach it: learn from usage and boost with it
+    catalog.experimental_enable_adaptive_ranking(graph)  # attach it: learn from usage and boost with it
 
     hits = await catalog.search_async(query, 5, method="semantic")  # semantic search, top-5 (dense is async)
 
@@ -31,13 +31,13 @@ async def main():
     saved = graph.to_json()               # serialize the in-memory graph
     graph = IntentGraph.from_json(saved)  # reload it (invalid graphs are rejected)
 
-    print("status:", catalog.adaptive_ranking_status)  # active | inactive | unknown | paused: model mismatch
+    print("status:", catalog.experimental_adaptive_ranking_status)  # active | inactive | unknown | paused: model mismatch
 
-    await catalog.rebuild_intent_graph()  # re-embed under the current model (recover after a model swap)
+    await catalog.experimental_rebuild_intent_graph()  # re-embed under the current model (recover after a model swap)
 
-    catalog.enable_adaptive_ranking(graph, rebuild_on_model_change=True)  # default False; True auto-recovers on next search
+    catalog.experimental_enable_adaptive_ranking(graph, rebuild_on_model_change=True)  # default False; True auto-recovers on next search
 
-    catalog.disable_adaptive_ranking()  # turn off; the graph keeps what it learned
+    catalog.experimental_disable_adaptive_ranking()  # turn off; the graph keeps what it learned
 
 
 if __name__ == "__main__":

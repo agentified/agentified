@@ -173,7 +173,7 @@ export class ToolRegistry {
    * score rather than a raw BM25 score, so use `rank` for ordering and
    * `fused` to detect the scale, not the raw `score`.
    */
-  enableAdaptiveRanking(
+  experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
     options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
   ): void {
@@ -191,7 +191,7 @@ export class ToolRegistry {
    * the usage arm pauses until this runs. Members, support, and edges are
    * preserved — only the centroids move to the new space.
    */
-  async rebuildIntentGraph(): Promise<void> {
+  async experimentalRebuildIntentGraph(): Promise<void> {
     try {
       await this.native.rebuildIntentGraph();
     } catch (error) {
@@ -207,7 +207,7 @@ export class ToolRegistry {
    * embedding model changed (`"paused: dim mismatch"` / `"paused: model
    * mismatch"`). Gate on this instead of reading stderr if you prefer.
    */
-  get adaptiveRankingStatus(): AdaptiveRankingStatus {
+  get experimentalAdaptiveRankingStatus(): AdaptiveRankingStatus {
     return this.native.adaptiveRankingStatus();
   }
 
@@ -224,11 +224,11 @@ export class ToolRegistry {
       : `built with embedding model '${s.built}' but the active model is '${s.active}'`;
     console.warn(
       `ratel: intent graph was ${how}. Adaptive usage ranking is PAUSED — ` +
-        `call rebuildIntentGraph() to rebuild it with the current model.`,
+        `call experimentalRebuildIntentGraph() to rebuild it with the current model.`,
     );
   }
 
-  /** Opt-in auto-recovery (see {@link enableAdaptiveRanking}): when the arm is
+  /** Opt-in auto-recovery (see {@link experimentalEnableAdaptiveRanking}): when the arm is
    * paused because the graph's model no longer matches, re-embed the graph under
    * the current model before the dense search. Re-checks each search, so once
    * rebuilt it stops; a failed rebuild throws `EmbedderError`, exactly as the
@@ -236,7 +236,7 @@ export class ToolRegistry {
   async #maybeRebuildOnModelChange(): Promise<void> {
     if (!this.#rebuildOnModelChange) return;
     if (this.native.adaptiveRankingStatus().status.startsWith("paused")) {
-      await this.rebuildIntentGraph();
+      await this.experimentalRebuildIntentGraph();
     }
   }
 
@@ -245,7 +245,7 @@ export class ToolRegistry {
    * graph stops growing. The graph keeps what it learned, so re-enabling
    * resumes rather than restarts.
    */
-  disableAdaptiveRanking(): void {
+  experimentalDisableAdaptiveRanking(): void {
     this.#rebuildOnModelChange = false;
     this.native.disableAdaptiveRanking();
   }
@@ -386,7 +386,7 @@ export class SkillRegistry {
    * score rather than a raw BM25 score, so use `rank` for ordering and
    * `fused` to detect the scale, not the raw `score`.
    */
-  enableAdaptiveRanking(
+  experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
     options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
   ): void {
@@ -404,7 +404,7 @@ export class SkillRegistry {
    * the usage arm pauses until this runs. Members, support, and edges are
    * preserved — only the centroids move to the new space.
    */
-  async rebuildIntentGraph(): Promise<void> {
+  async experimentalRebuildIntentGraph(): Promise<void> {
     try {
       await this.native.rebuildIntentGraph();
     } catch (error) {
@@ -420,7 +420,7 @@ export class SkillRegistry {
    * embedding model changed (`"paused: dim mismatch"` / `"paused: model
    * mismatch"`). Gate on this instead of reading stderr if you prefer.
    */
-  get adaptiveRankingStatus(): AdaptiveRankingStatus {
+  get experimentalAdaptiveRankingStatus(): AdaptiveRankingStatus {
     return this.native.adaptiveRankingStatus();
   }
 
@@ -437,11 +437,11 @@ export class SkillRegistry {
       : `built with embedding model '${s.built}' but the active model is '${s.active}'`;
     console.warn(
       `ratel: intent graph was ${how}. Adaptive usage ranking is PAUSED — ` +
-        `call rebuildIntentGraph() to rebuild it with the current model.`,
+        `call experimentalRebuildIntentGraph() to rebuild it with the current model.`,
     );
   }
 
-  /** Opt-in auto-recovery (see {@link enableAdaptiveRanking}): when the arm is
+  /** Opt-in auto-recovery (see {@link experimentalEnableAdaptiveRanking}): when the arm is
    * paused because the graph's model no longer matches, re-embed the graph under
    * the current model before the dense search. Re-checks each search, so once
    * rebuilt it stops; a failed rebuild throws `EmbedderError`, exactly as the
@@ -449,7 +449,7 @@ export class SkillRegistry {
   async #maybeRebuildOnModelChange(): Promise<void> {
     if (!this.#rebuildOnModelChange) return;
     if (this.native.adaptiveRankingStatus().status.startsWith("paused")) {
-      await this.rebuildIntentGraph();
+      await this.experimentalRebuildIntentGraph();
     }
   }
 
@@ -458,7 +458,7 @@ export class SkillRegistry {
    * graph stops growing. The graph keeps what it learned, so re-enabling
    * resumes rather than restarts.
    */
-  disableAdaptiveRanking(): void {
+  experimentalDisableAdaptiveRanking(): void {
     this.#rebuildOnModelChange = false;
     this.native.disableAdaptiveRanking();
   }

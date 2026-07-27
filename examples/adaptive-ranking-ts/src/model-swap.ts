@@ -6,7 +6,7 @@
 //
 // Centroids are tied to the model that built them, so a graph reloaded under a
 // different model can't be cosine-compared — the boost PAUSES instead of ranking
-// across incompatible vector spaces. `rebuildIntentGraph()` re-embeds it under
+// across incompatible vector spaces. `experimentalRebuildIntentGraph()` re-embeds it under
 // the current model; `{ rebuildOnModelChange: true }` does that automatically on
 // the next dense search.
 import { EmbedderError, IntentGraph, ToolCatalog } from "@ratel-ai/sdk";
@@ -47,28 +47,28 @@ async function main(): Promise<void> {
 
   // 1. Learn on the current model, persist, and pretend a different model made it.
   const graph = new IntentGraph();
-  catalog.enableAdaptiveRanking(graph);
+  catalog.experimentalEnableAdaptiveRanking(graph);
   for (const { query, invoked } of SESSION) await learn(catalog, query, invoked);
   const saved = swapModel(graph.toJson());
 
   // 2. Reload under the current model: stored centroids no longer match → paused.
   catalog = await semanticCatalog();
   let stale = IntentGraph.fromJson(saved);
-  catalog.enableAdaptiveRanking(stale, { warnOnModelMismatch: false });
-  console.log(`after a model swap  : ${catalog.adaptiveRankingStatus.status}`);
+  catalog.experimentalEnableAdaptiveRanking(stale, { warnOnModelMismatch: false });
+  console.log(`after a model swap  : ${catalog.experimentalAdaptiveRankingStatus.status}`);
 
   // 3a. Manual recovery: re-embed every cluster under the current model.
-  await catalog.rebuildIntentGraph();
-  console.log(`after rebuild       : ${catalog.adaptiveRankingStatus.status}`);
+  await catalog.experimentalRebuildIntentGraph();
+  console.log(`after rebuild       : ${catalog.experimentalAdaptiveRankingStatus.status}`);
 
   // 3b. Or opt in — the next dense search recovers for you. Recovery is lazy
   //     (enable is sync, rebuild is async), so status stays paused until then.
   catalog = await semanticCatalog();
   stale = IntentGraph.fromJson(saved);
-  catalog.enableAdaptiveRanking(stale, { warnOnModelMismatch: false, rebuildOnModelChange: true });
-  console.log(`auto, before search : ${catalog.adaptiveRankingStatus.status}`);
+  catalog.experimentalEnableAdaptiveRanking(stale, { warnOnModelMismatch: false, rebuildOnModelChange: true });
+  console.log(`auto, before search : ${catalog.experimentalAdaptiveRankingStatus.status}`);
   await catalog.searchAsync(QUERY, 5, "direct", "semantic");
-  console.log(`auto, after search  : ${catalog.adaptiveRankingStatus.status}`);
+  console.log(`auto, after search  : ${catalog.experimentalAdaptiveRankingStatus.status}`);
 }
 
 await main();

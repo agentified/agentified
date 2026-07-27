@@ -420,34 +420,34 @@ export class ToolCatalog {
    *
    * Set `rebuildOnModelChange` to auto-recover a model-mismatched graph on the
    * next dense (semantic/hybrid) search rather than staying paused until you
-   * call {@link rebuildIntentGraph} yourself. Off by default — the rebuild is an
+   * call {@link experimentalRebuildIntentGraph} yourself. Off by default — the rebuild is an
    * embedding pass (cost, possible `EmbedderError`, and it mutates the graph).
    */
-  enableAdaptiveRanking(
+  experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
     options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
   ): void {
-    this.registry.enableAdaptiveRanking(graph, options);
+    this.registry.experimentalEnableAdaptiveRanking(graph, options);
   }
 
   /**
    * Re-embed the intent graph's members under the current model and replace its
    * centroids — call after changing the embedding model. Preserves members,
-   * support, and edges. See {@link enableAdaptiveRanking}.
+   * support, and edges. See {@link experimentalEnableAdaptiveRanking}.
    */
-  async rebuildIntentGraph(): Promise<void> {
-    await this.registry.rebuildIntentGraph();
+  async experimentalRebuildIntentGraph(): Promise<void> {
+    await this.registry.experimentalRebuildIntentGraph();
   }
 
   /** Whether adaptive usage ranking is active, inactive, or paused by a model
    * change — see the native `AdaptiveRankingStatus`. */
-  get adaptiveRankingStatus() {
-    return this.registry.adaptiveRankingStatus;
+  get experimentalAdaptiveRankingStatus() {
+    return this.registry.experimentalAdaptiveRankingStatus;
   }
 
   /** Turn adaptive usage ranking off; the graph keeps what it learned. */
-  disableAdaptiveRanking(): void {
-    this.registry.disableAdaptiveRanking();
+  experimentalDisableAdaptiveRanking(): void {
+    this.registry.experimentalDisableAdaptiveRanking();
   }
 
   /**

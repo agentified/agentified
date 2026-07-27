@@ -295,7 +295,7 @@ class SkillRegistry:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
 
-    def enable_adaptive_ranking(
+    def experimental_enable_adaptive_ranking(
         self,
         graph: IntentGraph,
         *,
@@ -322,7 +322,7 @@ class SkillRegistry:
         (new centroids, bumped ``rev``). Recovery is lazy: status stays
         ``paused`` until that first dense search.
         """
-        # `enable_adaptive_ranking` takes `&mut self` natively, so it must not run
+        # `experimental_enable_adaptive_ranking` takes `&mut self` natively, so it must not run
         # while an in-flight dense build holds the registry — guard it like
         # `set_trace_sink`, surfacing the typed busy error rather than a raw
         # pyo3 "Already borrowed".
@@ -334,7 +334,7 @@ class SkillRegistry:
             self._native.enable_adaptive_ranking(graph)
         self._maybe_warn_model_mismatch()
 
-    def disable_adaptive_ranking(self) -> None:
+    def experimental_disable_adaptive_ranking(self) -> None:
         """Turn adaptive usage ranking off; the graph keeps what it learned."""
         with self._dense_state:
             self._raise_if_busy()
@@ -353,16 +353,16 @@ class SkillRegistry:
             return
         status, _built, _active, _dim = self._native.adaptive_ranking_status()
         if status.startswith("paused"):
-            await self.rebuild_intent_graph()
+            await self.experimental_rebuild_intent_graph()
 
-    async def rebuild_intent_graph(self) -> None:
+    async def experimental_rebuild_intent_graph(self) -> None:
         """Re-embed the graph's members under the current model; preserves learning."""
         await self._run_dense(self._native._rebuild_intent_graph)
         self._adaptive_warned = False
         self._maybe_warn_model_mismatch()
 
     @property
-    def adaptive_ranking_status(self) -> AdaptiveRankingStatus:
+    def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
         """Adaptive-ranking status; a str that also carries a pause's model detail."""
         status, built, active, dim_mismatch = self._native.adaptive_ranking_status()
         return AdaptiveRankingStatus(status, built, active, dim_mismatch)
@@ -381,7 +381,7 @@ class SkillRegistry:
         )
         warnings.warn(
             f"ratel: intent graph was {how}. Adaptive usage ranking is PAUSED — "
-            "call rebuild_intent_graph() to rebuild it with the current model.",
+            "call experimental_rebuild_intent_graph() to rebuild it with the current model.",
             stacklevel=2,
         )
 
@@ -577,7 +577,7 @@ class SkillCatalog:
         """
         self._registry.record_event(event)
 
-    def enable_adaptive_ranking(
+    def experimental_enable_adaptive_ranking(
         self,
         graph: IntentGraph,
         *,
@@ -598,27 +598,27 @@ class SkillCatalog:
 
         Set ``rebuild_on_model_change`` to auto-recover a model-mismatched graph
         on the next dense search rather than staying paused until you call
-        :meth:`rebuild_intent_graph` yourself. Off by default — the rebuild is an
+        :meth:`experimental_rebuild_intent_graph` yourself. Off by default — the rebuild is an
         embedding pass (cost, possible :class:`EmbedderError`, mutates the graph).
         """
-        self._registry.enable_adaptive_ranking(
+        self._registry.experimental_enable_adaptive_ranking(
             graph,
             warn_on_model_mismatch=warn_on_model_mismatch,
             rebuild_on_model_change=rebuild_on_model_change,
         )
 
-    async def rebuild_intent_graph(self) -> None:
+    async def experimental_rebuild_intent_graph(self) -> None:
         """Re-embed the graph's members under the current model; preserves learning."""
-        await self._registry.rebuild_intent_graph()
+        await self._registry.experimental_rebuild_intent_graph()
 
     @property
-    def adaptive_ranking_status(self) -> AdaptiveRankingStatus:
+    def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
         """Adaptive-ranking status: active, inactive, unknown, or paused."""
-        return self._registry.adaptive_ranking_status
+        return self._registry.experimental_adaptive_ranking_status
 
-    def disable_adaptive_ranking(self) -> None:
+    def experimental_disable_adaptive_ranking(self) -> None:
         """Turn adaptive usage ranking off; the graph keeps what it learned."""
-        self._registry.disable_adaptive_ranking()
+        self._registry.experimental_disable_adaptive_ranking()
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured trace envelopes; `[]` unless the sink is "memory"."""

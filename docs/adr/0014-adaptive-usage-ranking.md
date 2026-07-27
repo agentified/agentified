@@ -137,18 +137,18 @@ stale *enhancement* would be worse than the problem.
 
 The mismatch is surfaced three ways: a `TraceEvent::UsageModelMismatch` (structured, always),
 a one-time SDK stderr warning (default on, `warnOnModelMismatch: false` to suppress), and an
-`adaptiveRankingStatus` the app can gate on. `rebuildIntentGraph()` re-embeds the graph's
+`experimentalAdaptiveRankingStatus` the app can gate on. `experimentalRebuildIntentGraph()` re-embeds the graph's
 members under the current model and restamps — members, support, and edges are
 model-independent, so all learning survives; only the centroids move.
 
 Recovery is **explicit by default**: the arm stays paused until the caller invokes
-`rebuildIntentGraph()`, because a rebuild is an embedding pass (cost, can fail, mutates the
+`experimentalRebuildIntentGraph()`, because a rebuild is an embedding pass (cost, can fail, mutates the
 graph and bumps `rev`) and the paused fall-through is safe in the meantime. For zero-touch
-recovery, `enableAdaptiveRanking(graph, { rebuildOnModelChange: true })` (`rebuild_on_model_change=True`
+recovery, `experimentalEnableAdaptiveRanking(graph, { rebuildOnModelChange: true })` (`rebuild_on_model_change=True`
 in Python) opts in: the next dense search re-embeds the graph before searching, then proceeds.
 It lives on the catalog, not `IntentGraph` — the graph is a pure wire type with no embedder;
 only the catalog owns the model. Recovery is lazy (dense search is async-only, `enable` is
-sync), so `adaptiveRankingStatus` reads `paused` until that first dense search; a failed
+sync), so `experimentalAdaptiveRankingStatus` reads `paused` until that first dense search; a failed
 rebuild raises the same `EmbedderError` the dense query itself would. Off by default keeps the
 expensive, fallible operation from being implicit.
 
@@ -189,6 +189,15 @@ scale-invariant) and `fused` (whether `score` is an RRF score). Callers order/th
 `rank` and branch on `fused`; `score` is a within-list hint only. Deliberately no normalized
 confidence — BM25, cosine, and RRF have no honest common scale, so any single number would
 be fabricated.
+
+The SDK entry points ship behind an `experimental` prefix —
+`experimentalEnableAdaptiveRanking` / `experimental_enable_adaptive_ranking` and its
+`rebuild` / `disable` / `status` siblings — per the additive-evolution convention
+([AGENTS.md](../../AGENTS.md)): a new, unproven capability is marked until it earns promotion,
+then the prefix is dropped. The marker sits on the *behavior* entry points only. `IntentGraph`
+and its `to_json` / `from_json` / `rev` keep stable names — it is a `protocol/v1` wire type
+whose versioning already governs its evolution, and the experimental methods are the sole way
+to activate it, so they gate all use on their own.
 
 ### Where learning happens
 

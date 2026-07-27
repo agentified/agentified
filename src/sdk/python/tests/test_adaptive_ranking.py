@@ -69,7 +69,7 @@ async def test_ranking_is_untouched_until_enabled() -> None:
 async def test_learns_from_use_and_then_ranks_better() -> None:
     catalog = await build_catalog()
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     assert graph.cluster_count == 0
 
     await use_it(catalog, "why is the build broken", "gh_run_list")
@@ -86,7 +86,7 @@ async def test_a_query_with_no_evidence_is_unaffected() -> None:
     baseline = ids((await build_catalog()).search("read a file from disk", 5))
 
     catalog = await build_catalog()
-    catalog.enable_adaptive_ranking(IntentGraph())
+    catalog.experimental_enable_adaptive_ranking(IntentGraph())
     await use_it(catalog, "why is the build broken", "gh_run_list")
     await use_it(catalog, "is the build broken again", "gh_run_list")
     await use_it(catalog, "the build broken on main", "gh_run_list")
@@ -99,7 +99,7 @@ async def test_learning_survives_a_restart_via_the_wire_form() -> None:
     """The graph is in memory, so this is how a restart keeps what was learned."""
     first = await build_catalog()
     graph = IntentGraph()
-    first.enable_adaptive_ranking(graph)
+    first.experimental_enable_adaptive_ranking(graph)
     await use_it(first, "why is the build broken", "gh_run_list")
     await use_it(first, "is the build broken again", "gh_run_list")
     await use_it(first, "the build broken on main", "gh_run_list")
@@ -108,7 +108,7 @@ async def test_learning_survives_a_restart_via_the_wire_form() -> None:
     assert restored.cluster_count == 1
 
     second = await build_catalog()
-    second.enable_adaptive_ranking(restored)
+    second.experimental_enable_adaptive_ranking(restored)
     order = ids(second.search("why is the build broken", 5))
     assert order.index("gh_run_list") < order.index("docker_build")
 
@@ -118,7 +118,7 @@ async def test_rev_tracks_writes_and_survives_the_wire_form() -> None:
     """`rev` lets a caller save only when changed and detect a stale base."""
     catalog = await build_catalog()
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     assert graph.rev == 0
 
     await use_it(catalog, "why is the build broken", "gh_run_list")
@@ -142,12 +142,12 @@ def test_a_future_schema_version_is_rejected() -> None:
 async def test_disabling_stops_ranking_but_keeps_what_was_learned() -> None:
     catalog = await build_catalog()
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     await use_it(catalog, "why is the build broken", "gh_run_list")
     await use_it(catalog, "is the build broken again", "gh_run_list")
     await use_it(catalog, "the build broken on main", "gh_run_list")
 
-    catalog.disable_adaptive_ranking()
+    catalog.experimental_disable_adaptive_ranking()
     assert ids(catalog.search("why is the build broken", 5))[0] == "docker_build"
     assert graph.cluster_count == 1
     assert "gh_run_list" in graph.to_json()
@@ -169,7 +169,7 @@ async def test_jsonl_sink_survives_enabling_adaptive_ranking(tmp_path: Path) -> 
     # before the toggle, so assert the file grows *after* it.
     path = tmp_path / "trace.jsonl"
     catalog = await _jsonl_catalog(path)
-    catalog.enable_adaptive_ranking(IntentGraph())
+    catalog.experimental_enable_adaptive_ranking(IntentGraph())
 
     before = path.stat().st_size
     catalog.search("anything", 5)
@@ -182,7 +182,7 @@ async def test_jsonl_sink_survives_disabling_adaptive_ranking(tmp_path: Path) ->
     # ranking was never enabled.
     path = tmp_path / "trace.jsonl"
     catalog = await _jsonl_catalog(path)
-    catalog.disable_adaptive_ranking()
+    catalog.experimental_disable_adaptive_ranking()
 
     before = path.stat().st_size
     catalog.search("anything", 5)
@@ -211,7 +211,7 @@ async def _semantic_with_fake(status: str, *, flag: bool):
     reg = catalog._registry
     reg._native = _FakeNative(status)
     reg._rebuild_on_model_change = flag
-    reg.rebuild_intent_graph = AsyncMock()  # type: ignore[method-assign]
+    reg.experimental_rebuild_intent_graph = AsyncMock()  # type: ignore[method-assign]
     return catalog, reg
 
 
@@ -219,21 +219,21 @@ async def _semantic_with_fake(status: str, *, flag: bool):
 async def test_auto_rebuild_recovers_a_paused_graph_on_the_next_dense_search() -> None:
     catalog, reg = await _semantic_with_fake("paused: model mismatch", flag=True)
     await catalog.search_async("anything", 5, method="semantic")
-    reg.rebuild_intent_graph.assert_awaited_once()
+    reg.experimental_rebuild_intent_graph.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_auto_rebuild_is_off_by_default() -> None:
     catalog, reg = await _semantic_with_fake("paused: model mismatch", flag=False)
     await catalog.search_async("anything", 5, method="semantic")
-    reg.rebuild_intent_graph.assert_not_awaited()
+    reg.experimental_rebuild_intent_graph.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_auto_rebuild_does_nothing_when_the_arm_is_active() -> None:
     catalog, reg = await _semantic_with_fake("active", flag=True)
     await catalog.search_async("anything", 5, method="semantic")
-    reg.rebuild_intent_graph.assert_not_awaited()
+    reg.experimental_rebuild_intent_graph.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -245,10 +245,10 @@ async def test_auto_rebuild_stops_once_the_graph_is_recovered() -> None:
     async def _recover() -> None:
         reg._native._status = "active"
 
-    reg.rebuild_intent_graph = AsyncMock(side_effect=_recover)  # type: ignore[method-assign]
+    reg.experimental_rebuild_intent_graph = AsyncMock(side_effect=_recover)  # type: ignore[method-assign]
     await catalog.search_async("anything", 5, method="semantic")
     await catalog.search_async("anything", 5, method="semantic")
-    reg.rebuild_intent_graph.assert_awaited_once()
+    reg.experimental_rebuild_intent_graph.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -258,10 +258,10 @@ async def test_skill_catalog_auto_rebuild_recovers_a_paused_graph() -> None:
     reg = catalog._registry
     reg._native = _FakeNative("paused: model mismatch")
     reg._rebuild_on_model_change = True
-    reg.rebuild_intent_graph = AsyncMock()  # type: ignore[method-assign]
+    reg.experimental_rebuild_intent_graph = AsyncMock()  # type: ignore[method-assign]
 
     await catalog.search_async("anything", 5, method="semantic")
-    reg.rebuild_intent_graph.assert_awaited_once()
+    reg.experimental_rebuild_intent_graph.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -272,7 +272,7 @@ async def test_enable_adaptive_ranking_raises_the_typed_busy_error_mid_build() -
     catalog = await build_catalog()
     catalog._registry._dense_pending = 1
     with pytest.raises(RuntimeError, match="registry busy"):
-        catalog.enable_adaptive_ranking(IntentGraph())
+        catalog.experimental_enable_adaptive_ranking(IntentGraph())
 
 
 @pytest.mark.asyncio
@@ -280,7 +280,7 @@ async def test_disable_adaptive_ranking_raises_the_typed_busy_error_mid_build() 
     catalog = await build_catalog()
     catalog._registry._dense_pending = 1
     with pytest.raises(RuntimeError, match="registry busy"):
-        catalog.disable_adaptive_ranking()
+        catalog.experimental_disable_adaptive_ranking()
 
 
 @pytest.mark.asyncio
@@ -292,7 +292,7 @@ async def test_skill_enable_adaptive_ranking_raises_the_typed_busy_error_mid_bui
     )
     catalog._registry._dense_pending = 1
     with pytest.raises(RuntimeError, match="registry busy"):
-        catalog.enable_adaptive_ranking(IntentGraph())
+        catalog.experimental_enable_adaptive_ranking(IntentGraph())
 
 
 @pytest.mark.asyncio
@@ -301,7 +301,7 @@ async def test_adaptive_ranking_status_exposes_the_model_detail() -> None:
     # carries which models a pause involves — otherwise only reachable via stderr.
     catalog = await build_catalog()
     catalog._registry._native = _FakeNative("paused: model mismatch")
-    s = catalog.adaptive_ranking_status
+    s = catalog.experimental_adaptive_ranking_status
     assert s == "paused: model mismatch"
     assert s.startswith("paused")
     assert s.built == "old-model"
@@ -316,7 +316,7 @@ async def test_skill_adaptive_ranking_status_exposes_the_model_detail() -> None:
         Skill(id="s", name="s", description="a skill", tags=[], tools=[], metadata={}, body="# s")
     )
     catalog._registry._native = _FakeNative("paused: model mismatch")
-    s = catalog.adaptive_ranking_status
+    s = catalog.experimental_adaptive_ranking_status
     assert s == "paused: model mismatch"
     assert s.built == "old-model"
     assert s.active == "new-model"
@@ -345,8 +345,8 @@ async def test_one_graph_is_shared_between_tool_and_skill_catalogs() -> None:
             )
         ]
     )
-    tools.enable_adaptive_ranking(graph)
-    skills.enable_adaptive_ranking(graph)
+    tools.experimental_enable_adaptive_ranking(graph)
+    skills.experimental_enable_adaptive_ranking(graph)
 
     await use_it(tools, "why is the build broken", "gh_run_list")
     skills.search("why is the build broken", 5)
@@ -378,8 +378,8 @@ async def test_a_capability_search_answered_by_both_counts_support_once() -> Non
             body="# steps",
         )
     )
-    tools.enable_adaptive_ranking(graph)
-    skills.enable_adaptive_ranking(graph)
+    tools.experimental_enable_adaptive_ranking(graph)
+    skills.experimental_enable_adaptive_ranking(graph)
 
     # Fan-out ordering: both searches (same query) before any invoke.
     tools.search("why is the build broken", 5)
@@ -398,7 +398,7 @@ async def test_a_capability_search_answered_by_both_counts_support_once() -> Non
 async def test_rank_and_fused_expose_the_scale_switch() -> None:
     catalog = await build_catalog()
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
 
     cold = catalog.search("why is the build broken", 5)
     assert [h.rank for h in cold] == list(range(len(cold)))
@@ -485,12 +485,12 @@ async def test_model_mismatch_pauses_warns_and_rebuild_restores() -> None:
     catalog = await _semantic_catalog()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        catalog.enable_adaptive_ranking(_stale_graph())
-        assert catalog.adaptive_ranking_status == "paused: model mismatch"
-        assert any("rebuild_intent_graph()" in str(w.message) for w in caught)
+        catalog.experimental_enable_adaptive_ranking(_stale_graph())
+        assert catalog.experimental_adaptive_ranking_status == "paused: model mismatch"
+        assert any("experimental_rebuild_intent_graph()" in str(w.message) for w in caught)
 
-    await catalog.rebuild_intent_graph()
-    assert catalog.adaptive_ranking_status == "active"
+    await catalog.experimental_rebuild_intent_graph()
+    assert catalog.experimental_adaptive_ranking_status == "active"
 
 
 @pytest.mark.skipif(not _has_model, reason="bge-small not cached")
@@ -499,8 +499,8 @@ async def test_warn_can_be_suppressed() -> None:
     catalog = await _semantic_catalog()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        catalog.enable_adaptive_ranking(_stale_graph(), warn_on_model_mismatch=False)
-        assert catalog.adaptive_ranking_status == "paused: model mismatch"
+        catalog.experimental_enable_adaptive_ranking(_stale_graph(), warn_on_model_mismatch=False)
+        assert catalog.experimental_adaptive_ranking_status == "paused: model mismatch"
         assert not caught
 
 
@@ -509,12 +509,12 @@ async def test_warn_can_be_suppressed() -> None:
 async def test_rebuild_on_model_change_recovers_without_a_manual_rebuild() -> None:
     # End to end with a real model: a stale-model graph pauses, but the first
     # dense search rebuilds it under the active model and comes back active — no
-    # explicit rebuild_intent_graph() call.
+    # explicit experimental_rebuild_intent_graph() call.
     catalog = await _semantic_catalog()
-    catalog.enable_adaptive_ranking(
+    catalog.experimental_enable_adaptive_ranking(
         _stale_graph(), warn_on_model_mismatch=False, rebuild_on_model_change=True
     )
-    assert catalog.adaptive_ranking_status == "paused: model mismatch"
+    assert catalog.experimental_adaptive_ranking_status == "paused: model mismatch"
 
     await catalog.search_async("why is the build broken", 5, method="semantic")
-    assert catalog.adaptive_ranking_status == "active"
+    assert catalog.experimental_adaptive_ranking_status == "active"

@@ -19,7 +19,7 @@ async def test_learning_beats_bm25_and_survives_reload() -> None:
     assert top_ids(catalog, QUERY)[0] == "docker_build"
 
     graph = IntentGraph()
-    catalog.enable_adaptive_ranking(graph)
+    catalog.experimental_enable_adaptive_ranking(graph)
     assert graph.rev == 0
     for query, invoked in SESSION:
         await learn(catalog, query, invoked)
@@ -33,6 +33,6 @@ async def test_learning_beats_bm25_and_survives_reload() -> None:
     restored = IntentGraph.from_json(graph.to_json())
     assert restored.rev == graph.rev
     fresh = await build_catalog()
-    fresh.enable_adaptive_ranking(restored)
+    fresh.experimental_enable_adaptive_ranking(restored)
     after_reload = top_ids(fresh, QUERY)
     assert after_reload.index("gh_run_list") < after_reload.index("docker_build"), after_reload

@@ -12,7 +12,7 @@ await catalog.register(TOOLS.map(([id, description]): ExecutableTool => ({ id, n
 
 const graph = new IntentGraph(); // define the intent graph
 
-catalog.enableAdaptiveRanking(graph); // attach it: learn from usage and boost with it
+catalog.experimentalEnableAdaptiveRanking(graph); // attach it: learn from usage and boost with it
 
 const hits = await catalog.searchAsync(query, 5, "direct", "semantic"); // semantic search, top-5 (dense is async)
 
@@ -27,10 +27,10 @@ console.log("rev:", graph.rev); // write counter — persist only when it change
 const saved = graph.toJson(); // serialize the in-memory graph
 const graph2 = IntentGraph.fromJson(saved); // reload it (invalid graphs are rejected)
 
-console.log("status:", catalog.adaptiveRankingStatus.status); // active | inactive | unknown | paused: model mismatch
+console.log("status:", catalog.experimentalAdaptiveRankingStatus.status); // active | inactive | unknown | paused: model mismatch
 
-await catalog.rebuildIntentGraph(); // re-embed under the current model (recover after a model swap)
+await catalog.experimentalRebuildIntentGraph(); // re-embed under the current model (recover after a model swap)
 
-catalog.enableAdaptiveRanking(graph2, { rebuildOnModelChange: true }); // default false; true auto-recovers on next search
+catalog.experimentalEnableAdaptiveRanking(graph2, { rebuildOnModelChange: true }); // default false; true auto-recovers on next search
 
-catalog.disableAdaptiveRanking(); // turn off; the graph keeps what it learned
+catalog.experimentalDisableAdaptiveRanking(); // turn off; the graph keeps what it learned

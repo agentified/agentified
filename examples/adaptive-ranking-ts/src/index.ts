@@ -16,7 +16,7 @@ console.log(`  before learning : ${topIds(catalog, QUERY).join(" > ")}`);
 
 // 2. Attach a graph and learn from the session's search -> invoke pairs.
 const graph = new IntentGraph();
-catalog.enableAdaptiveRanking(graph);
+catalog.experimentalEnableAdaptiveRanking(graph);
 for (const { query, invoked } of SESSION) await learn(catalog, query, invoked);
 console.log(`  after learning  : ${topIds(catalog, QUERY).join(" > ")}   (rev=${graph.rev})`);
 
@@ -28,7 +28,7 @@ let savedRev = graph.rev;
 // 4. Reload into a fresh catalog — a restart keeps what earlier runs discovered.
 const restoredCatalog = await buildCatalog();
 const restored = IntentGraph.fromJson(saved);
-restoredCatalog.enableAdaptiveRanking(restored);
+restoredCatalog.experimentalEnableAdaptiveRanking(restored);
 console.log(`  after reload    : ${topIds(restoredCatalog, QUERY).join(" > ")}   (rev=${restored.rev})`);
 
 // 5. `rev` drives save-when-changed: learn once more, then persist only because
