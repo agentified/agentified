@@ -7,11 +7,22 @@ import { traceUpstreamRegister } from "./telemetry.js";
 
 const MCP_LIST_MAX_PAGES = 64;
 
+/** Stable discriminant for {@link McpToolsListError} from paginated MCP `tools/list`. */
 export type McpToolsListErrorCode = "RepeatedCursor" | "PaginationExceeded";
 
+/**
+ * Paginated MCP `tools/list` failed — repeated cursor or page cap exceeded.
+ * Thrown by {@link registerMcpServer} when listing upstream tools; mirrors Python's
+ * `McpToolsListError`.
+ */
 export class McpToolsListError extends Error {
+  /** Prefer {@link McpToolsListErrorCode} (or `instanceof`) over parsing {@link Error.message}. */
   readonly code: McpToolsListErrorCode;
 
+  /**
+   * @param message - Human-readable failure description.
+   * @param code - Stable {@link McpToolsListErrorCode} discriminant.
+   */
   constructor(message: string, code: McpToolsListErrorCode) {
     super(message);
     this.name = "McpToolsListError";
