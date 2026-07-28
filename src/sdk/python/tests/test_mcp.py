@@ -30,9 +30,9 @@ class _FakeTool:
 
 
 class _FakeListResult:
-    def __init__(self, tools, *, next_cursor: str | None = None):
+    def __init__(self, tools, *, nextCursor: str | None = None):
         self.tools = tools
-        self.next_cursor = next_cursor
+        self.nextCursor = nextCursor
 
 
 class _FakeSession:
@@ -94,7 +94,7 @@ class _PaginatedFakeSession:
         next_cursor = page.get("next_cursor")
         if next_cursor is None and "nextCursor" in page:
             next_cursor = page["nextCursor"]
-        return _FakeListResult(tools, next_cursor=next_cursor)
+        return _FakeListResult(tools, nextCursor=next_cursor)
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
         self.calls.append((name, args))
@@ -433,3 +433,41 @@ async def test_register_mcp_server_duplicate_tool_name_last_page_wins(
     assert handle.tool_ids == ["demo__dup", "demo__dup"]
     result = await catalog.invoke("demo__dup", {})
     assert result == {"version": "second"}
+
+
+async def test_register_mcp_server_paginated_list_tools_real_client_session() -> None:
+    """Exercise list_tools pagination against a real in-memory ClientSession."""
+    pytest.importorskip("mcp", reason="install ratel-ai[mcp] to run real MCP session tests")
+
+    from mcp import types
+    from mcp.server import Server
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    server = Server("ratel-pagination-probe")
+    tools = [
+        types.Tool(name="alpha", description="first page", inputSchema={"type": "object"}),
+        types.Tool(name="beta", description="first page", inputSchema={"type": "object"}),
+        types.Tool(name="gamma", description="second page", inputSchema={"type": "object"}),
+    ]
+
+    @server.list_tools()
+    async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
+        cursor = None if request.params is None else request.params.cursor
+        if cursor is None:
+            return types.ListToolsResult(tools=tools[:2], nextCursor="page-2")
+        if cursor == "page-2":
+            return types.ListToolsResult(tools=tools[2:])
+        raise RuntimeError(f"unexpected tools/list cursor: {cursor!r}")
+
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
+        return [types.TextContent(type="text", text=name)]
+
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id="mcp-real"))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        handle = await register_mcp_server(catalog, name="demo", session=session)
+        assert handle.tool_ids == ["demo__alpha", "demo__beta", "demo__gamma"]
+
+    register_events = [e for e in catalog.drain_trace_events() if e["type"] == "upstream_register"]
+    assert register_events[0]["tool_count"] == 3

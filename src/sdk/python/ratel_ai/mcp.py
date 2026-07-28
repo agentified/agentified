@@ -58,9 +58,9 @@ def _require_mcp() -> None:
 
 
 def _next_cursor(result: Any) -> str | None:
-    nc = getattr(result, "next_cursor", None)
+    nc = getattr(result, "nextCursor", None)
     if nc is None:
-        nc = getattr(result, "nextCursor", None)
+        nc = getattr(result, "next_cursor", None)
     return nc
 
 
