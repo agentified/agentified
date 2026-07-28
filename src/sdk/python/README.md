@@ -49,7 +49,7 @@ except EmbedderError:
     log.warning("applied +%d -%d, embeddings pending", reload.added, reload.removed)
 ```
 
-Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races a dense operation raises rather than applying half of itself.
+Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races an in-flight operation — dense work, but also an ordinary BM25 `search_async` holding the read lock — raises rather than applying half of itself.
 
 ## Install
 

@@ -11,10 +11,24 @@ export type { ReplaceOutcome, Skill, SkillHit };
  * counts, readable immediately, over a promise for the embedding pass.
  *
  * The corpus swap commits synchronously, so the counts are final the moment
- * `replaceAll` returns — read them without awaiting. Awaiting drives the
- * embedding pass and resolves to the same counts, or rejects if embedding
- * fails; a source that must report what a reload changed can therefore do so
- * even when the embedding pass failed.
+ * `replaceAll` returns and can be read before the embedding pass settles — a
+ * source that must report what a reload changed can therefore do so even when
+ * that pass fails.
+ *
+ * **Always `await` (or `.catch()`) the value, even when you only want the
+ * counts.** It is a real promise for the embedding pass, so leaving it
+ * unhandled turns an embedding failure into an unhandled rejection — which
+ * terminates the process under Node's default `--unhandled-rejections=throw`.
+ * Reading the counts is not a substitute for handling it:
+ *
+ * ```ts
+ * const reload = catalog.replaceAll(batch); // corpus live, counts final
+ * try {
+ *   await reload;
+ * } catch {
+ *   log.warn(`applied +${reload.added} -${reload.removed}, embeddings pending`);
+ * }
+ * ```
  */
 export type PendingReplace = Promise<ReplaceOutcome> & ReplaceOutcome;
 
@@ -111,8 +125,9 @@ export class SkillCatalog {
    * @param skills - The complete catalog contents. A repeated id keeps its last
    *   entry. An empty array clears the catalog.
    * @returns The counts, already final, over a promise for the embedding pass —
-   *   see {@link PendingReplace}. Read `.added`/`.removed` without awaiting;
-   *   `await` to drive the embedding pass.
+   *   see {@link PendingReplace}. `.added`/`.removed` can be read before that
+   *   pass settles, but the value must still always be awaited (or
+   *   `.catch()`-ed), or an embedding failure becomes an unhandled rejection.
    */
   replaceAll(skills: readonly Skill[]): PendingReplace {
     const outcome = this.registry.replaceAllItems(skills);

@@ -81,13 +81,20 @@ class PendingReplace(ReplaceOutcome):
     """What `replace_all` returns: final counts over a pending embedding pass.
 
     The corpus swap commits synchronously, so the counts are already final when
-    `replace_all` returns — read them without awaiting. Awaiting drives the
-    embedding pass and resolves to the plain `ReplaceOutcome`, or raises if
-    embedding fails, so a source can report what a reload changed even when the
-    embedding pass failed.
+    `replace_all` returns and can be read before the embedding pass settles — a
+    source can report what a reload changed even when that pass fails. **Always**
+    `await` **the result** regardless, so the embedding pass runs and its failure
+    is raised rather than swallowed.
+
+    Note that this compares unequal to a bare `ReplaceOutcome` with the same
+    counts: a dataclass `__eq__` requires both sides to be the same class, so no
+    field configuration changes that. Await first — the awaited value *is* a
+    plain `ReplaceOutcome` — and compare that.
     """
 
-    _driver: Awaitable[None] | None = None
+    # Excluded from repr so it doesn't print the coroutine. Excluding it from
+    # __eq__ would buy nothing: the class check above already decides equality.
+    _driver: Awaitable[None] | None = field(default=None, repr=False)
 
     def __await__(self) -> Generator[Any, None, ReplaceOutcome]:
         """Drive the embedding pass, then resolve to the plain counts."""
