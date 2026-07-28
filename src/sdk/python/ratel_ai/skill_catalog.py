@@ -30,7 +30,14 @@ from .catalog import (
 )
 from .telemetry import SEARCH_TARGET_SKILL, trace_search, trace_search_async, trace_skill_load
 
-__all__ = ["ReplaceOutcome", "Skill", "SkillCatalog", "SkillHit", "SkillRegistry"]
+__all__ = [
+    "PendingReplace",
+    "ReplaceOutcome",
+    "Skill",
+    "SkillCatalog",
+    "SkillHit",
+    "SkillRegistry",
+]
 
 _DenseResult = TypeVar("_DenseResult")
 
@@ -83,6 +90,7 @@ class PendingReplace(ReplaceOutcome):
     _driver: Awaitable[None] | None = None
 
     def __await__(self) -> Generator[Any, None, ReplaceOutcome]:
+        """Drive the embedding pass, then resolve to the plain counts."""
         if self._driver is not None:
             yield from self._driver.__await__()
         return ReplaceOutcome(self.added, self.removed, self.updated, self.unchanged)
