@@ -89,7 +89,10 @@ Churn telemetry falls out of the same diff — `SkillChurn{add}` / `SkillChurn{r
 changes only, reusing the existing `ChurnKind::Remove` variant. A no-op reload emits nothing.
 
 The call returns a `ReplaceOutcome` (`added` / `removed` / `updated` / `unchanged`) so a source
-can report what a reload did without draining the trace stream.
+can report what a reload did without draining the trace stream. The counts ride *on* the returned
+awaitable rather than through it: they are final once the swap commits, so they stay readable when
+the embedding pass fails — which is precisely the state a source most needs to report on. Awaiting
+still resolves to the same counts, or raises, exactly as `register` does.
 
 ### Skills only
 

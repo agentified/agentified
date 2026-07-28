@@ -38,6 +38,17 @@ const outcome = await r.skills.replaceAll([...localSkills, ...(await fetchRemote
 console.log(`reload: +${outcome.added} -${outcome.removed} ~${outcome.updated}`);
 ```
 
+The corpus swap is the synchronous half of that call, so the counts are already final when it returns — read them without awaiting and a reload whose embedding pass fails still reports what it changed:
+
+```ts
+const reload = r.skills.replaceAll(batch); // corpus is live; counts are final
+try {
+  await reload; // drives the embedding pass
+} catch {
+  console.warn(`applied +${reload.added} -${reload.removed}, embeddings pending`);
+}
+```
+
 Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races a dense operation throws rather than applying half of itself.
 
 Embedding failures from `register()`/`searchAsync()` are typed `EmbedderError`s (with a stable `.code` such as `"Load"`, `"NotCached"`, or `"DimensionMismatch"`); a dimension mismatch is a `DimensionMismatchError` subclass — the parity of Python's `EmbedderError`/`DimensionMismatchError`. Invalid embedding config still throws at construction.

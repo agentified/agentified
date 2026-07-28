@@ -271,14 +271,34 @@ describe("SkillCatalog.replaceAll", () => {
       await catalog.register(slides);
 
       const search = catalog.searchAsync("slides", 5);
-      // Two reloads must not interleave: the second is refused, not applied
-      // half-way, so the corpus is never a blend of both.
-      await expect(catalog.replaceAll([apiDesign])).rejects.toThrow(/registry busy; await/);
+      // A reload racing an in-flight dense operation is refused outright rather
+      // than applied half-way. The swap is the synchronous half of the call, so
+      // the refusal throws at the call site instead of rejecting the promise.
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
       await search;
       expect(catalog.has("frontend-slides")).toBe(true);
     } finally {
       await server.close();
     }
+  });
+
+  it("reports the committed counts even when the embedding pass fails", async () => {
+    const catalog = new SkillCatalog({
+      method: "semantic",
+      embedding: { local: "/definitely/missing/ratel-embedding-model" },
+    });
+
+    const reload = catalog.replaceAll([slides, apiDesign]);
+
+    // The swap commits before the embedding pass is driven, so the counts are
+    // final at call time. A reload that fails to embed still reports what it
+    // changed — the corpus is live and BM25 ranks it, which is exactly the
+    // state ADR-0015 tells a periodic source to expect and report on.
+    expect(reload.added).toBe(2);
+    expect(reload.removed).toBe(0);
+
+    await expect(reload).rejects.toThrow(/failed to load embedding model/);
+    expect(catalog.has("frontend-slides")).toBe(true);
   });
 });
 

@@ -6,6 +6,18 @@ import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
 export type { ReplaceOutcome, Skill, SkillHit };
 
+/**
+ * What {@link SkillCatalog.replaceAll} returns: the {@link ReplaceOutcome}
+ * counts, readable immediately, over a promise for the embedding pass.
+ *
+ * The corpus swap commits synchronously, so the counts are final the moment
+ * `replaceAll` returns — read them without awaiting. Awaiting drives the
+ * embedding pass and resolves to the same counts, or rejects if embedding
+ * fails; a source that must report what a reload changed can therefore do so
+ * even when the embedding pass failed.
+ */
+export type PendingReplace = Promise<ReplaceOutcome> & ReplaceOutcome;
+
 /** Construction options for {@link SkillCatalog}. */
 export interface SkillCatalogOptions {
   /** Local trace stream destination (default: discard). See {@link TraceSinkConfig}. */
@@ -89,21 +101,27 @@ export class SkillCatalog {
    * already live and BM25 still ranks it; semantic search reports
    * `EmbeddingsNotBuilt` until a later pass succeeds.
    *
-   * A concurrent dense operation rejects the call outright rather than applying
+   * A concurrent dense operation refuses the call outright rather than applying
    * it half-way, so two overlapping reloads can never blend into one corpus.
+   * Because the swap is the synchronous half, that refusal throws at the call
+   * site rather than rejecting the returned promise.
    *
    * @param skills - The complete catalog contents. A repeated id keeps its last
    *   entry. An empty array clears the catalog.
-   * @returns What the reload changed, counted by id.
+   * @returns The counts, already final, over a promise for the embedding pass —
+   *   see {@link PendingReplace}. Read `.added`/`.removed` without awaiting;
+   *   `await` to drive the embedding pass.
    */
-  async replaceAll(skills: readonly Skill[]): Promise<ReplaceOutcome> {
+  replaceAll(skills: readonly Skill[]): PendingReplace {
     const outcome = this.registry.replaceAllItems(skills);
     this.skills.clear();
     for (const skill of skills) {
       this.skills.set(skill.id, skill);
     }
-    await this.registry.buildDense();
-    return outcome;
+    // The counts ride on the promise itself, so a failed embedding pass still
+    // reports what the (already committed) swap changed.
+    const embedded = this.registry.buildDense().then(() => outcome);
+    return Object.assign(embedded, outcome);
   }
 
   /**

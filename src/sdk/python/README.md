@@ -39,6 +39,16 @@ outcome = await catalog.replace_all([*local_skills, *await fetch_remote_skills()
 print(f"reload: +{outcome.added} -{outcome.removed} ~{outcome.updated}")
 ```
 
+The corpus swap is the synchronous half of that call, so the counts are already final when it returns — read them without awaiting and a reload whose embedding pass fails still reports what it changed:
+
+```python
+reload = catalog.replace_all(batch)  # corpus is live; counts are final
+try:
+    await reload  # drives the embedding pass
+except EmbedderError:
+    log.warning("applied +%d -%d, embeddings pending", reload.added, reload.removed)
+```
+
 Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races a dense operation raises rather than applying half of itself.
 
 ## Install

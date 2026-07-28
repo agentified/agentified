@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from ratel_ai import ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
+from ratel_ai import EmbedderError, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 
 
 async def _catalog(*skills: Skill) -> SkillCatalog:
@@ -292,3 +292,24 @@ async def test_replace_all_on_semantic_embeds_the_new_skills(
 
     hits = await catalog.search_async("deploy", 5, method="semantic")
     assert [hit.skill_id for hit in hits] == ["deploy"]
+
+
+async def test_replace_all_reports_counts_when_the_embedding_pass_fails() -> None:
+    catalog = SkillCatalog(method="semantic", embedding={"local": "/missing/ratel-model"})
+
+    reload = catalog.replace_all(
+        [
+            Skill(id="slides", name="slides", description="Build decks."),
+            Skill(id="api-design", name="api-design", description="REST API design patterns."),
+        ]
+    )
+
+    # The swap commits before the embedding pass is driven, so the counts are
+    # final at call time. A reload that fails to embed still reports what it
+    # changed — the corpus is live and BM25 ranks it, which is exactly the
+    # state ADR-0015 tells a periodic source to expect and report on.
+    assert (reload.added, reload.removed) == (2, 0)
+
+    with pytest.raises(EmbedderError):
+        await reload
+    assert catalog.has("slides")

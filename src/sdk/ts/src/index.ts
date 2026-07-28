@@ -83,7 +83,7 @@ export type {
 export { ratel } from "./ratel.js";
 /** Adaptive usage ranking: the shared read model of what users invoke (ADR-0014). */
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
-export type { SkillCatalogOptions } from "./skill-catalog.js";
+export type { PendingReplace, SkillCatalogOptions } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 // OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel

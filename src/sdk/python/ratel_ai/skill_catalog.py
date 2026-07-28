@@ -11,7 +11,7 @@ import asyncio
 import threading
 import time
 import warnings
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, overload
 
@@ -67,6 +67,25 @@ class ReplaceOutcome:
     removed: int = 0
     updated: int = 0
     unchanged: int = 0
+
+
+@dataclass(frozen=True)
+class PendingReplace(ReplaceOutcome):
+    """What `replace_all` returns: final counts over a pending embedding pass.
+
+    The corpus swap commits synchronously, so the counts are already final when
+    `replace_all` returns — read them without awaiting. Awaiting drives the
+    embedding pass and resolves to the plain `ReplaceOutcome`, or raises if
+    embedding fails, so a source can report what a reload changed even when the
+    embedding pass failed.
+    """
+
+    _driver: Awaitable[None] | None = None
+
+    def __await__(self) -> Generator[Any, None, ReplaceOutcome]:
+        if self._driver is not None:
+            yield from self._driver.__await__()
+        return ReplaceOutcome(self.added, self.removed, self.updated, self.unchanged)
 
 
 class SkillRegistry:
@@ -234,12 +253,13 @@ class SkillRegistry:
         self._register_items(skills)
         return self._build_tracked(bool(skills))
 
-    def replace_all(self, skills: Iterable[Skill]) -> Awaitable[ReplaceOutcome]:
+    def replace_all(self, skills: Iterable[Skill]) -> PendingReplace:
         """Make `skills` the entire corpus — see `SkillCatalog.replace_all`.
 
         The corpus swap lands **synchronously** (a forgotten `await` never
-        leaves a half-applied reload); the returned awaitable drives only the
-        embedding pass and resolves to the counts. Always `await` the result.
+        leaves a half-applied reload); the returned `PendingReplace` already
+        carries the counts and drives only the embedding pass when awaited.
+        Always `await` the result.
         """
         batch = list(skills)
         if not all(isinstance(skill, Skill) for skill in batch):
@@ -498,17 +518,19 @@ class SkillRegistry:
             )
         return ReplaceOutcome(added, removed, updated, unchanged)
 
-    def _outcome_tracked(
-        self, outcome: ReplaceOutcome, has_items: bool
-    ) -> Awaitable[ReplaceOutcome]:
-        """`_build_tracked`, resolving to the already-computed replace counts."""
-        driver = self._build_tracked(has_items)
+    def _outcome_tracked(self, outcome: ReplaceOutcome, has_items: bool) -> PendingReplace:
+        """`_build_tracked`, carrying the already-computed replace counts.
 
-        async def _drive() -> ReplaceOutcome:
-            await driver
-            return outcome
-
-        return _drive()
+        The counts ride on the awaitable rather than through it, so a failed
+        embedding pass still reports what the (already committed) swap changed.
+        """
+        return PendingReplace(
+            outcome.added,
+            outcome.removed,
+            outcome.updated,
+            outcome.unchanged,
+            self._build_tracked(has_items),
+        )
 
     def _raise_if_busy(self) -> None:
         if self._dense_pending:
@@ -568,7 +590,7 @@ class SkillCatalog:
             self._skills[skill.id] = skill
         return self._registry._build_tracked(bool(batch))
 
-    def replace_all(self, skills: Iterable[Skill]) -> Awaitable[ReplaceOutcome]:
+    def replace_all(self, skills: Iterable[Skill]) -> PendingReplace:
         """Make `skills` the entire content of the catalog.
 
         Ids absent from the batch are removed, the rest are added or updated —
@@ -592,7 +614,9 @@ class SkillCatalog:
                 entry; an empty iterable clears the catalog.
 
         Returns:
-            An awaitable resolving to the `ReplaceOutcome` counts.
+            A `PendingReplace`: the counts, already final, over the pending
+            embedding pass. Read them without awaiting; `await` the result to
+            drive the embedding pass.
 
         Raises:
             TypeError: if any item is not a `Skill`.
