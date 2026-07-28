@@ -7,9 +7,9 @@ import { traceUpstreamRegister } from "./telemetry.js";
 
 const MCP_LIST_MAX_PAGES = 64;
 
-type McpToolsListErrorCode = "RepeatedCursor" | "PaginationExceeded";
+export type McpToolsListErrorCode = "RepeatedCursor" | "PaginationExceeded";
 
-class McpToolsListError extends Error {
+export class McpToolsListError extends Error {
   readonly code: McpToolsListErrorCode;
 
   constructor(message: string, code: McpToolsListErrorCode) {

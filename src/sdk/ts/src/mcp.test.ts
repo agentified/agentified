@@ -9,7 +9,7 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerMcpServer, ToolCatalog } from "./index.js";
+import { McpToolsListError, registerMcpServer, ToolCatalog } from "./index.js";
 
 interface ServerToolSpec {
   name: string;
@@ -482,9 +482,13 @@ describe("registerMcpServer tools/list pagination", () => {
 
     await expect(
       registerMcpServer(catalog, { name: "demo", transport: paginated.clientTransport }),
-    ).rejects.toMatchObject({
-      code: "RepeatedCursor",
-      message: expect.stringMatching(/repeated nextCursor/i),
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(McpToolsListError);
+      expect(err).toMatchObject({
+        code: "RepeatedCursor",
+        message: expect.stringMatching(/repeated nextCursor/i),
+      });
+      return true;
     });
     expect(catalog.has("demo__stuck")).toBe(false);
 
