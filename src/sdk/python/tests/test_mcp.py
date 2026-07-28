@@ -6,8 +6,10 @@ require the optional `mcp` package. A separate test pins the helpful error when
 `mcp` is absent.
 """
 
+import importlib.metadata
 import importlib.util
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -19,6 +21,108 @@ from ratel_ai.mcp import McpToolsListError
 @pytest.fixture
 def skip_mcp_import_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ratel_ai.mcp._require_mcp", lambda: None)
+
+
+def _mcp_major_version() -> int:
+    return int(importlib.metadata.version("mcp").split(".", maxsplit=1)[0])
+
+
+@asynccontextmanager
+async def _memory_client_session(server: Any) -> AsyncGenerator[Any, None]:
+    """Yield an initialized ClientSession over in-memory transport (mcp 1.x and 2.x)."""
+    memory_mod = __import__("mcp.shared.memory", fromlist=["create_client_server_memory_streams"])
+    create_connected = getattr(memory_mod, "create_connected_server_and_client_session", None)
+    if create_connected is not None:
+        async with create_connected(server) as session:
+            yield session
+        return
+
+    import anyio
+    from mcp.client.session import ClientSession
+
+    async with memory_mod.create_client_server_memory_streams() as (
+        client_streams,
+        server_streams,
+    ):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(
+                lambda: server.run(
+                    server_read,
+                    server_write,
+                    server.create_initialization_options(),
+                    raise_exceptions=False,
+                )
+            )
+            async with ClientSession(
+                read_stream=client_read,
+                write_stream=client_write,
+            ) as session:
+                await session.initialize()
+                yield session
+            tg.cancel_scope.cancel()
+
+
+def _paginated_probe_server() -> Any:
+    """Server that returns two pages of tools/list (decorator API on 1.x, handlers on 2.x)."""
+    if _mcp_major_version() >= 2:
+        import mcp_types as types
+        from mcp.server.lowlevel.server import Server
+
+        tools = [
+            types.Tool(name="alpha", description="first page", inputSchema={"type": "object"}),
+            types.Tool(name="beta", description="first page", inputSchema={"type": "object"}),
+            types.Tool(name="gamma", description="second page", inputSchema={"type": "object"}),
+        ]
+
+        async def on_list_tools(
+            _ctx: Any, params: types.PaginatedRequestParams | None
+        ) -> types.ListToolsResult:
+            cursor = None if params is None else params.cursor
+            if cursor is None:
+                return types.ListToolsResult(tools=tools[:2], nextCursor="page-2")
+            if cursor == "page-2":
+                return types.ListToolsResult(tools=tools[2:])
+            raise RuntimeError(f"unexpected tools/list cursor: {cursor!r}")
+
+        async def on_call_tool(
+            _ctx: Any, params: types.CallToolRequestParams
+        ) -> types.CallToolResult:
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=params.name)],
+            )
+
+        return Server(
+            "ratel-pagination-probe",
+            on_list_tools=on_list_tools,
+            on_call_tool=on_call_tool,
+        )
+
+    from mcp import types
+    from mcp.server import Server
+
+    server = Server("ratel-pagination-probe")
+    tools = [
+        types.Tool(name="alpha", description="first page", inputSchema={"type": "object"}),
+        types.Tool(name="beta", description="first page", inputSchema={"type": "object"}),
+        types.Tool(name="gamma", description="second page", inputSchema={"type": "object"}),
+    ]
+
+    @server.list_tools()
+    async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
+        cursor = None if request.params is None else request.params.cursor
+        if cursor is None:
+            return types.ListToolsResult(tools=tools[:2], nextCursor="page-2")
+        if cursor == "page-2":
+            return types.ListToolsResult(tools=tools[2:])
+        raise RuntimeError(f"unexpected tools/list cursor: {cursor!r}")
+
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
+        return [types.TextContent(type="text", text=name)]
+
+    return server
 
 
 class _FakeTool:
@@ -439,33 +543,9 @@ async def test_register_mcp_server_paginated_list_tools_real_client_session() ->
     """Exercise list_tools pagination against a real in-memory ClientSession."""
     pytest.importorskip("mcp", reason="install ratel-ai[mcp] to run real MCP session tests")
 
-    from mcp import types
-    from mcp.server import Server
-    from mcp.shared.memory import create_connected_server_and_client_session
-
-    server = Server("ratel-pagination-probe")
-    tools = [
-        types.Tool(name="alpha", description="first page", inputSchema={"type": "object"}),
-        types.Tool(name="beta", description="first page", inputSchema={"type": "object"}),
-        types.Tool(name="gamma", description="second page", inputSchema={"type": "object"}),
-    ]
-
-    @server.list_tools()
-    async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
-        cursor = None if request.params is None else request.params.cursor
-        if cursor is None:
-            return types.ListToolsResult(tools=tools[:2], nextCursor="page-2")
-        if cursor == "page-2":
-            return types.ListToolsResult(tools=tools[2:])
-        raise RuntimeError(f"unexpected tools/list cursor: {cursor!r}")
-
-    @server.call_tool()
-    async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
-        return [types.TextContent(type="text", text=name)]
-
+    server = _paginated_probe_server()
     catalog = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id="mcp-real"))
-    async with create_connected_server_and_client_session(server) as session:
-        await session.initialize()
+    async with _memory_client_session(server) as session:
         handle = await register_mcp_server(catalog, name="demo", session=session)
         assert handle.tool_ids == ["demo__alpha", "demo__beta", "demo__gamma"]
 

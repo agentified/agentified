@@ -64,10 +64,26 @@ def _next_cursor(result: Any) -> str | None:
     return nc
 
 
+def _paginated_list_params(cursor: str) -> Any:
+    for module_name in ("mcp.types", "mcp_types"):
+        try:
+            types_mod = __import__(module_name, fromlist=["PaginatedRequestParams"])
+            params_cls = types_mod.PaginatedRequestParams
+            return params_cls(cursor=cursor)
+        except (ImportError, AttributeError):
+            continue
+    from types import SimpleNamespace
+
+    return SimpleNamespace(cursor=cursor)
+
+
 async def _fetch_tools_page(session: Any, cursor: str | None) -> Any:
     if cursor is None:
         return await session.list_tools()
-    return await session.list_tools(cursor)
+    try:
+        return await session.list_tools(cursor)
+    except TypeError:
+        return await session.list_tools(params=_paginated_list_params(cursor))
 
 
 async def _list_all_mcp_tools(session: Any) -> list[Any]:
