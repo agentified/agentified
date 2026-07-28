@@ -21,14 +21,6 @@ def skip_mcp_import_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ratel_ai.mcp._require_mcp", lambda: None)
 
 
-def _cursor_from_list_tools_params(params: Any) -> str | None:
-    if params is None:
-        return None
-    if isinstance(params, dict):
-        return params.get("cursor")
-    return getattr(params, "cursor", None)
-
-
 class _FakeTool:
     def __init__(self, name, description, input_schema):
         self.name = name
@@ -47,7 +39,7 @@ class _FakeSession:
     def __init__(self):
         self.calls = []
 
-    async def list_tools(self, *, params=None):
+    async def list_tools(self, cursor: str | None = None):
         return _FakeListResult(
             [_FakeTool("create_issue", "Create a GitHub issue.", {"type": "object"})]
         )
@@ -96,8 +88,8 @@ class _PaginatedFakeSession:
                 self._handlers[name] = spec["handler"]
         return out
 
-    async def list_tools(self, *, params=None) -> _FakeListResult:
-        page = self._resolve_page(_cursor_from_list_tools_params(params))
+    async def list_tools(self, cursor: str | None = None) -> _FakeListResult:
+        page = self._resolve_page(cursor)
         tools = self._tools_from_page(page)
         next_cursor = page.get("next_cursor")
         if next_cursor is None and "nextCursor" in page:
