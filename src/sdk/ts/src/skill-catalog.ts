@@ -101,10 +101,12 @@ export class SkillCatalog {
    * already live and BM25 still ranks it; semantic search reports
    * `EmbeddingsNotBuilt` until a later pass succeeds.
    *
-   * A concurrent dense operation refuses the call outright rather than applying
-   * it half-way, so two overlapping reloads can never blend into one corpus.
+   * A concurrent operation refuses the call outright rather than applying it
+   * half-way, so two overlapping reloads can never blend into one corpus.
    * Because the swap is the synchronous half, that refusal throws at the call
-   * site rather than rejecting the returned promise.
+   * site rather than rejecting the returned promise. Note that any in-flight
+   * {@link SkillCatalog.searchAsync} can trigger it, including a plain BM25 one
+   * — `registry busy` is retryable and not exclusive to dense work.
    *
    * @param skills - The complete catalog contents. A repeated id keeps its last
    *   entry. An empty array clears the catalog.

@@ -582,7 +582,9 @@ class SkillCatalog:
 
         Raises:
             EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
-            RuntimeError: if a dense operation already owns the registry.
+            RuntimeError: if another operation already owns the registry —
+                dense work, but also an in-flight BM25 `search_async` holding
+                the read lock. `registry busy` is retryable, not fatal.
         """
         batch = [skills] if isinstance(skills, Skill) else list(skills)
         self._registry._register_items(batch)
@@ -621,7 +623,9 @@ class SkillCatalog:
         Raises:
             TypeError: if any item is not a `Skill`.
             EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
-            RuntimeError: if a dense operation already owns the registry.
+            RuntimeError: if another operation already owns the registry —
+                dense work, but also an in-flight BM25 `search_async` holding
+                the read lock. `registry busy` is retryable, not fatal.
         """
         batch = list(skills)
         awaitable = self._registry.replace_all(batch)

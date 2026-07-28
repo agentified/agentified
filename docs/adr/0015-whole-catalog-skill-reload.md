@@ -33,14 +33,24 @@ be a small change rather than an architecture:
 - **The model-facing payload is already pinned.** `ratel()` builds `search_capabilities` with
   `advertiseSkills: true`, so the tool description does not depend on whether the catalog is
   empty. A reload cannot perturb the prompt cache.
-- **The registries already refuse a racing mutation.** Each binding rejects a mutation while a
-  dense operation is in flight, so a corpus swap is never observed torn and two overlapping
-  reloads cannot interleave. Where that guard lives differs by surface, and the difference
-  matters to anyone adding a mutation: the napi binding holds the registry in an
+- **The registries already refuse a racing mutation.** A corpus swap is never observed torn and
+  two overlapping reloads cannot interleave, because a mutation racing an in-flight operation is
+  rejected rather than applied. Two details are worth stating precisely, because both are easy
+  to get wrong:
+
+  *Where the guard lives differs by surface.* The napi binding holds the registry in an
   `Arc<RwLock<_>>` and goes through `write_registry`, which checks the pending-dense counter and
-  takes the lock; the pyo3 binding owns its registry unlocked, and the equivalent check
+  then takes the lock; the pyo3 binding owns its registry unlocked, and the equivalent check
   (`_raise_if_busy` against `_dense_pending`) lives in the Python facade above it, not in the
   native layer.
+
+  *What contends is broader than dense work.* The pending-dense counter covers dense operations,
+  but `write_registry` also fails when any in-flight `search_async` still holds the read lock —
+  including a plain BM25 one, which takes no dense permit. So an ordinary read can refuse a
+  reload, non-deterministically, depending on whether the worker has taken the lock yet. This is
+  inherited, not introduced here: `register` contends the same way and did so before this ADR.
+  It is called out because the retry guidance below depends on it — a source must treat
+  `registry busy` as retryable on any traffic, not just dense traffic.
 
 ## Decision
 
@@ -112,7 +122,8 @@ whole-catalog tool replacement is a separate question and is not answered here.
 - Hosts that mix in-process and sourced skills must compose the batch on every reload. This is
   the deliberate cost of keeping ownership out of the core, and it is visible in the method
   name.
-- A reload that races a dense operation raises rather than applying partially; a periodic source
+- A reload that races an in-flight operation — dense work, but also an ordinary BM25
+  `search_async` holding the read lock — raises rather than applying partially; a periodic source
   must tolerate that and retry on its next tick.
 - The failure mode of a botched reload is degraded ranking (BM25 only), never an empty catalog —
   provided the source does not call `replaceAll([])` on a fetch error. Guarding that is the
