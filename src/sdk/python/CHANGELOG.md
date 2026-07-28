@@ -6,13 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.6.0-rc.0] - 2026-07-27
+## [0.6.0] - 2026-07-28
+
+> **Coming from `0.6.0rc0`?** That RC was tagged off a branch that predated 0.5.2, so it
+> shipped neither the `EventRecord` content-capture fixes nor the base `ratel-ai-telemetry`
+> runtime dependency. Read the 0.5.2 entry below as part of this upgrade. Upgrades from
+> 0.5.2 are unaffected: for them this release is purely additive.
 
 ### Added
 
 - **Experimental adaptive usage ranking (ADR-0014).** `IntentGraph` plus `experimental_enable_adaptive_ranking`, `experimental_rebuild_intent_graph`, `experimental_disable_adaptive_ranking`, and `experimental_adaptive_ranking_status` on `ToolCatalog` / `SkillCatalog`. The catalog learns from each search-then-invoke and boosts future rankings; persist and reload via `IntentGraph.to_json` / `from_json`, and track writes via `graph.rev`. Shipped behind an `experimental_` prefix — the API may change until it graduates.
 - `rank` and `fused` on search hits: order on `rank`, and branch on `fused` to know whether the usage arm changed the ranking.
 - Opt-in recovery after an embedding-model change: `experimental_enable_adaptive_ranking(graph, rebuild_on_model_change=True)` re-embeds a paused graph on the next dense search. Default off; explicit `experimental_rebuild_intent_graph()` otherwise. `experimental_adaptive_ranking_status` returns an `AdaptiveRankingStatus` that carries the paused/active state and the mismatched-model detail.
+
 ## [0.5.2] - 2026-07-26
 
 ### Changed
