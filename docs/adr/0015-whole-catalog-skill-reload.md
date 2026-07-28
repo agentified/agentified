@@ -33,9 +33,14 @@ be a small change rather than an architecture:
 - **The model-facing payload is already pinned.** `ratel()` builds `search_capabilities` with
   `advertiseSkills: true`, so the tool description does not depend on whether the catalog is
   empty. A reload cannot perturb the prompt cache.
-- **The registries are already lock-guarded.** The bindings hold the registry behind a write
-  lock and refuse a mutation while a dense operation is in flight, so a corpus swap is never
-  observed torn and two overlapping reloads cannot interleave.
+- **The registries already refuse a racing mutation.** Each binding rejects a mutation while a
+  dense operation is in flight, so a corpus swap is never observed torn and two overlapping
+  reloads cannot interleave. Where that guard lives differs by surface, and the difference
+  matters to anyone adding a mutation: the napi binding holds the registry in an
+  `Arc<RwLock<_>>` and goes through `write_registry`, which checks the pending-dense counter and
+  takes the lock; the pyo3 binding owns its registry unlocked, and the equivalent check
+  (`_raise_if_busy` against `_dense_pending`) lives in the Python facade above it, not in the
+  native layer.
 
 ## Decision
 
