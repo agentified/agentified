@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratel.sh/protocol/v1/intent-graph.schema.json",
+  "title": "IntentGraph",
+  "description": "The usage-ranking read model (ADR-0014): clusters of past queries, each carrying weighted edges to the capabilities invoked after them. Produced by two independent builders \u2014 the in-process local learner in ratel-ai-core and the hosted Ratel Cloud builder \u2014 and consumed as a scoring arm alongside BM25/dense retrieval. NOT a synced wire artifact in v1: it has no ETag semantics and is not served by GET /v1/catalog. It is specified here because it is the contract shared between those two producers, so neither can silently become the definition.",
+  "type": "object",
+  "required": [
+    "v",
+    "built_from_ts",
+    "intents"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Graph schema version. A consumer MUST reject a version it does not know rather than degrade."
+    },
+    "built_from_ts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Milliseconds since the Unix epoch of the newest event folded into this graph. Provenance only \u2014 it reports how current the graph is and is never read during ranking."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "OPTIONAL fingerprint of the embedding model the centroids were built with. Present only for a graph that carries centroids; absent for a lexically-clustered graph. A consumer MUST NOT cosine a query against centroids built by a different model \u2014 it detects the swap (dimension or fingerprint) and pauses the usage arm until the graph is rebuilt. See ADR-0014."
+    },
+    "rev": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "OPTIONAL monotonic write counter, bumped once per mutation of the graph (a confirmed observation, a centroid rebuild). Never read during ranking \u2014 it is a primitive for the caller's storage layer, which owns persistence. Two uses: save-when-changed (persist only when `rev` differs from the last saved value) and stale-base detection (before overwriting a stored graph, compare its `rev` to the one you loaded; a higher value means another writer moved ahead \u2014 single-writer is the supported model, so this makes a clobber detectable, not merged). Absent means treat as 0; the counter continues up from there. See ADR-0014."
+    },
+    "intents": {
+      "type": "array",
+      "description": "The clusters. Order is not significant; consumers MUST NOT rely on it.",
+      "items": {
+        "$ref": "#/$defs/intent"
+      }
+    }
+  },
+  "$defs": {
+    "intent": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "terms",
+        "members",
+        "support",
+        "tools",
+        "skills"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Cluster identifier, unique within the graph. Opaque: it names a row, nothing more."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable name for the cluster \u2014 the medoid member. Display only: retrieval results are identical whatever this string holds, so a producer MAY set it however it likes (the local builder counts it from the members; Ratel Cloud may use an extractor)."
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Distinguishing keywords (c-TF-IDF over the members). Display only, like label."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "THE MATCH KEY. The texts this cluster covers \u2014 raw user queries from the local learner, extractor-normalized goal strings from Ratel Cloud. Either works as a match corpus: a consumer with an embedder may derive a centroid from these, and one without may match lexically. This is why `centroid` is optional."
+        },
+        "centroid": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "description": "OPTIONAL precomputed mean of the members' embeddings, L2-normalized so cosine is a plain dot product. Absent when the producer clustered lexically rather than densely. A consumer MUST tolerate its absence and MUST NOT mix centroids across embedding models."
+        },
+        "support": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Count of distinct confirmed searches behind this cluster \u2014 searches that were followed by an invoke. One search that invokes several capabilities counts ONCE (it adds several edges but is one observation). Consumers scale the ranking arm by this (ADR-0014): one observation nudges, several carry full weight, so a single misclick cannot dictate ranking. Always >= 1."
+        },
+        "last_ts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "OPTIONAL epoch-millis of this cluster's most recent observation. Drives recency weighting and eviction (ADR-0014): a cluster keeps full weight for a grace period after its last use, then its arm weight decays and it is eventually evicted. Absent (or 0) means 'as current as the graph' \u2014 a loaded graph is not treated as instantly stale."
+        },
+        "tools": {
+          "$ref": "#/$defs/edges"
+        },
+        "skills": {
+          "$ref": "#/$defs/edges"
+        }
+      }
+    },
+    "edges": {
+      "type": "object",
+      "description": "Capability id -> count of confirmed invocations. Weights come from INVOCATIONS, never from what retrieval returned \u2014 recording the ranker's own output would reinforce its errors (ADR-0014). Only relative order within a cluster is load-bearing: the consumer ranks by weight and fuses on rank position, so absolute magnitudes never need reconciling with BM25 or cosine scores. MAY be empty. An id with no definition in the consumer's registry MUST be dropped, not ranked.",
+      "additionalProperties": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    }
+  }
+}

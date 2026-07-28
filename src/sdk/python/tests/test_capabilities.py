@@ -95,9 +95,7 @@ async def test_search_capabilities_pulls_skill_declared_tools() -> None:
         )
     )
     search = search_capabilities_tool(tools, skills)
-    result = await search.execute(
-        {"query": "deploy to vercel", "topKTools": 5, "topKSkills": 3}
-    )
+    result = await search.execute({"query": "deploy to vercel", "topKTools": 5, "topKSkills": 3})
     tool_ids = [h["toolId"] for g in result["tools"]["groups"] for h in g["hits"]]
     assert "fs__read_file" in tool_ids  # rode in on the skill
     assert tool_ids.count("vercel__push") == 1  # query hit + dep, not doubled

@@ -55,6 +55,12 @@ embedding_demo.py
 embedding_demo.ts
 embedding_usage_demo.py
 embedding_usage_demo.ts
+adaptive_demo.py
+adaptive_demo.ts
+adaptive_demo_graph.json
+# ...but the committed example demos are tracked (scratch copies elsewhere stay ignored)
+!examples/adaptive-ranking-python/adaptive_demo.py
+!examples/adaptive-ranking-ts/src/adaptive_demo.ts
 
 # Claude Code — personal/runtime; commit .claude/skills and .claude/settings.json
 .claude/settings.local.json

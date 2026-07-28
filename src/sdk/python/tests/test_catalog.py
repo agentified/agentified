@@ -200,9 +200,7 @@ async def test_per_call_method_overrides_default_and_reroutes() -> None:
     # Default is semantic, but with no registrations no model loads. A per-call
     # "bm25" must route to the bm25 engine — provable offline via the trace stage
     # the semantic default (empty corpus) never emits.
-    catalog = ToolCatalog(
-        method="semantic", trace=TraceSinkConfig(kind="memory", session_id="o")
-    )
+    catalog = ToolCatalog(method="semantic", trace=TraceSinkConfig(kind="memory", session_id="o"))
     await catalog.search_async("anything", 5)  # default: semantic engine
     catalog.search("anything", 5, method="bm25")  # per-call override: bm25 engine
     searches = [e for e in catalog.drain_trace_events() if e["type"] == "search"]
@@ -486,9 +484,7 @@ def test_registration_and_batch_cannot_race_dense_native_borrow(
         try:
             if batch:
                 asyncio.run(
-                    registry.register(
-                        [Tool(id="first", name="first", description="First"), raced]
-                    )
+                    registry.register([Tool(id="first", name="first", description="First"), raced])
                 )
             else:
                 asyncio.run(registry.register(raced))

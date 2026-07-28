@@ -12,7 +12,7 @@ use napi::{Env, Task};
 use ratel_ai_core as core;
 use ratel_ai_core::{
     EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, Origin, SearchMethod,
-    TraceEvent,
+    TraceEvent, UsageLearner,
 };
 use serde_json::Value;
 
@@ -27,6 +27,7 @@ const REGISTRY_BUSY_MESSAGE: &str =
 enum EmbeddingOperation {
     Build,
     Rebuild,
+    RebuildIntentGraph,
 }
 
 struct DenseOperationPermit {
@@ -96,6 +97,7 @@ impl Task for ToolEmbeddingTask {
         match self.operation {
             EmbeddingOperation::Build => registry.build_embeddings(),
             EmbeddingOperation::Rebuild => registry.rebuild_embeddings(),
+            EmbeddingOperation::RebuildIntentGraph => registry.rebuild_intent_graph(),
         }
         .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
@@ -144,6 +146,8 @@ impl Task for ToolSearchTask {
                     .map(|hit| SearchHit {
                         tool_id: hit.tool_id,
                         score: hit.score as f64,
+                        rank: hit.rank,
+                        fused: hit.fused,
                     })
                     .collect()
             })
@@ -171,6 +175,7 @@ impl Task for SkillEmbeddingTask {
         match self.operation {
             EmbeddingOperation::Build => registry.build_embeddings(),
             EmbeddingOperation::Rebuild => registry.rebuild_embeddings(),
+            EmbeddingOperation::RebuildIntentGraph => registry.rebuild_intent_graph(),
         }
         .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
@@ -219,6 +224,8 @@ impl Task for SkillSearchTask {
                     .map(|hit| SkillHit {
                         skill_id: hit.skill_id,
                         score: hit.score as f64,
+                        rank: hit.rank,
+                        fused: hit.fused,
                     })
                     .collect()
             })
@@ -298,11 +305,19 @@ pub struct Tool {
 pub struct SearchHit {
     /// Id of the matched tool, as registered.
     pub tool_id: String,
-    /// Relevance score; higher is better, ties break by id ascending. The scale
-    /// depends on the method: raw BM25 (unbounded) for `"bm25"`, cosine
-    /// similarity for `"semantic"`, Reciprocal Rank Fusion for `"hybrid"` —
-    /// comparable within one result list, not across methods.
+    /// Relevance score; higher is better, ties break by id ascending. Its scale
+    /// depends on the method (raw BM25 / cosine / RRF) AND on `fused` — with
+    /// adaptive ranking a matched query returns small RRF scores while an
+    /// unmatched one on the same catalog returns the raw score. Order by `rank`
+    /// and branch on `fused`; treat `score` as a within-list hint only.
     pub score: f64,
+    /// 0-based position in this result list (best is `0`). Stable across methods
+    /// and across the `fused` switch — the field to order or threshold on.
+    pub rank: u32,
+    /// `true` when `score` is an RRF score (ordering-only) rather than the raw
+    /// method score: the usage arm fused into this search, or the method is
+    /// hybrid. Uniform across one result list; lets a caller detect the scale.
+    pub fused: bool,
 }
 
 /// Destination for the local trace stream (ADR-0007): `"noop"` discards,
@@ -363,6 +378,154 @@ fn resolve_embedding(config: Option<EmbeddingConfig>) -> napi::Result<Option<Emb
         .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
+/// SDK-facing view of whether adaptive usage ranking is contributing. `status`
+/// is `"active" | "inactive" | "unknown" | "paused: dim mismatch" | "paused:
+/// model mismatch"`; `built`/`active`/`dimMismatch` are set only when paused.
+#[napi(object)]
+pub struct AdaptiveRankingStatus {
+    /// One of `"active" | "inactive" | "unknown" | "paused: dim mismatch" |
+    /// "paused: model mismatch"`.
+    pub status: String,
+    /// When paused: the embedding model (or its dimension) the graph's centroids
+    /// were built with. Absent unless paused.
+    pub built: Option<String>,
+    /// When paused: the currently active embedding model (or its dimension).
+    /// Absent unless paused.
+    pub active: Option<String>,
+    /// When paused: `true` if the mismatch is a dimension difference, `false` if
+    /// it is a same-dimension model-identity difference. Absent unless paused.
+    pub dim_mismatch: Option<bool>,
+}
+
+fn map_status(s: core::AdaptiveRankingStatus) -> AdaptiveRankingStatus {
+    use core::AdaptiveRankingStatus as S;
+    match s {
+        S::Inactive => AdaptiveRankingStatus {
+            status: "inactive".into(),
+            built: None,
+            active: None,
+            dim_mismatch: None,
+        },
+        S::Active => AdaptiveRankingStatus {
+            status: "active".into(),
+            built: None,
+            active: None,
+            dim_mismatch: None,
+        },
+        S::Unknown => AdaptiveRankingStatus {
+            status: "unknown".into(),
+            built: None,
+            active: None,
+            dim_mismatch: None,
+        },
+        S::Paused {
+            dim_mismatch,
+            built,
+            active,
+        } => AdaptiveRankingStatus {
+            status: if dim_mismatch {
+                "paused: dim mismatch"
+            } else {
+                "paused: model mismatch"
+            }
+            .into(),
+            built: Some(built),
+            active: Some(active),
+            dim_mismatch: Some(dim_mismatch),
+        },
+    }
+}
+
+/// A shared usage-ranking intent graph (ADR-0014): clusters of past queries,
+/// each remembering the capabilities invoked after them.
+///
+/// **Hand the same instance to both registries.** One cluster carries a `tools`
+/// map and a `skills` map, so a tool catalog and a skill catalog sharing a graph
+/// learn from and rank against one set of clusters. Giving them separate graphs
+/// duplicates every cluster and halves the evidence behind each.
+#[napi]
+pub struct IntentGraph {
+    inner: Arc<RwLock<core::IntentGraph>>,
+}
+
+impl Default for IntentGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[napi]
+impl IntentGraph {
+    /// An empty graph — knows nothing until a search is followed by an invoke.
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(core::IntentGraph::empty())),
+        }
+    }
+
+    /// Adopt a graph serialized in the `protocol/v1` wire form — produced by
+    /// a previous `toJson` or by Ratel Cloud.
+    ///
+    /// Throws if the JSON is malformed or declares a schema version this build
+    /// does not read (a consumer rejects rather than degrading).
+    #[napi(factory)]
+    pub fn from_json(json: String) -> napi::Result<Self> {
+        let graph = core::IntentGraph::from_json(&json)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Self {
+            inner: Arc::new(RwLock::new(graph)),
+        })
+    }
+
+    /// Serialize to the `protocol/v1` wire form — for inspection, or to carry
+    /// what was learned across processes.
+    ///
+    /// The graph is in-process only; persistence is yours. It mutates on every
+    /// confirmed invoke, so unsaved observations are lost on a crash — persist on
+    /// a cadence or at shutdown. Use `rev` to save only when it changed and to
+    /// detect a concurrent writer; single-writer is the supported model.
+    ///
+    /// SENSITIVE: the output contains the raw text of past user queries (the
+    /// cluster `members`). Treat a persisted graph like your query/telemetry log
+    /// — restrict permissions (`0600`), keep it out of version control and
+    /// images, and do not ship it to a less-trusted store.
+    #[napi]
+    pub fn to_json(&self) -> napi::Result<String> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?;
+        serde_json::to_string(&*guard)
+            .map_err(|e| napi::Error::from_reason(format!("serialize intent graph: {e}")))
+    }
+
+    /// How many clusters the graph holds. `0` is the cold-start state, in which
+    /// the graph contributes nothing to ranking.
+    #[napi(getter)]
+    pub fn cluster_count(&self) -> napi::Result<u32> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?;
+        Ok(guard.len() as u32)
+    }
+
+    /// Monotonic write counter — bumped once per mutation (a confirmed
+    /// observation, a rebuild). Never affects ranking; it is a primitive for your
+    /// storage layer. Snapshot it after each save: a later value means unsaved
+    /// learning (save-when-changed), and a stored graph whose `rev` is higher than
+    /// the one you loaded was written by another process (stale-base detection).
+    #[napi(getter)]
+    pub fn rev(&self) -> napi::Result<f64> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?;
+        Ok(guard.rev() as f64)
+    }
+}
+
 /// Node binding over the `ratel-ai-core` tool registry: an in-process index
 /// that ranks registered tools against a natural-language query (BM25 by
 /// default; semantic/hybrid once embeddings are built). Metadata-only — the
@@ -373,6 +536,13 @@ pub struct ToolRegistry {
     dense_gate: Arc<Mutex<()>>,
     pending_dense: Arc<AtomicUsize>,
     memory_sink: Option<Arc<MemorySink>>,
+    /// The current undecorated sink, whatever its kind. Retained so
+    /// enable/disable adaptive ranking can re-wrap or restore it; rebuilding
+    /// from `memory_sink` alone would drop a configured jsonl sink to noop.
+    base_sink: Arc<dyn core::TraceSink>,
+    /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
+    /// otherwise changing sinks would silently switch learning off.
+    graph: Option<Arc<RwLock<core::IntentGraph>>>,
 }
 
 #[napi]
@@ -391,6 +561,8 @@ impl ToolRegistry {
             dense_gate: Arc::new(Mutex::new(())),
             pending_dense: Arc::new(AtomicUsize::new(0)),
             memory_sink: None,
+            base_sink: Arc::new(NoopSink),
+            graph: None,
         })
     }
 
@@ -439,6 +611,8 @@ impl ToolRegistry {
             .map(|hit| SearchHit {
                 tool_id: hit.tool_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect()
     }
@@ -461,6 +635,8 @@ impl ToolRegistry {
             .map(|hit| SearchHit {
                 tool_id: hit.tool_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect()
     }
@@ -501,6 +677,8 @@ impl ToolRegistry {
             .map(|hit| SearchHit {
                 tool_id: hit.tool_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect())
     }
@@ -572,11 +750,84 @@ impl ToolRegistry {
     #[napi]
     pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
         let (sink, memory) = build_trace_sink(config)?;
+        // Retain the raw sink so enable/disable can re-wrap or restore it —
+        // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
+        self.base_sink = sink.clone();
+        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
+        // the sink outright would quietly stop learning.
+        let sink = match &self.graph {
+            Some(graph) => {
+                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
+            }
+            None => sink,
+        };
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
         Ok(())
+    }
+
+    /// Turn on adaptive usage ranking against `graph` (ADR-0014).
+    ///
+    /// Wires both halves at once: the registry **ranks** against the graph, and
+    /// the trace sink is decorated with a learner that **grows** it from
+    /// search-then-invoke pairs. Pass the same `IntentGraph` to the tool and
+    /// skill registries so both learn into one set of clusters.
+    ///
+    /// Ranking changes only where the graph has evidence: a query matching no
+    /// cluster returns exactly what it would have without one. Note that with a
+    /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
+    /// BM25 score — only ordering is comparable, as with hybrid search.
+    #[napi]
+    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+        let handle = graph.inner.clone();
+        let inner_sink = self.base_sink.clone();
+        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(learner);
+        registry.set_intent_graph(Some(handle.clone()));
+        drop(registry);
+        self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Turn adaptive usage ranking off: ranking returns to the base engine and
+    /// the graph stops growing. The graph itself is untouched, so re-enabling
+    /// resumes from what it already learned.
+    #[napi]
+    pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
+        let inner_sink = self.base_sink.clone();
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(inner_sink);
+        registry.set_intent_graph(None);
+        drop(registry);
+        self.graph = None;
+        Ok(())
+    }
+
+    /// Re-embed the intent graph's members under the current model and replace
+    /// its centroids — call after changing the embedding model. Preserves
+    /// members, support, and edges.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn rebuild_intent_graph(&self) -> AsyncTask<ToolEmbeddingTask> {
+        AsyncTask::new(ToolEmbeddingTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            operation: EmbeddingOperation::RebuildIntentGraph,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Whether adaptive usage ranking is contributing, paused (model changed),
+    /// or inactive — see `AdaptiveRankingStatus`.
+    #[napi]
+    pub fn adaptive_ranking_status(&self) -> napi::Result<AdaptiveRankingStatus> {
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
+        Ok(map_status(registry.adaptive_ranking_status()))
     }
 
     /// Drain captured envelopes from the active sink. Returns `[]` unless the
@@ -626,6 +877,13 @@ impl Task for FactEmbeddingTask {
         match self.operation {
             EmbeddingOperation::Build => registry.build_embeddings(),
             EmbeddingOperation::Rebuild => registry.rebuild_embeddings(),
+            // Facts have no usage-ranking intent graph; the fact binding never
+            // constructs this operation.
+            EmbeddingOperation::RebuildIntentGraph => {
+                return Err(napi::Error::from_reason(
+                    "fact registry has no intent graph to rebuild",
+                ));
+            }
         }
         .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
@@ -992,9 +1250,13 @@ pub struct Skill {
 pub struct SkillHit {
     /// Id of the matched skill, as registered.
     pub skill_id: String,
-    /// Relevance score; higher is better, ties break by id ascending. Scale
-    /// depends on the method (BM25 / cosine / RRF), as on `SearchHit.score`.
+    /// Relevance score; scale depends on the method and on `fused`, as on
+    /// `SearchHit.score`. Order by `rank`, branch on `fused`.
     pub score: f64,
+    /// 0-based position in this result list — as on `SearchHit.rank`.
+    pub rank: u32,
+    /// `true` when `score` is an RRF score — as on `SearchHit.fused`.
+    pub fused: bool,
 }
 
 /// Node binding over the `ratel-ai-core` skill registry — the skill twin of
@@ -1007,6 +1269,13 @@ pub struct SkillRegistry {
     dense_gate: Arc<Mutex<()>>,
     pending_dense: Arc<AtomicUsize>,
     memory_sink: Option<Arc<MemorySink>>,
+    /// The current undecorated sink, whatever its kind. Retained so
+    /// enable/disable adaptive ranking can re-wrap or restore it; rebuilding
+    /// from `memory_sink` alone would drop a configured jsonl sink to noop.
+    base_sink: Arc<dyn core::TraceSink>,
+    /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
+    /// otherwise changing sinks would silently switch learning off.
+    graph: Option<Arc<RwLock<core::IntentGraph>>>,
 }
 
 #[napi]
@@ -1023,6 +1292,8 @@ impl SkillRegistry {
             dense_gate: Arc::new(Mutex::new(())),
             pending_dense: Arc::new(AtomicUsize::new(0)),
             memory_sink: None,
+            base_sink: Arc::new(NoopSink),
+            graph: None,
         })
     }
 
@@ -1074,6 +1345,8 @@ impl SkillRegistry {
             .map(|hit| SkillHit {
                 skill_id: hit.skill_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect()
     }
@@ -1093,6 +1366,8 @@ impl SkillRegistry {
             .map(|hit| SkillHit {
                 skill_id: hit.skill_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect()
     }
@@ -1132,6 +1407,8 @@ impl SkillRegistry {
             .map(|hit| SkillHit {
                 skill_id: hit.skill_id,
                 score: hit.score as f64,
+                rank: hit.rank,
+                fused: hit.fused,
             })
             .collect())
     }
@@ -1197,11 +1474,84 @@ impl SkillRegistry {
     #[napi]
     pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
         let (sink, memory) = build_trace_sink(config)?;
+        // Retain the raw sink so enable/disable can re-wrap or restore it —
+        // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
+        self.base_sink = sink.clone();
+        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
+        // the sink outright would quietly stop learning.
+        let sink = match &self.graph {
+            Some(graph) => {
+                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
+            }
+            None => sink,
+        };
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
         Ok(())
+    }
+
+    /// Turn on adaptive usage ranking against `graph` (ADR-0014).
+    ///
+    /// Wires both halves at once: the registry **ranks** against the graph, and
+    /// the trace sink is decorated with a learner that **grows** it from
+    /// search-then-invoke pairs. Pass the same `IntentGraph` to the tool and
+    /// skill registries so both learn into one set of clusters.
+    ///
+    /// Ranking changes only where the graph has evidence: a query matching no
+    /// cluster returns exactly what it would have without one. Note that with a
+    /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
+    /// BM25 score — only ordering is comparable, as with hybrid search.
+    #[napi]
+    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+        let handle = graph.inner.clone();
+        let inner_sink = self.base_sink.clone();
+        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(learner);
+        registry.set_intent_graph(Some(handle.clone()));
+        drop(registry);
+        self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Turn adaptive usage ranking off: ranking returns to the base engine and
+    /// the graph stops growing. The graph itself is untouched, so re-enabling
+    /// resumes from what it already learned.
+    #[napi]
+    pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
+        let inner_sink = self.base_sink.clone();
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(inner_sink);
+        registry.set_intent_graph(None);
+        drop(registry);
+        self.graph = None;
+        Ok(())
+    }
+
+    /// Re-embed the intent graph's members under the current model and replace
+    /// its centroids — call after changing the embedding model. Preserves
+    /// members, support, and edges.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn rebuild_intent_graph(&self) -> AsyncTask<SkillEmbeddingTask> {
+        AsyncTask::new(SkillEmbeddingTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            operation: EmbeddingOperation::RebuildIntentGraph,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Whether adaptive usage ranking is contributing, paused (model changed),
+    /// or inactive — see `AdaptiveRankingStatus`.
+    #[napi]
+    pub fn adaptive_ranking_status(&self) -> napi::Result<AdaptiveRankingStatus> {
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?;
+        Ok(map_status(registry.adaptive_ranking_status()))
     }
 
     /// Drain captured envelopes from the active sink. Returns `[]` unless the

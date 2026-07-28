@@ -1,0 +1,23 @@
+[project]
+name = "ratel-example-adaptive-ranking"
+version = "0.0.0"
+description = "Ratel adaptive usage ranking — learn from invocations, persist, reload"
+requires-python = ">=3.10"
+dependencies = [
+    "ratel-ai",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+# Use the local SDK from this monorepo rather than PyPI.
+ratel-ai = { path = "../../src/sdk/python" }
+
+[tool.pytest.ini_options]
+# `test_adaptive.py` drives the catalog with an async `learn`; auto mode runs the
+# coroutine tests without per-test markers.
+asyncio_mode = "auto"

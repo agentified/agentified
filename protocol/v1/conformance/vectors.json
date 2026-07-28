@@ -480,5 +480,557 @@
       "private_key"
     ],
     "note": "Secrets never appear on the wire. A conforming projection emits exactly `skillFields`; any field whose lowercased name contains one of `forbiddenFieldSubstrings` MUST NOT appear in a v1 payload. Implementations assert this structurally (a test fails if such a field enters a wire shape)."
+  },
+  "graph": {
+    "note": "Conformance fixtures for the intent-graph read model (ADR-0014, schema/intent-graph.schema.json). Unlike the catalog vectors these pin STRUCTURE, not ETags: the graph is not a synced wire artifact in v1. Both producers — the in-process local learner and the Ratel Cloud builder — MUST emit graphs that validate, and every consumer MUST reject the `invalid` set.",
+    "consumerRules": [
+      "An edge naming a capability absent from the consumer's registry MUST be dropped, never ranked — the catalog may have changed since the graph was grown.",
+      "`centroid` MAY be absent; a consumer without an embedder matches lexically over `members`, and one with an embedder MAY derive a centroid from `members`.",
+      "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
+      "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
+      "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores."
+    ],
+    "valid": [
+      {
+        "name": "dense",
+        "why": "Full graph from a semantic/hybrid learner: centroid present, several members, two weighted tool edges.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "lexical-no-centroid",
+        "why": "A lexically-clustered producer (the Bm25 tier, or Ratel Cloud's Jaccard clusterer) emits no centroid. `members` is the match key, so the graph is still fully usable — a consumer with an embedder may derive a centroid from the members.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "support-one",
+        "why": "A cluster seeded by a single confirmed observation. Valid, and the consumer scales its ranking arm down accordingly rather than refusing the row.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_seed",
+              "label": "rotate the signing key",
+              "terms": [
+                "rotate",
+                "signing",
+                "key"
+              ],
+              "members": [
+                "how do I rotate the signing key"
+              ],
+              "support": 1,
+              "tools": {
+                "vault_rotate": 1.0
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-edges",
+        "why": "Edge maps may be empty — a cluster can exist with no surviving capability edges after decay. It contributes no ranking arm.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {},
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "skill-edges",
+        "why": "Skills are ranked by the same mechanism as tools, via the skill registry's own arm.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {},
+              "skills": {
+                "ci-triage": 1.0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "unknown-capability-id",
+        "why": "A graph may name a capability the consumer does not have — the catalog changed after the graph was grown. This is VALID on the wire; the consumer drops the id at rank time (see consumerRules), it is not a format error.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "since_deleted_tool": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "extra-fields",
+        "why": "Producers may carry additional fields; a conforming consumer ignores them.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ],
+              "provenance": "ratel-cloud"
+            }
+          ],
+          "generator": "ratel-cloud@2026-07"
+        }
+      },
+      {
+        "name": "dense-with-model",
+        "why": "A dense graph declares the embedding model its centroids were built with, so a consumer can detect a model swap instead of cosine-ing across vector spaces.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "model": "hf:BAAI/bge-small-en-v1.5",
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "with-rev",
+        "why": "A graph carries an OPTIONAL monotonic write counter. It is metadata for the caller's storage layer (save-when-changed, stale-base detection) and never affects ranking; a consumer accepts it and otherwise ignores it.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "rev": 42,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "rev-negative",
+        "because": "`rev`, when present, is a non-negative integer — it only ever counts up.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "rev": -1,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "unknown-version",
+        "because": "`v` must be 1; a consumer rejects an unknown version rather than degrading.",
+        "doc": {
+          "v": 2,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "missing-members",
+        "because": "`members` is the match key — without it the row can never be matched.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-members",
+        "because": "`members` requires at least one entry.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "support-zero",
+        "because": "`support` counts confirmed observations and is at least 1; a row with none should not have been emitted.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 0,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "negative-edge-weight",
+        "because": "Edge weights are positive invocation counts; zero or negative is meaningless and would invert the arm's order.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": -0.5
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-centroid",
+        "because": "When present, a centroid must have at least one dimension.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": []
+            }
+          ]
+        }
+      },
+      {
+        "name": "duplicate-intent-id",
+        "because": "Ids name a row and must be unique within the graph.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            },
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      }
+    ]
   }
 }

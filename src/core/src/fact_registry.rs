@@ -8,7 +8,7 @@ use crate::embedding::EmbedderError;
 use crate::embedding_config::EmbeddingModel;
 use crate::fact::{Fact, PinMode};
 use crate::fact_indexing::searchable_text;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, rrf_fuse};
+use crate::fusion::{RETRIEVE_DEPTH, RRF_K, rrf_fuse_weighted, sort_and_truncate};
 use crate::method::SearchMethod;
 use crate::search::bm25_search;
 use crate::trace::{ChurnKind, FactHitTrace, NoopSink, Origin, SearchStage, TraceEvent, TraceSink};
@@ -253,9 +253,14 @@ impl FactRegistry {
             return Ok(Vec::new());
         }
         let t = Instant::now();
-        let ranked = self
-            .dense
-            .search(self.facts.values(), query, top_k, self.sink.as_ref())?;
+        // Facts have no usage arm, so retrieval depth stays `top_k` and the
+        // query vector the dense arm embeds is not reused.
+        let (ranked, _query_vec) = self.dense.search_returning_query_vec(
+            self.facts.values(),
+            query,
+            top_k,
+            self.sink.as_ref(),
+        )?;
         let stage_ms = t.elapsed().as_millis() as u64;
         let hits: Vec<FactHit> = ranked
             .into_iter()
@@ -306,9 +311,12 @@ impl FactRegistry {
         };
 
         let t = Instant::now();
-        let dense_ranked =
-            self.dense
-                .search(self.facts.values(), query, depth, self.sink.as_ref())?;
+        let (dense_ranked, _query_vec) = self.dense.search_returning_query_vec(
+            self.facts.values(),
+            query,
+            depth,
+            self.sink.as_ref(),
+        )?;
         let dense_stage = SearchStage {
             name: "dense".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -318,8 +326,8 @@ impl FactRegistry {
         let t = Instant::now();
         let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
         let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut fused = rrf_fuse(&[&bm25_ids, &dense_ids], RRF_K);
-        fused.truncate(top_k);
+        let mut fused = rrf_fuse_weighted(&[(&bm25_ids, 1.0), (&dense_ids, 1.0)], RRF_K);
+        sort_and_truncate(&mut fused, top_k);
         let rrf_stage = SearchStage {
             name: "rrf".into(),
             took_ms: t.elapsed().as_millis() as u64,

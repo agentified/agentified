@@ -19,9 +19,82 @@ class SearchHit:
     def score(self) -> float:
         """Relevance score; higher ranks first.
 
-        The scale depends on the search method: raw BM25 (unbounded) for
-        "bm25", cosine similarity for "semantic", reciprocal-rank-fusion for
-        "hybrid" — scores from different methods are not comparable.
+        The scale depends on the search method (raw BM25 / cosine / RRF) AND on
+        `fused` — with adaptive ranking a matched query returns small RRF scores
+        while an unmatched one on the same catalog returns the raw score. Order
+        by `rank`, branch on `fused`; treat `score` as a within-list hint only.
+        """
+
+    @property
+    def rank(self) -> int:
+        """0-based position in this result list (best is 0).
+
+        Stable across methods and across the `fused` switch — the field to order
+        or threshold on, in place of the scale-shifting `score`.
+        """
+
+    @property
+    def fused(self) -> bool:
+        """Whether `score` is a Reciprocal Rank Fusion score (ordering-only).
+
+        `True` when the usage arm fused into this search or the method is hybrid;
+        `False` for a plain BM25/semantic result. Uniform across one result list;
+        lets you detect which scale `score` is on.
+        """
+
+class IntentGraph:
+    """A shared usage-ranking intent graph (ADR-0014).
+
+    Clusters of past queries, each remembering the capabilities invoked after
+    them. Hand the *same* instance to a tool catalog and a skill catalog: one
+    cluster carries both a tool and a skill edge map, so sharing gives one set
+    of clusters with all the evidence behind it, while separate graphs
+    duplicate every cluster and split the evidence.
+    """
+
+    def __init__(self) -> None:
+        """An empty graph — knows nothing until a search is followed by an invoke."""
+
+    @staticmethod
+    def from_json(json: str) -> IntentGraph:
+        """Adopt a graph in the `protocol/v1` wire form.
+
+        Accepts output from `ratel-graph build`, a previous `to_json()`, or
+        Ratel Cloud. Raises `ValueError` if it is malformed or declares a
+        schema version this build does not read.
+        """
+
+    def to_json(self) -> str:
+        """Serialize to the `protocol/v1` wire form.
+
+        For inspection, or to carry what was learned across processes. The graph
+        is in-process only; persistence is yours. It mutates on every confirmed
+        invoke, so unsaved observations are lost on a crash — persist on a cadence
+        or at shutdown. Use ``rev`` to save only when it changed and to detect a
+        concurrent writer; single-writer is the supported model.
+
+        SENSITIVE: the output contains the raw text of past user queries (the
+        cluster ``members``). Treat a persisted graph like your query/telemetry
+        log — restrict permissions (``0600``), keep it out of version control and
+        images, and do not ship it to a less-trusted store.
+        """
+
+    @property
+    def cluster_count(self) -> int:
+        """How many clusters the graph holds.
+
+        `0` is the cold-start state, in which it contributes nothing to
+        ranking.
+        """
+
+    @property
+    def rev(self) -> int:
+        """Monotonic write counter, bumped once per mutation.
+
+        Never affects ranking — a primitive for your storage layer. Snapshot it
+        after each save: a later value means unsaved learning (save-when-changed),
+        and a stored graph whose ``rev`` is higher than the one you loaded was
+        written by another process (stale-base detection).
         """
 
 class ToolRegistry:
@@ -125,6 +198,35 @@ class ToolRegistry:
         jsonl path that cannot be opened.
         """
 
+    def _rebuild_intent_graph(self) -> None:
+        """Re-embed the intent graph's members under the current model (worker)."""
+
+    def adaptive_ranking_status(
+        self,
+    ) -> tuple[str, str | None, str | None, bool | None]:
+        """(status, built, active, dim_mismatch) — adaptive ranking model check."""
+
+    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+        """Turn on adaptive usage ranking against `graph` (ADR-0014).
+
+        Wires both halves: this registry ranks against the graph, and its trace
+        sink is decorated with a learner that grows it from search-then-invoke
+        pairs. Pass the same graph to the other registry so both learn into one
+        set of clusters.
+
+        Only queries matching a cluster are affected. With a graph attached
+        `SearchHit.score` becomes a fusion score rather than a raw BM25 score,
+        so use `rank` for ordering and `fused` to detect the scale.
+        """
+
+    def disable_adaptive_ranking(self) -> None:
+        """Turn adaptive usage ranking off.
+
+        Ranking returns to the base engine and the graph stops growing; the
+        graph keeps what it learned, so re-enabling resumes rather than
+        restarts.
+        """
+
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured envelopes from the active sink.
 
@@ -151,9 +253,17 @@ class SkillHit:
     def score(self) -> float:
         """Relevance score; higher ranks first.
 
-        Same method-dependent scale as `SearchHit.score`, computed against the
-        skill corpus.
+        Scale depends on the method and on `fused`, as on `SearchHit.score`.
+        Order by `rank`, branch on `fused`.
         """
+
+    @property
+    def rank(self) -> int:
+        """0-based position — as on `SearchHit.rank`."""
+
+    @property
+    def fused(self) -> bool:
+        """Whether `score` is an RRF score — as on `SearchHit.fused`."""
 
 class SkillRegistry:
     """Private native metadata registry over the skill corpus.
@@ -237,6 +347,35 @@ class SkillRegistry:
         path: str | None = ...,
     ) -> None:
         """Route trace events to a sink — see `ToolRegistry.set_trace_sink`."""
+
+    def _rebuild_intent_graph(self) -> None:
+        """Re-embed the intent graph's members under the current model (worker)."""
+
+    def adaptive_ranking_status(
+        self,
+    ) -> tuple[str, str | None, str | None, bool | None]:
+        """(status, built, active, dim_mismatch) — adaptive ranking model check."""
+
+    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+        """Turn on adaptive usage ranking against `graph` (ADR-0014).
+
+        Wires both halves: this registry ranks against the graph, and its trace
+        sink is decorated with a learner that grows it from search-then-invoke
+        pairs. Pass the same graph to the other registry so both learn into one
+        set of clusters.
+
+        Only queries matching a cluster are affected. With a graph attached
+        `SearchHit.score` becomes a fusion score rather than a raw BM25 score,
+        so use `rank` for ordering and `fused` to detect the scale.
+        """
+
+    def disable_adaptive_ranking(self) -> None:
+        """Turn adaptive usage ranking off.
+
+        Ranking returns to the base engine and the graph stops growing; the
+        graph keeps what it learned, so re-enabling resumes rather than
+        restarts.
+        """
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured envelopes — see `ToolRegistry.drain_trace_events`."""

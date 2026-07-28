@@ -34,7 +34,12 @@ make Ratel Cloud an island.
   emits the same shapes; every consumer reads the same shapes. Event set: search, invoke
   start/end/error, gateway-tool calls, upstream-MCP ingest, auth / `needs_auth`, plus the
   skill events ([ADR-0005](0005-first-class-skills.md)). Additions are non-breaking;
-  renames/removals are not.
+  renames/removals are not. This is enforced, not merely intended: `TraceEvent` is
+  `#[non_exhaustive]`, so a new **variant** cannot break a downstream `match` (it must carry a
+  `_ =>` arm). A new **field** on an existing variant is non-breaking only for consumers that
+  destructure with a trailing `..` — the convention this crate follows; variant-level
+  non-exhaustiveness is deliberately avoided, as it would also block downstream from
+  constructing events by literal.
 - **One tagged stream, filtering at the consumer**: rerankers, suggestion analysis, and
   inspection subscribe to different cuts of the same producer; no parallel pipes to drift.
 - **Query-log semantics, not oplog semantics**: trace events are observations of usage.

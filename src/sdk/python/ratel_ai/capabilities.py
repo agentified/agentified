@@ -129,10 +129,7 @@ def _build_search_description(has_skills: bool, upstreams: Sequence[UpstreamServ
     if not upstreams:
         return base
     listing = "\n".join(format_upstream_line(u) for u in upstreams)
-    return (
-        f"{base}\n\n"
-        f"This catalog aggregates tools from these upstream MCP servers:\n{listing}"
-    )
+    return f"{base}\n\nThis catalog aggregates tools from these upstream MCP servers:\n{listing}"
 
 
 def search_capabilities_tool(

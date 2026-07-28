@@ -12,10 +12,12 @@ import inspect
 import json
 import threading
 import time
+import warnings
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TypedDict, TypeVar, Union, overload
 
+from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
 from ._native import SearchHit
 from ._native import ToolRegistry as _NativeToolRegistry
 from .telemetry import SEARCH_TARGET_TOOL, trace_execute_tool, trace_search, trace_search_async
@@ -213,6 +215,36 @@ class TraceSinkConfig:
     path: str | None = None
 
 
+class AdaptiveRankingStatus(str):
+    """The adaptive-ranking status, enriched with the models a pause involves.
+
+    A plain ``str`` — ``== "active"`` and ``.startswith("paused")`` work as before
+    — that also exposes, when the arm is paused by a model change, the fingerprint
+    the graph was ``built`` with, the currently ``active`` model, and whether it is
+    a ``dim_mismatch`` (different width) vs a same-width different model. All three
+    are ``None`` unless the status is a ``paused: ...``. Mirrors the object the TS
+    SDK returns, so the detail is reachable without parsing stderr.
+    """
+
+    built: str | None
+    active: str | None
+    dim_mismatch: bool | None
+
+    def __new__(
+        cls,
+        status: str,
+        built: str | None = None,
+        active: str | None = None,
+        dim_mismatch: bool | None = None,
+    ) -> AdaptiveRankingStatus:
+        """Build a status string carrying the model detail behind a pause."""
+        self = super().__new__(cls, status)
+        self.built = built
+        self.active = active
+        self.dim_mismatch = dim_mismatch
+        return self
+
+
 class ToolRegistry:
     """Typed Python facade over the private native tool registry."""
 
@@ -313,6 +345,9 @@ class ToolRegistry:
         )
         self._native = _NativeToolRegistry(**kwargs)
         self._eager = method in ("semantic", "hybrid")
+        self._warn_on_model_mismatch = True
+        self._adaptive_warned = False
+        self._rebuild_on_model_change = False
         self._dense_gate = threading.Lock()
         self._dense_state = threading.Lock()
         self._dense_pending = 0
@@ -391,7 +426,7 @@ class ToolRegistry:
             raise ValueError(f"unknown search method: {method}")
         if method != "bm25":
             raise RuntimeError(
-                f'{method} search is asynchronous; use `await registry.search_async(..., '
+                f"{method} search is asynchronous; use `await registry.search_async(..., "
                 f'method="{method}")`'
             )
         return self.search_with_origin(query, top_k, origin)
@@ -439,6 +474,7 @@ class ToolRegistry:
             return self.search_with_origin(query, top_k, origin)
         if self._undriven_builds > 0:
             raise RuntimeError(_UNAWAITED_REGISTER)
+        await self._maybe_rebuild_on_model_change()
         return await self._run_dense(
             lambda: self._native._search_with_method(query, top_k, origin, method)
         )
@@ -454,6 +490,104 @@ class ToolRegistry:
         with self._dense_state:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
+
+    def experimental_enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        *,
+        warn_on_model_mismatch: bool = True,
+        rebuild_on_model_change: bool = False,
+    ) -> None:
+        """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
+
+        Wires both halves: this registry ranks against what users have actually
+        invoked after similar queries, and keeps learning as it is used. Pass
+        the same :class:`IntentGraph` to the other registry so both learn into one
+        set of clusters.
+
+        Only queries matching a cluster are affected. With a graph attached the
+        hit ``score`` becomes a fusion score rather than a raw BM25 score, so
+        use ``rank`` for ordering and ``fused`` to detect the scale, not the
+        raw ``score``.
+
+        On a model change the arm pauses and a one-time warning is issued unless
+        ``warn_on_model_mismatch`` is False; call :meth:`experimental_rebuild_intent_graph`.
+
+        Set ``rebuild_on_model_change`` to recover automatically instead: the
+        next dense (semantic/hybrid) search re-embeds the graph under the current
+        model before searching, so a persisted graph self-heals after a model
+        swap. It is off by default because the rebuild is an embedding pass —
+        expensive, able to raise :class:`EmbedderError`, and it mutates the graph
+        (new centroids, bumped ``rev``). Recovery is lazy: status stays
+        ``paused`` until that first dense search.
+        """
+        # `experimental_enable_adaptive_ranking` takes `&mut self` natively, so it must not run
+        # while an in-flight dense build holds the registry — guard it like
+        # `set_trace_sink`, surfacing the typed busy error rather than a raw
+        # pyo3 "Already borrowed".
+        with self._dense_state:
+            self._raise_if_busy()
+            self._warn_on_model_mismatch = warn_on_model_mismatch
+            self._rebuild_on_model_change = rebuild_on_model_change
+            self._adaptive_warned = False
+            self._native.enable_adaptive_ranking(graph)
+        self._maybe_warn_model_mismatch()
+
+    def experimental_disable_adaptive_ranking(self) -> None:
+        """Turn adaptive usage ranking off; the graph keeps what it learned."""
+        with self._dense_state:
+            self._raise_if_busy()
+            self._rebuild_on_model_change = False
+            self._native.disable_adaptive_ranking()
+
+    async def _maybe_rebuild_on_model_change(self) -> None:
+        """Auto-recover a model-mismatched graph before a dense search, opt-in.
+
+        A no-op unless ``rebuild_on_model_change`` was set and the arm is paused.
+        Re-checks each dense search: once rebuilt the status reads ``active`` and
+        this stops rebuilding, so a model that is briefly unavailable heals on a
+        later search rather than staying paused forever.
+        """
+        if not self._rebuild_on_model_change:
+            return
+        status, _built, _active, _dim = self._native.adaptive_ranking_status()
+        if status.startswith("paused"):
+            await self.experimental_rebuild_intent_graph()
+
+    async def experimental_rebuild_intent_graph(self) -> None:
+        """Re-embed the graph's members under the current model; preserves learning.
+
+        Call after changing the embedding model: a graph's centroids are only
+        comparable to queries from the model that built them, so on a swap the
+        usage arm pauses until this runs.
+        """
+        await self._run_dense(self._native._rebuild_intent_graph)
+        self._adaptive_warned = False
+        self._maybe_warn_model_mismatch()
+
+    @property
+    def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
+        """Adaptive-ranking status; a str that also carries a pause's model detail."""
+        status, built, active, dim_mismatch = self._native.adaptive_ranking_status()
+        return AdaptiveRankingStatus(status, built, active, dim_mismatch)
+
+    def _maybe_warn_model_mismatch(self) -> None:
+        if self._adaptive_warned or not self._warn_on_model_mismatch:
+            return
+        status, built, active, dim_mismatch = self._native.adaptive_ranking_status()
+        if not status.startswith("paused"):
+            return
+        self._adaptive_warned = True
+        how = (
+            f"built with a {built}-dim embedding model but the active model outputs {active} dims"
+            if dim_mismatch
+            else f"built with embedding model '{built}' but the active model is '{active}'"
+        )
+        warnings.warn(
+            f"ratel: intent graph was {how}. Adaptive usage ranking is PAUSED — "
+            "call experimental_rebuild_intent_graph() to rebuild it with the current model.",
+            stacklevel=2,
+        )
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured native trace events."""
@@ -631,7 +765,7 @@ class ToolCatalog:
             raise ValueError(f"unknown search method: {resolved_method}")
         if resolved_method != "bm25":
             raise RuntimeError(
-                f'{resolved_method} search is asynchronous; use `await catalog.search_async(..., '
+                f"{resolved_method} search is asynchronous; use `await catalog.search_async(..., "
                 f'method="{resolved_method}")`'
             )
         return trace_search(
@@ -697,6 +831,49 @@ class ToolCatalog:
             ValueError: if the dict doesn't match any known event shape.
         """
         self._registry.record_event(event)
+
+    def experimental_enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        *,
+        warn_on_model_mismatch: bool = True,
+        rebuild_on_model_change: bool = False,
+    ) -> None:
+        """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
+
+        Wires both halves: this catalog ranks against what users have actually
+        invoked after similar queries, and keeps learning as it is used. Pass
+        the same :class:`IntentGraph` to the other catalog so both learn into one
+        set of clusters.
+
+        Only queries matching a cluster are affected. With a graph attached the
+        hit ``score`` becomes a fusion score rather than a raw BM25 score, so
+        use ``rank`` for ordering and ``fused`` to detect the scale, not the
+        raw ``score``.
+
+        Set ``rebuild_on_model_change`` to auto-recover a model-mismatched graph
+        on the next dense search rather than staying paused until you call
+        :meth:`experimental_rebuild_intent_graph` yourself. Off by default — the rebuild is an
+        embedding pass (cost, possible :class:`EmbedderError`, mutates the graph).
+        """
+        self._registry.experimental_enable_adaptive_ranking(
+            graph,
+            warn_on_model_mismatch=warn_on_model_mismatch,
+            rebuild_on_model_change=rebuild_on_model_change,
+        )
+
+    async def experimental_rebuild_intent_graph(self) -> None:
+        """Re-embed the graph's members under the current model; preserves learning."""
+        await self._registry.experimental_rebuild_intent_graph()
+
+    @property
+    def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
+        """Adaptive-ranking status: active, inactive, unknown, or paused."""
+        return self._registry.experimental_adaptive_ranking_status
+
+    def experimental_disable_adaptive_ranking(self) -> None:
+        """Turn adaptive usage ranking off; the graph keeps what it learned."""
+        self._registry.experimental_disable_adaptive_ranking()
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured trace envelopes; `[]` unless the sink is "memory"."""
