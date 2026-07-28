@@ -14,7 +14,13 @@ from typing import Any
 
 import pytest
 
-from ratel_ai import EmbedderError, McpToolsListError, ToolCatalog, TraceSinkConfig, register_mcp_server
+from ratel_ai import (
+    EmbedderError,
+    McpToolsListError,
+    ToolCatalog,
+    TraceSinkConfig,
+    register_mcp_server,
+)
 
 
 @pytest.fixture
