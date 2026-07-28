@@ -294,6 +294,36 @@ async def test_replace_all_on_semantic_embeds_the_new_skills(
     assert [hit.skill_id for hit in hits] == ["deploy"]
 
 
+async def test_replace_all_refuses_a_second_reload_while_the_first_embeds(
+    controlled_embedding_endpoint: tuple[str, threading.Event, threading.Event],
+) -> None:
+    # The TS twin can fire both reloads in one tick, because napi takes the
+    # dense permit synchronously. Here `_dense_pending` only rises once the
+    # embedding request is actually in flight, so the endpoint holds the first
+    # reload open to create the overlap.
+    endpoint, request_started, send_response = controlled_embedding_endpoint
+    catalog = SkillCatalog(method="semantic", embedding={"url": endpoint, "model": "test-model"})
+
+    first = asyncio.ensure_future(
+        catalog.replace_all([Skill(id="slides", name="slides", description="Build decks.")])
+    )
+    await asyncio.to_thread(request_started.wait)
+    try:
+        # Refused outright — not queued behind the first, not merged into it.
+        with pytest.raises(RuntimeError, match=r"^registry busy; await the active operation$"):
+            catalog.replace_all(
+                [Skill(id="api-design", name="api-design", description="REST API patterns.")]
+            )
+    finally:
+        send_response.set()
+    await first
+
+    # The corpus is exactly the first batch, never a blend of the two.
+    assert catalog.has("slides")
+    assert not catalog.has("api-design")
+    assert catalog.size() == 1
+
+
 async def test_replace_all_reports_counts_when_the_embedding_pass_fails() -> None:
     catalog = SkillCatalog(method="semantic", embedding={"local": "/missing/ratel-model"})
 

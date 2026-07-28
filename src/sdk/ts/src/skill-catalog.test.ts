@@ -282,6 +282,34 @@ describe("SkillCatalog.replaceAll", () => {
     }
   });
 
+  it("refuses a second reload while the first is still embedding", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+
+      // The first reload's swap has committed and its embedding pass now owns
+      // the registry (the dense permit is taken synchronously, before the call
+      // returns).
+      const first = catalog.replaceAll([slides]);
+
+      // So the second is refused outright — not queued behind the first, not
+      // merged into it.
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
+
+      await first;
+
+      // The corpus is exactly the first batch, never a blend of the two.
+      expect(catalog.has("frontend-slides")).toBe(true);
+      expect(catalog.has("api-design")).toBe(false);
+      expect(catalog.size()).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("reports the committed counts even when the embedding pass fails", async () => {
     const catalog = new SkillCatalog({
       method: "semantic",
