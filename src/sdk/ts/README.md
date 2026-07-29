@@ -31,6 +31,26 @@ const hits = await catalog.searchAsync("deploy the service", 5);
 
 `register()` returns a promise for every method (BM25 too); `search()` stays synchronous for BM25 only, and `searchAsync()` covers all three. To change the endpoint's model or vector dimension, construct a new catalog and re-register.
 
+A `SkillCatalog` also takes a whole reloaded catalog at once with `replaceAll()`, for a source that fetches the full set rather than individual changes ([ADR 0015](../../../docs/adr/0015-whole-catalog-skill-reload.md)). The batch *is* the catalog: ids missing from it are removed, including ones registered in-process, so a host that mixes local and remote skills composes the batch itself. It mutates in place, so `r.skills`, every adapted view, and the capability tools already handed to the model all see the reload without being rebuilt.
+
+```ts
+const outcome = await r.skills.replaceAll([...localSkills, ...(await fetchRemoteSkills())]);
+console.log(`reload: +${outcome.added} -${outcome.removed} ~${outcome.updated}`);
+```
+
+The corpus swap is the synchronous half of that call, so the counts are already final when it returns — read them without awaiting and a reload whose embedding pass fails still reports what it changed:
+
+```ts
+const reload = r.skills.replaceAll(batch); // corpus is live; counts are final
+try {
+  await reload; // drives the embedding pass
+} catch {
+  console.warn(`applied +${reload.added} -${reload.removed}, embeddings pending`);
+}
+```
+
+Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races an in-flight operation — dense work, but also an ordinary BM25 `searchAsync` holding the read lock — throws rather than applying half of itself.
+
 Embedding failures from `register()`/`searchAsync()` are typed `EmbedderError`s (with a stable `.code` such as `"Load"`, `"NotCached"`, or `"DimensionMismatch"`); a dimension mismatch is a `DimensionMismatchError` subclass — the parity of Python's `EmbedderError`/`DimensionMismatchError`. Invalid embedding config still throws at construction.
 
 ```ts

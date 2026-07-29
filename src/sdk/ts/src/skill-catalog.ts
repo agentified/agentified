@@ -1,10 +1,36 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { Skill, SkillHit } from "../native/index.cjs";
+import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
-export type { Skill, SkillHit };
+export type { ReplaceOutcome, Skill, SkillHit };
+
+/**
+ * What {@link SkillCatalog.replaceAll} returns: the {@link ReplaceOutcome}
+ * counts, readable immediately, over a promise for the embedding pass.
+ *
+ * The corpus swap commits synchronously, so the counts are final the moment
+ * `replaceAll` returns and can be read before the embedding pass settles — a
+ * source that must report what a reload changed can therefore do so even when
+ * that pass fails.
+ *
+ * **Always `await` (or `.catch()`) the value, even when you only want the
+ * counts.** It is a real promise for the embedding pass, so leaving it
+ * unhandled turns an embedding failure into an unhandled rejection — which
+ * terminates the process under Node's default `--unhandled-rejections=throw`.
+ * Reading the counts is not a substitute for handling it:
+ *
+ * ```ts
+ * const reload = catalog.replaceAll(batch); // corpus live, counts final
+ * try {
+ *   await reload;
+ * } catch {
+ *   log.warn(`applied +${reload.added} -${reload.removed}, embeddings pending`);
+ * }
+ * ```
+ */
+export type PendingReplace = Promise<ReplaceOutcome> & ReplaceOutcome;
 
 /** Construction options for {@link SkillCatalog}. */
 export interface SkillCatalogOptions {
@@ -65,6 +91,54 @@ export class SkillCatalog {
       this.skills.set(skill.id, skill);
     }
     await this.registry.buildDense();
+  }
+
+  /**
+   * Make `skills` the entire content of the catalog: ids absent from the batch
+   * are removed, the rest are added or updated. The whole-catalog counterpart
+   * to {@link SkillCatalog.register}, for a source that reloads a catalog
+   * rather than pushing individual changes. Mutates in place, so every holder
+   * of this catalog — `ratel()`'s `r.skills`, each adapted view, and the
+   * capability tools taken from `modelTools()` — observes the reload without
+   * being rebuilt.
+   *
+   * **Removal is unconditional.** Skills registered in-process are dropped just
+   * like any others, since the batch *is* the catalog. A host that keeps local
+   * skills alongside a remote source composes the batch itself:
+   * `await catalog.replaceAll([...localSkills, ...remoteSkills])`.
+   *
+   * Embedding follows the same two-phase contract as
+   * {@link SkillCatalog.register}: the corpus swap lands first, then the batch
+   * is embedded. Only genuinely new or re-worded skills are embedded — an
+   * unchanged id keeps its vector, so reloading an unchanged catalog costs no
+   * embedding calls at all. If the embedding pass fails, the new corpus is
+   * already live and BM25 still ranks it; semantic search reports
+   * `EmbeddingsNotBuilt` until a later pass succeeds.
+   *
+   * A concurrent operation refuses the call outright rather than applying it
+   * half-way, so two overlapping reloads can never blend into one corpus.
+   * Because the swap is the synchronous half, that refusal throws at the call
+   * site rather than rejecting the returned promise. Note that any in-flight
+   * {@link SkillCatalog.searchAsync} can trigger it, including a plain BM25 one
+   * — `registry busy` is retryable and not exclusive to dense work.
+   *
+   * @param skills - The complete catalog contents. A repeated id keeps its last
+   *   entry. An empty array clears the catalog.
+   * @returns The counts, already final, over a promise for the embedding pass —
+   *   see {@link PendingReplace}. `.added`/`.removed` can be read before that
+   *   pass settles, but the value must still always be awaited (or
+   *   `.catch()`-ed), or an embedding failure becomes an unhandled rejection.
+   */
+  replaceAll(skills: readonly Skill[]): PendingReplace {
+    const outcome = this.registry.replaceAllItems(skills);
+    this.skills.clear();
+    for (const skill of skills) {
+      this.skills.set(skill.id, skill);
+    }
+    // The counts ride on the promise itself, so a failed embedding pass still
+    // reports what the (already committed) swap changed.
+    const embedded = this.registry.buildDense().then(() => outcome);
+    return Object.assign(embedded, outcome);
   }
 
   /**

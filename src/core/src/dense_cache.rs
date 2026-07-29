@@ -13,7 +13,8 @@
 //! place: on replace the registry calls [`DenseCache::invalidate`] to drop the
 //! stale vector, and the next [`DenseCache::extend`] re-embeds that id like any
 //! other missing one — so a re-registered id never leaves a stale embedding
-//! behind (RAT-378).
+//! behind (RAT-378). The same keying lets `replace_all` drop the vector of an
+//! id that leaves the corpus outright, which no `extend` then re-embeds.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -263,8 +264,15 @@ impl DenseCache {
         Ok(())
     }
 
-    /// Drop a cached embedding so the next [`Self::extend`] re-embeds this id.
-    /// Called by a registry's `register` when it replaces an existing id in place.
+    /// Drop a cached embedding for an id whose vector must not survive.
+    ///
+    /// Two callers, for two different reasons: a registry's `register` (and the
+    /// update half of `replace_all`) drops a superseded vector so the next
+    /// [`Self::extend`] re-embeds that id; the removal half of `replace_all`
+    /// drops the vector of an id leaving the corpus entirely, with nothing to
+    /// re-embed. The second case is load-bearing rather than tidiness —
+    /// [`Self::require_built`] compares *counts*, so a vector left behind for a
+    /// departed id could offset a new, unembedded one and let the guard pass.
     pub(crate) fn invalidate(&self, id: &str) {
         self.state
             .lock()
