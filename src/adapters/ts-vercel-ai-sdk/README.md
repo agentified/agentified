@@ -9,7 +9,7 @@ Ratel keeps the model's tool list small and stable: instead of advertising every
 Install the compatible GA pair:
 
 ```bash
-pnpm add @ratel-ai/sdk@^0.5.3 @ratel-ai/vercel-ai-sdk@^0.2.0 ai@^7
+pnpm add @ratel-ai/sdk@^0.6.0 @ratel-ai/vercel-ai-sdk@^0.3.0 ai@^7
 ```
 
 ## Usage

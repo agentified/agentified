@@ -157,7 +157,9 @@ pub enum TraceEvent {
         took_ms: u64,
     },
     /// The skill corpus changed — the skill-side twin of
-    /// [`TraceEvent::IndexChurn`], emitted by [`crate::SkillRegistry::register`].
+    /// [`TraceEvent::IndexChurn`]. [`crate::SkillRegistry::register`] emits
+    /// [`ChurnKind::Add`] only; [`crate::SkillRegistry::replace_all`] emits
+    /// either kind, and is the only source of [`ChurnKind::Remove`] for skills.
     SkillChurn {
         /// Whether the id was added or removed.
         kind: ChurnKind,

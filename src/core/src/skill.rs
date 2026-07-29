@@ -13,6 +13,7 @@ use std::collections::HashMap;
 /// `{"stacks": ["react"]}` for the push-path ranker to boost/filter by project
 /// context, deliberately *not* matched as query terms. `body` is the dispatch
 /// payload and is also not indexed, so a long body never skews relevance.
+#[derive(PartialEq, Eq)]
 pub struct Skill {
     /// Stable identifier, returned in [`crate::SkillHit::skill_id`].
     /// Registering the same id again replaces the entry in place. Not indexed

@@ -62,6 +62,23 @@ impl Embeddable for Skill {
     }
 }
 
+/// What a whole-corpus [`SkillRegistry::replace_all`] actually changed, counted
+/// by id. `updated` covers any field edit (including a body-only rewrite);
+/// `unchanged` ids are byte-identical and keep their cached embedding. A reload
+/// that changed nothing reports zeros across `added`/`removed`/`updated` — the
+/// cheap case a periodic source hits most of the time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplaceOutcome {
+    /// Ids in the new corpus that were not in the old one.
+    pub added: usize,
+    /// Ids in the old corpus that are absent from the new one.
+    pub removed: usize,
+    /// Ids present in both whose content differs in any field.
+    pub updated: usize,
+    /// Ids present in both with identical content.
+    pub unchanged: usize,
+}
+
 /// Retrieval index over [`Skill`]s — the on-demand analog of
 /// [`crate::ToolRegistry`]. Same selectable BM25/semantic/hybrid engines; a
 /// parallel type keeps the tool path untouched and lets skill telemetry stand on
@@ -316,6 +333,102 @@ impl SkillRegistry {
             kind: ChurnKind::Add,
             skill_id,
         });
+    }
+
+    /// Replace the entire corpus with `skills`: ids absent from the batch are
+    /// removed, ids present are added or updated. The whole-catalog counterpart
+    /// to [`Self::register`], for a source that reloads a catalog rather than
+    /// pushing individual changes. Within one batch a repeated id keeps its last
+    /// entry, exactly as a repeated [`Self::register`] would.
+    ///
+    /// Synchronous and infallible: it swaps the corpus and maintains the dense
+    /// cache, but never embeds. Call [`Self::build_embeddings`] afterwards on a
+    /// semantic/hybrid catalog — it then embeds only the ids this replace
+    /// actually invalidated.
+    ///
+    /// Cache handling is deliberately narrow, so a reload of a mostly-unchanged
+    /// catalog costs no embeddings: a removed id's vector is dropped, an id whose
+    /// indexed text (`name`/`description`/`tags`) changed is invalidated for
+    /// re-embedding, and everything else keeps the vector it already had —
+    /// including an id whose `body`, `tools`, or `metadata` changed, since none
+    /// of those are embedded.
+    ///
+    /// Dropping a removed id's vector is load-bearing, not just tidiness: the
+    /// dense cache's built-ness guard compares *counts*, so a stale vector left
+    /// behind could offset a new, unembedded id and let a semantic search
+    /// silently omit it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratel_ai_core::{Skill, SkillRegistry};
+    ///
+    /// fn skill(id: &str, description: &str) -> Skill {
+    ///     Skill {
+    ///         id: id.into(),
+    ///         name: id.into(),
+    ///         description: description.into(),
+    ///         tags: vec![],
+    ///         tools: vec![],
+    ///         metadata: std::collections::HashMap::new(),
+    ///         body: String::new(),
+    ///     }
+    /// }
+    ///
+    /// let mut registry = SkillRegistry::new();
+    /// registry.register(skill("api-design", "REST API design patterns"));
+    /// registry.register(skill("slides", "Build HTML presentations"));
+    ///
+    /// // The reloaded catalog no longer carries `slides`.
+    /// let outcome = registry.replace_all(vec![
+    ///     skill("api-design", "REST API design patterns"),
+    ///     skill("migrations", "Write reversible database migrations"),
+    /// ]);
+    ///
+    /// assert_eq!((outcome.added, outcome.removed, outcome.unchanged), (1, 1, 1));
+    /// assert!(registry.search("build HTML presentations", 5).is_empty());
+    /// ```
+    pub fn replace_all(&mut self, skills: Vec<Skill>) -> ReplaceOutcome {
+        let mut next: IndexMap<String, Skill> = IndexMap::with_capacity(skills.len());
+        for skill in skills {
+            next.insert(skill.id.clone(), skill);
+        }
+
+        let mut outcome = ReplaceOutcome::default();
+
+        for id in self.skills.keys() {
+            if !next.contains_key(id) {
+                self.dense.invalidate(id);
+                self.sink.record(TraceEvent::SkillChurn {
+                    kind: ChurnKind::Remove,
+                    skill_id: id.clone(),
+                });
+                outcome.removed += 1;
+            }
+        }
+
+        for (id, skill) in &next {
+            match self.skills.get(id) {
+                Some(current) if current == skill => {
+                    outcome.unchanged += 1;
+                    continue;
+                }
+                Some(current) => {
+                    if searchable_text(current) != searchable_text(skill) {
+                        self.dense.invalidate(id);
+                    }
+                    outcome.updated += 1;
+                }
+                None => outcome.added += 1,
+            }
+            self.sink.record(TraceEvent::SkillChurn {
+                kind: ChurnKind::Add,
+                skill_id: id.clone(),
+            });
+        }
+
+        self.skills = next;
+        outcome
     }
 
     /// Number of registered skills (distinct ids).
@@ -809,6 +922,192 @@ mod tests {
             hits[0].score > 0.9,
             "ranks with the re-embedded frontend vector"
         );
+    }
+
+    #[test]
+    fn replace_all_drops_ids_absent_from_the_batch() {
+        let mut reg = catalog();
+        let outcome = reg.replace_all(vec![skill(
+            "api-design",
+            "api-design",
+            "REST API design patterns: resource naming, status codes, pagination",
+            &["backend", "api"],
+        )]);
+        assert_eq!(reg.len(), 1);
+        assert_eq!(outcome.removed, 1);
+        assert!(
+            reg.search("animation-rich HTML presentations", 5)
+                .is_empty(),
+            "a dropped skill must leave the corpus, not linger in the index"
+        );
+    }
+
+    #[test]
+    fn replace_all_with_an_empty_batch_clears_the_corpus() {
+        let mut reg = catalog();
+        reg.replace_all(Vec::new());
+        assert!(reg.is_empty());
+        assert!(reg.search("anything", 5).is_empty());
+    }
+
+    #[test]
+    fn replace_all_keeps_the_last_of_duplicate_ids() {
+        // Parity with `register`, which replaces an id in place: within one
+        // batch the later entry wins and the corpus holds a single entry.
+        let mut reg = SkillRegistry::new();
+        reg.replace_all(vec![
+            skill("s", "s", "REST API design", &["api"]),
+            skill("s", "s", "HTML slides frontend", &["frontend"]),
+        ]);
+        assert_eq!(reg.len(), 1);
+        let hits = reg.search("html slides frontend", 5);
+        assert_eq!(hits.first().map(|h| h.skill_id.as_str()), Some("s"));
+    }
+
+    #[test]
+    fn replace_all_reports_what_changed() {
+        let mut reg = SkillRegistry::new();
+        reg.register(skill("keep", "keep", "REST API design", &["api"]));
+        reg.register(skill("edit", "edit", "HTML slides", &["frontend"]));
+        reg.register(skill("drop", "drop", "database migrations", &["data"]));
+
+        let outcome = reg.replace_all(vec![
+            skill("keep", "keep", "REST API design", &["api"]),
+            skill("edit", "edit", "HTML slides and animations", &["frontend"]),
+            skill("add", "add", "queue consumers", &["backend"]),
+        ]);
+
+        assert_eq!(
+            outcome,
+            ReplaceOutcome {
+                added: 1,
+                removed: 1,
+                updated: 1,
+                unchanged: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn replace_all_embeds_only_what_changed() {
+        let counter = Arc::new(CountingEmbedder::new());
+        let mut reg = with_embedder(counter.clone());
+        reg.register(skill("a", "a", "REST API design", &["api"]));
+        reg.register(skill("b", "b", "HTML slides", &["frontend"]));
+        reg.build_embeddings().unwrap();
+        assert_eq!(counter.doc_calls(), 2);
+
+        // `a` is byte-identical, `b` is dropped, `c` is new.
+        reg.replace_all(vec![
+            skill("a", "a", "REST API design", &["api"]),
+            skill("c", "c", "database migrations", &["data"]),
+        ]);
+        reg.build_embeddings().unwrap();
+        assert_eq!(
+            counter.doc_calls(),
+            3,
+            "an unchanged id keeps its vector; only the new skill is embedded"
+        );
+    }
+
+    #[test]
+    fn replace_all_keeps_the_vector_when_only_the_body_changed() {
+        // The body is never embedded (`searchable_text` excludes it), so a
+        // body-only edit must not cost an embedding on the next build.
+        let counter = Arc::new(CountingEmbedder::new());
+        let mut reg = with_embedder(counter.clone());
+        reg.register(skill("a", "a", "REST API design", &["api"]));
+        reg.build_embeddings().unwrap();
+        assert_eq!(counter.doc_calls(), 1);
+
+        let mut rewritten = skill("a", "a", "REST API design", &["api"]);
+        rewritten.body = "# a\n\nrewritten instructions".into();
+        reg.replace_all(vec![rewritten]);
+        reg.build_embeddings().unwrap();
+        assert_eq!(counter.doc_calls(), 1);
+    }
+
+    #[test]
+    fn replace_all_re_embeds_a_skill_whose_indexed_text_changed() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("s", "s", "REST API design", &["api"])); // dense: api bucket
+        reg.build_embeddings().unwrap();
+
+        reg.replace_all(vec![skill("s", "s", "HTML slides frontend", &["frontend"])]); // → frontend bucket
+        reg.build_embeddings().unwrap();
+
+        let hits = reg
+            .search_with_method("frontend slides", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(hits.first().map(|h| h.skill_id.as_str()), Some("s"));
+        assert!(hits[0].score > 0.9, "ranks with the re-embedded vector");
+    }
+
+    #[test]
+    fn replace_all_drops_the_vector_of_a_removed_id() {
+        // The dense guard is a count (`vectors.len() < corpus_len`), so leaving a
+        // removed id's vector in the cache would let a *new*, unembedded id slip
+        // past `require_built` and be silently skipped in ranking. Removal must
+        // drop the vector, not just the corpus entry.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill(
+            "api-design",
+            "api-design",
+            "REST API design",
+            &["api"],
+        ));
+        reg.register(skill("frontend", "frontend", "HTML slides", &["frontend"]));
+        reg.build_embeddings().unwrap();
+
+        reg.replace_all(vec![
+            skill("api-design", "api-design", "REST API design", &["api"]),
+            skill("db", "db", "database migrations", &["data"]),
+        ]);
+
+        assert!(
+            matches!(
+                reg.search_with_method("database", 5, Origin::Direct, SearchMethod::Semantic),
+                Err(EmbedderError::EmbeddingsNotBuilt)
+            ),
+            "a removed id's stale vector must not mask an unembedded new id"
+        );
+
+        reg.build_embeddings().unwrap();
+        let hits = reg
+            .search_with_method(
+                "database migrations",
+                5,
+                Origin::Direct,
+                SearchMethod::Semantic,
+            )
+            .unwrap();
+        assert_eq!(hits.first().map(|h| h.skill_id.as_str()), Some("db"));
+    }
+
+    #[test]
+    fn replace_all_emits_churn_only_for_real_changes() {
+        let sink = Arc::new(MemorySink::new("test-session"));
+        let mut reg = SkillRegistry::with_trace_sink(sink.clone());
+        reg.register(skill("keep", "keep", "REST API design", &["api"]));
+        reg.register(skill("drop", "drop", "HTML slides", &["frontend"]));
+        sink.drain();
+
+        reg.replace_all(vec![
+            skill("keep", "keep", "REST API design", &["api"]),
+            skill("add", "add", "database migrations", &["data"]),
+        ]);
+
+        let churn: Vec<(ChurnKind, String)> = sink
+            .drain()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                TraceEvent::SkillChurn { kind, skill_id } => Some((kind, skill_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(churn.len(), 2, "an unchanged id emits nothing: {churn:?}");
+        assert!(churn.contains(&(ChurnKind::Remove, "drop".to_string())));
+        assert!(churn.contains(&(ChurnKind::Add, "add".to_string())));
     }
 
     #[test]

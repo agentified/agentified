@@ -1,6 +1,6 @@
 {
   "name": "@ratel-ai/sdk-win32-x64-msvc",
-  "version": "0.6.0-rc.0",
+  "version": "0.6.0",
   "cpu": [
     "x64"
   ],

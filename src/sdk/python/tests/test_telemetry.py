@@ -199,11 +199,16 @@ async def test_real_mcp_result_is_normalized_for_span_and_event(
         "structuredContent": {"ok": True},
         "isError": False,
     }
-    assert json.loads(span.attributes["gen_ai.tool.call.result"]) == normalized
+    span_result = json.loads(span.attributes["gen_ai.tool.call.result"])
+    # mcp >= 2.0 always serializes resultType ("complete" here); mcp 1.x omits it.
+    assert span_result.pop("resultType", "complete") == "complete"
+    assert span_result == normalized
     event = _log_events_named("ratel.tool.execution.details")[0]
     event_result = event.attributes["gen_ai.tool.call.result"]
     assert not isinstance(event_result, str)
-    assert json.loads(json.dumps(event_result)) == normalized
+    event_result = json.loads(json.dumps(event_result))
+    assert event_result.pop("resultType", "complete") == "complete"
+    assert event_result == normalized
 
 
 @pytest.mark.asyncio

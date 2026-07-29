@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-28
+
+### Changed
+
+- The `@ratel-ai/sdk` peer range moves to `^0.6.0`, tracking the SDK release that adds experimental adaptive usage ranking. The adapter's own API is unchanged, and 0.6.0 is additive over 0.5.2 — the range moves because at 0.x a caret does not span minors, so `^0.5.2` excludes `0.6.x`. npm resolves peers automatically, which makes that mismatch an install-time `ERESOLVE` rather than a warning: `@ratel-ai/mastra@0.1.0` cannot be installed alongside `@ratel-ai/sdk@0.6.x`, and this release cannot be installed alongside `@ratel-ai/sdk@0.5.x`. Staying on the 0.5 SDK means staying on adapter 0.1.0.
+
 ## [0.1.0] - 2026-07-24
 
 ### Added
