@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { defineExperimentInternal, type ExperimentEvaluationSink } from "./experiment.js";
+import { defineExperimentInternal } from "./experiment.js";
+import type { ExperimentEvaluationSink } from "./experiment-sink.js";
 import { type ExperimentEvaluationReference, experimentalDefineExperiment } from "./index.js";
 
 interface SearchParams {

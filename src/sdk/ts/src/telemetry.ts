@@ -117,8 +117,8 @@ import type {
   ExperimentArmEvaluation,
   ExperimentArmEvaluationHandle,
   ExperimentEvaluationSink,
-  ExperimentRankedItem,
-} from "./experiment.js";
+} from "./experiment-sink.js";
+import type { ExperimentRankedItem } from "./experiment-types.js";
 
 const TRACER_NAME = "@ratel-ai/sdk";
 const LOGGER_NAME = "@ratel-ai/sdk";
