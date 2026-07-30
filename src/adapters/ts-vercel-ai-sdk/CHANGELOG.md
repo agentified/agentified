@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `RatelOtelIntegration` copies the active retrieval experiment's five-field baggage stamp onto every AI SDK `gen_ai.*` span, giving generic and vendor destinations the exact experiment/selection join plus arm, role, and unit context.
+- Client-executed passthrough tools now enter Ratel's `execute_tool` funnel through a descriptor-preserving exposure wrapper. Native lifecycle hooks, metadata, `this`, execution options, and scalar/promise/stream return shapes remain intact; provider/host-executed tools without `execute` remain unobservable.
+
 ## [0.3.0] - 2026-07-28
 
 ### Changed
