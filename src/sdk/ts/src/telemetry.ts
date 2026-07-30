@@ -19,12 +19,13 @@
 import {
   context,
   type Context as OtelContext,
+  propagation,
   type Span,
   SpanKind,
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import { type AnyValue, logs } from "@opentelemetry/api-logs";
+import { type AnyValue, type AnyValueMap, logs } from "@opentelemetry/api-logs";
 import {
   AuthOutcome,
   ContentCapture,
@@ -37,6 +38,60 @@ import {
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
+  RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
+  RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
+  RATEL_EXPERIMENT_AGREEMENT_K,
+  RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT,
+  RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS,
+  RATEL_EXPERIMENT_AGREEMENT_TOP1,
+  RATEL_EXPERIMENT_ARM,
+  RATEL_EXPERIMENT_ARM_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_COLD,
+  RATEL_EXPERIMENT_COMPARISON,
+  RATEL_EXPERIMENT_DROP,
+  RATEL_EXPERIMENT_DROP_REASON,
+  RATEL_EXPERIMENT_DURATION_MS,
+  RATEL_EXPERIMENT_EFFECTIVE_ARM,
+  RATEL_EXPERIMENT_FALLBACK,
+  RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM,
+  RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW,
+  RATEL_EXPERIMENT_HIT_COUNT,
+  RATEL_EXPERIMENT_ID,
+  RATEL_EXPERIMENT_ID_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_INVOCATION,
+  RATEL_EXPERIMENT_INVOCATION_AGE_MS,
+  RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED,
+  RATEL_EXPERIMENT_INVOCATION_RANK,
+  RATEL_EXPERIMENT_OUTCOME,
+  RATEL_EXPERIMENT_OUTCOME_LABEL,
+  RATEL_EXPERIMENT_OUTCOME_SCORE,
+  RATEL_EXPERIMENT_RANKING_ERROR,
+  RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+  RATEL_EXPERIMENT_RESULT_ATTRS,
+  RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR,
+  RATEL_EXPERIMENT_RESULT_IDS,
+  RATEL_EXPERIMENT_RESULT_SCORES,
+  RATEL_EXPERIMENT_RESULTS,
+  RATEL_EXPERIMENT_ROLE,
+  RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_SELECTION_ID,
+  RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_SERVED_ARM,
+  RATEL_EXPERIMENT_SERVED_DURATION_MS,
+  RATEL_EXPERIMENT_SERVED_HIT_COUNT,
+  RATEL_EXPERIMENT_SERVED_OUTCOME,
+  RATEL_EXPERIMENT_SHADOW_ARM,
+  RATEL_EXPERIMENT_SHADOW_DURATION_MS,
+  RATEL_EXPERIMENT_SHADOW_HIT_COUNT,
+  RATEL_EXPERIMENT_SHADOW_OUTCOME,
+  RATEL_EXPERIMENT_SKIP,
+  RATEL_EXPERIMENT_SKIP_ARM,
+  RATEL_EXPERIMENT_SKIP_CONCURRENCY,
+  RATEL_EXPERIMENT_SKIP_REASON,
+  RATEL_EXPERIMENT_TURN,
+  RATEL_EXPERIMENT_UNIT,
+  RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY,
   RATEL_ORIGIN,
   RATEL_SEARCH,
   RATEL_SEARCH_HIT_COUNT,
@@ -57,9 +112,64 @@ import {
 } from "@ratel-ai/telemetry";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import type { SearchOrigin } from "./catalog.js";
+import type {
+  ExperimentArmCompletionEvaluation,
+  ExperimentArmEvaluation,
+  ExperimentArmEvaluationHandle,
+  ExperimentEvaluationSink,
+  ExperimentRankedItem,
+} from "./experiment.js";
 
 const TRACER_NAME = "@ratel-ai/sdk";
 const LOGGER_NAME = "@ratel-ai/sdk";
+const ERROR_TYPE = "error.type";
+const RESERVED_EXPERIMENT_ATTRIBUTES = new Set([
+  ERROR_TYPE,
+  GEN_AI_TOOL_NAME,
+  RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
+  RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
+  RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
+  RATEL_EXPERIMENT_AGREEMENT_K,
+  RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT,
+  RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS,
+  RATEL_EXPERIMENT_AGREEMENT_TOP1,
+  RATEL_EXPERIMENT_ARM,
+  RATEL_EXPERIMENT_COLD,
+  RATEL_EXPERIMENT_DROP_REASON,
+  RATEL_EXPERIMENT_DURATION_MS,
+  RATEL_EXPERIMENT_EFFECTIVE_ARM,
+  RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM,
+  RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW,
+  RATEL_EXPERIMENT_HIT_COUNT,
+  RATEL_EXPERIMENT_ID,
+  RATEL_EXPERIMENT_INVOCATION_AGE_MS,
+  RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED,
+  RATEL_EXPERIMENT_INVOCATION_RANK,
+  RATEL_EXPERIMENT_OUTCOME,
+  RATEL_EXPERIMENT_OUTCOME_LABEL,
+  RATEL_EXPERIMENT_OUTCOME_SCORE,
+  RATEL_EXPERIMENT_RANKING_ERROR,
+  RATEL_EXPERIMENT_RESULT_ATTRS,
+  RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR,
+  RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+  RATEL_EXPERIMENT_RESULT_IDS,
+  RATEL_EXPERIMENT_RESULT_SCORES,
+  RATEL_EXPERIMENT_ROLE,
+  RATEL_EXPERIMENT_SELECTION_ID,
+  RATEL_EXPERIMENT_SERVED_ARM,
+  RATEL_EXPERIMENT_SERVED_DURATION_MS,
+  RATEL_EXPERIMENT_SERVED_HIT_COUNT,
+  RATEL_EXPERIMENT_SERVED_OUTCOME,
+  RATEL_EXPERIMENT_SHADOW_ARM,
+  RATEL_EXPERIMENT_SHADOW_DURATION_MS,
+  RATEL_EXPERIMENT_SHADOW_HIT_COUNT,
+  RATEL_EXPERIMENT_SHADOW_OUTCOME,
+  RATEL_EXPERIMENT_SKIP_ARM,
+  RATEL_EXPERIMENT_SKIP_CONCURRENCY,
+  RATEL_EXPERIMENT_SKIP_REASON,
+  RATEL_EXPERIMENT_TURN,
+  RATEL_EXPERIMENT_UNIT,
+]);
 
 function getTracer() {
   return trace.getTracer(TRACER_NAME);
@@ -67,6 +177,284 @@ function getTracer() {
 
 function getLogger() {
   return logs.getLogger(LOGGER_NAME);
+}
+
+/** Validate and snapshot caller-supplied scalar experiment telemetry. */
+export function validateExperimentAttributes(
+  attributes: Record<string, string | number | boolean> | undefined,
+): Record<string, string | number | boolean> | undefined {
+  if (attributes === undefined) {
+    return undefined;
+  }
+  for (const key of Object.keys(attributes)) {
+    if (RESERVED_EXPERIMENT_ATTRIBUTES.has(key)) {
+      throw new Error(
+        `experimentalDefineExperiment.select: "${key}" is a reserved telemetry attribute`,
+      );
+    }
+  }
+  return { ...attributes };
+}
+
+/** Build the SDK-owned OpenTelemetry sink used by the public experiment factory. */
+export function createExperimentTelemetrySink<Arm extends string>(): ExperimentEvaluationSink<Arm> {
+  return {
+    arm(evaluation) {
+      return startExperimentArm(evaluation);
+    },
+    comparison(evaluation, arm) {
+      arm?.event(RATEL_EXPERIMENT_COMPARISON, {
+        [RATEL_EXPERIMENT_SERVED_ARM]: evaluation.served.arm,
+        [RATEL_EXPERIMENT_SERVED_OUTCOME]: evaluation.served.outcome,
+        [RATEL_EXPERIMENT_SERVED_DURATION_MS]: evaluation.served.durationMs,
+        [RATEL_EXPERIMENT_SERVED_HIT_COUNT]: evaluation.served.hitCount,
+        [RATEL_EXPERIMENT_SHADOW_ARM]: evaluation.shadow.arm,
+        [RATEL_EXPERIMENT_SHADOW_OUTCOME]: evaluation.shadow.outcome,
+        [RATEL_EXPERIMENT_SHADOW_DURATION_MS]: evaluation.shadow.durationMs,
+        [RATEL_EXPERIMENT_SHADOW_HIT_COUNT]: evaluation.shadow.hitCount,
+        [RATEL_EXPERIMENT_AGREEMENT_TOP1]: evaluation.agreement.top1,
+        [RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER]: evaluation.agreement.exactOrder,
+        [RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT]: evaluation.agreement.overlapCount,
+        [RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K]: evaluation.agreement.jaccardAtK,
+        [RATEL_EXPERIMENT_AGREEMENT_K]: evaluation.agreement.k,
+        ...(evaluation.agreement.itemAttrs === undefined
+          ? {}
+          : { [RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS]: evaluation.agreement.itemAttrs }),
+        ...(evaluation.agreement.resultAttrs === undefined
+          ? {}
+          : { [RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS]: evaluation.agreement.resultAttrs }),
+      });
+    },
+    skip(evaluation, arm) {
+      arm?.event(RATEL_EXPERIMENT_SKIP, {
+        [RATEL_EXPERIMENT_SKIP_ARM]: evaluation.skippedArm,
+        [RATEL_EXPERIMENT_SKIP_CONCURRENCY]: evaluation.concurrency,
+        [RATEL_EXPERIMENT_SKIP_REASON]: "capacity",
+      });
+    },
+    fallback(evaluation, arm) {
+      arm?.event(RATEL_EXPERIMENT_FALLBACK, {
+        [RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM]: evaluation.effectiveArm,
+        [RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW]: evaluation.reusedShadow,
+      });
+    },
+    drop(evaluation, arm) {
+      arm?.event(RATEL_EXPERIMENT_DROP, {
+        [RATEL_EXPERIMENT_DROP_REASON]: evaluation.reason,
+      });
+    },
+    invocation(evaluation) {
+      const attribution = evaluation.attribution;
+      getLogger().emit({
+        eventName: RATEL_EXPERIMENT_INVOCATION,
+        attributes: {
+          [RATEL_EXPERIMENT_ID]: evaluation.experimentId,
+          [RATEL_EXPERIMENT_UNIT]: evaluation.unitHash,
+          [GEN_AI_TOOL_NAME]: evaluation.toolId,
+          [RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED]: attribution.attributed,
+          ...(evaluation.turn === undefined ? {} : { [RATEL_EXPERIMENT_TURN]: evaluation.turn }),
+          ...(attribution.attributed
+            ? {
+                [RATEL_EXPERIMENT_SELECTION_ID]: attribution.selectionId,
+                [RATEL_EXPERIMENT_EFFECTIVE_ARM]: attribution.effectiveArm,
+                [RATEL_EXPERIMENT_INVOCATION_RANK]: attribution.rank,
+                [RATEL_EXPERIMENT_INVOCATION_AGE_MS]: attribution.ageMs,
+              }
+            : {}),
+        },
+        context: context.active(),
+      });
+    },
+    outcome(evaluation) {
+      getLogger().emit({
+        eventName: RATEL_EXPERIMENT_OUTCOME,
+        attributes: {
+          [RATEL_EXPERIMENT_ID]: evaluation.experimentId,
+          [RATEL_EXPERIMENT_SELECTION_ID]: evaluation.selectionId,
+          ...(evaluation.label === undefined
+            ? {}
+            : { [RATEL_EXPERIMENT_OUTCOME_LABEL]: evaluation.label }),
+          ...(evaluation.score === undefined
+            ? {}
+            : { [RATEL_EXPERIMENT_OUTCOME_SCORE]: evaluation.score }),
+        },
+        context: context.active(),
+      });
+    },
+  };
+}
+
+function startExperimentArm<Arm extends string>(
+  evaluation: ExperimentArmEvaluation<Arm>,
+): ExperimentArmEvaluationHandle {
+  const stamp = {
+    [RATEL_EXPERIMENT_ID]: evaluation.experimentId,
+    [RATEL_EXPERIMENT_SELECTION_ID]: evaluation.selectionId,
+    [RATEL_EXPERIMENT_ARM]: evaluation.arm,
+    [RATEL_EXPERIMENT_ROLE]: evaluation.role,
+    [RATEL_EXPERIMENT_UNIT]: evaluation.unitHash,
+  };
+  const attributes = { ...evaluation.attributes, ...stamp };
+  const parentContext = context.active();
+  let baggage = propagation.getBaggage(parentContext) ?? propagation.createBaggage();
+  baggage = baggage
+    .setEntry(RATEL_EXPERIMENT_ID_BAGGAGE_KEY, { value: evaluation.experimentId })
+    .setEntry(RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY, { value: evaluation.selectionId })
+    .setEntry(RATEL_EXPERIMENT_ARM_BAGGAGE_KEY, { value: evaluation.arm })
+    .setEntry(RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY, { value: evaluation.role })
+    .setEntry(RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY, { value: evaluation.unitHash });
+  const baggageContext = propagation.setBaggage(parentContext, baggage);
+  const span = getTracer().startSpan(
+    RATEL_EXPERIMENT_ARM,
+    {
+      kind: SpanKind.INTERNAL,
+      attributes: {
+        ...attributes,
+        [RATEL_EXPERIMENT_COLD]: evaluation.cold,
+      },
+    },
+    baggageContext,
+  );
+  const armContext = trace.setSpan(baggageContext, span);
+
+  return {
+    run: (callback) => context.with(armContext, callback),
+    complete: (completion) => completeExperimentArm(span, armContext, attributes, completion),
+    event: (eventName, eventAttributes) =>
+      addExperimentEvent(eventName, attributes, eventAttributes, armContext),
+  };
+}
+
+function addExperimentEvent(
+  eventName: string,
+  armAttributes: Record<string, string | number | boolean>,
+  eventAttributes: Record<string, unknown>,
+  armContext: OtelContext,
+): void {
+  getLogger().emit({
+    eventName,
+    attributes: { ...armAttributes, ...eventAttributes } as AnyValueMap,
+    context: armContext,
+  });
+}
+
+function completeExperimentArm(
+  span: Span,
+  armContext: OtelContext,
+  attributes: Record<string, string | number | boolean>,
+  completion: ExperimentArmCompletionEvaluation,
+): void {
+  try {
+    span.setAttribute(RATEL_EXPERIMENT_OUTCOME, completion.outcome);
+    span.setAttribute(RATEL_EXPERIMENT_DURATION_MS, completion.durationMs);
+    if (completion.hitCount !== undefined) {
+      span.setAttribute(RATEL_EXPERIMENT_HIT_COUNT, completion.hitCount);
+    }
+    if (completion.failure !== undefined) {
+      span.setAttribute(ERROR_TYPE, errorType(completion.failure.error));
+      if (completion.failure.error instanceof Error) {
+        span.recordException(completion.failure.error);
+      }
+    }
+    if (completion.rankingFailure !== undefined) {
+      span.setAttribute(RATEL_EXPERIMENT_RANKING_ERROR, errorType(completion.rankingFailure.error));
+    }
+    if (completion.resultAttributesFailure !== undefined) {
+      span.setAttribute(
+        RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+        errorType(completion.resultAttributesFailure.error),
+      );
+      if (completion.resultAttributesFailure.error instanceof Error) {
+        span.recordException(completion.resultAttributesFailure.error);
+      }
+    }
+    span.setStatus({
+      code:
+        completion.outcome === "ok" || completion.outcome === "empty"
+          ? SpanStatusCode.OK
+          : SpanStatusCode.ERROR,
+      ...(completion.failure === undefined
+        ? {}
+        : { message: errorMessage(completion.failure.error) }),
+    });
+    if (completion.ranking !== undefined) {
+      const itemAttributes = encodeExperimentResultAttributes(span, completion.ranking);
+      addExperimentResultsEvent(
+        completion.ranking,
+        attributes,
+        armContext,
+        itemAttributes?.eventValue,
+      );
+    }
+  } finally {
+    span.end();
+  }
+}
+
+function addExperimentResultsEvent(
+  ranking: readonly ExperimentRankedItem[],
+  attributes: Record<string, string | number | boolean>,
+  armContext: OtelContext,
+  resultAttributes?: AnyValue,
+): void {
+  const scores = ranking.map((item) => item.score);
+  getLogger().emit({
+    eventName: RATEL_EXPERIMENT_RESULTS,
+    attributes: {
+      ...attributes,
+      [RATEL_EXPERIMENT_RESULT_IDS]: ranking.map((item) => item.id),
+      ...(scores.every(
+        (score): score is number => typeof score === "number" && Number.isFinite(score),
+      )
+        ? { [RATEL_EXPERIMENT_RESULT_SCORES]: scores }
+        : {}),
+      ...(resultAttributes === undefined
+        ? {}
+        : { [RATEL_EXPERIMENT_RESULT_ATTRS]: resultAttributes }),
+    },
+    context: armContext,
+  });
+}
+
+function encodeExperimentResultAttributes(
+  span: Span,
+  ranking: readonly ExperimentRankedItem[],
+): { eventValue?: AnyValue } | undefined {
+  if (!captureContentOnSpan() && !captureContentOnEvent()) {
+    return undefined;
+  }
+  try {
+    const encoded = JSON.stringify(ranking.map((item) => item.attrs ?? null));
+    if (encoded === undefined) {
+      throw new Error("experiment result attributes are not JSON-encodable");
+    }
+    if (captureContentOnSpan()) {
+      span.setAttribute(RATEL_EXPERIMENT_RESULT_ATTRS, encoded);
+    }
+    return {
+      ...(captureContentOnEvent() ? { eventValue: JSON.parse(encoded) as AnyValue } : {}),
+    };
+  } catch (error) {
+    span.setAttribute(RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR, errorType(error));
+    if (error instanceof Error) {
+      span.recordException(error);
+    }
+    return undefined;
+  }
+}
+
+function errorType(error: unknown): string {
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      const name = (error as { name?: unknown }).name;
+      if (typeof name === "string" && name.length > 0) {
+        return name;
+      }
+    } catch {
+      // Fall through to the stable non-Error classification.
+    }
+  }
+  return error instanceof Error ? error.name : typeof error;
 }
 
 /** Content rides span attributes only when the capture gate selects a span mode. */

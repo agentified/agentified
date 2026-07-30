@@ -11,6 +11,7 @@ import {
   type ExperimentInvocationBuffer,
   hashUnitId,
 } from "./experiment-invocation.js";
+import { createExperimentTelemetrySink, validateExperimentAttributes } from "./telemetry.js";
 
 /** Whether an arm dispatch is serving the caller or running as detached shadow work. */
 export type ExperimentArmRole = "serving" | "shadow";
@@ -161,6 +162,35 @@ export interface ExperimentOutcomeEvaluation {
   score?: number;
 }
 
+/** @internal Controlled identity and dispatch facts for one experiment arm. */
+export interface ExperimentArmEvaluation<Arm extends string = string> {
+  experimentId: string;
+  selectionId: string;
+  unitHash: string;
+  arm: Arm;
+  role: ExperimentArmRole;
+  cold: boolean;
+  attributes?: Record<string, string | number | boolean>;
+}
+
+/** @internal Observable completion facts for one experiment arm. */
+export interface ExperimentArmCompletionEvaluation {
+  outcome: ExperimentArmOutcome;
+  durationMs: number;
+  hitCount?: number;
+  ranking?: readonly ExperimentRankedItem[];
+  failure?: { error: unknown };
+  rankingFailure?: { error: unknown };
+  resultAttributesFailure?: { error: unknown };
+}
+
+/** @internal Telemetry handle that keeps an arm's explicit context and span together. */
+export interface ExperimentArmEvaluationHandle {
+  run<T>(callback: () => T): T;
+  complete(evaluation: ExperimentArmCompletionEvaluation): void;
+  event(eventName: string, attributes: Record<string, unknown>): void;
+}
+
 /** @internal Why an admitted peer shadow produced no comparison. */
 export type ExperimentPeerDropReason =
   | "arm-failed"
@@ -194,6 +224,18 @@ export interface ExperimentDropEvaluation<Arm extends string = string> {
   reason: ExperimentPeerDropReason;
 }
 
+/** @internal One shadow dispatch skipped because instance capacity was full. */
+export interface ExperimentSkipEvaluation<Arm extends string = string> {
+  skippedArm: Arm;
+  concurrency: number;
+}
+
+/** @internal One successful fallback decision. */
+export interface ExperimentFallbackEvaluation<Arm extends string = string> {
+  effectiveArm: Arm;
+  reusedShadow: boolean;
+}
+
 /** @internal One invocation attribution ready for telemetry emission. */
 export interface ExperimentInvocationEvaluation<Arm extends string = string> {
   experimentId: string;
@@ -205,8 +247,17 @@ export interface ExperimentInvocationEvaluation<Arm extends string = string> {
 
 /** @internal Evaluation records consumed by the SDK telemetry layer. */
 export interface ExperimentEvaluationSink<Arm extends string = string> {
-  comparison?(evaluation: ExperimentComparisonEvaluation<Arm>): void;
-  drop?(evaluation: ExperimentDropEvaluation<Arm>): void;
+  arm?(evaluation: ExperimentArmEvaluation<Arm>): ExperimentArmEvaluationHandle;
+  comparison?(
+    evaluation: ExperimentComparisonEvaluation<Arm>,
+    arm?: ExperimentArmEvaluationHandle,
+  ): void;
+  drop?(evaluation: ExperimentDropEvaluation<Arm>, arm?: ExperimentArmEvaluationHandle): void;
+  skip?(evaluation: ExperimentSkipEvaluation<Arm>, arm?: ExperimentArmEvaluationHandle): void;
+  fallback?(
+    evaluation: ExperimentFallbackEvaluation<Arm>,
+    arm?: ExperimentArmEvaluationHandle,
+  ): void;
   invocation?(evaluation: ExperimentInvocationEvaluation<Arm>): void;
   outcome?(evaluation: ExperimentOutcomeEvaluation): void;
 }
@@ -222,6 +273,7 @@ type ArmCompletion<Result> =
       durationMs: number;
       outcome: ExperimentArmOutcome;
       ranking?: ExperimentRankedItem[];
+      rankingFailure?: { error: unknown };
       resultAttributes?: ResultAttributesProjection;
     }
   | {
@@ -256,6 +308,7 @@ interface ArmRun<Result, Arm extends string> {
   arm: Arm;
   cold: boolean;
   role: ExperimentArmRole;
+  telemetry?: ExperimentArmEvaluationHandle;
   completion: Promise<ArmCompletion<Result>>;
 }
 
@@ -285,7 +338,7 @@ interface Deferred<T> {
 export function experimentalDefineExperiment<Params, Result, Arm extends string>(
   config: ExperimentConfig<Params, Result, Arm>,
 ): Experiment<Params, Result, Arm> {
-  return defineExperimentInternal(config);
+  return defineExperimentInternal(config, createExperimentTelemetrySink());
 }
 
 /** @internal Builds an experiment with an evaluation sink for package-level composition. */
@@ -316,7 +369,9 @@ export function defineExperimentInternal<Params, Result, Arm extends string>(
           "experimentalDefineExperiment.select: shadow requires a second declared arm",
         );
       }
+      const telemetryAttributes = validateExperimentAttributes(options.attributes);
       const selectionId = randomUUID();
+      const unitHash = hashUnitId(options.unitId);
       const k = resolveEvaluationK(options.k, config.evaluation.k);
       const servedEvaluation = createDeferred<ServedEvaluationSignal<Result, Arm>>();
 
@@ -334,7 +389,11 @@ export function defineExperimentInternal<Params, Result, Arm extends string>(
           params,
           role,
           options,
+          telemetryAttributes,
           coldAtStart.get(arm) ?? false,
+          selectionId,
+          unitHash,
+          sink,
           onCallbackSettled,
         );
       };
@@ -342,7 +401,15 @@ export function defineExperimentInternal<Params, Result, Arm extends string>(
       const shadows = new Map<Arm, ArmRun<Result, Arm>>();
       if (options.shadow === true) {
         for (const arm of armNames) {
-          if (arm === assignedArm || shadowsInFlight >= shadowConcurrency) {
+          if (arm === assignedArm) {
+            continue;
+          }
+          if (shadowsInFlight >= shadowConcurrency) {
+            notifyEvaluation(
+              sink.skip,
+              { skippedArm: arm, concurrency: shadowConcurrency },
+              assigned.telemetry,
+            );
             continue;
           }
           shadowsInFlight += 1;
@@ -368,6 +435,7 @@ export function defineExperimentInternal<Params, Result, Arm extends string>(
         servedEvaluation,
         shadows,
         invocationBuffer,
+        sink,
         unitId: options.unitId,
       });
     },
@@ -455,6 +523,7 @@ async function completeSelection<Params, Result, Arm extends string>(
     k: number;
     servedEvaluation: Deferred<ServedEvaluationSignal<Result, Arm>>;
     invocationBuffer?: ExperimentInvocationBuffer<Arm>;
+    sink: ExperimentEvaluationSink<Arm>;
     unitId: string;
   },
 ): Promise<ExperimentSelection<Result, Arm>> {
@@ -486,6 +555,11 @@ async function completeSelection<Params, Result, Arm extends string>(
       if (reusedShadow !== undefined) {
         consumedShadow = effectiveArm;
       }
+      notifyEvaluation(
+        args.sink.fallback,
+        { effectiveArm, reusedShadow: reusedShadow !== undefined },
+        args.assigned.telemetry,
+      );
     }
 
     signal = {
@@ -526,53 +600,91 @@ function startArm<Params, Result, Arm extends string>(
   params: Params,
   role: ExperimentArmRole,
   options: ExperimentSelectOptions<Result, Arm>,
+  telemetryAttributes: Record<string, string | number | boolean> | undefined,
   cold: boolean,
+  selectionId: string,
+  unitHash: string,
+  sink: ExperimentEvaluationSink<Arm>,
   onCallbackSettled?: () => void,
 ): ArmRun<Result, Arm> {
-  const callback = startArmCallback(config, arm, params, role, onCallbackSettled);
-  const completion = callback.then((settled): ArmCompletion<Result> => {
-    if (!settled.ok) {
-      return {
-        ...settled,
-        outcome: isTimeoutError(settled.error) ? "timeout" : "error",
-        source: "select",
-      };
-    }
-
-    let result: Result;
-    try {
-      result = options.transform === undefined ? settled.result : options.transform(settled.result);
-    } catch (error) {
-      return {
-        ok: false,
-        error,
-        durationMs: settled.durationMs,
-        outcome: "error",
-        source: "transform",
-      };
-    }
-
-    try {
-      const ranking = config.ranking(result);
-      const resultAttributes = projectResultAttributes(config, result);
-      return {
-        ok: true,
-        result,
-        durationMs: settled.durationMs,
-        outcome: ranking.length === 0 ? "empty" : "ok",
-        ranking,
-        resultAttributes,
-      };
-    } catch {
-      return {
-        ok: true,
-        result,
-        durationMs: settled.durationMs,
-        outcome: "error",
-      };
-    }
+  const telemetry = startArmTelemetry(sink, {
+    experimentId: config.id,
+    selectionId,
+    unitHash,
+    arm,
+    role,
+    cold,
+    attributes: telemetryAttributes,
   });
-  return { arm, cold, role, completion };
+  const complete = () =>
+    startArmCallback(config, arm, params, role, onCallbackSettled)
+      .then((settled): ArmCompletion<Result> => {
+        if (!settled.ok) {
+          return {
+            ...settled,
+            outcome: isTimeoutError(settled.error) ? "timeout" : "error",
+            source: "select",
+          };
+        }
+
+        let result: Result;
+        try {
+          result =
+            options.transform === undefined ? settled.result : options.transform(settled.result);
+        } catch (error) {
+          return {
+            ok: false,
+            error,
+            durationMs: settled.durationMs,
+            outcome: "error",
+            source: "transform",
+          };
+        }
+
+        try {
+          const ranking = config.ranking(result);
+          const resultAttributes = projectResultAttributes(config, result);
+          return {
+            ok: true,
+            result,
+            durationMs: settled.durationMs,
+            outcome: ranking.length === 0 ? "empty" : "ok",
+            ranking,
+            resultAttributes,
+          };
+        } catch (error) {
+          return {
+            ok: true,
+            result,
+            durationMs: settled.durationMs,
+            outcome: "error",
+            rankingFailure: { error },
+          };
+        }
+      })
+      .then((completed) => {
+        completeArmTelemetry(telemetry, {
+          outcome: completed.outcome,
+          durationMs: completed.durationMs,
+          ...(!completed.ok
+            ? { failure: { error: completed.error } }
+            : completed.rankingFailure === undefined
+              ? {}
+              : {
+                  failure: completed.rankingFailure,
+                  rankingFailure: completed.rankingFailure,
+                }),
+          ...(!completed.ok || completed.ranking === undefined
+            ? {}
+            : { hitCount: completed.ranking.length, ranking: completed.ranking }),
+          ...(completed.ok && completed.resultAttributes?.ok === false
+            ? { resultAttributesFailure: { error: completed.resultAttributes.error } }
+            : {}),
+        });
+        return completed;
+      });
+  const completion = runArmTelemetry(telemetry, complete);
+  return { arm, cold, role, telemetry, completion };
 }
 
 function projectResultAttributes<Params, Result, Arm extends string>(
@@ -597,19 +709,19 @@ async function completePeerEvaluation<Result, Arm extends string>(
 ): Promise<void> {
   const [shadowCompletion, served] = await Promise.all([shadow.completion, servedPromise]);
   if (!shadowCompletion.ok || shadowCompletion.ranking === undefined) {
-    notifyDrop(sink, served.selectionId, shadow.arm, "arm-failed");
+    notifyDrop(sink, served.selectionId, shadow.arm, "arm-failed", shadow.telemetry);
     return;
   }
   if (served.status === "selection-failed") {
-    notifyDrop(sink, served.selectionId, shadow.arm, "selection-failed");
+    notifyDrop(sink, served.selectionId, shadow.arm, "selection-failed", shadow.telemetry);
     return;
   }
   if (served.consumedShadow === shadow.arm) {
-    notifyDrop(sink, served.selectionId, shadow.arm, "fallback-consumed");
+    notifyDrop(sink, served.selectionId, shadow.arm, "fallback-consumed", shadow.telemetry);
     return;
   }
   if (served.completion.ranking === undefined) {
-    notifyDrop(sink, served.selectionId, shadow.arm, "served-ranking-failed");
+    notifyDrop(sink, served.selectionId, shadow.arm, "served-ranking-failed", shadow.telemetry);
     return;
   }
 
@@ -627,24 +739,28 @@ async function completePeerEvaluation<Result, Arm extends string>(
       k: served.k,
       ...comparableResultAttributes,
     });
-    notifyEvaluation(sink.comparison, {
-      selectionId: served.selectionId,
-      served: {
-        arm: served.effectiveArm,
-        outcome: served.completion.outcome,
-        durationMs: served.completion.durationMs,
-        hitCount: served.completion.ranking.length,
+    notifyEvaluation(
+      sink.comparison,
+      {
+        selectionId: served.selectionId,
+        served: {
+          arm: served.effectiveArm,
+          outcome: served.completion.outcome,
+          durationMs: served.completion.durationMs,
+          hitCount: served.completion.ranking.length,
+        },
+        shadow: {
+          arm: shadow.arm,
+          outcome: shadowCompletion.outcome,
+          durationMs: shadowCompletion.durationMs,
+          hitCount: shadowCompletion.ranking.length,
+        },
+        agreement,
       },
-      shadow: {
-        arm: shadow.arm,
-        outcome: shadowCompletion.outcome,
-        durationMs: shadowCompletion.durationMs,
-        hitCount: shadowCompletion.ranking.length,
-      },
-      agreement,
-    });
+      shadow.telemetry,
+    );
   } catch {
-    notifyDrop(sink, served.selectionId, shadow.arm, "comparison-failed");
+    notifyDrop(sink, served.selectionId, shadow.arm, "comparison-failed", shadow.telemetry);
   }
 }
 
@@ -653,8 +769,9 @@ function notifyDrop<Arm extends string>(
   selectionId: string,
   shadowArm: Arm,
   reason: ExperimentPeerDropReason,
+  telemetry?: ExperimentArmEvaluationHandle,
 ): void {
-  notifyEvaluation(sink.drop, { selectionId, shadowArm, reason });
+  notifyEvaluation(sink.drop, { selectionId, shadowArm, reason }, telemetry);
 }
 
 function startArmCallback<Params, Result, Arm extends string>(
@@ -694,6 +811,74 @@ function startArmCallback<Params, Result, Arm extends string>(
   }
 }
 
+function startArmTelemetry<Arm extends string>(
+  sink: ExperimentEvaluationSink<Arm>,
+  evaluation: ExperimentArmEvaluation<Arm>,
+): ExperimentArmEvaluationHandle | undefined {
+  try {
+    return sink.arm?.(evaluation);
+  } catch {
+    return undefined;
+  }
+}
+
+function completeArmTelemetry(
+  telemetry: ExperimentArmEvaluationHandle | undefined,
+  evaluation: ExperimentArmCompletionEvaluation,
+): void {
+  try {
+    telemetry?.complete(evaluation);
+  } catch {
+    // Telemetry delivery is observational and cannot fail application work.
+  }
+}
+
+function runArmTelemetry<T>(
+  telemetry: ExperimentArmEvaluationHandle | undefined,
+  callback: () => T,
+): T {
+  if (telemetry === undefined) {
+    return callback();
+  }
+
+  let state: "pending" | "running" | "returned" | "threw" = "pending";
+  let result!: T;
+  let callbackError: unknown;
+  const runOnce = () => {
+    if (state === "returned") {
+      return result;
+    }
+    if (state === "threw") {
+      throw callbackError;
+    }
+    state = "running";
+    try {
+      result = callback();
+      state = "returned";
+      return result;
+    } catch (error) {
+      callbackError = error;
+      state = "threw";
+      throw error;
+    }
+  };
+
+  try {
+    telemetry.run(runOnce);
+    if (state === "pending") {
+      return runOnce();
+    }
+  } catch {
+    if (state === "pending") {
+      return runOnce();
+    }
+  }
+  if (state === "returned") {
+    return result;
+  }
+  throw callbackError;
+}
+
 function trackShadow(pending: Set<Promise<void>>, completion: Promise<unknown>): void {
   const contained = completion.then(
     () => undefined,
@@ -714,11 +899,16 @@ function createDeferred<T>(): Deferred<T> {
 }
 
 function notifyEvaluation<Evaluation>(
-  emit: ((evaluation: Evaluation) => void) | undefined,
+  emit: ((evaluation: Evaluation, arm?: ExperimentArmEvaluationHandle) => void) | undefined,
   evaluation: Evaluation,
+  telemetry?: ExperimentArmEvaluationHandle,
 ): void {
   try {
-    emit?.(evaluation);
+    if (telemetry === undefined) {
+      emit?.(evaluation);
+    } else {
+      emit?.(evaluation, telemetry);
+    }
   } catch {
     // Evaluation delivery is observational and cannot fail application work.
   }
