@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 const MAX_TRACKED_UNITS = 1_000;
 const MAX_SELECTIONS_PER_UNIT = 32;
@@ -55,7 +56,7 @@ interface SelectionRecord<Arm extends string> {
  */
 export function createExperimentInvocationBuffer<Arm extends string = string>(
   policy: ExperimentInvocationPolicy,
-  clock: () => number = Date.now,
+  clock: () => number = monotonicNow,
 ): ExperimentInvocationBuffer<Arm> {
   const selections = new Map<string, SelectionRecord<Arm>[]>();
 
@@ -146,4 +147,8 @@ function sweepExpiredSelections<Arm extends string>(
 
 function elapsedMs(nowMs: number, completedAtMs: number): number {
   return Math.max(0, nowMs - completedAtMs);
+}
+
+function monotonicNow(): number {
+  return performance.now();
 }

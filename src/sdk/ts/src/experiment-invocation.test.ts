@@ -1,7 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExperimentInvocationBuffer, hashUnitId } from "./experiment-invocation.js";
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("createExperimentInvocationBuffer", () => {
+  it("keeps default elapsed windows and ages stable across wall-clock jumps", () => {
+    let wallTimeMs = 1_000;
+    let monotonicTimeMs = 100;
+    vi.spyOn(Date, "now").mockImplementation(() => wallTimeMs);
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicTimeMs);
+    const buffer = createExperimentInvocationBuffer({ window: { maxAgeMs: 100 } });
+    buffer.recordSelection({
+      unitId: "unit-a",
+      selectionId: "selection-1",
+      effectiveArm: "legacy",
+      ids: ["inspect-ci"],
+    });
+
+    wallTimeMs = -1_000_000;
+    monotonicTimeMs = 140;
+    expect(buffer.evaluateInvocation({ unitId: "unit-a", toolId: "inspect-ci" })[0]).toMatchObject({
+      attributed: true,
+      ageMs: 40,
+    });
+
+    wallTimeMs = 1_000_000;
+    monotonicTimeMs = 180;
+    expect(buffer.evaluateInvocation({ unitId: "unit-a", toolId: "inspect-ci" })[0]).toMatchObject({
+      attributed: true,
+      ageMs: 80,
+    });
+  });
+
   it("attributes an invocation to the newest completed selection by default", () => {
     let nowMs = 100;
     const buffer = createExperimentInvocationBuffer<"legacy" | "candidate">(

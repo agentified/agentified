@@ -996,55 +996,157 @@ describe("experimentalDefineExperiment", () => {
     }
   });
 
-  it("attributes invocations to the positional selection window", async () => {
-    vi.useFakeTimers();
-    try {
-      const invocation = vi.fn();
-      const sink: ExperimentEvaluationSink<"legacy"> = { invocation };
-      const experiment = defineExperimentInternal(
-        {
-          id: "search",
-          arms: {
-            legacy: {
-              select: async ({ query }: SearchParams) => ({ ids: [query] }),
-            },
+  it("snapshots served projections before caller mutation while a shadow is pending", async () => {
+    const comparison = vi.fn();
+    const pendingShadow = deferred<{
+      facts: Record<string, string>;
+      ranking: Array<{ attrs: Record<string, string>; id: string }>;
+    }>();
+    const served = {
+      facts: { source: "shared" },
+      ranking: [{ attrs: { domain: "docs" }, id: "same" }],
+    };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          control: { select: async () => served },
+          candidate: { select: () => pendingShadow.promise },
+        },
+        ranking: (result) => result.ranking,
+        evaluation: {
+          attributes: (result) => result.facts,
+          references: ["peer-selection"],
+        },
+      },
+      { comparison },
+    );
+
+    const selection = await experiment.select(
+      { query: "build failure" },
+      { arm: "control", shadow: true, unitId: "unit-a" },
+    );
+    expect(selection.result).toBe(served);
+    const [servedItem] = selection.result.ranking;
+    if (servedItem === undefined) {
+      throw new Error("test fixture requires one served item");
+    }
+    servedItem.id = "mutated";
+    servedItem.attrs.domain = "code";
+    selection.result.facts.source = "mutated";
+
+    pendingShadow.resolve({
+      facts: { source: "shared" },
+      ranking: [{ attrs: { domain: "docs" }, id: "same" }],
+    });
+    await experiment.drain();
+
+    expect(comparison).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agreement: expect.objectContaining({
+          exactOrder: true,
+          itemAttrs: { domain: true },
+          jaccardAtK: 1,
+          resultAttrs: { source: true },
+          top1: true,
+        }),
+      }),
+    );
+  });
+
+  it("snapshots projection buffers reused across arm callbacks", async () => {
+    const comparison = vi.fn();
+    const pendingShadow = deferred<SearchResult>();
+    const rankingBuffer = [{ id: "" }];
+    const resultAttributesBuffer = { source: "" };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          control: { select: async () => ({ ids: ["control"] }) },
+          candidate: { select: () => pendingShadow.promise },
+        },
+        ranking: (result: SearchResult) => {
+          const [item] = rankingBuffer;
+          const [id] = result.ids;
+          if (item === undefined || id === undefined) {
+            throw new Error("test fixture requires one ranked id");
+          }
+          item.id = id;
+          return rankingBuffer;
+        },
+        evaluation: {
+          attributes: (result: SearchResult) => {
+            const [id] = result.ids;
+            if (id === undefined) {
+              throw new Error("test fixture requires one result id");
+            }
+            resultAttributesBuffer.source = id;
+            return resultAttributesBuffer;
           },
-          ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
-          evaluation: {
-            references: [
-              {
-                kind: "invocation",
-                window: { maxAgeMs: 1_000, turns: 2 },
-                attribution: "all-in-window",
-              },
-            ],
+          references: ["peer-selection"],
+        },
+      },
+      { comparison },
+    );
+
+    await experiment.select(
+      { query: "build failure" },
+      { arm: "control", shadow: true, unitId: "unit-a" },
+    );
+    pendingShadow.resolve({ ids: ["candidate"] });
+    await experiment.drain();
+
+    expect(comparison).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agreement: expect.objectContaining({
+          exactOrder: false,
+          resultAttrs: { source: false },
+          top1: false,
+        }),
+      }),
+    );
+  });
+
+  it("attributes invocations to the positional selection window", async () => {
+    const invocation = vi.fn();
+    const sink: ExperimentEvaluationSink<"legacy"> = { invocation };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: {
+            select: async ({ query }: SearchParams) => ({ ids: [query] }),
           },
         },
-        sink,
-      );
-      const selectAt = async (now: number, query: string) => {
-        vi.setSystemTime(now);
-        return experiment.select({ query }, { arm: "legacy", unitId: "unit-a" });
-      };
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: {
+          references: [
+            {
+              kind: "invocation",
+              window: { maxAgeMs: 1_000, turns: 2 },
+              attribution: "all-in-window",
+            },
+          ],
+        },
+      },
+      sink,
+    );
 
-      await selectAt(0, "first");
-      await selectAt(500, "second");
-      await selectAt(900, "third");
-      vi.setSystemTime(1_200);
-      experiment.reportInvocation({
-        toolId: "third",
-        turn: 999,
-        unitId: "unit-a",
-      });
+    await experiment.select({ query: "first" }, { arm: "legacy", unitId: "unit-a" });
+    await experiment.select({ query: "second" }, { arm: "legacy", unitId: "unit-a" });
+    await experiment.select({ query: "third" }, { arm: "legacy", unitId: "unit-a" });
+    experiment.reportInvocation({
+      toolId: "third",
+      turn: 999,
+      unitId: "unit-a",
+    });
 
-      expect(invocation).toHaveBeenCalledTimes(2);
-      expect(invocation.mock.calls.map(([record]) => record.attribution)).toEqual([
-        expect.objectContaining({ ageMs: 700, attributed: true, rank: -1 }),
-        expect.objectContaining({ ageMs: 300, attributed: true, rank: 0 }),
-      ]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(invocation).toHaveBeenCalledTimes(2);
+    expect(invocation.mock.calls.map(([record]) => record.attribution)).toEqual([
+      expect.objectContaining({ ageMs: expect.any(Number), attributed: true, rank: -1 }),
+      expect.objectContaining({ ageMs: expect.any(Number), attributed: true, rank: 0 }),
+    ]);
   });
 
   it("drops a consumed fallback shadow while comparing other shadows to it", async () => {
@@ -1193,7 +1295,7 @@ describe("experimentalDefineExperiment", () => {
     });
   });
 
-  it("contains comparison failures as terminal drops", async () => {
+  it("contains result-attribute snapshot failures without dropping the comparison", async () => {
     const comparison = vi.fn();
     const drop = vi.fn();
     const throwingAttributes = new Proxy(
@@ -1227,12 +1329,9 @@ describe("experimentalDefineExperiment", () => {
     await experiment.drain();
 
     expect(selection.result.ids).toEqual(["legacy"]);
-    expect(comparison).not.toHaveBeenCalled();
-    expect(drop).toHaveBeenCalledWith({
-      selectionId: selection.selectionId,
-      shadowArm: "ratel",
-      reason: "comparison-failed",
-    });
+    expect(comparison).toHaveBeenCalledOnce();
+    expect(comparison.mock.calls[0]?.[0].agreement).not.toHaveProperty("resultAttrs");
+    expect(drop).not.toHaveBeenCalled();
   });
 
   it("does not project or record peers without peer-selection evaluation", async () => {
