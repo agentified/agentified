@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.4.0-rc.0] - 2026-07-30
+
 ### Added
 
 - `RatelOtelIntegration` copies the active retrieval experiment's five-field baggage stamp onto every AI SDK `gen_ai.*` span, giving generic and vendor destinations the exact experiment/selection join plus arm, role, and unit context.

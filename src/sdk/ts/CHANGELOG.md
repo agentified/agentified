@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.7.0-rc.0] - 2026-07-30
+
 ### Added
 
 - `RatelAdapter.experimentalExposePassthrough`, an optional experimental exposure-time hook for framework-native tools. Its core-owned invocation wrapper preserves scalar, promise, and `AsyncIterable` return shapes while emitting the standard `execute_tool` span and local invoke events; adapters can instrument client-executed passthroughs without mutating caller-owned tools.
