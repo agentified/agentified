@@ -242,8 +242,51 @@ function wrapPassthrough(t: Tool, exposure: ExperimentalPassthroughToolExposure)
       return exposure.invoke(input, () => Reflect.apply(execute, receiver, [input, options]));
     },
   };
+  // The clone shares t's prototype but not its private-field brand, so any
+  // inherited member reading instance state — a class-backed tool's getter,
+  // needsApproval, or toModelOutput — would resolve #private against the clone
+  // and throw. Re-expose each inherited member bound to the original instance.
+  // Own members (the object-literal `tool()` shape) stay carried above by
+  // identity, so their references and the frozen-tool contract are preserved.
+  redirectInheritedMembers(t, descriptors);
   exposed = Object.create(Object.getPrototypeOf(t), descriptors) as Tool;
   return exposed;
+}
+
+// Redirect the receiver of every prototype-chain accessor and method to the
+// original instance so private-field reads resolve against its brand. Keys
+// already carried as own descriptors are left untouched.
+function redirectInheritedMembers(
+  t: Tool,
+  descriptors: Record<PropertyKey, PropertyDescriptor>,
+): void {
+  let proto: object | null = Object.getPrototypeOf(t);
+  while (proto !== null && proto !== Object.prototype) {
+    for (const key of Reflect.ownKeys(proto)) {
+      if (key === "constructor" || key === "execute" || Object.hasOwn(descriptors, key)) {
+        continue;
+      }
+      const inherited = Object.getOwnPropertyDescriptor(proto, key);
+      if (inherited === undefined) continue;
+      if (inherited.get !== undefined || inherited.set !== undefined) {
+        const { get, set } = inherited;
+        descriptors[key] = {
+          configurable: true,
+          enumerable: inherited.enumerable ?? false,
+          get: get ? () => get.call(t) : undefined,
+          set: set ? (value: unknown) => set.call(t, value) : undefined,
+        };
+      } else if (typeof inherited.value === "function") {
+        descriptors[key] = {
+          configurable: true,
+          enumerable: inherited.enumerable ?? false,
+          writable: inherited.writable ?? false,
+          value: (inherited.value as (...args: unknown[]) => unknown).bind(t),
+        };
+      }
+    }
+    proto = Object.getPrototypeOf(proto);
+  }
 }
 
 function rethrowTargetFailure(result: unknown): unknown {

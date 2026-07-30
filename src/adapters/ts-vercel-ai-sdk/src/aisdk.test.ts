@@ -457,6 +457,41 @@ describe("passthrough end-to-end", () => {
     expect((exposed.execute as () => unknown)()).toEqual({ calls: 1 });
     expect(providerTool.calls).toBe(1);
   });
+
+  it("reads private state through a class-backed passthrough's getters and methods", async () => {
+    class StatefulProviderTool {
+      readonly type = "provider";
+      readonly id = "acme.stateful-members";
+      readonly args = {};
+      readonly isProviderExecuted = false;
+      readonly inputSchema = { type: "object" };
+      #calls = 0;
+
+      execute() {
+        return { calls: ++this.#calls };
+      }
+
+      get calls() {
+        return this.#calls;
+      }
+
+      snapshot() {
+        return { calls: this.#calls };
+      }
+    }
+
+    const view = ratel().adaptTo(aiSdk());
+    const providerTool = new StatefulProviderTool();
+    await view.tools.register({ stateful: providerTool as unknown as Tool });
+    const exposed = view.modelTools().stateful as unknown as StatefulProviderTool;
+
+    expect((exposed.execute as () => unknown)()).toEqual({ calls: 1 });
+    // Members other than execute must resolve their private state against the
+    // original instance, not the wrapper: a getter and a method invoked through
+    // the exposed tool read #calls without a private-brand TypeError.
+    expect(exposed.calls).toBe(1);
+    expect(exposed.snapshot()).toEqual({ calls: 1 });
+  });
 });
 
 describe("recallMessages codec", () => {
