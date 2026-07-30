@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental prompt compression (ADR-0016).** `ExperimentalCompression` — a new top-level export, orthogonal to `ToolCatalog` / `SkillCatalog` — compresses prose you carry into the context using an LLMLingua-2 token classifier. `compress()` returns the rewritten text plus per-unit `kept` / `dropped` importance scores and a `stats` block reporting exactly what it cost; `score()` exposes the raw signal with no policy applied; `preload()` pays the ~700 MB model load at startup instead of inside a request. A prompt too short to compress comes back verbatim with `stats.gate` naming the rule that fired. Every call releases the GIL and runs on a worker thread. Shipped behind an `Experimental` marker — the API may change until it graduates.
+- `CompressorError` (a `RuntimeError` subclass) for compression model-load and inference failures; invalid compression config raises `ValueError` at construction.
+
+### Notes
+
+- Compress the **context**, not your instructions: the intended use is retrieved passages, transcripts, and documents, leaving the system prompt and the user's question verbatim.
+- Compression is lossy and costs real time (~2 s for a 623-token document on a laptop CPU). The `dropped` scores and the gate make the loss visible and steerable; they do not make it safe. Evaluate it on your own data.
+
 ## [0.6.0] - 2026-07-28
 
 > **Coming from `0.6.0rc0`?** That RC was tagged off a branch that predated 0.5.2, so it

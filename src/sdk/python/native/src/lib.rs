@@ -37,6 +37,12 @@ create_exception!(
     EmbedderError,
     "A query/corpus embedding dimension mismatch — the model changed under an existing set."
 );
+create_exception!(
+    _native,
+    CompressorError,
+    PyRuntimeError,
+    "Prompt-compression model load / inference failure (subclass of RuntimeError)."
+);
 
 /// Map a core embedding error to a typed Python exception (base `EmbedderError`,
 /// with `DimensionMismatchError` for the dimension case), keeping `RuntimeError`
@@ -934,6 +940,272 @@ impl SkillRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Experimental prompt compression (ADR-0016)
+//
+// No dense gating: compression touches no registry state, so it cannot race an
+// embedding rebuild and must not be serialized against one. Every method
+// releases the GIL — a forward pass takes seconds and the cold load is ~700 MB.
+// ---------------------------------------------------------------------------
+
+fn map_compressor_err(err: core::CompressorError) -> PyErr {
+    match err {
+        core::CompressorError::Config { .. } => PyValueError::new_err(err.to_string()),
+        other => CompressorError::new_err(other.to_string()),
+    }
+}
+
+/// One scored unit of the input — a word in the intuitive sense (`doesn't` and
+/// `8,400` are each one).
+#[pyclass(get_all, frozen)]
+#[derive(Clone)]
+pub struct WordScore {
+    /// The unit's text, exactly as it appears in the input.
+    pub text: String,
+    /// Byte offset of the unit in the input.
+    pub start: usize,
+    /// Byte offset one past the unit in the input.
+    pub end: usize,
+    /// `P(INCLUDE)` averaged over the unit's model tokens; `1.0` when protected.
+    pub importance: f64,
+    /// Model tokens the unit costs.
+    pub tokens: u32,
+    /// Whether the unit was protected, and so kept regardless of importance.
+    pub protected: bool,
+}
+
+#[pymethods]
+impl WordScore {
+    fn __repr__(&self) -> String {
+        format!(
+            "WordScore(text={:?}, importance={:.3}, tokens={}, protected={})",
+            self.text, self.importance, self.tokens, self.protected
+        )
+    }
+}
+
+/// What compression cost and produced.
+#[pyclass(get_all, frozen)]
+#[derive(Clone)]
+pub struct CompressionStats {
+    /// Model tokens in the input.
+    pub model_tokens_in: u32,
+    /// Model tokens in the output.
+    pub model_tokens_out: u32,
+    /// Scored units in the input.
+    pub words_in: u32,
+    /// Scored units kept.
+    pub words_out: u32,
+    /// Encoder passes performed; `0` when gated.
+    pub chunks: u32,
+    /// Units protected from removal.
+    pub protected_units: u32,
+    /// The keep-ratio that was requested.
+    pub rate: f64,
+    /// `"too_short_words"` | `"too_short_tokens"` | `"rate_one"` when the input
+    /// was returned verbatim; `None` when it was compressed.
+    pub gate: Option<String>,
+    /// Protected content alone exceeded the budget, so `rate` was overrun.
+    pub budget_exceeded: bool,
+    /// Wall time in milliseconds, excluding a cold model load.
+    pub took_ms: u64,
+}
+
+#[pymethods]
+impl CompressionStats {
+    fn __repr__(&self) -> String {
+        format!(
+            "CompressionStats(model_tokens_in={}, model_tokens_out={}, gate={:?})",
+            self.model_tokens_in, self.model_tokens_out, self.gate
+        )
+    }
+}
+
+/// A compressed prompt plus the evidence for every decision made.
+#[pyclass(get_all, frozen)]
+#[derive(Clone)]
+pub struct CompressedPrompt {
+    /// The compressed text, built from slices of the input.
+    pub text: String,
+    /// Units that survived. Empty when `explain` is off.
+    pub kept: Vec<WordScore>,
+    /// Units removed, with the scores that removed them. Empty when `explain`
+    /// is off.
+    pub dropped: Vec<WordScore>,
+    /// Counts and gating for this call.
+    pub stats: CompressionStats,
+}
+
+#[pymethods]
+impl CompressedPrompt {
+    fn __repr__(&self) -> String {
+        format!(
+            "CompressedPrompt(text={:?}, stats={})",
+            self.text,
+            self.stats.__repr__()
+        )
+    }
+}
+
+fn to_word_score(w: &core::WordScore) -> WordScore {
+    WordScore {
+        text: w.text.clone(),
+        start: w.start,
+        end: w.end,
+        importance: w.importance as f64,
+        tokens: w.tokens,
+        protected: w.protected,
+    }
+}
+
+fn to_compressed(out: core::CompressedPrompt) -> CompressedPrompt {
+    CompressedPrompt {
+        text: out.text,
+        kept: out.kept.iter().map(to_word_score).collect(),
+        dropped: out.dropped.iter().map(to_word_score).collect(),
+        stats: CompressionStats {
+            model_tokens_in: out.stats.model_tokens_in,
+            model_tokens_out: out.stats.model_tokens_out,
+            words_in: out.stats.words_in,
+            words_out: out.stats.words_out,
+            chunks: out.stats.chunks,
+            protected_units: out.stats.protected_units,
+            rate: out.stats.rate as f64,
+            gate: out.stats.gate.map(|g| {
+                match g {
+                    core::CompressionGate::TooShortWords => "too_short_words",
+                    core::CompressionGate::TooShortTokens => "too_short_tokens",
+                    core::CompressionGate::RateOne => "rate_one",
+                }
+                .to_string()
+            }),
+            budget_exceeded: out.stats.budget_exceeded,
+            took_ms: out.stats.took_ms,
+        },
+    }
+}
+
+/// Prompt compression over an LLMLingua-2 token classifier. The Python facade
+/// (`ratel_ai.compression`) wraps this with `asyncio.to_thread`.
+#[pyclass]
+pub struct PromptCompressor {
+    inner: core::PromptCompressor,
+}
+
+#[pymethods]
+impl PromptCompressor {
+    /// Construct a compressor. An invalid model config raises `ValueError` here,
+    /// at construction; no model is loaded until the first call past the gate.
+    #[new]
+    #[pyo3(signature = (spec=None, huggingface=None, local=None, revision=None, download=None))]
+    fn new(
+        spec: Option<String>,
+        huggingface: Option<String>,
+        local: Option<String>,
+        revision: Option<String>,
+        download: Option<bool>,
+    ) -> PyResult<Self> {
+        let any_source = spec.is_some() || huggingface.is_some() || local.is_some();
+        let inner = if any_source || revision.is_some() || download.is_some() {
+            let model = core::CompressionModel::resolve(core::CompressionSpec {
+                spec,
+                huggingface,
+                local,
+                revision,
+                download,
+            })
+            .map_err(map_compressor_err)?;
+            core::PromptCompressor::with_model(model).map_err(map_compressor_err)?
+        } else {
+            core::PromptCompressor::new()
+        };
+        Ok(Self { inner })
+    }
+
+    /// Load the weights now. GIL-releasing worker; the facade wraps it as
+    /// `preload`.
+    fn _preload(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.preload())
+            .map_err(map_compressor_err)
+    }
+
+    /// Compress `text`. GIL-releasing worker; the facade wraps it as `compress`.
+    #[pyo3(signature = (text, rate=None, min_words=None, min_tokens=None, max_chunks=None,
+        protect_literals=None, protect_regexes=None, protect_numbers=None,
+        protect_negations=None, negation_terms=None, preserve_paragraphs=None, explain=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn _compress(
+        &self,
+        py: Python<'_>,
+        text: String,
+        rate: Option<f64>,
+        min_words: Option<usize>,
+        min_tokens: Option<usize>,
+        max_chunks: Option<usize>,
+        protect_literals: Option<Vec<String>>,
+        protect_regexes: Option<Vec<String>>,
+        protect_numbers: Option<bool>,
+        protect_negations: Option<bool>,
+        negation_terms: Option<Vec<String>>,
+        preserve_paragraphs: Option<bool>,
+        explain: Option<bool>,
+    ) -> PyResult<CompressedPrompt> {
+        let mut options = core::CompressionOptions::default();
+        if let Some(v) = rate {
+            options.rate = v as f32;
+        }
+        if let Some(v) = min_words {
+            options.min_words = v;
+        }
+        if let Some(v) = min_tokens {
+            options.min_tokens = v;
+        }
+        if let Some(v) = max_chunks {
+            options.max_chunks = v;
+        }
+        let mut protect = Vec::new();
+        protect.extend(
+            protect_literals
+                .unwrap_or_default()
+                .into_iter()
+                .map(core::ProtectPattern::Literal),
+        );
+        protect.extend(
+            protect_regexes
+                .unwrap_or_default()
+                .into_iter()
+                .map(core::ProtectPattern::Regex),
+        );
+        options.protect = protect;
+        if let Some(v) = protect_numbers {
+            options.protect_numbers = v;
+        }
+        if let Some(v) = protect_negations {
+            options.protect_negations = v;
+        }
+        if let Some(v) = negation_terms {
+            options.negation_terms = Some(v);
+        }
+        if let Some(v) = preserve_paragraphs {
+            options.preserve_paragraphs = v;
+        }
+        if let Some(v) = explain {
+            options.explain = v;
+        }
+        py.allow_threads(|| self.inner.compress(&text, Some(&options)))
+            .map(to_compressed)
+            .map_err(map_compressor_err)
+    }
+
+    /// Per-unit importance with no policy applied. GIL-releasing worker; the
+    /// facade wraps it as `score`.
+    fn _score(&self, py: Python<'_>, text: String) -> PyResult<Vec<WordScore>> {
+        py.allow_threads(|| self.inner.score(&text))
+            .map(|s| s.iter().map(to_word_score).collect())
+            .map_err(map_compressor_err)
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ToolRegistry>()?;
@@ -941,7 +1213,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SearchHit>()?;
     m.add_class::<SkillRegistry>()?;
     m.add_class::<SkillHit>()?;
+    m.add_class::<PromptCompressor>()?;
+    m.add_class::<CompressedPrompt>()?;
+    m.add_class::<CompressionStats>()?;
+    m.add_class::<WordScore>()?;
     m.add("EmbedderError", m.py().get_type::<EmbedderError>())?;
+    m.add("CompressorError", m.py().get_type::<CompressorError>())?;
     m.add(
         "DimensionMismatchError",
         m.py().get_type::<DimensionMismatchError>(),

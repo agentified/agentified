@@ -65,6 +65,19 @@ export type {
   SearchToolsToolOptions,
 } from "./compat.js";
 export { SEARCH_TOOLS_ID, searchToolsTool } from "./compat.js";
+// Experimental prompt compression (ADR-0016). Orthogonal to the catalogs: it
+// compresses prose the caller carries, and loads nothing unless invoked.
+export type {
+  CompressedPrompt,
+  CompressionGate,
+  CompressionModelSpec,
+  CompressionOptions,
+  CompressionStats,
+  ExperimentalCompressionOptions,
+  ProtectPattern,
+  WordScore,
+} from "./compression.js";
+export { ExperimentalCompression } from "./compression.js";
 export { DimensionMismatchError, EmbedderError } from "./errors.js";
 export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
 export { McpToolsListError, registerMcpServer } from "./mcp.js";

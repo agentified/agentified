@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental prompt compression (ADR-0016).** `PromptCompressor` compresses prose you carry into the context — transcripts, retrieved passages, documents — with an LLMLingua-2 BERT token classifier run in-process via Candle. On top of raw thresholding it decides on **atoms** (runs of tokens with no bytes between them, so `doesn't` / `8,400` / `pg_upgrade` are never half-kept), charges **protected** spans to the budget first, spends the rest in model tokens by importance, and rebuilds output from the **original byte offsets** rather than detokenizing. Prompts below a minimum length are returned verbatim with `CompressionStats::gate` saying so. `CompressionModel::{Default, HuggingFace, Local}` selects the checkpoint under ADR-0012's download policy; `preload()` pays the ~700 MB cold load on purpose.
+- `TraceEvent::{Compress, CompressorLoad, CompressorDownload}` — counts only; a compression event deliberately carries no prompt text.
+
+### Notes
+
+- Compression is lossy and **slower than an ONNX runtime**: ~2–2.6 s for a 623-token document against ~574 ms for the same weights under ONNX Runtime. Measured numbers and the reasoning are in ADR-0016; this is a stated blocker for promoting the surface out of `experimental`.
+- `protect_numbers` defaults to **off**. Blanket digit protection was measured to cost *more* critical facts than it saves at every rate below 0.4 — it spends budget on incidental figures and starves prose that matters more. Name the figures that matter via `protect` instead.
+
 ## [0.6.0] - 2026-07-28
 
 ### Added

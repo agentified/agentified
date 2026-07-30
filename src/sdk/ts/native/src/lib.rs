@@ -1242,3 +1242,342 @@ impl SkillRegistry {
             .collect()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Experimental prompt compression (ADR-0016)
+//
+// Deliberately free of the dense machinery above: compression touches no
+// registry state, so it cannot race an embedding rebuild. Giving it a
+// `dense_gate` or a `DenseOperationPermit` would serialize it against work it
+// has nothing to do with, buying nothing and costing latency.
+// ---------------------------------------------------------------------------
+
+/// Which model backs compression. The SDK normalizes its public `string | object`
+/// form into these fields; core `CompressionModel::resolve` validates the source.
+#[napi(object)]
+pub struct CompressionConfig {
+    /// Bare string shortcut — a local model directory path only.
+    pub spec: Option<String>,
+    /// HuggingFace repo id of a BERT token-classification checkpoint.
+    pub huggingface: Option<String>,
+    /// Local model directory path.
+    pub local: Option<String>,
+    /// Git revision for a HuggingFace source; `main` when omitted.
+    pub revision: Option<String>,
+    /// Opt in to downloading a not-yet-cached HuggingFace model (default false).
+    pub download: Option<bool>,
+}
+
+/// One protect pattern: exactly one of `literal` / `regex`.
+#[napi(object)]
+pub struct ProtectPatternConfig {
+    /// Exact text to protect wherever it occurs.
+    pub literal: Option<String>,
+    /// Rust `regex` pattern — no lookaround or backreferences.
+    pub regex: Option<String>,
+}
+
+/// Per-call compression options. Every field is optional; omitted fields take
+/// the core defaults.
+#[napi(object)]
+pub struct CompressionOptionsConfig {
+    /// Approximate keep-ratio in the model's own tokens. Default `0.4`.
+    pub rate: Option<f64>,
+    /// Words below which the input is returned verbatim, checked before any
+    /// model load. Default `40`.
+    pub min_words: Option<u32>,
+    /// Model tokens below which the input is returned verbatim. Default `50`.
+    pub min_tokens: Option<u32>,
+    /// Maximum encoder passes. Default `16`.
+    pub max_chunks: Option<u32>,
+    /// Spans that must survive at any rate.
+    pub protect: Option<Vec<ProtectPatternConfig>>,
+    /// Protect every unit containing a digit. Default `false`.
+    pub protect_numbers: Option<bool>,
+    /// Protect negations, whose loss inverts a claim. Default `true`.
+    pub protect_negations: Option<bool>,
+    /// Replace the built-in (English) negation list.
+    pub negation_terms: Option<Vec<String>>,
+    /// Keep blank lines as blank lines. Default `true`.
+    pub preserve_paragraphs: Option<bool>,
+    /// Populate `kept` / `dropped`. Default `true`.
+    pub explain: Option<bool>,
+}
+
+/// One scored unit of the input — a word in the intuitive sense (`doesn't` and
+/// `8,400` are each one).
+#[napi(object)]
+pub struct WordScore {
+    /// The unit's text, exactly as it appears in the input.
+    pub text: String,
+    /// Byte offset of the unit in the input.
+    pub start: u32,
+    /// Byte offset one past the unit in the input.
+    pub end: u32,
+    /// `P(INCLUDE)` averaged over the unit's model tokens; `1` when protected.
+    pub importance: f64,
+    /// Model tokens the unit costs.
+    pub tokens: u32,
+    /// Whether the unit was protected, and so kept regardless of importance.
+    pub protected: bool,
+}
+
+/// What compression cost and produced.
+#[napi(object)]
+pub struct CompressionStats {
+    /// Model tokens in the input.
+    pub model_tokens_in: u32,
+    /// Model tokens in the output.
+    pub model_tokens_out: u32,
+    /// Scored units in the input.
+    pub words_in: u32,
+    /// Scored units kept.
+    pub words_out: u32,
+    /// Encoder passes performed; `0` when gated.
+    pub chunks: u32,
+    /// Units protected from removal.
+    pub protected_units: u32,
+    /// The keep-ratio that was requested.
+    pub rate: f64,
+    /// `"too_short_words"` | `"too_short_tokens"` | `"rate_one"` when the input
+    /// was returned verbatim; absent when it was compressed.
+    pub gate: Option<String>,
+    /// Protected content alone exceeded the budget, so `rate` was overrun.
+    pub budget_exceeded: bool,
+    /// Wall time in milliseconds, excluding a cold model load.
+    pub took_ms: u32,
+}
+
+/// A compressed prompt plus the evidence for every decision.
+#[napi(object)]
+pub struct CompressedPrompt {
+    /// The compressed text, built from slices of the input.
+    pub text: String,
+    /// Units that survived. Empty when `explain` is false.
+    pub kept: Vec<WordScore>,
+    /// Units removed, with the scores that removed them. Empty when `explain`
+    /// is false.
+    pub dropped: Vec<WordScore>,
+    pub stats: CompressionStats,
+}
+
+fn to_word_score(w: &core::WordScore) -> WordScore {
+    WordScore {
+        text: w.text.clone(),
+        start: w.start as u32,
+        end: w.end as u32,
+        importance: w.importance as f64,
+        tokens: w.tokens,
+        protected: w.protected,
+    }
+}
+
+fn to_compressed(out: core::CompressedPrompt) -> CompressedPrompt {
+    CompressedPrompt {
+        text: out.text,
+        kept: out.kept.iter().map(to_word_score).collect(),
+        dropped: out.dropped.iter().map(to_word_score).collect(),
+        stats: CompressionStats {
+            model_tokens_in: out.stats.model_tokens_in,
+            model_tokens_out: out.stats.model_tokens_out,
+            words_in: out.stats.words_in,
+            words_out: out.stats.words_out,
+            chunks: out.stats.chunks,
+            protected_units: out.stats.protected_units,
+            rate: out.stats.rate as f64,
+            gate: out.stats.gate.map(|g| {
+                match g {
+                    core::CompressionGate::TooShortWords => "too_short_words",
+                    core::CompressionGate::TooShortTokens => "too_short_tokens",
+                    core::CompressionGate::RateOne => "rate_one",
+                }
+                .to_string()
+            }),
+            budget_exceeded: out.stats.budget_exceeded,
+            took_ms: out.stats.took_ms as u32,
+        },
+    }
+}
+
+/// Build core options from the JS shape, defaulting every omitted field.
+fn resolve_compression_options(
+    config: Option<CompressionOptionsConfig>,
+) -> napi::Result<core::CompressionOptions> {
+    let mut options = core::CompressionOptions::default();
+    let Some(c) = config else { return Ok(options) };
+    if let Some(v) = c.rate {
+        options.rate = v as f32;
+    }
+    if let Some(v) = c.min_words {
+        options.min_words = v as usize;
+    }
+    if let Some(v) = c.min_tokens {
+        options.min_tokens = v as usize;
+    }
+    if let Some(v) = c.max_chunks {
+        options.max_chunks = v as usize;
+    }
+    if let Some(patterns) = c.protect {
+        options.protect = patterns
+            .into_iter()
+            .map(|p| match (p.literal, p.regex) {
+                (Some(l), None) => Ok(core::ProtectPattern::Literal(l)),
+                (None, Some(r)) => Ok(core::ProtectPattern::Regex(r)),
+                _ => Err(napi::Error::from_reason(
+                    "each protect pattern needs exactly one of 'literal' or 'regex'",
+                )),
+            })
+            .collect::<napi::Result<Vec<_>>>()?;
+    }
+    if let Some(v) = c.protect_numbers {
+        options.protect_numbers = v;
+    }
+    if let Some(v) = c.protect_negations {
+        options.protect_negations = v;
+    }
+    if let Some(v) = c.negation_terms {
+        options.negation_terms = Some(v);
+    }
+    if let Some(v) = c.preserve_paragraphs {
+        options.preserve_paragraphs = v;
+    }
+    if let Some(v) = c.explain {
+        options.explain = v;
+    }
+    Ok(options)
+}
+
+/// One task type per result shape, so each `AsyncTask` carries its real type
+/// across to TypeScript instead of a `Value` the SDK would have to re-parse.
+pub struct PreloadTask {
+    inner: Arc<core::PromptCompressor>,
+}
+
+pub struct CompressTask {
+    inner: Arc<core::PromptCompressor>,
+    text: String,
+    options: Box<core::CompressionOptions>,
+}
+
+pub struct ScoreTask {
+    inner: Arc<core::PromptCompressor>,
+    text: String,
+}
+
+fn compression_error(e: core::CompressorError) -> napi::Error {
+    napi::Error::from_reason(e.to_string())
+}
+
+impl Task for PreloadTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.inner.preload().map_err(compression_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Task for CompressTask {
+    type Output = CompressedPrompt;
+    type JsValue = CompressedPrompt;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.inner
+            .compress(&self.text, Some(&self.options))
+            .map(to_compressed)
+            .map_err(compression_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Task for ScoreTask {
+    type Output = Vec<WordScore>;
+    type JsValue = Vec<WordScore>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.inner
+            .score(&self.text)
+            .map(|s| s.iter().map(to_word_score).collect())
+            .map_err(compression_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Prompt compression over an LLMLingua-2 token classifier.
+///
+/// Every method runs on a libuv worker: a forward pass takes seconds and the
+/// cold load is ~700 MB, so nothing here may block the event loop.
+#[napi]
+pub struct PromptCompressor {
+    inner: Arc<core::PromptCompressor>,
+}
+
+#[napi]
+impl PromptCompressor {
+    /// Construct a compressor. An invalid model config throws here, at
+    /// construction; no model is loaded until the first call past the gate.
+    #[napi(constructor)]
+    pub fn new(model: Option<CompressionConfig>) -> napi::Result<Self> {
+        let inner = match model {
+            Some(c) => {
+                let resolved = core::CompressionModel::resolve(core::CompressionSpec {
+                    spec: c.spec,
+                    huggingface: c.huggingface,
+                    local: c.local,
+                    revision: c.revision,
+                    download: c.download,
+                })
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+                core::PromptCompressor::with_model(resolved)
+                    .map_err(|e| napi::Error::from_reason(e.to_string()))?
+            }
+            None => core::PromptCompressor::new(),
+        };
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// Load the weights now, so the first real call is not charged the cold load.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn preload(&self) -> AsyncTask<PreloadTask> {
+        AsyncTask::new(PreloadTask {
+            inner: Arc::clone(&self.inner),
+        })
+    }
+
+    /// Compress `text`. Returns it verbatim, with `stats.gate` set, when it is
+    /// too short to compress — without loading a model.
+    #[napi(ts_return_type = "Promise<CompressedPrompt>")]
+    pub fn compress(
+        &self,
+        text: String,
+        options: Option<CompressionOptionsConfig>,
+    ) -> napi::Result<AsyncTask<CompressTask>> {
+        let options = Box::new(resolve_compression_options(options)?);
+        Ok(AsyncTask::new(CompressTask {
+            inner: Arc::clone(&self.inner),
+            text,
+            options,
+        }))
+    }
+
+    /// Per-unit importance with no policy applied — the raw signal.
+    #[napi(ts_return_type = "Promise<WordScore[]>")]
+    pub fn score(&self, text: String) -> AsyncTask<ScoreTask> {
+        AsyncTask::new(ScoreTask {
+            inner: Arc::clone(&self.inner),
+            text,
+        })
+    }
+}

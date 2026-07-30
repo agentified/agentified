@@ -395,3 +395,145 @@ class SkillRegistry:
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured envelopes — see `ToolRegistry.drain_trace_events`."""
+
+class WordScore:
+    """One scored unit of the input.
+
+    A word in the intuitive sense: ``doesn't`` and ``8,400`` are each one.
+    """
+
+    @property
+    def text(self) -> str:
+        """The unit's text, exactly as it appears in the input."""
+
+    @property
+    def start(self) -> int:
+        """Byte offset of the unit in the input."""
+
+    @property
+    def end(self) -> int:
+        """Byte offset one past the unit in the input."""
+
+    @property
+    def importance(self) -> float:
+        """`P(INCLUDE)` averaged over the unit's model tokens; 1.0 when protected."""
+
+    @property
+    def tokens(self) -> int:
+        """Model tokens the unit costs."""
+
+    @property
+    def protected(self) -> bool:
+        """Whether the unit was protected, and so kept regardless of importance."""
+
+class CompressionStats:
+    """What compression cost and produced."""
+
+    @property
+    def model_tokens_in(self) -> int:
+        """Model tokens in the input."""
+
+    @property
+    def model_tokens_out(self) -> int:
+        """Model tokens in the output."""
+
+    @property
+    def words_in(self) -> int:
+        """Scored units in the input."""
+
+    @property
+    def words_out(self) -> int:
+        """Scored units kept."""
+
+    @property
+    def chunks(self) -> int:
+        """Encoder passes performed; 0 when gated."""
+
+    @property
+    def protected_units(self) -> int:
+        """Units protected from removal."""
+
+    @property
+    def rate(self) -> float:
+        """The keep-ratio that was requested."""
+
+    @property
+    def gate(self) -> str | None:
+        """Why the input was returned verbatim.
+
+        ``"too_short_words"`` | ``"too_short_tokens"`` | ``"rate_one"``, or
+        ``None`` when the input was compressed.
+        """
+
+    @property
+    def budget_exceeded(self) -> bool:
+        """Protected content alone exceeded the budget, so ``rate`` was overrun."""
+
+    @property
+    def took_ms(self) -> int:
+        """Wall time in milliseconds, excluding a cold model load."""
+
+class CompressedPrompt:
+    """A compressed prompt plus the evidence for every decision made."""
+
+    @property
+    def text(self) -> str:
+        """The compressed text, built from slices of the input."""
+
+    @property
+    def kept(self) -> list[WordScore]:
+        """Units that survived. Empty when ``explain`` is off."""
+
+    @property
+    def dropped(self) -> list[WordScore]:
+        """Units removed, with the scores that removed them.
+
+        Empty when ``explain`` is off.
+        """
+
+    @property
+    def stats(self) -> CompressionStats:
+        """Counts and gating for this call."""
+
+class PromptCompressor:
+    """Prompt compression over an LLMLingua-2 token classifier.
+
+    The `_`-prefixed methods release the GIL and block; the ergonomic async
+    facade is `ratel_ai.compression.ExperimentalCompression`.
+    """
+
+    def __init__(
+        self,
+        spec: str | None = None,
+        huggingface: str | None = None,
+        local: str | None = None,
+        revision: str | None = None,
+        download: bool | None = None,
+    ) -> None:
+        """Construct a compressor; an invalid model config raises ``ValueError``."""
+
+    def _preload(self) -> None:
+        """Load the weights now, releasing the GIL."""
+
+    def _compress(
+        self,
+        text: str,
+        rate: float | None = None,
+        min_words: int | None = None,
+        min_tokens: int | None = None,
+        max_chunks: int | None = None,
+        protect_literals: list[str] | None = None,
+        protect_regexes: list[str] | None = None,
+        protect_numbers: bool | None = None,
+        protect_negations: bool | None = None,
+        negation_terms: list[str] | None = None,
+        preserve_paragraphs: bool | None = None,
+        explain: bool | None = None,
+    ) -> CompressedPrompt:
+        """Compress ``text``, releasing the GIL."""
+
+    def _score(self, text: str) -> list[WordScore]:
+        """Per-unit importance with no policy applied, releasing the GIL."""
+
+class CompressorError(RuntimeError):
+    """Prompt-compression model load / inference failure."""

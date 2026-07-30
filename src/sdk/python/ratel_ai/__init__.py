@@ -42,7 +42,21 @@ from .catalog import (
 # Deprecated pre-0.2.0 surface (see compat.py) — kept so `ratel-ai==0.1.x`
 # callers keep working after upgrading to 0.2.0. Slated for removal (RAT-250).
 from .compat import SEARCH_TOOLS_ID, search_tools_tool
-from .exceptions import DimensionMismatchError, EmbedderError
+
+# Experimental prompt compression (ADR-0016). Orthogonal to the catalogs: it
+# compresses prose the caller carries, and loads nothing unless invoked.
+from .compression import (
+    CompressedPrompt,
+    CompressionGate,
+    CompressionModelSpec,
+    CompressionOptions,
+    CompressionStats,
+    ExperimentalCompression,
+    HuggingFaceCompressionConfig,
+    LocalCompressionConfig,
+    WordScore,
+)
+from .exceptions import CompressorError, DimensionMismatchError, EmbedderError
 from .mcp import McpServerHandle, McpToolsListError, register_mcp_server
 from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
@@ -55,6 +69,16 @@ from .telemetry import configure_telemetry
 
 __all__ = [
     "AdaptiveRankingStatus",
+    "CompressedPrompt",
+    "CompressionGate",
+    "CompressionModelSpec",
+    "CompressionOptions",
+    "CompressionStats",
+    "CompressorError",
+    "ExperimentalCompression",
+    "HuggingFaceCompressionConfig",
+    "LocalCompressionConfig",
+    "WordScore",
     "IntentGraph",
     "GET_SKILL_CONTENT_ID",
     "INVOKE_TOOL_ID",

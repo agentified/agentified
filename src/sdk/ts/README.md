@@ -101,6 +101,28 @@ const [hit] = catalog.search("What is the weather in Rome?", 1);
 console.log(await catalog.invoke(hit.toolId, { city: "Rome" }));
 ```
 
+## Experimental: prompt compression
+
+`ExperimentalCompression` compresses prose you carry into the context — transcripts, retrieved passages, documents — with an LLMLingua-2 token classifier plus a policy layer that keeps the loss visible. It is orthogonal to the catalogs: nothing loads unless you construct one and call it.
+
+```ts
+import { ExperimentalCompression } from "@ratel-ai/sdk";
+
+const compressor = new ExperimentalCompression();
+await compressor.preload(); // ~700 MB, once, not inside a request
+
+const result = await compressor.compress(transcript, { rate: 0.4 });
+console.log(result.text);
+console.log(result.stats.modelTokensIn, "->", result.stats.modelTokensOut);
+for (const unit of result.dropped.slice(0, 5)) {
+  console.log("dropped", unit.text, unit.importance);
+}
+```
+
+Compress the **context**; leave your instructions and the user's question verbatim. A prompt too short to compress comes back untouched with `stats.gate` naming the rule that fired.
+
+It is not cheap: ~2 seconds for a 623-token document on a laptop CPU. Compression is lossy — `kept`/`dropped` scores and the gate make the loss steerable, not safe, so evaluate it on your own data. The API may change while it carries the `Experimental` marker. See [ADR-0016](../../../docs/adr/0016-experimental-prompt-compression.md).
+
 ## Framework adapters
 
 To work in a host framework's native tool and message shapes, adapt the core with a

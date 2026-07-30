@@ -86,6 +86,28 @@ async def main():
 asyncio.run(main())
 ```
 
+## Experimental: prompt compression
+
+`ExperimentalCompression` compresses prose you carry into the context — transcripts, retrieved passages, documents — with an LLMLingua-2 token classifier plus a policy layer that keeps the loss visible. It is orthogonal to the catalogs: nothing loads unless you construct one and call it.
+
+```python
+from ratel_ai import ExperimentalCompression
+
+compressor = ExperimentalCompression()
+await compressor.preload()  # ~700 MB, once, not inside a request
+
+result = await compressor.compress(transcript, rate=0.4)
+print(result.text)
+print(result.stats.model_tokens_in, "->", result.stats.model_tokens_out)
+for unit in result.dropped[:5]:
+    print("dropped", unit.text, unit.importance)
+```
+
+Compress the **context**; leave your instructions and the user's question verbatim. A prompt too short to compress comes back untouched with `stats.gate` naming the rule that fired.
+
+It is not cheap: ~2 seconds for a 623-token document on a laptop CPU. Compression is lossy — `kept`/`dropped` scores and the gate make the loss steerable, not safe, so evaluate it on your own data. The API may change while it carries the `Experimental` marker. See [ADR-0016](../../../docs/adr/0016-experimental-prompt-compression.md).
+
+
 Continue with the [Python guide](https://docs.ratel.sh/docs/sdks/python), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-python), or the [Pydantic AI example](https://github.com/ratel-ai/ratel/tree/main/examples/pydantic-ai).
 
 Telemetry export is optional. With the `otlp` extra installed, `configure_telemetry()` reads `RATEL_OTLP_ENDPOINT` (falling back to the superseded `RATEL_URL`, which warns) and `RATEL_API_KEY`, wires trace and Logs exporters, and returns a shutdown handle. It exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default — `export_all_spans=True` widens spans only. Message/tool content stays off by default; opt in with `capture_content`/`include_span_and_events` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Hosts that already own OpenTelemetry providers add both `ratel_span_processor` and `ratel_log_record_processor` instead.

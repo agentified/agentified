@@ -1,0 +1,12 @@
+[project]
+name = "ratel-example-compression"
+version = "0.0.0"
+description = "Ratel experimental prompt compression — compress the context, keep the scaffolding"
+requires-python = ">=3.10"
+dependencies = [
+    "ratel-ai",
+]
+
+[tool.uv.sources]
+# Use the local SDK from this monorepo rather than PyPI.
+ratel-ai = { path = "../../src/sdk/python" }
