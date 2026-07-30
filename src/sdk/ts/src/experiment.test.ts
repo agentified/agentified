@@ -86,6 +86,65 @@ describe("experimentalDefineExperiment", () => {
     expect(selection.result.ids).toEqual(["ratel"]);
   });
 
+  it("splits many units in proportion to the configured weights", async () => {
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        control: { select: async () => ({ ids: ["control"] }) },
+        candidate: { select: async () => ({ ids: ["candidate"] }) },
+      },
+      split: [
+        { arm: "control", weight: 9 },
+        { arm: "candidate", weight: 1 },
+      ],
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { references: ["peer-selection"] },
+    });
+
+    const counts = { control: 0, candidate: 0 };
+    const units = 3000;
+    for (let i = 0; i < units; i += 1) {
+      const selection = await experiment.select(
+        { query: "build failure" },
+        { unitId: `unit-${i}` },
+      );
+      counts[selection.assignedArm] += 1;
+    }
+
+    // The hashed split must actually route both arms in ~90/10; a hardcoded
+    // bucket or a broken modulus collapses every unit onto one arm.
+    expect(counts.control).toBeGreaterThan(0);
+    expect(counts.candidate).toBeGreaterThan(0);
+    expect(counts.control / units).toBeCloseTo(0.9, 1);
+  });
+
+  it("assigns each unit the same arm across repeated selects", async () => {
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        control: { select: async () => ({ ids: ["control"] }) },
+        candidate: { select: async () => ({ ids: ["candidate"] }) },
+      },
+      split: [
+        { arm: "control", weight: 1 },
+        { arm: "candidate", weight: 1 },
+      ],
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { references: ["peer-selection"] },
+    });
+
+    const arms = new Set<string>();
+    for (let i = 0; i < 50; i += 1) {
+      const unitId = `unit-${i}`;
+      const first = await experiment.select({ query: "build failure" }, { unitId });
+      const second = await experiment.select({ query: "build failure" }, { unitId });
+      expect(second.assignedArm).toBe(first.assignedArm);
+      arms.add(first.assignedArm);
+    }
+    // A stable assignment is not a constant one: an even split reaches both arms.
+    expect(arms).toEqual(new Set(["control", "candidate"]));
+  });
+
   it("lets an explicit zero-weight arm override the configured split", async () => {
     const candidate = vi.fn(async () => ({ ids: ["candidate"] }));
     const experiment = experimentalDefineExperiment({
@@ -384,6 +443,40 @@ describe("experimentalDefineExperiment", () => {
     expect(selection.assignedArm).toBe("candidate");
     expect(selection.effectiveArm).toBe("legacy");
     expect(legacy).toHaveBeenCalledWith(expect.anything(), { role: "serving" });
+  });
+
+  it("propagates a serving transform failure instead of consuming the fallback arm", async () => {
+    const transformError = new Error("transform redaction failed");
+    const candidate = vi.fn(async () => ({ ids: ["candidate"] }));
+    const legacy = vi.fn(async () => ({ ids: ["legacy"] }));
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        candidate: { select: candidate },
+        legacy: { select: legacy },
+      },
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { references: ["peer-selection"] },
+      fallbackArm: "legacy",
+    });
+
+    await expect(
+      experiment.select(
+        { query: "build failure" },
+        {
+          arm: "candidate",
+          unitId: "unit-a",
+          transform: () => {
+            throw transformError;
+          },
+        },
+      ),
+    ).rejects.toBe(transformError);
+
+    // ADR-0016 privacy contract: a serving transform failure reaches the caller.
+    // Falling back would serve an arm result the transform never got to redact.
+    expect(candidate).toHaveBeenCalledOnce();
+    expect(legacy).not.toHaveBeenCalled();
   });
 
   it("falls back when a rejection has a throwing name accessor", async () => {
