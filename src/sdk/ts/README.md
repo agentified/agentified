@@ -129,10 +129,13 @@ the canonical `search_capabilities` result.
 
 `ratel(config)` owns one `ToolCatalog` + `SkillCatalog` + recall-id counter and every
 framework-independent guard (reserved capability-tool ids, top-K clamp, first-registration-wins
-on the adapted path, passthrough of provider-run tools); an adapter is just three codecs
-(`ingest` / `expose` / `recallMessages`) plus its framework idioms. `adaptTo` infers the
-framework's tool and message types, so app code needs no casts. A framework tool registered on
-the un-adapted core throws an error pointing at the adapter package to install. See ADR-0013.
+on the adapted path, passthrough of provider-run tools); an adapter has three required codecs
+(`ingest` / `expose` / `recallMessages`), an optional `experimentalExposePassthrough` hook, plus
+its framework idioms. The experimental hook receives a core-owned invocation wrapper, so a
+framework can preserve native tool semantics while client-side passthrough execution still enters
+the standard OTel/local trace funnel. `adaptTo` infers the framework's tool and message types, so
+app code needs no casts. A framework tool registered on the un-adapted core throws an error
+pointing at the adapter package to install. See ADR-0013.
 
 Continue with the [TypeScript guide](https://docs.ratel.sh/docs/sdks/typescript), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-typescript), or the [Vercel AI SDK example](https://github.com/ratel-ai/ratel/tree/main/examples/ai-sdk).
 

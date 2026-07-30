@@ -541,41 +541,57 @@ export class ToolCatalog {
     if (!fn) {
       throw new Error(`unknown toolId: ${toolId}`);
     }
-    // The `execute_tool` OTel span wraps the local trace stream; both record the
-    // same invocation, on their two independent channels (ADR-0007).
-    return traceExecuteTool(toolId, input, () => {
-      this.registry.recordEvent({
-        type: "invoke_start",
-        tool_id: toolId,
-        args_size_bytes: argsSizeBytes(input),
-      });
-      const started = Date.now();
-
-      const succeed = (_result: unknown): void => {
-        this.registry.recordEvent({
-          type: "invoke_end",
-          tool_id: toolId,
-          took_ms: Date.now() - started,
-        });
-      };
-      const reject = (err: unknown): void => {
-        this.registry.recordEvent({
-          type: "invoke_error",
-          tool_id: toolId,
-          took_ms: Date.now() - started,
-          error: errorMessage(err),
-        });
-      };
-
-      try {
-        const result = context === undefined ? fn(input) : fn(input, context);
-        return observeInvocationResult(result, succeed, reject);
-      } catch (err) {
-        reject(err);
-        throw err;
-      }
-    });
+    return runToolInvocation(this, toolId, input, () =>
+      context === undefined ? fn(input) : fn(input, context),
+    );
   }
+}
+
+/**
+ * Run framework-owned tool work through the same OTel and local trace funnel as
+ * a catalog invocation while preserving its immediate return shape.
+ *
+ * @internal Framework adapter exposure only.
+ */
+export function runToolInvocation<T>(
+  catalog: ToolCatalog,
+  toolId: string,
+  input: unknown,
+  run: () => T,
+): T {
+  // The `execute_tool` OTel span wraps the local trace stream; both record the
+  // same invocation, on their two independent channels (ADR-0007).
+  return traceExecuteTool(toolId, input, () => {
+    catalog.recordEvent({
+      type: "invoke_start",
+      tool_id: toolId,
+      args_size_bytes: argsSizeBytes(input),
+    });
+    const started = Date.now();
+
+    const succeed = (_result: unknown): void => {
+      catalog.recordEvent({
+        type: "invoke_end",
+        tool_id: toolId,
+        took_ms: Date.now() - started,
+      });
+    };
+    const reject = (err: unknown): void => {
+      catalog.recordEvent({
+        type: "invoke_error",
+        tool_id: toolId,
+        took_ms: Date.now() - started,
+        error: errorMessage(err),
+      });
+    };
+
+    try {
+      return observeInvocationResult(run(), succeed, reject) as T;
+    } catch (err) {
+      reject(err);
+      throw err;
+    }
+  });
 }
 
 /** Unwrap a (possibly async) validation result and continue with its value, or throw its error. */

@@ -14,6 +14,7 @@ import {
   type EmbeddingSpec,
   type ExecutableTool,
   type InputValidator,
+  runToolInvocation,
   type SearchMethod,
   ToolCatalog,
   type TraceSinkConfig,
@@ -96,11 +97,24 @@ export interface RecallRef {
 }
 
 /**
+ * Core-owned invocation funnel supplied when an adapter exposes a passthrough.
+ * Wrappers retain the framework tool's native execution contract while the SDK
+ * records the same OTel span and local trace events as a catalog invocation.
+ */
+export interface ExperimentalPassthroughToolExposure {
+  /** Id used by `execute_tool` telemetry and local invocation events. */
+  readonly id: string;
+  /** Run one native execution without changing its scalar/promise/stream shape. */
+  invoke<Result>(input: unknown, execute: () => Result): Result;
+}
+
+/**
  * The framework boundary: one complementary package per framework implements
  * this so Ratel speaks that framework's native tool and message shapes. The
- * three codecs (`ingest` / `expose` / `recallMessages`) are the whole contract;
- * `extend` adds framework idioms. The core owns all state and guards, so an
- * adapter is ~three pure functions.
+ * three codecs (`ingest` / `expose` / `recallMessages`) are the required
+ * contract; `experimentalExposePassthrough` can instrument client-executed
+ * native tools and `extend` adds framework idioms. The core owns all state and
+ * guards.
  *
  * @typeParam TTool - The framework's tool type (e.g. AI SDK `Tool`).
  * @typeParam TMessage - The framework's message type (e.g. AI SDK `ModelMessage`).
@@ -123,6 +137,11 @@ export interface RatelAdapter<
    * framework's complete live execution context in a private, stable tag before
    * passing it as the capability executor's optional second argument. */
   expose(tool: ExecutableTool): TTool;
+  /**
+   * Optionally wrap a framework-native passthrough each time {@link AdaptedBase.modelTools}
+   * exposes it. Return `tool` unchanged when it has no client-side executor.
+   */
+  experimentalExposePassthrough?(tool: TTool, exposure: ExperimentalPassthroughToolExposure): TTool;
   /** Synthetic recall pair in the framework's message shape. */
   recallMessages(ref: RecallRef, recall: SearchCapabilitiesResult): TMessage[];
   /** Framework-idiomatic helpers, merged onto the adapted object. */
@@ -564,7 +583,14 @@ export function ratel(config: RatelConfig = {}): Ratel {
       ground,
       groundSnapshot,
       modelTools() {
-        const out: Record<string, unknown> = Object.fromEntries(passthrough);
+        const out: Record<string, unknown> = {};
+        for (const [id, tool] of passthrough) {
+          out[id] =
+            adapter.experimentalExposePassthrough?.(tool, {
+              id,
+              invoke: (input, execute) => runToolInvocation(catalog, id, input, execute),
+            }) ?? tool;
+        }
         for (const [id, tool] of Object.entries(modelTools())) {
           out[id] = adapter.expose(tool);
         }

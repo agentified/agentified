@@ -13,6 +13,8 @@ first phase lands in `@ratel-ai/sdk`.
 
 Amended 2026-07-26 to record the subpath-entrypoint + optional-peer rule for adapter
 capabilities whose dependency the host base can't take (see Consequences).
+Amended 2026-07-30 to add optional passthrough exposure wrapping for core-owned
+invocation instrumentation.
 
 ## Context
 
@@ -37,7 +39,8 @@ into.
 **A `RatelAdapter` SPI plus a `ratel(config)` factory. The core is a standalone,
 framework-free object — a collection handle per catalog, an explicit `modelTools()`, a pure
 `recall()` — and `adaptTo(aiSdk())` layers a framework-shaped view over the same state. An
-adapter is three pure codecs; the core owns all state and every framework-independent guard.**
+adapter has three required codecs plus optional extension hooks; the core owns all state and
+every framework-independent guard.**
 
 - **Registration and exposure are separate acts.** `r.tools` is a handle over the core's one
   `ToolCatalog` (mongo `db.collection` style): registration is callable at any time, including
@@ -69,11 +72,16 @@ adapter is three pure codecs; the core owns all state and every framework-indepe
   with a pointer to `searchAsync`, rather than leaking the native migration error), and
   `searchAsync(...)` ranks any method off the event loop.
 
-- **The seam is three codecs + one extension hook.** `ingest(id, tool)` maps a framework tool to
+- **The seam is three required codecs + two optional hooks.** `ingest(id, tool)` maps a framework tool to
   a `CatalogRegistration` (or `"passthrough"` for provider-executed tools that must stay eagerly
   exposed; passthroughs are framework-shaped, so they live per view); `expose(tool)` wraps a
   Ratel `ExecutableTool` into a framework tool; `recallMessages(ref, recall)` renders the
-  synthetic `search_capabilities` pair in the framework's message shape. `extend(base)` adds
+  synthetic `search_capabilities` pair in the framework's message shape.
+  `experimentalExposePassthrough(tool, exposure)` optionally wraps a passthrough at each
+  `modelTools()` snapshot; the core-supplied `exposure.invoke` preserves the native
+  scalar/promise/stream return shape while recording the same OTel span and local trace events as
+  a catalog invocation. The experimental name keeps this new adapter capability reversible while
+  it is proven. Adapters return non-client-executable passthroughs unchanged. `extend(base)` adds
   framework idioms (the AI SDK's mutate-and-append `appendRecall`, Mastra's `recallProcessor`)
   that surface on the adapted object with full framework typing via a `TExt` generic.
 
@@ -156,10 +164,11 @@ to the executor path is the optional opaque context argument described above.
 
 ## Consequences
 
-- A framework adapter is ~three pure functions plus its idioms; correctness of the shared guards
-  and result shape is the core's job and is tested once. This is what makes community adapters
-  safe: a runner-agnostic conformance testkit (`@ratel-ai/sdk/testkit`) pins the contract, driven
-  by framework-supplied hooks and shipped with a reference adapter as the worked example.
+- A framework adapter is three required codecs, optional extension hooks, and its idioms;
+  correctness of the shared guards and result shape is the core's job and is tested once. This is
+  what makes community adapters safe: a runner-agnostic conformance testkit
+  (`@ratel-ai/sdk/testkit`) pins the required contract, driven by framework-supplied hooks and
+  shipped with a reference adapter as the worked example.
 - The first adapter (`@ratel-ai/vercel-ai-sdk`) sets the host-version compatibility policy
   adapters follow: peer on every supported host major at once (`ai@^5.0.0 || ^6.0.0 || ^7.0.0`;
   `ai@4` predates the v5 tool/message reshape and is out of scope), one shared code path
@@ -185,7 +194,10 @@ to the executor path is the optional opaque context argument described above.
   already runs.
 - Late-registered *passthroughs* are the one thing an already-exposed set can't pick up (they are
   plain framework tools, not catalog entries); surfacing them requires re-taking `modelTools()` — a
-  visible, deliberate prompt-cache bust rather than an implicit mutation.
+  visible, deliberate prompt-cache bust rather than an implicit mutation. An adapter may wrap a
+  client-executed passthrough in that fresh snapshot without mutating the registered framework
+  object; provider/host-executed passthroughs remain unchanged and outside the client invocation
+  funnel.
 - Rejected: string-keyed adapters and auto-require sugar (breaks bundlers and static typing).
   Rejected: auto-detecting the framework from inside the core (structurally unreliable under
   pnpm strict `node_modules`; an adapter declaring the framework as a peer resolves it
