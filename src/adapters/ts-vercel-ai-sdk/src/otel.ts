@@ -1,19 +1,5 @@
 import { type EnrichSpan, OpenTelemetry, type OpenTelemetryOptions } from "@ai-sdk/otel";
-import { type Attributes, context, propagation } from "@opentelemetry/api";
-import {
-  Origin,
-  RATEL_EXPERIMENT_ARM,
-  RATEL_EXPERIMENT_ARM_BAGGAGE_KEY,
-  RATEL_EXPERIMENT_ID,
-  RATEL_EXPERIMENT_ID_BAGGAGE_KEY,
-  RATEL_EXPERIMENT_ROLE,
-  RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY,
-  RATEL_EXPERIMENT_SELECTION_ID,
-  RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY,
-  RATEL_EXPERIMENT_UNIT,
-  RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY,
-  RATEL_ORIGIN,
-} from "@ratel-ai/telemetry";
+import { Origin, RATEL_ORIGIN } from "@ratel-ai/telemetry";
 
 /**
  * Re-exported so `origin` is spellable without depending on `@ratel-ai/telemetry`
@@ -25,8 +11,7 @@ export { Origin };
 
 /**
  * {@link RatelOtelIntegration} options: every `@ai-sdk/otel` knob, plus the
- * `ratel.origin` the overlay stamps. An active retrieval experiment contributes
- * its five controlled join fields from OTel baggage automatically.
+ * `ratel.origin` the overlay stamps.
  *
  * `enrichSpan` is composed with, not taken over. Owning it outright would cost
  * a host every attribute its own hook adds, silently and unrecoverably — the
@@ -74,18 +59,9 @@ type EmittingTelemetry = Pick<
   | "onError"
 >;
 
-const EXPERIMENT_JOIN_FIELDS = [
-  [RATEL_EXPERIMENT_ID_BAGGAGE_KEY, RATEL_EXPERIMENT_ID],
-  [RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY, RATEL_EXPERIMENT_SELECTION_ID],
-  [RATEL_EXPERIMENT_ARM_BAGGAGE_KEY, RATEL_EXPERIMENT_ARM],
-  [RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY, RATEL_EXPERIMENT_ROLE],
-  [RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY, RATEL_EXPERIMENT_UNIT],
-] as const;
-
 /**
  * An `ai@7` telemetry integration that emits the AI SDK's standard `gen_ai.*`
- * spans and adds Ratel's `ratel.*` overlay: `ratel.origin`, plus the active
- * retrieval experiment's id, selection id, arm, role, and unit hash.
+ * spans and adds Ratel's `ratel.*` overlay.
  *
  * It **creates** spans onto whatever OTel provider the host has registered; it
  * never registers a provider and never exports. Delivery is the host's: every
@@ -113,8 +89,6 @@ const EXPERIMENT_JOIN_FIELDS = [
  * integration's embedded emitter creates (scope `gen_ai`). The SDK's own
  * `ratel.*` and `execute_tool <tool>` spans come from a different tracer and are
  * never enriched here, `gen_ai.*` attributes on them notwithstanding.
- * Experiment baggage propagates only when the host registers a ContextManager
- * and starts AI SDK work inside the experiment arm callback.
  *
  * **Register exactly one emitting integration.** This one, Langfuse's, and the
  * bare `OpenTelemetry` from `@ai-sdk/otel` all embed the same emitter, so
@@ -134,13 +108,9 @@ export class RatelOtelIntegration implements EmittingTelemetry {
   constructor({ origin = Origin.Agent, enrichSpan, ...options }: RatelOtelIntegrationOptions = {}) {
     this.#emitter = new OpenTelemetry({
       ...options,
-      // Ratel's keys land last, so a host hook cannot counterfeit controlled
-      // origin or experiment vocabulary.
-      enrichSpan: (event) => ({
-        ...hostAttributes(enrichSpan, event),
-        ...activeExperimentJoin(),
-        [RATEL_ORIGIN]: origin,
-      }),
+      // Ratel's keys land last: `ratel.origin` is Ratel vocabulary, so a host
+      // hook that writes it too must not decide what the overlay reports.
+      enrichSpan: (event) => ({ ...hostAttributes(enrichSpan, event), [RATEL_ORIGIN]: origin }),
     });
   }
 
@@ -255,20 +225,4 @@ function hostAttributes(enrichSpan: EnrichSpan | undefined, event: Parameters<En
   } catch {
     return undefined;
   }
-}
-
-/** Controlled experiment baggage copied onto descendant AI SDK spans for exact joins. */
-function activeExperimentJoin(): Attributes | undefined {
-  const baggage = propagation.getBaggage(context.active());
-  if (baggage === undefined) {
-    return undefined;
-  }
-  const attributes: Attributes = {};
-  for (const [baggageKey, attributeKey] of EXPERIMENT_JOIN_FIELDS) {
-    const entry = baggage.getEntry(baggageKey);
-    if (entry !== undefined) {
-      attributes[attributeKey] = entry.value;
-    }
-  }
-  return attributes;
 }

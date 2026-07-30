@@ -73,58 +73,19 @@ What is specific to Mastra is that the two streams do **not** share a pipeline. 
 tracing is a private one: it never registers a global provider — so there is no fight with the
 host's `NodeSDK` — but its spans never pass through the host's span processors either, leaving
 over its exporter's own socket instead. Two parallel egress paths, and no shared trace ids unless
-Mastra's own OTel bridge joins the trees. An un-instrumented Mastra emits no private spans, so
-until its side is configured, Ratel's spans are all a host gets.
+Mastra's own OTel bridge joins the trees. How to wire any of that is Mastra's documentation to
+give, not this adapter's; the one thing worth saying here is that nothing is ambient — an
+un-instrumented Mastra emits nothing to OpenTelemetry, so until its side is wired up, Ratel's
+spans are all a host gets.
 
-The opt-in `@ratel-ai/mastra/observability` entrypoint adds experiment joins to that private
-stream:
-
-```bash
-pnpm add @mastra/observability @opentelemetry/api @opentelemetry/context-async-hooks
-```
-
-```ts
-import { Mastra } from "@mastra/core/mastra";
-import { Observability } from "@mastra/observability";
-import { context } from "@opentelemetry/api";
-import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
-import { experimentalRatelSpanOutputProcessor } from "@ratel-ai/mastra/observability";
-
-// Required even when no exporter is configured: baggage propagation depends on it.
-context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
-
-const observability = new Observability({
-  configs: {
-    default: {
-      serviceName: "my-agent",
-      exporters: [/* the host's Mastra exporters */],
-      spanOutputProcessors: [experimentalRatelSpanOutputProcessor()],
-    },
-  },
-});
-
-export const mastra = new Mastra({ observability });
-```
-
-Add the processor to every Mastra observability config that should carry experiment joins. It
-captures the active arm on a span's first processor pass and copies the five controlled
-`ratel.experiment.*` fields (`id`, `selection_id`, `arm`, `role`, `unit`) onto that span. Baggage
-values win collisions; unrelated Mastra attributes remain. Put it after any custom processor
-that rewrites those keys. Mastra sampling and internal/excluded-span filters still decide which
-spans reach processors.
-
-The Mastra operation must **start inside the experiment arm callback**. Calling
-`agent.generate()` after `experiment.select()` returns is too late: the arm context has ended.
-Without a Mastra OTel bridge, the SDK and Mastra streams keep separate trace ids; join them by the
-five experiment attributes. The processor neither installs a bridge nor changes exporters.
-Executable Mastra tools already traverse Ratel's invocation funnel through `invoke_tool`.
-Provider/client tools with no `execute` remain outside that SDK funnel, although any private
-Mastra span they produce can still receive the experiment join.
+Ratel adds nothing to Mastra's stream today. There is no `./otel` entrypoint on this package —
+the `ai@7` integration is specific to the Vercel AI SDK — and no `ratel.*` overlay lands on
+Mastra's spans; Mastra's `spanOutputProcessors` seam is where a processor would stamp one.
 
 ## Package shape
 
 - Package name: `@ratel-ai/mastra`
-- Pure TypeScript. The root adapter remains glue over host peers: `@mastra/core@>=1.11.0 <2`, `zod@^3.25.0 || ^4.0.0` (matching Mastra's own zod peer), and `@ratel-ai/sdk`. The package carries only the OTel-free `@ratel-ai/telemetry` vocabulary; the opt-in `./observability` entrypoint additionally peers optionally on `@opentelemetry/api`.
+- Pure TypeScript, **zero runtime dependencies** — the adapter is glue. `@mastra/core@>=1.11.0 <2`, `zod@^3.25.0 || ^4.0.0` (matching Mastra's own zod peer), and `@ratel-ai/sdk` are peers the host already installs.
 - Live context forwarding spans this adapter and `@ratel-ai/sdk`; upgrade their RCs together. An older SDK silently drops the adapter's opaque context before catalog execution.
 - Requires Node.js 22.13 or newer, matching Mastra's own requirement.
 - MIT ([ADR-0009](../../../docs/adr/0009-licensing.md)); member of the pnpm workspace; `publishConfig` provenance on.
@@ -133,7 +94,7 @@ Mastra span they produce can still receive the experiment join.
 
 The supported range is `@mastra/core@>=1.11.0 <2`. Version 1.11 is the floor because it is the first 1.x release where `createTool()` normalizes zod and raw JSON schemas to the Standard Schema surface that `ingest` reads.
 
-There is no runtime version detection. The adapter stays on the common public tool, message, processor, `SpanOutputProcessor`, and `ToolExecutionContext` shapes and owns small compatibility details locally: the direct-call no-op observer fallback, structural validation-error check, and structural span-output processor type. The latter avoids importing `@mastra/core/observability`, a subpath that Mastra 1.11 did not export even though the processor contract already existed. This also avoids imports that Mastra only exported later (`isValidationError` in 1.18 and `noopObserve` in 1.37) while preserving their behavior. CI runs the adapter build, suite, and type tests against exact 1.11.0, 1.31.0, and 1.51.0; the worked Mastra example also drives a real 1.51 Agent loop.
+There is no runtime version detection. The adapter stays on the common public tool, message, processor, and `ToolExecutionContext` shapes and owns two tiny compatibility details locally: the direct-call no-op observer fallback and the structural validation-error check. This avoids imports that Mastra only exported later (`isValidationError` in 1.18 and `noopObserve` in 1.37) while preserving their behavior. CI runs the adapter build, suite, and type tests against exact 1.11.0, 1.31.0, and 1.51.0; the worked Mastra example also drives a real 1.51 Agent loop.
 
 ## Build & test
 
@@ -146,4 +107,4 @@ pnpm --filter @ratel-ai/mastra lint
 pnpm --filter @ratel-ai/mastra test
 ```
 
-The suite covers the three codecs, the recall processor (including id economy on the no-op paths), experiment joins through a real SDK arm context, a mock-model integration test that drives the real Mastra `Agent` loop, a compile-only type-test locking the supported `@mastra/core` surface, and the `@ratel-ai/sdk/testkit` conformance battery (22 cases, 0 skipped). CI repeats it against the minimum Mastra release.
+The suite covers the three codecs, the recall processor (including id economy on the no-op paths), a mock-model integration test that drives the real Mastra `Agent` loop, a compile-only type-test locking the supported `@mastra/core` surface, and the `@ratel-ai/sdk/testkit` conformance battery (22 cases, 0 skipped). CI repeats it against the minimum Mastra release.

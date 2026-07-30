@@ -2,19 +2,9 @@
 // surface, so a drift in Mastra's types fails `tsc -p tsconfig.type-tests.json`
 // rather than at a host's call site.
 import { Agent, type ToolsInput } from "@mastra/core/agent";
-import type { Config } from "@mastra/core/mastra";
 import type { InputProcessor, Processor } from "@mastra/core/processors";
 import { ratel } from "@ratel-ai/sdk";
 import { mastra } from "./mastra.js";
-import { experimentalRatelSpanOutputProcessor } from "./observability.js";
-
-type MastraObservability = NonNullable<Config["observability"]>;
-type MastraObservabilityInstance = NonNullable<
-  ReturnType<MastraObservability["getDefaultInstance"]>
->;
-type MastraSpanOutputProcessor = ReturnType<
-  MastraObservabilityInstance["getSpanOutputProcessors"]
->[number];
 
 const view = ratel().adaptTo(mastra());
 
@@ -25,8 +15,6 @@ const tools: ToolsInput = view.modelTools();
 // `InputProcessor` (id + processInput), so it drops into `inputProcessors`.
 const processor: Processor = view.recallProcessor();
 const inputProcessor: InputProcessor = view.recallProcessor();
-const spanOutputProcessor: MastraSpanOutputProcessor = experimentalRatelSpanOutputProcessor();
-const absentSpan = experimentalRatelSpanOutputProcessor().process();
 
 // Both slot into a real Agent construction with no cast.
 const agent = new Agent({
@@ -41,6 +29,4 @@ const agent = new Agent({
 void tools;
 void processor;
 void inputProcessor;
-void spanOutputProcessor;
-void absentSpan;
 void agent;

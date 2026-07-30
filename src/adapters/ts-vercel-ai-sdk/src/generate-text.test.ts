@@ -99,10 +99,7 @@ describe("AI SDK loop integration", () => {
       prompt: "read the tenant",
     });
 
-    expect(tools.tenant_probe).not.toBe(tenantProbe);
-    expect((tools.tenant_probe as typeof tenantProbe).contextSchema).toBe(
-      tenantProbe.contextSchema,
-    );
+    expect(tools.tenant_probe).toBe(tenantProbe);
     expect(receivedContext).toEqual({ tenantId: "ACME" });
   });
 
@@ -147,8 +144,7 @@ describe("AI SDK loop integration", () => {
     ).responseMessages;
     const toolMessage = responseMessages.find((message) => message.role === "tool");
 
-    expect(tools.render_status).not.toBe(rendered);
-    expect((tools.render_status as typeof rendered).toModelOutput).toBe(rendered.toModelOutput);
+    expect(tools.render_status).toBe(rendered);
     expect(toolMessage?.content[0]?.output).toEqual({
       type: "text",
       value: "STATUS:ready",

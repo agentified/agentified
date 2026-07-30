@@ -10,17 +10,8 @@ import {
   type SpanExporter,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { experimentalDefineExperiment, ratel } from "@ratel-ai/sdk";
-import {
-  EXECUTE_TOOL,
-  RATEL_EXPERIMENT_ARM,
-  RATEL_EXPERIMENT_ID,
-  RATEL_EXPERIMENT_ROLE,
-  RATEL_EXPERIMENT_SELECTION_ID,
-  RATEL_EXPERIMENT_UNIT,
-  RATEL_ORIGIN,
-  RATEL_SEARCH,
-} from "@ratel-ai/telemetry";
+import { ratel } from "@ratel-ai/sdk";
+import { EXECUTE_TOOL, RATEL_ORIGIN, RATEL_SEARCH } from "@ratel-ai/telemetry";
 import * as ai from "ai";
 import { generateText, type LanguageModel, tool } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -242,27 +233,6 @@ async function driveMixedWorkInHostSpan(): Promise<void> {
   });
 }
 
-async function driveExperimentWork(): Promise<string> {
-  const experiment = experimentalDefineExperiment({
-    id: "retrieval-v2",
-    arms: {
-      hybrid: {
-        select: async () => {
-          await driveMixedWork();
-          return { ids: ["deploy_app"] };
-        },
-      },
-    },
-    ranking: (result) => result.ids.map((id) => ({ id })),
-    evaluation: { references: ["peer-selection"] },
-  });
-  const selection = await experiment.select(
-    { query: "deploy to production" },
-    { arm: "hybrid", unitId: "unit-a" },
-  );
-  return selection.selectionId;
-}
-
 describe("telemetry coexistence", () => {
   it("fans the SDK's own spans to every processor on the host's provider", async () => {
     const langfuse = langfuseDestination(ACCEPT_ALL);
@@ -320,33 +290,6 @@ describe("telemetry coexistence", () => {
     // `ratel.` name prefix also catches `execute_tool`, whose name carries no
     // hint of who emitted it.
     expect(langfuse.names()).toEqual([`${EXECUTE_TOOL} deploy_app`, RATEL_SEARCH]);
-  });
-
-  it("funnels a client-executed passthrough through the SDK tool span", async () => {
-    const generic = inMemoryDestination();
-    hostProvider(generic);
-    const view = ratel({ trace: { kind: "memory", sessionId: "passthrough" } }).adaptTo(aiSdk());
-    await view.tools.register({
-      shell: {
-        type: "provider",
-        id: "acme.shell",
-        args: {},
-        isProviderExecuted: false,
-        inputSchema: { type: "object" },
-        execute: (input: unknown) => ({ input, ran: true }),
-      } as unknown as Tool,
-    });
-    const exposed = view.modelTools().shell;
-    const run = exposed.execute as (input: unknown, options: unknown) => unknown;
-
-    const result = run({ command: "pwd" }, { toolCallId: "shell-0", messages: [] });
-    await provider?.forceFlush();
-
-    expect(result).toEqual({ input: { command: "pwd" }, ran: true });
-    expect(scopedNames(generic.spans(), SDK_SCOPE)).toContain(`${EXECUTE_TOOL} shell`);
-    expect(
-      (view.tools.catalog.drainTraceEvents() as Array<{ type: string }>).map((event) => event.type),
-    ).toEqual(["invoke_start", "invoke_end"]);
   });
 });
 
@@ -408,34 +351,6 @@ describe.skipIf(aiSdkMajor < 7)("telemetry coexistence with the AI SDK integrati
       for (const span of emitted) {
         expect(span.attributes[RATEL_ORIGIN]).toBe("agent");
         expect(span.attributes["deployment.environment"]).toBe("staging");
-      }
-    }
-    expect(scopedNames(generic.spans(), AI_SDK_SCOPE)).toEqual(
-      scopedNames(langfuse.spans(), AI_SDK_SCOPE),
-    );
-  });
-
-  it("carries a real experiment join to every destination", async () => {
-    const langfuse = langfuseDestination(ACCEPT_ALL);
-    const generic = inMemoryDestination();
-    hostProvider(langfuse, generic);
-    registerTelemetry?.(new RatelOtelIntegration());
-
-    const selectionId = await driveExperimentWork();
-    await provider?.forceFlush();
-
-    const expectedJoin = {
-      [RATEL_EXPERIMENT_ID]: "retrieval-v2",
-      [RATEL_EXPERIMENT_SELECTION_ID]: selectionId,
-      [RATEL_EXPERIMENT_ARM]: "hybrid",
-      [RATEL_EXPERIMENT_ROLE]: "serving",
-      [RATEL_EXPERIMENT_UNIT]: "d7bce2267437426d",
-    };
-    for (const seen of [generic.spans(), langfuse.spans()]) {
-      const emitted = fromScope(seen, AI_SDK_SCOPE);
-      expect(emitted.length).toBeGreaterThan(0);
-      for (const span of emitted) {
-        expect(span.attributes).toMatchObject(expectedJoin);
       }
     }
     expect(scopedNames(generic.spans(), AI_SDK_SCOPE)).toEqual(
