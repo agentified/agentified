@@ -94,6 +94,7 @@ export type {
 // content plus the content-presence re-injection gate. Namespaced so dependence
 // on this unstable surface is explicit: `experimental.FactCatalog`.
 export * as experimental from "./experimental.js";
+export { experimentalDefineExperiment } from "./experiment.js";
 export type {
   Experiment,
   ExperimentArmOutcome,
@@ -105,8 +106,7 @@ export type {
   ExperimentSelection,
   ExperimentSelectOptions,
   ExperimentSplit,
-} from "./experiment.js";
-export { experimentalDefineExperiment } from "./experiment.js";
+} from "./experiment-types.js";
 export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
 export { McpToolsListError, registerMcpServer } from "./mcp.js";
 // The framework-adapter SPI and factory (ADR-0013): `ratel(config).adaptTo(adapter)`.
