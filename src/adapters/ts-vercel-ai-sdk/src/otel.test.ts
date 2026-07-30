@@ -1,5 +1,5 @@
 import { OpenTelemetry } from "@ai-sdk/otel";
-import { context, trace } from "@opentelemetry/api";
+import { context, propagation, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
   BasicTracerProvider,
@@ -7,7 +7,20 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { Origin, RATEL_ORIGIN } from "@ratel-ai/telemetry";
+import {
+  Origin,
+  RATEL_EXPERIMENT_ARM,
+  RATEL_EXPERIMENT_ARM_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_ID,
+  RATEL_EXPERIMENT_ID_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_ROLE,
+  RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_SELECTION_ID,
+  RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY,
+  RATEL_EXPERIMENT_UNIT,
+  RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY,
+  RATEL_ORIGIN,
+} from "@ratel-ai/telemetry";
 import * as ai from "ai";
 import { generateText, type LanguageModel, tool } from "ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -196,6 +209,51 @@ describe.skipIf(aiSdkMajor < 7)("RatelOtelIntegration", () => {
     expect(produced.length).toBeGreaterThan(0);
     for (const span of produced) {
       expect(span.attributes[RATEL_ORIGIN]).toBe("agent");
+    }
+  });
+
+  it("stamps the active experiment join on every span the AI SDK emits", async () => {
+    const experimentJoin = {
+      [RATEL_EXPERIMENT_ID]: "retrieval-v2",
+      [RATEL_EXPERIMENT_SELECTION_ID]: "selection-42",
+      [RATEL_EXPERIMENT_ARM]: "hybrid",
+      [RATEL_EXPERIMENT_ROLE]: "serving",
+      [RATEL_EXPERIMENT_UNIT]: "0123456789abcdef",
+    };
+    let baggage = propagation.createBaggage();
+    for (const [key, value] of [
+      [RATEL_EXPERIMENT_ID_BAGGAGE_KEY, experimentJoin[RATEL_EXPERIMENT_ID]],
+      [RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY, experimentJoin[RATEL_EXPERIMENT_SELECTION_ID]],
+      [RATEL_EXPERIMENT_ARM_BAGGAGE_KEY, experimentJoin[RATEL_EXPERIMENT_ARM]],
+      [RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY, experimentJoin[RATEL_EXPERIMENT_ROLE]],
+      [RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY, experimentJoin[RATEL_EXPERIMENT_UNIT]],
+    ] as const) {
+      baggage = baggage.setEntry(key, { value });
+    }
+    const experimentContext = propagation.setBaggage(context.active(), baggage);
+
+    await context.with(experimentContext, () =>
+      generateText({
+        model: new MockLanguageModelV2([textReply("hi")]) as unknown as LanguageModel,
+        prompt: "hello",
+        telemetry: {
+          integrations: [
+            new RatelOtelIntegration({
+              enrichSpan: () => ({
+                [RATEL_EXPERIMENT_ID]: "counterfeit",
+                [RATEL_EXPERIMENT_SELECTION_ID]: "counterfeit",
+              }),
+            }),
+          ],
+        },
+      }),
+    );
+
+    const produced = spans();
+    expect(produced.length).toBeGreaterThan(0);
+    for (const span of produced) {
+      // Controlled baggage wins over a host hook that writes Ratel-owned keys.
+      expect(span.attributes).toMatchObject(experimentJoin);
     }
   });
 

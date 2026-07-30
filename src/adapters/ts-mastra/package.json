@@ -1,11 +1,23 @@
 {
   "name": "@ratel-ai/mastra",
-  "version": "0.2.0",
+  "version": "0.3.0-rc.0",
   "description": "Mastra adapter for Ratel — adapts the context-engineering core to @mastra/core tool and message shapes, with a per-turn recall input processor.",
   "private": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./observability": {
+      "types": "./dist/observability.d.ts",
+      "default": "./dist/observability.js"
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
   "license": "MIT",
   "author": "Agentified",
   "homepage": "https://github.com/ratel-ai/ratel",
@@ -44,14 +56,25 @@
     "access": "public",
     "provenance": true
   },
+  "dependencies": {
+    "@ratel-ai/telemetry": "workspace:^"
+  },
   "peerDependencies": {
     "@mastra/core": ">=1.11.0 <2",
+    "@opentelemetry/api": "^1.9.0",
     "@ratel-ai/sdk": "workspace:^",
     "zod": "^3.25.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
     "@mastra/core": "1.51.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.9.0",
     "@ratel-ai/sdk": "workspace:^",
     "typescript": "^5.6.0",
     "vitest": "^4.1.5",
