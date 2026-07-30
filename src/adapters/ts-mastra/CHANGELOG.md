@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0-rc.0] - 2026-07-30
+
 ### Added
 
 - `@ratel-ai/mastra/observability` now exports `experimentalRatelSpanOutputProcessor()`, which copies the active retrieval experiment's five controlled baggage fields onto Mastra's private spans for exact cross-stream joins while preserving Mastra's independent telemetry pipeline.
