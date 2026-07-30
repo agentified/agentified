@@ -642,7 +642,7 @@ function startArm<Params, Result, Arm extends string>(
         }
 
         try {
-          const ranking = config.ranking(result);
+          const ranking = snapshotRanking(config.ranking(result));
           const resultAttributes = projectResultAttributes(config, result);
           return {
             ok: true,
@@ -687,6 +687,14 @@ function startArm<Params, Result, Arm extends string>(
   return { arm, cold, role, telemetry, completion };
 }
 
+function snapshotRanking(ranking: readonly ExperimentRankedItem[]): ExperimentRankedItem[] {
+  return ranking.map((item) => ({
+    id: item.id,
+    ...(item.score === undefined ? {} : { score: item.score }),
+    ...(item.attrs === undefined ? {} : { attrs: { ...item.attrs } }),
+  }));
+}
+
 function projectResultAttributes<Params, Result, Arm extends string>(
   config: ExperimentConfig<Params, Result, Arm>,
   result: Result,
@@ -696,7 +704,7 @@ function projectResultAttributes<Params, Result, Arm extends string>(
     return undefined;
   }
   try {
-    return { ok: true, attributes: project(result) };
+    return { ok: true, attributes: { ...project(result) } };
   } catch (error) {
     return { ok: false, error };
   }
