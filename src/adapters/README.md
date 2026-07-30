@@ -1,6 +1,6 @@
 # `src/adapters/`
 
-Framework adapter packages: one complementary package per host framework that plugs into the `@ratel-ai/sdk` framework-adapter SPI (`ratel(config).adaptTo(adapter)`, [ADR-0013](../../docs/adr/0013-framework-adapter-spi.md)) so Ratel speaks that framework's native tool and message shapes. The core owns all state and guards; each adapter is three pure codecs plus the framework's idioms.
+Framework adapter packages: one complementary package per host framework that plugs into the `@ratel-ai/sdk` framework-adapter SPI (`ratel(config).adaptTo(adapter)`, [ADR-0013](../../docs/adr/0013-framework-adapter-spi.md)) so Ratel speaks that framework's native tool and message shapes. The core owns all state and guards; each adapter has three required codecs, optional extension hooks, and the framework's idioms.
 
 Directories are language-prefixed (`ts-*`, `py-*`) since a framework gets one adapter per SDK language.
 

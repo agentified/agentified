@@ -87,6 +87,7 @@ export type {
   AdaptedRatel,
   AdaptedToolCollection,
   CatalogRegistration,
+  ExperimentalPassthroughToolExposure,
   Ratel,
   RatelAdapter,
   RatelConfig,
