@@ -7,7 +7,7 @@ Directories are language-prefixed (`ts-*`, `py-*`) since a framework gets one ad
 ## Layout
 
 - `ts-vercel-ai-sdk/` — [`@ratel-ai/vercel-ai-sdk`](ts-vercel-ai-sdk/README.md): the [Vercel AI SDK](https://sdk.vercel.ai) (`ai@^5 || ^6 || ^7`) adapter, plus `RatelOtelIntegration` on a separate `./otel` entrypoint (`ai@7` telemetry).
-- `ts-mastra/` — [`@ratel-ai/mastra`](ts-mastra/README.md): the [Mastra](https://mastra.ai) (`@mastra/core`) adapter.
+- `ts-mastra/` — [`@ratel-ai/mastra`](ts-mastra/README.md): the [Mastra](https://mastra.ai) (`@mastra/core`) adapter, plus experimental retrieval-experiment joins on its separate `./observability` entrypoint.
 
 ## Build & test
 
