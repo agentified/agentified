@@ -1,9 +1,10 @@
 # `ratel-ai-telemetry` (Python)
 
 The `ratel.*` telemetry vocabulary for Python: the constants that codify the Tier 2 overlay
-of [`CONVENTIONS.md`](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/CONVENTIONS.md) (attribute keys, span/EventRecord names, the
-`Origin`/`SearchTarget`/`AuthOutcome` value enums, the pinned semconv version). **Importing
-the constants pulls no OpenTelemetry SDK** — the vocabulary stays weight-free for the SDK
+of [`CONVENTIONS.md`](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/CONVENTIONS.md)
+(attribute and baggage keys, span/EventRecord names, the `Origin`/`SearchTarget`/`AuthOutcome`
+and experiment role/outcome/skip/drop value enums, the pinned semconv version). **Importing the
+constants pulls no OpenTelemetry SDK** — the vocabulary stays weight-free for the SDK
 (emit side), the cloud (read side), and edge/serverless emitters
 ([ADR-0007](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0007-telemetry-two-streams.md)). `init()` — turnkey OTLP
 exporter sugar over the standard OTel Python SDK — lives in the `ratel_ai_telemetry.otlp`

@@ -24,9 +24,10 @@ Rationale and the two-tier design are documented in [ADR 0007](../../docs/adr/00
 
 Emission needs no wiring and no configuration. `@ratel-ai/sdk` writes to whatever OpenTelemetry
 providers are registered globally and registers none itself, so with no provider wired every
-span is a no-op — there is nothing to switch on, and nothing to switch off. Five span shapes,
-all `SpanKind.INTERNAL`, all on instrumentation scope **`@ratel-ai/sdk`** (`ratel-ai` in
-Python):
+span is a no-op — there is nothing to switch on, and nothing to switch off. Five span shapes
+are emitted today, all `SpanKind.INTERNAL`, all on instrumentation scope **`@ratel-ai/sdk`**
+(`ratel-ai` in Python). The vocabulary also reserves the TypeScript-only experiment shape;
+RS-59 wires its emitter.
 
 | emitted span name | attributes (gated ones marked) |
 | --- | --- |
@@ -35,6 +36,7 @@ Python):
 | `ratel.skill.load` | `ratel.skill.id` |
 | `ratel.upstream.register` | `ratel.upstream.server` / `.transport` / `.tool_count` |
 | `ratel.auth.flow` | `ratel.upstream.server`, `ratel.auth.outcome` |
+| `ratel.experiment.arm` (reserved; TypeScript only) | `ratel.experiment.id` / `.selection_id` / `.arm` / `.role` / `.unit`, `.cold` / `.outcome` / `.duration_ms`; conditional `.hit_count` and projection diagnostics; gated `.result_attrs` |
 
 The tool span's name carries the tool, so it reads `execute_tool send_email` on the wire; bare
 `execute_tool` is the `gen_ai.operation.name` *value*, not the name. The asymmetry in that table
@@ -47,11 +49,14 @@ span, but neither SDK emits it there — both set it on `ratel.search` only, and
 integration's overlay lands on that emitter's own spans rather than on this one. The table above
 reports what is emitted; closing the drift is a follow-up on the emit side, not a docs edit.
 
-The content-bearing half rides the Logs data model as two `EventRecord`s —
-`ratel.search.results` (the query text) and `ratel.tool.execution.details` (tool arguments, plus
-the result on success). Both are off by default and gated by
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` / `setContentCapture()`. Both are
-`ratel.*`-named: a filter keyed on `gen_ai.*` event names drops all of them.
+The emitted content half currently rides the Logs data model as `ratel.search.results` and
+`ratel.tool.execution.details`; both are off by default. The vocabulary additionally reserves
+seven experiment EventRecords (`results`, `comparison`, `skip`, `fallback`, `drop`,
+`invocation`, `outcome`) for RS-59. Their result ids and scores are measurements; only per-item
+`ratel.experiment.result_attrs` follows
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` / `setContentCapture()`. Every name is under
+`ratel.*`, so a filter keyed only on `gen_ai.*` event names drops the whole Logs signal once
+emitted.
 
 ## Emission is not delivery
 

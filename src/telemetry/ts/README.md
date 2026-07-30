@@ -1,9 +1,10 @@
 # `@ratel-ai/telemetry`
 
 The `ratel.*` telemetry vocabulary for TypeScript: the constants that codify the Tier 2
-overlay of [`../CONVENTIONS.md`](../CONVENTIONS.md) (attribute keys, span/EventRecord names,
-the `Origin`/`SearchTarget`/`AuthOutcome` value enums, the pinned semconv version), plus the
-content-capture gate (`contentCaptureMode`). **This package is OTel-free** — importing it
+overlay of [`../CONVENTIONS.md`](../CONVENTIONS.md) (attribute and baggage keys,
+span/EventRecord names, the `Origin`/`SearchTarget`/`AuthOutcome` and experiment
+role/outcome/skip/drop value enums, the pinned semconv version), plus the content-capture gate
+(`contentCaptureMode`). **This package is OTel-free** — importing it
 pulls no OpenTelemetry SDK, so the SDK (emit side), the server (read side), and
 edge/serverless emitters take the vocabulary weight-free
 ([ADR-0007](../../../docs/adr/0007-telemetry-two-streams.md)).

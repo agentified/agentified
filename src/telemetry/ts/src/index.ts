@@ -42,6 +42,9 @@ export const CAPTURE_CONTENT_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_C
 /** `ratel.search` — capability search (unifies tool-search and skill-search). */
 export const RATEL_SEARCH = "ratel.search";
 
+/** `ratel.experiment.arm` — one serving or shadow experiment-arm dispatch. */
+export const RATEL_EXPERIMENT_ARM = "ratel.experiment.arm";
+
 /**
  * `execute_tool` — the `gen_ai.operation.name` value for a tool invocation.
  *
@@ -71,6 +74,24 @@ export const RATEL_SEARCH_RESULTS = "ratel.search.results";
 
 /** `ratel.tool.execution.details` — Opt-In structured tool arguments/result event. */
 export const RATEL_TOOL_EXECUTION_DETAILS = "ratel.tool.execution.details";
+
+/** `ratel.experiment.results` — ranked measurement for one experiment arm. */
+export const RATEL_EXPERIMENT_RESULTS = "ratel.experiment.results";
+
+/** `ratel.experiment.comparison` — one shadow-vs-served comparison. */
+export const RATEL_EXPERIMENT_COMPARISON = "ratel.experiment.comparison";
+
+/** `ratel.experiment.skip` — one shadow dispatch skipped for capacity. */
+export const RATEL_EXPERIMENT_SKIP = "ratel.experiment.skip";
+
+/** `ratel.experiment.fallback` — one successful fallback selection. */
+export const RATEL_EXPERIMENT_FALLBACK = "ratel.experiment.fallback";
+
+/** `ratel.experiment.drop` — one peer comparison that could not be emitted. */
+export const RATEL_EXPERIMENT_DROP = "ratel.experiment.drop";
+
+/** `ratel.experiment.invocation` — attributed or unattributed tool invocation. */
+export const RATEL_EXPERIMENT_INVOCATION = "ratel.experiment.invocation";
 
 /**
  * `gen_ai.client.inference.operation.details` — the event that carries inference
@@ -114,6 +135,159 @@ export const RATEL_SKILL_ID = "ratel.skill.id";
 
 /** `ratel.auth.outcome` — `ok` / `refreshed` / `needs_auth` / `failed` (see {@link AuthOutcome}). */
 export const RATEL_AUTH_OUTCOME = "ratel.auth.outcome";
+
+/** `ratel.experiment.id` — configured experiment id. */
+export const RATEL_EXPERIMENT_ID = "ratel.experiment.id";
+
+/** `ratel.experiment.selection_id` — opaque selection correlation id. */
+export const RATEL_EXPERIMENT_SELECTION_ID = "ratel.experiment.selection_id";
+
+/** `ratel.experiment.role` — immutable dispatch role (see {@link ExperimentArmRole}). */
+export const RATEL_EXPERIMENT_ROLE = "ratel.experiment.role";
+
+/** `ratel.experiment.unit` — pseudonymous 16-hex unit hash. */
+export const RATEL_EXPERIMENT_UNIT = "ratel.experiment.unit";
+
+/** `ratel.experiment.cold` — whether warmup was unresolved when selection began. */
+export const RATEL_EXPERIMENT_COLD = "ratel.experiment.cold";
+
+/**
+ * `ratel.experiment.outcome` — arm completion attribute and reported-outcome EventRecord name
+ * (see {@link ExperimentArmOutcome}).
+ */
+export const RATEL_EXPERIMENT_OUTCOME = "ratel.experiment.outcome";
+
+/** `ratel.experiment.duration_ms` — arm callback duration in milliseconds. */
+export const RATEL_EXPERIMENT_DURATION_MS = "ratel.experiment.duration_ms";
+
+/** `ratel.experiment.hit_count` — ranked result count when ranking succeeds. */
+export const RATEL_EXPERIMENT_HIT_COUNT = "ratel.experiment.hit_count";
+
+/** `ratel.experiment.ranking_error` — error type when ranking projection fails. */
+export const RATEL_EXPERIMENT_RANKING_ERROR = "ratel.experiment.ranking_error";
+
+/** `ratel.experiment.result_attributes_error` — result-level projection error type. */
+export const RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR = "ratel.experiment.result_attributes_error";
+
+/** `ratel.experiment.result_attrs_encoding_error` — gated item-attribute encoding error type. */
+export const RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR =
+  "ratel.experiment.result_attrs_encoding_error";
+
+/** `ratel.experiment.result_ids` — ordered ranked result identifiers. */
+export const RATEL_EXPERIMENT_RESULT_IDS = "ratel.experiment.result_ids";
+
+/** `ratel.experiment.result_scores` — ordered finite scores when every item has one. */
+export const RATEL_EXPERIMENT_RESULT_SCORES = "ratel.experiment.result_scores";
+
+/** `ratel.experiment.result_attrs` — capture-gated item attributes aligned to result ids. */
+export const RATEL_EXPERIMENT_RESULT_ATTRS = "ratel.experiment.result_attrs";
+
+/** `ratel.experiment.served.arm` — effective served arm in a peer comparison. */
+export const RATEL_EXPERIMENT_SERVED_ARM = "ratel.experiment.served.arm";
+
+/** `ratel.experiment.served.outcome` — effective served arm outcome. */
+export const RATEL_EXPERIMENT_SERVED_OUTCOME = "ratel.experiment.served.outcome";
+
+/** `ratel.experiment.served.duration_ms` — effective served arm callback duration. */
+export const RATEL_EXPERIMENT_SERVED_DURATION_MS = "ratel.experiment.served.duration_ms";
+
+/** `ratel.experiment.served.hit_count` — effective served ranking size. */
+export const RATEL_EXPERIMENT_SERVED_HIT_COUNT = "ratel.experiment.served.hit_count";
+
+/** `ratel.experiment.shadow.arm` — compared shadow arm. */
+export const RATEL_EXPERIMENT_SHADOW_ARM = "ratel.experiment.shadow.arm";
+
+/** `ratel.experiment.shadow.outcome` — compared shadow arm outcome. */
+export const RATEL_EXPERIMENT_SHADOW_OUTCOME = "ratel.experiment.shadow.outcome";
+
+/** `ratel.experiment.shadow.duration_ms` — compared shadow arm callback duration. */
+export const RATEL_EXPERIMENT_SHADOW_DURATION_MS = "ratel.experiment.shadow.duration_ms";
+
+/** `ratel.experiment.shadow.hit_count` — compared shadow ranking size. */
+export const RATEL_EXPERIMENT_SHADOW_HIT_COUNT = "ratel.experiment.shadow.hit_count";
+
+/** `ratel.experiment.agreement.top1` — whether first ranked ids agree. */
+export const RATEL_EXPERIMENT_AGREEMENT_TOP1 = "ratel.experiment.agreement.top1";
+
+/** `ratel.experiment.agreement.exact_order` — whether complete ordered ids agree. */
+export const RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER = "ratel.experiment.agreement.exact_order";
+
+/** `ratel.experiment.agreement.overlap_count` — complete-set overlap count. */
+export const RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT = "ratel.experiment.agreement.overlap_count";
+
+/** `ratel.experiment.agreement.jaccard_at_k` — rank-window Jaccard agreement. */
+export const RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K = "ratel.experiment.agreement.jaccard_at_k";
+
+/** `ratel.experiment.agreement.k` — rank window used for Jaccard. */
+export const RATEL_EXPERIMENT_AGREEMENT_K = "ratel.experiment.agreement.k";
+
+/** `ratel.experiment.agreement.item_attrs` — rank-zero shared-key agreement map. */
+export const RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS = "ratel.experiment.agreement.item_attrs";
+
+/** `ratel.experiment.agreement.result_attrs` — result-level union-key agreement map. */
+export const RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS = "ratel.experiment.agreement.result_attrs";
+
+/** `ratel.experiment.effective_arm` — caller-visible arm after fallback. */
+export const RATEL_EXPERIMENT_EFFECTIVE_ARM = "ratel.experiment.effective_arm";
+
+/** `ratel.experiment.skip.arm` — shadow arm skipped for capacity. */
+export const RATEL_EXPERIMENT_SKIP_ARM = "ratel.experiment.skip.arm";
+
+/** `ratel.experiment.skip.concurrency` — configured shadow concurrency. */
+export const RATEL_EXPERIMENT_SKIP_CONCURRENCY = "ratel.experiment.skip.concurrency";
+
+/** `ratel.experiment.skip.reason` — skip reason (see {@link ExperimentSkipReason}). */
+export const RATEL_EXPERIMENT_SKIP_REASON = "ratel.experiment.skip.reason";
+
+/** `ratel.experiment.fallback.effective_arm` — fallback arm that served. */
+export const RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM = "ratel.experiment.fallback.effective_arm";
+
+/** `ratel.experiment.fallback.reused_shadow` — whether fallback reused admitted shadow work. */
+export const RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW = "ratel.experiment.fallback.reused_shadow";
+
+/** `ratel.experiment.drop.reason` — comparison drop reason (see {@link ExperimentDropReason}). */
+export const RATEL_EXPERIMENT_DROP_REASON = "ratel.experiment.drop.reason";
+
+/** `ratel.experiment.invocation.attributed` — whether an invocation matched a selection. */
+export const RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED = "ratel.experiment.invocation.attributed";
+
+/** `ratel.experiment.invocation.rank` — zero-based first rank, or -1 when absent. */
+export const RATEL_EXPERIMENT_INVOCATION_RANK = "ratel.experiment.invocation.rank";
+
+/** `ratel.experiment.invocation.age_ms` — selection age at invocation report time. */
+export const RATEL_EXPERIMENT_INVOCATION_AGE_MS = "ratel.experiment.invocation.age_ms";
+
+/** `ratel.experiment.turn` — optional caller-supplied turn annotation. */
+export const RATEL_EXPERIMENT_TURN = "ratel.experiment.turn";
+
+/** `ratel.experiment.outcome.label` — free non-empty reported outcome label. */
+export const RATEL_EXPERIMENT_OUTCOME_LABEL = "ratel.experiment.outcome.label";
+
+/** `ratel.experiment.outcome.score` — finite reported outcome score. */
+export const RATEL_EXPERIMENT_OUTCOME_SCORE = "ratel.experiment.outcome.score";
+
+// ---------------------------------------------------------------------------
+// Experiment baggage keys (ADR-0016)
+//
+// The controlled dispatch stamp uses the same wire keys as the matching span
+// attributes. Explicit aliases keep baggage construction discoverable without
+// allowing the vocabulary to drift.
+// ---------------------------------------------------------------------------
+
+/** Baggage key matching {@link RATEL_EXPERIMENT_ID}. */
+export const RATEL_EXPERIMENT_ID_BAGGAGE_KEY = RATEL_EXPERIMENT_ID;
+
+/** Baggage key matching {@link RATEL_EXPERIMENT_SELECTION_ID}. */
+export const RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY = RATEL_EXPERIMENT_SELECTION_ID;
+
+/** Baggage key matching {@link RATEL_EXPERIMENT_ARM}. */
+export const RATEL_EXPERIMENT_ARM_BAGGAGE_KEY = RATEL_EXPERIMENT_ARM;
+
+/** Baggage key matching {@link RATEL_EXPERIMENT_ROLE}. */
+export const RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY = RATEL_EXPERIMENT_ROLE;
+
+/** Baggage key matching {@link RATEL_EXPERIMENT_UNIT}. */
+export const RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY = RATEL_EXPERIMENT_UNIT;
 
 // ---------------------------------------------------------------------------
 // `gen_ai.*` interop keys (CONVENTIONS.md, Tier 1 — borrowed verbatim)
@@ -192,3 +366,35 @@ export const AuthOutcome = {
   Failed: "failed",
 } as const;
 export type AuthOutcome = (typeof AuthOutcome)[keyof typeof AuthOutcome];
+
+/** Immutable role assigned when an experiment arm is dispatched. */
+export const ExperimentArmRole = {
+  Serving: "serving",
+  Shadow: "shadow",
+} as const;
+export type ExperimentArmRole = (typeof ExperimentArmRole)[keyof typeof ExperimentArmRole];
+
+/** Completion outcome of one experiment-arm dispatch. */
+export const ExperimentArmOutcome = {
+  Ok: "ok",
+  Empty: "empty",
+  Timeout: "timeout",
+  Error: "error",
+} as const;
+export type ExperimentArmOutcome = (typeof ExperimentArmOutcome)[keyof typeof ExperimentArmOutcome];
+
+/** Reason a requested shadow dispatch did not start. */
+export const ExperimentSkipReason = {
+  Capacity: "capacity",
+} as const;
+export type ExperimentSkipReason = (typeof ExperimentSkipReason)[keyof typeof ExperimentSkipReason];
+
+/** Terminal reason a peer-eligible shadow produced no comparison. */
+export const ExperimentDropReason = {
+  ArmFailed: "arm-failed",
+  FallbackConsumed: "fallback-consumed",
+  SelectionFailed: "selection-failed",
+  ServedRankingFailed: "served-ranking-failed",
+  ComparisonFailed: "comparison-failed",
+} as const;
+export type ExperimentDropReason = (typeof ExperimentDropReason)[keyof typeof ExperimentDropReason];

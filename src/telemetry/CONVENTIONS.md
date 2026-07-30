@@ -240,6 +240,67 @@ per the two-channel table in § Tier 1 content.
 | `ratel.upstream.server` | string | |
 | `ratel.auth.outcome` | enum | `ok \| refreshed \| needs_auth \| failed` (`needs_auth` = the 401-driven `AuthNeeds`) |
 
+### `ratel.experiment.arm`: retrieval experiment dispatch
+
+Every serving or shadow arm run is an `INTERNAL` span named
+**`ratel.experiment.arm`**. The TypeScript SDK uses instrumentation scope
+`@ratel-ai/sdk`; `ratel.search` remains capability search only.
+
+Five controlled strings form the arm stamp. Emitters set them directly on the span and use the
+same keys in OTel baggage for descendant correlation:
+
+| Attribute / baggage key | Type | Notes |
+|---|---|---|
+| `ratel.experiment.id` | string | configured experiment id |
+| `ratel.experiment.selection_id` | string | opaque selection correlation id |
+| `ratel.experiment.arm` | string | declared arm name; this key literal also names the arm span |
+| `ratel.experiment.role` | enum | exactly `serving \| shadow`; never `served` |
+| `ratel.experiment.unit` | string | first 16 lowercase hex characters of SHA-256(unit id) |
+
+The remaining arm-span attributes describe dispatch and completion:
+
+| Attribute | Type and presence |
+|---|---|
+| `ratel.experiment.cold` | required boolean at dispatch |
+| `ratel.experiment.outcome` | required `ok \| empty \| timeout \| error` at completion; also the reported-outcome EventRecord name |
+| `ratel.experiment.duration_ms` | required non-negative arm-callback duration |
+| `ratel.experiment.hit_count` | non-negative integer when ranking succeeds |
+| `ratel.experiment.ranking_error` | error type when ranking fails |
+| `ratel.experiment.result_attributes_error` | error type when the result-level projector fails |
+| `ratel.experiment.result_attrs_encoding_error` | error type when gated item attrs cannot be encoded |
+
+Experiment lifecycle and evaluation use seven Logs **EventRecords**, never SpanEvents:
+
+| EventRecord | Fixed experiment-specific attributes |
+|---|---|
+| `ratel.experiment.results` | full arm stamp; `ratel.experiment.result_ids`, `.result_scores`, `.result_attrs` |
+| `ratel.experiment.comparison` | full shadow stamp; `ratel.experiment.served.{arm,outcome,duration_ms,hit_count}`, `ratel.experiment.shadow.{arm,outcome,duration_ms,hit_count}`, `ratel.experiment.agreement.{top1,exact_order,overlap_count,jaccard_at_k,k,item_attrs,result_attrs}` |
+| `ratel.experiment.skip` | assigned-arm stamp; `ratel.experiment.skip.{arm,concurrency,reason}` |
+| `ratel.experiment.fallback` | failed assigned-arm stamp; `ratel.experiment.fallback.{effective_arm,reused_shadow}` |
+| `ratel.experiment.drop` | full shadow stamp; `ratel.experiment.drop.reason` |
+| `ratel.experiment.invocation` | experiment id + unit + `ratel.experiment.invocation.attributed`; when attributed, `.selection_id`, `.effective_arm`, `.invocation.{rank,age_ms}`; optional `.turn`; borrowed `gen_ai.tool.name` |
+| `ratel.experiment.outcome` | experiment id + selection id; `ratel.experiment.outcome.{label,score}` |
+
+`ratel.experiment.result_ids` is an ordered `string[]` and is always a measurement, not
+content. `result_scores` is present only when every item has a finite score.
+`ratel.experiment.result_attrs` is the only experiment field controlled by the content-capture
+gate: `SPAN_ONLY` / `SPAN_AND_EVENT` put its JSON encoding on the arm span; `EVENT_ONLY` /
+`SPAN_AND_EVENT` put the structured, id-aligned array on `ratel.experiment.results`.
+`NO_CONTENT` emits neither copy. Result-level projector values are never emitted; only
+`agreement.result_attrs` booleans are.
+
+Closed lifecycle values are:
+
+- skip reason: `capacity`;
+- drop reason:
+  `arm-failed | fallback-consumed | selection-failed | served-ranking-failed | comparison-failed`.
+
+`ratel.experiment.effective_arm` is selection-level and is not added to an already-completed arm
+span. Standard `error.type` remains the error key; it is not mirrored under `ratel.*`.
+Experiment baggage propagates only when the host registers a `ContextManager`, which is required
+independently of exporter setup. The SDK registers neither providers nor exporters; hosts need
+both span and log-record processors to deliver the complete experiment signal.
+
 ### Out of the remote tier
 
 `index_churn` / `skill_churn` are internal catalog-maintenance events with no consumer in this
