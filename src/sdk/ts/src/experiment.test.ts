@@ -1367,11 +1367,12 @@ describe("experimentalDefineExperiment", () => {
     const fail = () => {
       throw new Error("telemetry unavailable");
     };
+    const select = vi.fn(async () => ({ ids: ["legacy"] }));
     const experiment = defineExperimentInternal(
       {
         id: "search",
         arms: {
-          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          legacy: { select },
           ratel: { select: async () => ({ ids: ["ratel"] }) },
         },
         ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
@@ -1380,7 +1381,16 @@ describe("experimentalDefineExperiment", () => {
           references: ["peer-selection", { kind: "invocation", window: { turns: 1 } }],
         },
       },
-      { comparison: fail, invocation: fail, outcome: fail },
+      {
+        arm: () => ({
+          run: fail,
+          complete: fail,
+          event: fail,
+        }),
+        comparison: fail,
+        invocation: fail,
+        outcome: fail,
+      },
     );
 
     await expect(
@@ -1389,6 +1399,7 @@ describe("experimentalDefineExperiment", () => {
         { arm: "legacy", shadow: true, unitId: "unit-a" },
       ),
     ).resolves.toEqual(expect.objectContaining({ effectiveArm: "legacy" }));
+    expect(select).toHaveBeenCalledOnce();
     await expect(experiment.drain()).resolves.toBeUndefined();
     expect(() => experiment.reportInvocation({ toolId: "legacy", unitId: "unit-a" })).not.toThrow();
     expect(() =>
