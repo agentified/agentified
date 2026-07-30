@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { defineExperimentInternal, type ExperimentEvaluationSink } from "./experiment.js";
 import { type ExperimentEvaluationReference, experimentalDefineExperiment } from "./index.js";
 
 interface SearchParams {
@@ -862,5 +863,539 @@ describe("experimentalDefineExperiment", () => {
     await experiment.warm();
 
     expect(warmup).toHaveBeenCalledTimes(2);
+  });
+
+  it("projects result attributes once for each successfully ranked peer arm", async () => {
+    const attributes = vi.fn((result: SearchResult) => ({
+      empty: result.ids.length === 0,
+    }));
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        legacy: { select: async () => ({ ids: ["legacy"] }) },
+        ratel: { select: async () => ({ ids: ["ratel"] }) },
+      },
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { attributes, references: ["peer-selection"] },
+    });
+
+    await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(attributes).toHaveBeenCalledTimes(2);
+    expect(attributes).toHaveBeenCalledWith({ ids: ["legacy"] });
+    expect(attributes).toHaveBeenCalledWith({ ids: ["ratel"] });
+  });
+
+  it("rejects outcome reports when outcome evaluation is disabled", () => {
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        legacy: { select: async () => ({ ids: ["legacy"] }) },
+      },
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { references: ["peer-selection"] },
+    });
+
+    expect(() =>
+      experiment.reportOutcome({ label: "accepted", selectionId: "selection-1" }),
+    ).toThrow(/outcome.*not enabled/i);
+  });
+
+  it("validates outcome report identifiers, labels, and scores", () => {
+    const experiment = experimentalDefineExperiment({
+      id: "search",
+      arms: {
+        legacy: { select: async () => ({ ids: ["legacy"] }) },
+      },
+      ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+      evaluation: { outcome: true, references: ["peer-selection"] },
+    });
+    const report = (args: unknown) =>
+      experiment.reportOutcome(args as Parameters<typeof experiment.reportOutcome>[0]);
+
+    expect(() => report({ label: "accepted", selectionId: "" })).toThrow(/selectionId.*non-empty/i);
+    expect(() => report({ label: "", selectionId: "selection-1" })).toThrow(/label.*non-empty/i);
+    expect(() => report({ score: Number.NaN, selectionId: "selection-1" })).toThrow(
+      /score.*finite/i,
+    );
+    expect(() => report({ selectionId: "selection-1" })).toThrow(/label.*score/i);
+  });
+
+  it("records every valid outcome report as an append-only observation", () => {
+    const outcome = vi.fn();
+    const sink: ExperimentEvaluationSink<"legacy"> = { outcome };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { outcome: true, references: ["peer-selection"] },
+      },
+      sink,
+    );
+    const report = {
+      label: "accepted",
+      score: 0.9,
+      selectionId: "selection-from-an-earlier-process",
+    };
+
+    experiment.reportOutcome(report);
+    experiment.reportOutcome(report);
+
+    expect(outcome).toHaveBeenCalledTimes(2);
+    expect(outcome).toHaveBeenNthCalledWith(1, {
+      experimentId: "search",
+      ...report,
+    });
+    expect(outcome).toHaveBeenNthCalledWith(2, {
+      experimentId: "search",
+      ...report,
+    });
+  });
+
+  it("compares every shadow once against the effective served arm with request k", async () => {
+    const comparison = vi.fn();
+    const sink: ExperimentEvaluationSink<"control" | "candidate" | "hybrid"> = {
+      comparison,
+    };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          control: { select: async () => ({ ids: ["a", "b", "z"] }) },
+          candidate: { select: async () => ({ ids: ["b", "c", "y"] }) },
+          hybrid: { select: async () => ({ ids: ["a", "q"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { k: 3, references: ["peer-selection"] },
+        shadowPolicy: { concurrency: 2 },
+      },
+      sink,
+    );
+
+    await experiment.select(
+      { query: "build failure" },
+      { arm: "control", k: 2, shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(comparison).toHaveBeenCalledTimes(2);
+    expect(comparison.mock.calls.map(([record]) => record.shadow.arm)).toEqual([
+      "candidate",
+      "hybrid",
+    ]);
+    for (const [record] of comparison.mock.calls) {
+      expect(record.served.arm).toBe("control");
+      expect(record.agreement.k).toBe(2);
+    }
+  });
+
+  it("attributes invocations to the positional selection window", async () => {
+    vi.useFakeTimers();
+    try {
+      const invocation = vi.fn();
+      const sink: ExperimentEvaluationSink<"legacy"> = { invocation };
+      const experiment = defineExperimentInternal(
+        {
+          id: "search",
+          arms: {
+            legacy: {
+              select: async ({ query }: SearchParams) => ({ ids: [query] }),
+            },
+          },
+          ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+          evaluation: {
+            references: [
+              {
+                kind: "invocation",
+                window: { maxAgeMs: 1_000, turns: 2 },
+                attribution: "all-in-window",
+              },
+            ],
+          },
+        },
+        sink,
+      );
+      const selectAt = async (now: number, query: string) => {
+        vi.setSystemTime(now);
+        return experiment.select({ query }, { arm: "legacy", unitId: "unit-a" });
+      };
+
+      await selectAt(0, "first");
+      await selectAt(500, "second");
+      await selectAt(900, "third");
+      vi.setSystemTime(1_200);
+      experiment.reportInvocation({
+        toolId: "third",
+        turn: 999,
+        unitId: "unit-a",
+      });
+
+      expect(invocation).toHaveBeenCalledTimes(2);
+      expect(invocation.mock.calls.map(([record]) => record.attribution)).toEqual([
+        expect.objectContaining({ ageMs: 700, attributed: true, rank: -1 }),
+        expect.objectContaining({ ageMs: 300, attributed: true, rank: 0 }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a consumed fallback shadow while comparing other shadows to it", async () => {
+    const comparison = vi.fn();
+    const drop = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          candidate: {
+            select: async () => {
+              throw new Error("candidate unavailable");
+            },
+          },
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          hybrid: { select: async () => ({ ids: ["hybrid"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { references: ["peer-selection"] },
+        fallbackArm: "legacy",
+        shadowPolicy: { concurrency: 2 },
+      },
+      { comparison, drop },
+    );
+
+    const selection = await experiment.select(
+      { query: "build failure" },
+      { arm: "candidate", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(selection.effectiveArm).toBe("legacy");
+    expect(drop).toHaveBeenCalledOnce();
+    expect(drop).toHaveBeenCalledWith({
+      selectionId: selection.selectionId,
+      shadowArm: "legacy",
+      reason: "fallback-consumed",
+    });
+    expect(comparison).toHaveBeenCalledOnce();
+    expect(comparison).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectionId: selection.selectionId,
+        served: expect.objectContaining({ arm: "legacy" }),
+        shadow: expect.objectContaining({ arm: "hybrid" }),
+      }),
+    );
+  });
+
+  it("prefers arm-failed when both the shadow and selection fail", async () => {
+    const drop = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: {
+            select: async () => {
+              throw new Error("serving failed");
+            },
+          },
+          ratel: {
+            select: async () => {
+              throw new Error("shadow failed");
+            },
+          },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { references: ["peer-selection"] },
+      },
+      { drop },
+    );
+
+    const selecting = experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await expect(selecting).rejects.toThrow("serving failed");
+    await experiment.drain();
+
+    expect(drop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "arm-failed", shadowArm: "ratel" }),
+    );
+  });
+
+  it("drops a successful shadow when the selection fails", async () => {
+    const drop = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: {
+            select: async () => {
+              throw new Error("serving failed");
+            },
+          },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { references: ["peer-selection"] },
+      },
+      { drop },
+    );
+
+    const selecting = experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await expect(selecting).rejects.toThrow("serving failed");
+    await experiment.drain();
+
+    expect(drop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "selection-failed", shadowArm: "ratel" }),
+    );
+  });
+
+  it("drops peer comparison when the served ranking projection fails", async () => {
+    const drop = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["served"] }) },
+          ratel: { select: async () => ({ ids: ["shadow"] }) },
+        },
+        ranking: (result: SearchResult) => {
+          if (result.ids[0] === "served") {
+            throw new Error("ranking failed");
+          }
+          return result.ids.map((id) => ({ id }));
+        },
+        evaluation: { references: ["peer-selection"] },
+      },
+      { drop },
+    );
+
+    const selection = await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(selection.result.ids).toEqual(["served"]);
+    expect(drop).toHaveBeenCalledWith({
+      selectionId: selection.selectionId,
+      shadowArm: "ratel",
+      reason: "served-ranking-failed",
+    });
+  });
+
+  it("contains comparison failures as terminal drops", async () => {
+    const comparison = vi.fn();
+    const drop = vi.fn();
+    const throwingAttributes = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("comparison failed");
+        },
+      },
+    ) as Record<string, string | number | boolean | null>;
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: {
+          attributes: () => throwingAttributes,
+          references: ["peer-selection"],
+        },
+      },
+      { comparison, drop },
+    );
+
+    const selection = await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(selection.result.ids).toEqual(["legacy"]);
+    expect(comparison).not.toHaveBeenCalled();
+    expect(drop).toHaveBeenCalledWith({
+      selectionId: selection.selectionId,
+      shadowArm: "ratel",
+      reason: "comparison-failed",
+    });
+  });
+
+  it("does not project or record peers without peer-selection evaluation", async () => {
+    const attributes = vi.fn(() => ({ source: "catalog" }));
+    const comparison = vi.fn();
+    const drop = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: {
+          attributes,
+          references: [{ kind: "invocation", window: { turns: 1 } }],
+        },
+      },
+      { comparison, drop },
+    );
+
+    await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(attributes).not.toHaveBeenCalled();
+    expect(comparison).not.toHaveBeenCalled();
+    expect(drop).not.toHaveBeenCalled();
+  });
+
+  it("omits only result agreement when one result projector fails", async () => {
+    const comparison = vi.fn();
+    const attributes = vi.fn((result: SearchResult) => {
+      if (result.ids[0] === "ratel") {
+        throw new Error("attributes unavailable");
+      }
+      return { source: "legacy" };
+    });
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { attributes, references: ["peer-selection"] },
+      },
+      { comparison },
+    );
+
+    await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    await experiment.drain();
+
+    expect(attributes).toHaveBeenCalledTimes(2);
+    expect(comparison).toHaveBeenCalledOnce();
+    expect(comparison.mock.calls[0]?.[0].agreement).not.toHaveProperty("resultAttrs");
+  });
+
+  it("keeps ranking-failed selections out of invocation attribution", async () => {
+    const invocation = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+        },
+        ranking: () => {
+          throw new Error("ranking failed");
+        },
+        evaluation: {
+          references: [{ kind: "invocation", window: { turns: 1 } }],
+        },
+      },
+      { invocation },
+    );
+
+    const selection = await experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", unitId: "unit-a" },
+    );
+    experiment.reportInvocation({ toolId: "legacy", unitId: "unit-a" });
+
+    expect(selection.result.ids).toEqual(["legacy"]);
+    expect(invocation).toHaveBeenCalledWith(
+      expect.objectContaining({ attribution: { attributed: false } }),
+    );
+  });
+
+  it("drains peer continuations waiting for the served result", async () => {
+    const serving = deferred<SearchResult>();
+    const comparison = vi.fn();
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: () => serving.promise },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: { references: ["peer-selection"] },
+      },
+      { comparison },
+    );
+
+    const selecting = experiment.select(
+      { query: "build failure" },
+      { arm: "legacy", shadow: true, unitId: "unit-a" },
+    );
+    const draining = experiment.drain();
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+
+    serving.resolve({ ids: ["legacy"] });
+    await selecting;
+    await draining;
+
+    expect(comparison).toHaveBeenCalledOnce();
+  });
+
+  it("contains failures from every evaluation sink callback", async () => {
+    const fail = () => {
+      throw new Error("telemetry unavailable");
+    };
+    const experiment = defineExperimentInternal(
+      {
+        id: "search",
+        arms: {
+          legacy: { select: async () => ({ ids: ["legacy"] }) },
+          ratel: { select: async () => ({ ids: ["ratel"] }) },
+        },
+        ranking: (result: SearchResult) => result.ids.map((id) => ({ id })),
+        evaluation: {
+          outcome: true,
+          references: ["peer-selection", { kind: "invocation", window: { turns: 1 } }],
+        },
+      },
+      { comparison: fail, invocation: fail, outcome: fail },
+    );
+
+    await expect(
+      experiment.select(
+        { query: "build failure" },
+        { arm: "legacy", shadow: true, unitId: "unit-a" },
+      ),
+    ).resolves.toEqual(expect.objectContaining({ effectiveArm: "legacy" }));
+    await expect(experiment.drain()).resolves.toBeUndefined();
+    expect(() => experiment.reportInvocation({ toolId: "legacy", unitId: "unit-a" })).not.toThrow();
+    expect(() =>
+      experiment.reportOutcome({
+        label: "accepted",
+        selectionId: "selection-from-an-earlier-process",
+      }),
+    ).not.toThrow();
   });
 });
