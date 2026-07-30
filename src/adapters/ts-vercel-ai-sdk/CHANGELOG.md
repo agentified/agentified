@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.4.0-rc.1] - 2026-07-30
+
+### Fixed
+
+- Passthrough exposure of a class-backed tool no longer throws when a member other than `execute` reads private (`#`) instance state. The 0.4.0-rc.0 wrapper cloned the tool with `Object.create`, which carries the prototype but not the class's private-field brand, so an inherited getter, `needsApproval`, or `toModelOutput` invoked through the exposed tool raised `Cannot read private member`. Inherited accessors and methods now run against the original instance; own members stay carried by identity, so the frozen-tool contract and native member references are unchanged (correcting the rc.0 note that `this` remained intact).
+
 ## [0.4.0-rc.0] - 2026-07-30
 
 ### Added
