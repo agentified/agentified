@@ -2,7 +2,7 @@
 
 The [Vercel AI SDK](https://sdk.vercel.ai) (`ai@^5 || ^6 || ^7`) adapter for [Ratel](https://github.com/ratel-ai/ratel). `ratel(config).adaptTo(aiSdk())` layers a framework-shaped view over the framework-neutral core (ADR-0013), so an AI SDK agent registers its own `tool()`s, hands the model Ratel's capability funnel, and gets per-turn recall — all in the SDK's native `Tool` and `ModelMessage` shapes, with no glue in app code.
 
-Ratel keeps the model's tool list small and stable: instead of advertising every tool, it exposes three capability tools (`search_capabilities` / `invoke_tool` / `get_skill_content`) and injects a ranked, per-turn `search_capabilities` result for the current user message. The core owns all state and every guard (reserved ids, top-K clamp, first-registration-wins, recall-id counter); the adapter is just three codecs plus two recall idioms.
+Ratel keeps the model's tool list small and stable: instead of advertising every tool, it exposes three capability tools (`search_capabilities` / `invoke_tool` / `get_skill_content`) and injects a ranked, per-turn `search_capabilities` result for the current user message. The core owns all state and every guard (reserved ids, top-K clamp, first-registration-wins, recall-id counter); the adapter has three required codecs, the experimental passthrough exposure hook, and two recall idioms.
 
 ## Install
 
@@ -176,10 +176,15 @@ range declared in this package can see that.
   never touched by it — including when they carry `gen_ai.*` attributes of their own, which
   `execute_tool` does. Selecting spans by attribute prefix and expecting the overlay on them
   is asserting something untrue; select by scope.
-- **What lands on each span, for now, is `ratel.origin`.** Not a limit of the hook: the AI
-  SDK hands `enrichSpan` the `spanType`, `operationId`, `callId`, and `runtimeContext` at
-  span creation, so per-span-kind and per-call attributes are already reachable. It's a
-  deliberate baseline — the richer experiment vocabulary lands with the work that defines it.
+- **Every span gets `ratel.origin`; active retrieval experiments add their full join.**
+  When AI SDK work starts inside an `experimentalDefineExperiment` arm callback, the integration
+  copies the five controlled baggage fields — experiment id, selection id, arm, role, and
+  pseudonymous unit hash — onto every emitted `gen_ai.*` span. The selection id is the exact join
+  to the value returned by `select()`. Register a ContextManager unconditionally: without one,
+  the experiment arm's direct attributes survive but descendant baggage does not. Starting
+  `generateText()` only after `select()` returns is also too late; the arm context has been
+  restored by then. Ratel-owned values land after a host `enrichSpan`, so that hook cannot
+  counterfeit them.
 - **`origin` is selectable, and your `enrichSpan` composes.**
   `new RatelOtelIntegration({ origin: Origin.Direct })` overrides the `agent` default. `Origin`
   is re-exported from this entrypoint, so you don't need `@ratel-ai/telemetry` on your own
@@ -190,14 +195,16 @@ range declared in this package can see that.
   instance, so a host doing both passes a second integration per call via
   `telemetry: { integrations: [...] }` rather than re-registering globally.
   Every other option passes through to the embedded emitter, including an `enrichSpan` of your
-  own: it is called and its attributes merged *under* Ratel's, so everything you return lands
-  except `ratel.origin` itself, which the overlay keeps. If your hook throws, you lose your own
-  attributes for that span and nothing else — `ratel.origin` still lands.
+  own: it is called and its attributes merged *under* Ratel's. `ratel.origin` is always a
+  controlled overlay; during an active experiment the five experiment id, selection id, arm,
+  role, and unit keys are controlled too. Host attributes on every other key land unchanged. If
+  your hook throws, you lose your own attributes for that span and nothing else — Ratel's
+  controlled overlays still land.
 
 ## Limitations
 
 - **Persist the response messages** (`await result.responseMessages` on `ai@7`; `(await result.response).messages` on `ai@5`/`ai@6`, which have no `responseMessages`). Recall fires only when the last message is the user's turn. If you drop the accumulated response messages between turns, turn *N+1* loses turn *N*'s tool calls and results — standard AI SDK message hygiene, load-bearing here.
-- **`modelTools()` snapshots passthrough tools.** Plain function tools enter the shared catalog and may register after a snapshot because the model still reaches them through the stable capability tools. Provider-defined/dynamic tools, tools without an `execute`, and tools with AI SDK-only model metadata or lifecycle behavior (`contextSchema`, approval/input hooks, `toModelOutput`, provider options/metadata, strict mode, input examples, or title) pass through directly so the adapter never weakens those semantics. Register passthroughs before taking the snapshot, or call `modelTools()` again and replace the model-facing set.
+- **`modelTools()` snapshots passthrough tools.** Plain function tools enter the shared catalog and may register after a snapshot because the model still reaches them through the stable capability tools. Provider-defined/dynamic tools, tools without an `execute`, and tools with AI SDK-only model metadata or lifecycle behavior (`contextSchema`, approval/input hooks, `toModelOutput`, provider options/metadata, strict mode, input examples, or title) stay native. At each snapshot, a client-executed passthrough gets a descriptor-preserving execution wrapper that leaves its lifecycle hooks, metadata, registered-tool `this`, options, and scalar/promise/stream return shape intact while sending the call through Ratel's `execute_tool` funnel; the registered tool object is never mutated. A passthrough with no client-side `execute` is provider- or host-executed, so Ratel cannot observe its invocation and emits no SDK tool span for it. Register passthroughs before taking the snapshot, or call `modelTools()` again and replace the model-facing set.
 - **Cataloged executable schemas must resolve synchronously.** Registration synchronously rejects a cataloged executable tool whose `inputSchema` or `outputSchema` converts to a Promise. The whole registration batch remains unchanged. Native passthrough tools never enter this conversion path. Use a synchronous Zod schema or static JSON Schema wrapper for cataloged tools.
 - **Live execution options thread through `invoke_tool`; direct catalog calls fall back.** When the model runs a cataloged tool through `invoke_tool`, the adapter forwards the AI SDK's complete live execution options unchanged — `toolCallId`, `messages`, `abortSignal`, and the outer capability's context field (`experimental_context` on `ai@6`/late `ai@5`, `context` on `ai@7`). A tool declaring its own `contextSchema` stays native, so the host validates and routes its named context normally. The driver-level escape hatch `r.tools.catalog.invoke(id, args)` has no AI SDK invocation to thread, so it validates the original input schema and uses a fabricated fallback (`toolCallId: "ratel_<id>"`, `messages: []`, both context spellings `undefined`). Live-option forwarding spans this adapter and `@ratel-ai/sdk` — upgrade their RCs together; an older SDK (before `0.5.1-rc.1`) drops the opaque context before catalog execution.
 - **`appendRecall` is async.** Core recall is asynchronous (unlike the sync prototype this was extracted from) — `await` it.
@@ -209,6 +216,13 @@ Peer range: **`ai@^5.0.0 || ^6.0.0 || ^7.0.0`** — one shared code path, no per
 
 Approval (`needsApproval`) is available on AI SDK 6+, while per-tool `contextSchema` is AI
 SDK 7-only. When present, both stay on the native passthrough path.
+
+Experiment joins degrade explicitly on older majors: `ai@5` has no telemetry-integration seam,
+and `ai@6` has a different legacy seam that `RatelOtelIntegration` does not implement. Their
+framework-emitted `gen_ai.*` spans therefore receive no direct Ratel experiment overlay. The
+adapter still routes every client-executed passthrough through the SDK's own `execute_tool` span
+(cataloged tools already use it), preserving active baggage for a host
+`BaggageSpanProcessor`; passthroughs without `execute` remain invisible as described above.
 
 Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.37` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Every row also asserts that consumer resolved **no** `@ai-sdk/otel`; the v7 rows additionally install it and typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface. Releases between floor and latest are covered by the range, not row-verified.
 

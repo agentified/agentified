@@ -1,5 +1,6 @@
 import type {
   CatalogRegistration,
+  ExperimentalPassthroughToolExposure,
   JSONSchema7,
   RatelAdapter,
   RecallRef,
@@ -76,9 +77,9 @@ export interface AiSdkExt {
  * The Vercel AI SDK adapter: `ratel(config).adaptTo(aiSdk())` gives the
  * framework-neutral core the AI SDK's native {@link Tool} and
  * {@link ModelMessage} shapes, across `ai@5`, `ai@6`, and `ai@7`. The core owns every guard (reserved ids, top-K clamp,
- * first-registration-wins, recall-id counter), so the adapter is just the three
- * codecs — `ingest` / `expose` / `recallMessages` — plus the {@link AiSdkExt}
- * recall helpers.
+ * first-registration-wins, recall-id counter), so the adapter is the three
+ * required codecs — `ingest` / `expose` / `recallMessages` — the experimental
+ * passthrough exposure hook, plus the {@link AiSdkExt} recall helpers.
  *
  * @returns A {@link RatelAdapter} over the AI SDK's tool and message types.
  */
@@ -148,6 +149,10 @@ export function aiSdk(): RatelAdapter<Tool, ModelMessage, AiSdkExt> {
       });
     },
 
+    experimentalExposePassthrough(t, exposure) {
+      return wrapPassthrough(t, exposure);
+    },
+
     recallMessages(ref: RecallRef, recall: SearchCapabilitiesResult): ModelMessage[] {
       return [
         {
@@ -215,6 +220,30 @@ export function aiSdk(): RatelAdapter<Tool, ModelMessage, AiSdkExt> {
       };
     },
   };
+}
+
+function wrapPassthrough(t: Tool, exposure: ExperimentalPassthroughToolExposure): Tool {
+  const execute = t.execute;
+  if (typeof execute !== "function") {
+    return t;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(t);
+  const executeDescriptor = Object.getOwnPropertyDescriptor(t, "execute");
+  let exposed: Tool;
+  descriptors.execute = {
+    configurable: executeDescriptor?.configurable ?? true,
+    enumerable: executeDescriptor?.enumerable ?? true,
+    writable:
+      executeDescriptor !== undefined && "writable" in executeDescriptor
+        ? executeDescriptor.writable
+        : true,
+    value: function (this: unknown, input: unknown, options: unknown) {
+      const receiver = this === exposed ? t : this;
+      return exposure.invoke(input, () => Reflect.apply(execute, receiver, [input, options]));
+    },
+  };
+  exposed = Object.create(Object.getPrototypeOf(t), descriptors) as Tool;
+  return exposed;
 }
 
 function rethrowTargetFailure(result: unknown): unknown {

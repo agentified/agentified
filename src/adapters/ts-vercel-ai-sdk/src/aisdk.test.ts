@@ -355,21 +355,107 @@ describe("live execution context", () => {
 });
 
 describe("passthrough end-to-end", () => {
-  it("exposes a provider tool by identity and never catalogs it", () => {
+  it("wraps a frozen client-executed provider without changing its native call contract", async () => {
     const view = ratel().adaptTo(aiSdk());
-    const providerTool = {
+    let receiver: unknown;
+    let receivedOptions: unknown;
+    const originalExecute = function (this: unknown, input: unknown, options: unknown) {
+      receiver = this;
+      receivedOptions = options;
+      return { input, ran: true };
+    };
+    const providerTool = Object.freeze({
       type: "provider",
       id: "acme.shell",
       args: {},
       isProviderExecuted: false,
       inputSchema: { type: "object" },
-      execute: async () => ({ ran: true }),
-    } as unknown as Tool;
-    view.tools.register({ shell: providerTool });
-    // Exposed untouched, in native provider shape...
-    expect(view.modelTools().shell).toBe(providerTool);
-    // ...and never funneled into the catalog.
+      execute: originalExecute,
+    }) as unknown as Tool;
+    await view.tools.register({ shell: providerTool });
+    const exposed = view.modelTools().shell;
+    const options = { toolCallId: "shell-0", messages: [] };
+    const result = (exposed.execute as (input: unknown, options: unknown) => unknown)(
+      { command: "pwd" },
+      options,
+    );
+
+    expect(exposed).not.toBe(providerTool);
+    expect(result).toEqual({ input: { command: "pwd" }, ran: true });
+    expect(receiver).toBe(providerTool);
+    expect(receivedOptions).toBe(options);
+    expect(providerTool.execute).toBe(originalExecute);
+    expect((exposed as { id?: string }).id).toBe("acme.shell");
     expect(view.tools.catalog.has("shell")).toBe(false);
+  });
+
+  it("preserves promise and AsyncIterable return shapes", async () => {
+    const view = ratel().adaptTo(aiSdk());
+    await view.tools.register({
+      promised: {
+        type: "provider",
+        id: "acme.promised",
+        args: {},
+        inputSchema: { type: "object" },
+        execute: () => Promise.resolve({ done: true }),
+      } as unknown as Tool,
+      streamed: {
+        type: "provider",
+        id: "acme.streamed",
+        args: {},
+        inputSchema: { type: "object" },
+        execute: async function* () {
+          yield { step: 1 };
+          yield { step: 2 };
+        },
+      } as unknown as Tool,
+    });
+    const tools = view.modelTools();
+    const options = { toolCallId: "shape-0", messages: [] };
+
+    const promise = (
+      tools.promised.execute as (input: unknown, options: unknown) => PromiseLike<unknown>
+    )({}, options);
+    const stream = (
+      tools.streamed.execute as (
+        input: unknown,
+        options: unknown,
+      ) => AsyncIterable<{ step: number }>
+    )({}, options);
+
+    expect(promise).toBeInstanceOf(Promise);
+    await expect(promise).resolves.toEqual({ done: true });
+    expect(typeof stream[Symbol.asyncIterator]).toBe("function");
+    const values: Array<{ step: number }> = [];
+    for await (const value of stream) values.push(value);
+    expect(values).toEqual([{ step: 1 }, { step: 2 }]);
+  });
+
+  it("executes a class-backed passthrough against its registered private state", async () => {
+    class StatefulProviderTool {
+      readonly type = "provider";
+      readonly id = "acme.stateful";
+      readonly args = {};
+      readonly isProviderExecuted = false;
+      readonly inputSchema = { type: "object" };
+      #calls = 0;
+
+      execute() {
+        return { calls: ++this.#calls };
+      }
+
+      get calls() {
+        return this.#calls;
+      }
+    }
+
+    const view = ratel().adaptTo(aiSdk());
+    const providerTool = new StatefulProviderTool();
+    await view.tools.register({ stateful: providerTool as unknown as Tool });
+    const exposed = view.modelTools().stateful;
+
+    expect((exposed.execute as () => unknown)()).toEqual({ calls: 1 });
+    expect(providerTool.calls).toBe(1);
   });
 });
 
