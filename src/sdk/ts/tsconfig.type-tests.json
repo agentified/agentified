@@ -3,6 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["src/catalog.type-test.ts"],
+  "include": ["src/catalog.type-test.ts", "src/experiment.type-test.ts"],
   "exclude": []
 }
