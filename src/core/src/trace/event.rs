@@ -312,6 +312,55 @@ pub enum TraceEvent {
         /// Real download size, in bytes.
         bytes: u64,
     },
+    /// Emitted once, on the first (cold) load of the prompt-compression model.
+    /// Reuses [`EmbedderLoadStatus`] — it is a model-load outcome, and a
+    /// near-identical second enum would be worse than a name that reads as
+    /// embedding-specific. See `compression/model.rs` and ADR-0016.
+    CompressorLoad {
+        /// Resolved model display name: repo id or local path.
+        model: String,
+        /// Load outcome: ok, slow, or failed.
+        status: EmbedderLoadStatus,
+        /// Load wall time, in milliseconds (`0` when the load failed before
+        /// timing).
+        took_ms: u64,
+        /// The slow-load hint or the load error; `None` on a normal load.
+        reason: Option<String>,
+    },
+    /// Emitted once when the compression model is actually downloaded to the
+    /// HuggingFace cache (a cold fetch), carrying the real byte size — this model
+    /// is ~700 MB, so a first-run download must never be a silent surprise.
+    CompressorDownload {
+        /// The model that was downloaded.
+        model: String,
+        /// Real download size, in bytes.
+        bytes: u64,
+    },
+    /// Emitted once per [`crate::CompressedPrompt`] produced.
+    ///
+    /// Counts only — deliberately **no prompt text**. Traces land in a local
+    /// JSONL file, and a compression event carrying the full prompt would be the
+    /// largest PII surface in the crate. See ADR-0016.
+    Compress {
+        /// Model tokens in the input.
+        model_tokens_in: u32,
+        /// Model tokens in the output.
+        model_tokens_out: u32,
+        /// Scored units in the input.
+        words_in: u32,
+        /// Scored units kept.
+        words_out: u32,
+        /// The requested keep-ratio.
+        rate: f32,
+        /// Encoder passes performed (`0` when gated).
+        chunks: u32,
+        /// Units protected from removal.
+        protected_units: u32,
+        /// Whether the input was returned verbatim instead of compressed.
+        gated: bool,
+        /// Wall time, in milliseconds, excluding a cold model load.
+        took_ms: u64,
+    },
     /// Emitted when a semantic/hybrid search runs against an embedding set built
     /// with a *different* model than the one now configured. Retrieval fails
     /// rather than mixing vector spaces; the caller must rebuild the complete

@@ -54,6 +54,27 @@ fn main() {
 }
 ```
 
-Package layout: `src/` holds the retrieval and trace engine, `examples/` contains runnable demos, and `tests/` covers integration behavior. From a repository checkout, run `cargo test -p ratel-ai-core` or `cargo run -p ratel-ai-core --example search_demo`.
+## Experimental: prompt compression
+
+`PromptCompressor` compresses prose you carry into the context — transcripts, retrieved passages, documents — using an LLMLingua-2 token classifier plus a policy layer that keeps the loss visible. It is orthogonal to retrieval: nothing loads unless you construct one and call it. See [ADR-0016](../../docs/adr/0016-experimental-prompt-compression.md).
+
+```rust
+use ratel_ai_core::PromptCompressor;
+
+let compressor = PromptCompressor::new();
+compressor.preload()?;                              // ~700 MB, one-time
+let out = compressor.compress(&transcript, None)?;  // rate 0.40 by default
+
+println!("{} -> {} tokens", out.stats.model_tokens_in, out.stats.model_tokens_out);
+for unit in out.dropped.iter().take(5) {
+    println!("dropped {:?} ({:.2})", unit.text, unit.importance);
+}
+```
+
+Compress the **context**; leave your instructions and the user's question verbatim. Prompts shorter than `min_tokens` come back untouched with `stats.gate` saying so — short text has no redundancy to spend.
+
+It is not cheap: ~2–2.6 s for a 623-token document on an 8-core laptop CPU, and the model is ~700 MB. Call `preload()` at startup so no request pays the cold load. Compression is lossy — the `kept`/`dropped` scores and the gate make the loss steerable, not safe, so evaluate it on your own data. The API may change while it carries the `experimental` marker in the SDKs.
+
+Package layout: `src/` holds the retrieval, compression, and trace engine, `examples/` contains runnable demos, and `tests/` covers integration behavior. From a repository checkout, run `cargo test -p ratel-ai-core` or `cargo run -p ratel-ai-core --example search_demo`. The compression regression suite needs the model on disk and is `#[ignore]`d: `cargo test -p ratel-ai-core --release --test compression_golden -- --ignored`.
 
 Continue with [tool retrieval](https://docs.ratel.sh/docs/tool-retrieval), the [Rust API reference](https://docs.rs/ratel-ai-core/latest/ratel_ai_core/), or the [source repository](https://github.com/ratel-ai/ratel). Benchmark results are maintained separately in [ratel-ai/ratel-bench](https://github.com/ratel-ai/ratel-bench).

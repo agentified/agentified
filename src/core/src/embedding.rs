@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -52,6 +52,12 @@ use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStr
 use crate::embedding_config::{
     DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, OLLAMA_DEFAULT_URL, Pooling,
     endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint, local_fingerprint,
+};
+// The keyed load cache and the HF-cache fetch race handling are shared with the
+// prompt compressor; they live in one place so the two can't drift (ADR-0016).
+use crate::model_files::{
+    LoadSlot, fetch_cached_with, fetch_optional, get_or_load_keyed, is_cache_unwritable,
+    is_not_found, snapshot_sha,
 };
 use crate::trace::{EmbedderLoadStatus, TraceEvent, TraceSink};
 
@@ -390,43 +396,6 @@ fn build_embedder(
             Ok((Arc::new(e), LoadNotices::default()))
         }
     }
-}
-
-/// A per-key load slot in a keyed cache: `None` until the value is loaded, then
-/// `Some`. Guarded by its own mutex so a `load` serializes callers of *that* key
-/// without holding the whole-map lock.
-type LoadSlot<T> = Arc<Mutex<Option<Arc<T>>>>;
-
-/// Get-or-load into a keyed cache with **no failure caching**: on `Err` the key's
-/// slot stays empty so a later call retries. Returns the value plus `Some(load_ms)`
-/// on the call that performed the load, `None` on warm reuse. Generic so the
-/// non-poisoning + once contract is unit-tested without touching the network.
-///
-/// The map lock is held only long enough to get/create the key's slot; `load`
-/// runs against that per-key slot mutex, never the map. So **different keys load
-/// concurrently** (a cold load of one model no longer blocks another), while
-/// **same-key loads stay single-flight** (concurrent cold misses share the slot,
-/// so `load` runs once and exactly one caller reports `Some(load_ms)`).
-fn get_or_load_keyed<T: ?Sized>(
-    cache: &Mutex<HashMap<String, LoadSlot<T>>>,
-    key: &str,
-    load: impl FnOnce() -> Result<Arc<T>, EmbedderError>,
-) -> Result<(Arc<T>, Option<u64>), EmbedderError> {
-    // Hold the map lock only to get/create this key's slot, then release it.
-    let slot = {
-        let mut guard = cache.lock().expect("embedder cache mutex poisoned");
-        Arc::clone(guard.entry(key.to_string()).or_default())
-    };
-    // Serialize per key on the slot — the map lock is NOT held across `load`.
-    let mut slot = slot.lock().expect("embedder cache slot mutex poisoned");
-    if let Some(existing) = slot.as_ref() {
-        return Ok((existing.clone(), None));
-    }
-    let started = Instant::now();
-    let loaded = load()?; // Err leaves the slot `None`, so a later call retries.
-    let took_ms = started.elapsed().as_millis() as u64;
-    *slot = Some(loaded.clone());
-    Ok((loaded, Some(took_ms)))
 }
 
 /// Resolve the process embedder and record the one-time load-telemetry event on
@@ -958,27 +927,6 @@ fn resolve_pooling(detected: Option<Pooling>) -> (Pooling, bool) {
     }
 }
 
-/// Best-effort optional fetch of a small side file (pooling config, alt weights):
-/// `None` on any error, so a missing file never fails the load.
-fn fetch_optional(repo: &ApiRepo, file: &str) -> Option<PathBuf> {
-    repo.get(file).ok()
-}
-
-/// Whether an hf-hub fetch error is a "file not in repo" (so we try a fallback
-/// file) rather than a real network/cache failure.
-fn is_not_found(source: &str) -> bool {
-    let l = source.to_lowercase();
-    l.contains("404") || l.contains("not found") || l.contains("entry not found")
-}
-
-/// The concrete commit SHA a HuggingFace fetch resolved to, read from the cached
-/// snapshot path (`…/snapshots/<sha>/<file>`). `None` if the path isn't in that
-/// layout — the caller falls back to the requested revision string.
-fn snapshot_sha(weights_path: &Path) -> Option<String> {
-    let name = weights_path.parent()?.file_name()?.to_str()?;
-    (name.len() == 40 && name.chars().all(|c| c.is_ascii_hexdigit())).then(|| name.to_string())
-}
-
 /// OpenAI-compatible HTTP embedding endpoint (OpenAI, Ollama, TEI, vLLM…). Any
 /// model can back it, including non-BERT ones the in-process path can't run.
 /// Vectors are **re-normalized on ingestion** — an arbitrary endpoint may return
@@ -1344,58 +1292,18 @@ impl Embedder for EndpointEmbedder {
     }
 }
 
-/// Resolve one model file from the HF cache, tolerating the cross-process
-/// download race on a cold cache. hf-hub guards each blob with a *non-blocking*
-/// `flock` and gives up after ~5s (5 × 1s); a first fetch of the ~130 MB weights
-/// takes longer, so when several processes load the embedder at once on a cold
-/// cache — parallel test workers, a web server's worker pool cold-starting,
-/// `multiprocessing` — every process but the lock holder gets `LockAcquisition`
-/// and would fail. Retry with backoff: the losers wait for the winner's download
-/// to land, then `get()` returns the now-cached blob without locking (hf-hub
-/// checks the cache before it locks). Any other failure is classified and
-/// returned immediately. See ADR-0011.
+/// Resolve one model file from the HF cache, with the cold-cache lock-race retry
+/// in [`crate::model_files::fetch_cached_with`], naming failures as *embedding*
+/// model failures.
 fn fetch_cached(repo: &ApiRepo, file: &str, model: &str) -> Result<PathBuf, EmbedderError> {
-    // ~30 × (up to hf-hub's own ~5s lock wait + 1s backoff) comfortably outlasts
-    // a single cold-cache download; the loser normally succeeds within a few.
-    const MAX_ATTEMPTS: u32 = 30;
-    const BACKOFF: Duration = Duration::from_secs(1);
-
-    let mut attempt = 1;
-    loop {
-        match repo.get(file) {
-            Ok(path) => return Ok(path),
-            Err(e) => {
-                let msg = e.to_string();
-                if attempt < MAX_ATTEMPTS && is_lock_contention(&msg) {
-                    attempt += 1;
-                    std::thread::sleep(BACKOFF);
-                    continue;
-                }
-                return Err(classify_fetch_error(model, &msg));
-            }
-        }
-    }
-}
-
-/// True only when an hf-hub fetch failed because another process holds the
-/// download lock — the one error worth retrying, since the blob appears once the
-/// winner finishes. Every other failure is terminal and classified below.
-fn is_lock_contention(err: &str) -> bool {
-    err.contains("Lock acquisition failed")
+    fetch_cached_with(repo, file, |msg| classify_fetch_error(model, msg))
 }
 
 /// Map an hf-hub fetch error string to a typed [`EmbedderError`]. A cache
 /// permission/space problem is distinct (and actionable) from a network/model
 /// problem; everything else is treated as a download failure.
 fn classify_fetch_error(model: &str, msg: &str) -> EmbedderError {
-    let lower = msg.to_lowercase();
-    let unwritable = lower.contains("permission denied")
-        || lower.contains("read-only")
-        || lower.contains("no space")
-        || lower.contains("os error 13") // EACCES
-        || lower.contains("os error 28") // ENOSPC
-        || lower.contains("os error 30"); // EROFS
-    if unwritable {
+    if is_cache_unwritable(msg) {
         EmbedderError::CacheUnwritable {
             source: msg.to_string(),
         }
@@ -1424,23 +1332,10 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use std::time::Instant;
 
     use super::*;
     use crate::{Origin, SearchMethod, Tool, ToolRegistry};
-
-    #[test]
-    fn only_lock_contention_is_retried() {
-        // The cold-cache download race: retry and wait for the winner.
-        assert!(is_lock_contention(
-            "Lock acquisition failed: /home/u/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/blobs/abc.lock"
-        ));
-        // Everything else is terminal — classify, don't spin.
-        assert!(!is_lock_contention("request error: connection refused"));
-        assert!(!is_lock_contention("Http(reqwest::Error { status: 404 })"));
-        assert!(!is_lock_contention(
-            "No such file or directory (os error 2)"
-        ));
-    }
 
     #[test]
     fn classifies_cache_permission_and_space_as_unwritable() {

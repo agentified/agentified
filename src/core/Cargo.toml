@@ -31,6 +31,9 @@ candle-transformers = "0.9"
 # onig_sys, which breaks cross-compilation to aarch64-linux for the SDK
 # wheels/addons. BERT WordPiece tokenization is unaffected by the backend.
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+# Protect patterns for prompt compression (ADR-0016). Already in the tree via
+# `tokenizers`, so making it direct adds no crate to the build.
+regex = "1"
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
 
 # Sync HTTP client for OpenAI-compatible embedding endpoints (OpenAI, Ollama,

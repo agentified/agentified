@@ -1,0 +1,21 @@
+Speaker 1: Alright, let's get the Q3 infrastructure review started. So the first item on the agenda is the database migration that we've been putting off since, I think, since basically the beginning of May. Um, as most of you know, we're currently running Postgres 12 in production, which reached end of life back in November 2024, so we are officially unsupported at this point and security patches are no longer being issued for that version.
+
+Speaker 2: Yeah, and I just want to add some context there, because I think it's worth saying out loud. We tried this migration once already, back in April, and it failed. The reason it failed was that the pg_upgrade step took about four hours on the primary, and our maintenance window was only two hours, so we had to roll back halfway through. That rollback itself took another hour and we ended up with roughly three hours of degraded read performance for customers in the EU region.
+
+Speaker 1: Right, so what's different this time?
+
+Speaker 2: Two things. First, we're going to use logical replication instead of pg_upgrade, which means we can build the Postgres 16 replica alongside the existing primary and let it catch up over several days without any downtime. Then the actual cutover is just a DNS switch plus a connection pool drain, which we estimate at somewhere between 90 seconds and 4 minutes. Second, we've already tested this exact procedure twice in staging with a full production data snapshot, and both runs completed successfully.
+
+Speaker 3: What's the storage cost of running both clusters in parallel?
+
+Speaker 2: About 8,400 dollars for the two week overlap period. That's the db.r6g.4xlarge instance plus 12 terabytes of provisioned IOPS storage. We already got sign-off from Priya on the budget side last Thursday.
+
+Speaker 3: Okay. And what happens to the extensions? We're using PostGIS and pg_stat_statements and I think TimescaleDB somewhere in the analytics pipeline.
+
+Speaker 2: PostGIS and pg_stat_statements both have clean upgrade paths. TimescaleDB is the risky one because the version we're on, 2.8, doesn't support Postgres 16 at all, so we need to bump Timescale to 2.14 first, and that's a separate migration with its own compatibility issues around continuous aggregates. My recommendation is that we decouple those, do the Timescale upgrade in a separate window two weeks earlier.
+
+Speaker 1: Let's do that. Can you write it up as two separate tickets and get them in front of the platform team by Friday?
+
+Speaker 2: Yes, I'll have both written up by Wednesday end of day.
+
+Speaker 1: Great. Next item, the CDN contract renewal.

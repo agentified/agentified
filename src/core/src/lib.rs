@@ -74,6 +74,7 @@
 
 #![warn(missing_docs)]
 
+mod compression;
 mod dense_cache;
 mod dense_search;
 mod embedding;
@@ -81,6 +82,7 @@ mod embedding_config;
 mod fusion;
 mod indexing;
 mod method;
+mod model_files;
 mod search;
 mod skill;
 mod skill_indexing;
@@ -91,6 +93,10 @@ mod trace;
 mod usage;
 mod usage_learner;
 
+pub use compression::{
+    CompressedPrompt, CompressionGate, CompressionModel, CompressionOptions, CompressionSpec,
+    CompressionStats, CompressorError, PromptCompressor, ProtectPattern, WordScore,
+};
 pub use embedding::EmbedderError;
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use method::{ParseSearchMethodError, SearchMethod};

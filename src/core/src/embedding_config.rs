@@ -435,7 +435,7 @@ impl EmbeddingModel {
     }
 }
 
-fn fingerprint(kind: &str, fields: &[(&str, &str)]) -> String {
+pub(crate) fn fingerprint(kind: &str, fields: &[(&str, &str)]) -> String {
     let mut fingerprint = kind.to_string();
     for (name, value) in fields {
         push_fingerprint_field(&mut fingerprint, name, value);
@@ -531,7 +531,7 @@ fn infer_from_string(
 }
 
 /// A `scheme://…` URL. Requires `://`, so a Windows `C:\…` path never matches.
-fn looks_like_url(s: &str) -> bool {
+pub(crate) fn looks_like_url(s: &str) -> bool {
     match s.find("://") {
         Some(idx) if idx > 0 => {
             let scheme = &s[..idx];
@@ -549,7 +549,7 @@ fn looks_like_url(s: &str) -> bool {
 
 /// An unambiguous local-path intent — even if the path doesn't exist yet, so a
 /// mistyped local path errors as "not found" rather than a phantom HF repo.
-fn looks_like_path(s: &str) -> bool {
+pub(crate) fn looks_like_path(s: &str) -> bool {
     s.starts_with('/')
         || s.starts_with("./")
         || s.starts_with("../")
