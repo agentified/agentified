@@ -23,6 +23,8 @@ pub const CAPTURE_CONTENT_ENV: &str = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAG
 
 /// `ratel.search` — capability search (unifies tool-search and skill-search).
 pub const RATEL_SEARCH: &str = "ratel.search";
+/// `ratel.experiment.arm` — one serving or shadow experiment-arm dispatch.
+pub const RATEL_EXPERIMENT_ARM: &str = "ratel.experiment.arm";
 /// `execute_tool` — the `gen_ai.operation.name` value for a tool invocation.
 ///
 /// Deliberately the standard OTel `gen_ai` operation, not a bespoke
@@ -44,6 +46,18 @@ pub const RATEL_AUTH_FLOW: &str = "ratel.auth.flow";
 pub const RATEL_SEARCH_RESULTS: &str = "ratel.search.results";
 /// `ratel.tool.execution.details` — Opt-In structured tool arguments/result event.
 pub const RATEL_TOOL_EXECUTION_DETAILS: &str = "ratel.tool.execution.details";
+/// `ratel.experiment.results` — ranked measurement for one experiment arm.
+pub const RATEL_EXPERIMENT_RESULTS: &str = "ratel.experiment.results";
+/// `ratel.experiment.comparison` — one shadow-vs-served comparison.
+pub const RATEL_EXPERIMENT_COMPARISON: &str = "ratel.experiment.comparison";
+/// `ratel.experiment.skip` — one shadow dispatch skipped for capacity.
+pub const RATEL_EXPERIMENT_SKIP: &str = "ratel.experiment.skip";
+/// `ratel.experiment.fallback` — one successful fallback selection.
+pub const RATEL_EXPERIMENT_FALLBACK: &str = "ratel.experiment.fallback";
+/// `ratel.experiment.drop` — one peer comparison that could not be emitted.
+pub const RATEL_EXPERIMENT_DROP: &str = "ratel.experiment.drop";
+/// `ratel.experiment.invocation` — attributed or unattributed tool invocation.
+pub const RATEL_EXPERIMENT_INVOCATION: &str = "ratel.experiment.invocation";
 /// `gen_ai.client.inference.operation.details` — inference request/response content.
 pub const GEN_AI_INFERENCE_DETAILS: &str = "gen_ai.client.inference.operation.details";
 
@@ -73,6 +87,104 @@ pub const RATEL_UPSTREAM_TOOL_COUNT: &str = "ratel.upstream.tool_count";
 pub const RATEL_SKILL_ID: &str = "ratel.skill.id";
 /// `ratel.auth.outcome` — `ok` / `refreshed` / `needs_auth` / `failed` (see [`AuthOutcome`]).
 pub const RATEL_AUTH_OUTCOME: &str = "ratel.auth.outcome";
+/// `ratel.experiment.id` — configured experiment id.
+pub const RATEL_EXPERIMENT_ID: &str = "ratel.experiment.id";
+/// `ratel.experiment.selection_id` — opaque selection correlation id.
+pub const RATEL_EXPERIMENT_SELECTION_ID: &str = "ratel.experiment.selection_id";
+/// `ratel.experiment.role` — immutable dispatch role (see [`ExperimentArmRole`]).
+pub const RATEL_EXPERIMENT_ROLE: &str = "ratel.experiment.role";
+/// `ratel.experiment.unit` — pseudonymous 16-hex unit hash.
+pub const RATEL_EXPERIMENT_UNIT: &str = "ratel.experiment.unit";
+/// `ratel.experiment.cold` — whether warmup was unresolved when selection began.
+pub const RATEL_EXPERIMENT_COLD: &str = "ratel.experiment.cold";
+/// `ratel.experiment.outcome` — arm completion attr and reported-outcome EventRecord name.
+pub const RATEL_EXPERIMENT_OUTCOME: &str = "ratel.experiment.outcome";
+/// `ratel.experiment.duration_ms` — arm callback duration in milliseconds.
+pub const RATEL_EXPERIMENT_DURATION_MS: &str = "ratel.experiment.duration_ms";
+/// `ratel.experiment.hit_count` — ranked result count when ranking succeeds.
+pub const RATEL_EXPERIMENT_HIT_COUNT: &str = "ratel.experiment.hit_count";
+/// `ratel.experiment.ranking_error` — error type when ranking projection fails.
+pub const RATEL_EXPERIMENT_RANKING_ERROR: &str = "ratel.experiment.ranking_error";
+/// `ratel.experiment.result_attributes_error` — result-level projection error type.
+pub const RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR: &str =
+    "ratel.experiment.result_attributes_error";
+/// `ratel.experiment.result_attrs_encoding_error` — item-attribute encoding error type.
+pub const RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: &str =
+    "ratel.experiment.result_attrs_encoding_error";
+/// `ratel.experiment.result_ids` — ordered ranked result identifiers.
+pub const RATEL_EXPERIMENT_RESULT_IDS: &str = "ratel.experiment.result_ids";
+/// `ratel.experiment.result_scores` — ordered finite scores when every item has one.
+pub const RATEL_EXPERIMENT_RESULT_SCORES: &str = "ratel.experiment.result_scores";
+/// `ratel.experiment.result_attrs` — capture-gated item attrs aligned to result ids.
+pub const RATEL_EXPERIMENT_RESULT_ATTRS: &str = "ratel.experiment.result_attrs";
+/// `ratel.experiment.served.arm` — effective served arm in a peer comparison.
+pub const RATEL_EXPERIMENT_SERVED_ARM: &str = "ratel.experiment.served.arm";
+/// `ratel.experiment.served.outcome` — effective served arm outcome.
+pub const RATEL_EXPERIMENT_SERVED_OUTCOME: &str = "ratel.experiment.served.outcome";
+/// `ratel.experiment.served.duration_ms` — effective served arm callback duration.
+pub const RATEL_EXPERIMENT_SERVED_DURATION_MS: &str = "ratel.experiment.served.duration_ms";
+/// `ratel.experiment.served.hit_count` — effective served ranking size.
+pub const RATEL_EXPERIMENT_SERVED_HIT_COUNT: &str = "ratel.experiment.served.hit_count";
+/// `ratel.experiment.shadow.arm` — compared shadow arm.
+pub const RATEL_EXPERIMENT_SHADOW_ARM: &str = "ratel.experiment.shadow.arm";
+/// `ratel.experiment.shadow.outcome` — compared shadow arm outcome.
+pub const RATEL_EXPERIMENT_SHADOW_OUTCOME: &str = "ratel.experiment.shadow.outcome";
+/// `ratel.experiment.shadow.duration_ms` — compared shadow arm callback duration.
+pub const RATEL_EXPERIMENT_SHADOW_DURATION_MS: &str = "ratel.experiment.shadow.duration_ms";
+/// `ratel.experiment.shadow.hit_count` — compared shadow ranking size.
+pub const RATEL_EXPERIMENT_SHADOW_HIT_COUNT: &str = "ratel.experiment.shadow.hit_count";
+/// `ratel.experiment.agreement.top1` — whether first ranked ids agree.
+pub const RATEL_EXPERIMENT_AGREEMENT_TOP1: &str = "ratel.experiment.agreement.top1";
+/// `ratel.experiment.agreement.exact_order` — whether complete ordered ids agree.
+pub const RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER: &str = "ratel.experiment.agreement.exact_order";
+/// `ratel.experiment.agreement.overlap_count` — complete-set overlap count.
+pub const RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT: &str =
+    "ratel.experiment.agreement.overlap_count";
+/// `ratel.experiment.agreement.jaccard_at_k` — rank-window Jaccard agreement.
+pub const RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K: &str = "ratel.experiment.agreement.jaccard_at_k";
+/// `ratel.experiment.agreement.k` — rank window used for Jaccard.
+pub const RATEL_EXPERIMENT_AGREEMENT_K: &str = "ratel.experiment.agreement.k";
+/// `ratel.experiment.agreement.item_attrs` — rank-zero shared-key agreement map.
+pub const RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS: &str = "ratel.experiment.agreement.item_attrs";
+/// `ratel.experiment.agreement.result_attrs` — result-level union-key agreement map.
+pub const RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS: &str = "ratel.experiment.agreement.result_attrs";
+/// `ratel.experiment.effective_arm` — caller-visible arm after fallback.
+pub const RATEL_EXPERIMENT_EFFECTIVE_ARM: &str = "ratel.experiment.effective_arm";
+/// `ratel.experiment.skip.arm` — shadow arm skipped for capacity.
+pub const RATEL_EXPERIMENT_SKIP_ARM: &str = "ratel.experiment.skip.arm";
+/// `ratel.experiment.skip.concurrency` — configured shadow concurrency.
+pub const RATEL_EXPERIMENT_SKIP_CONCURRENCY: &str = "ratel.experiment.skip.concurrency";
+/// `ratel.experiment.skip.reason` — skip reason (see [`ExperimentSkipReason`]).
+pub const RATEL_EXPERIMENT_SKIP_REASON: &str = "ratel.experiment.skip.reason";
+/// `ratel.experiment.fallback.effective_arm` — fallback arm that served.
+pub const RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM: &str = "ratel.experiment.fallback.effective_arm";
+/// `ratel.experiment.fallback.reused_shadow` — whether fallback reused admitted shadow work.
+pub const RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW: &str = "ratel.experiment.fallback.reused_shadow";
+/// `ratel.experiment.drop.reason` — comparison drop reason (see [`ExperimentDropReason`]).
+pub const RATEL_EXPERIMENT_DROP_REASON: &str = "ratel.experiment.drop.reason";
+/// `ratel.experiment.invocation.attributed` — whether an invocation matched a selection.
+pub const RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED: &str = "ratel.experiment.invocation.attributed";
+/// `ratel.experiment.invocation.rank` — zero-based first rank, or -1 when absent.
+pub const RATEL_EXPERIMENT_INVOCATION_RANK: &str = "ratel.experiment.invocation.rank";
+/// `ratel.experiment.invocation.age_ms` — selection age at invocation report time.
+pub const RATEL_EXPERIMENT_INVOCATION_AGE_MS: &str = "ratel.experiment.invocation.age_ms";
+/// `ratel.experiment.turn` — optional caller-supplied turn annotation.
+pub const RATEL_EXPERIMENT_TURN: &str = "ratel.experiment.turn";
+/// `ratel.experiment.outcome.label` — free non-empty reported outcome label.
+pub const RATEL_EXPERIMENT_OUTCOME_LABEL: &str = "ratel.experiment.outcome.label";
+/// `ratel.experiment.outcome.score` — finite reported outcome score.
+pub const RATEL_EXPERIMENT_OUTCOME_SCORE: &str = "ratel.experiment.outcome.score";
+
+/// Baggage key matching [`RATEL_EXPERIMENT_ID`].
+pub const RATEL_EXPERIMENT_ID_BAGGAGE_KEY: &str = RATEL_EXPERIMENT_ID;
+/// Baggage key matching [`RATEL_EXPERIMENT_SELECTION_ID`].
+pub const RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY: &str = RATEL_EXPERIMENT_SELECTION_ID;
+/// Baggage key matching [`RATEL_EXPERIMENT_ARM`].
+pub const RATEL_EXPERIMENT_ARM_BAGGAGE_KEY: &str = RATEL_EXPERIMENT_ARM;
+/// Baggage key matching [`RATEL_EXPERIMENT_ROLE`].
+pub const RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY: &str = RATEL_EXPERIMENT_ROLE;
+/// Baggage key matching [`RATEL_EXPERIMENT_UNIT`].
+pub const RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY: &str = RATEL_EXPERIMENT_UNIT;
 
 // ---------------------------------------------------------------------------
 // `gen_ai.*` interop keys (CONVENTIONS.md, Tier 1 — borrowed verbatim)
@@ -174,6 +286,94 @@ impl AuthOutcome {
     }
 }
 
+/// Immutable role assigned when an experiment arm is dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentArmRole {
+    /// The dispatch may supply the caller-visible result — wire value `serving`.
+    Serving,
+    /// The dispatch runs for evaluation — wire value `shadow`.
+    Shadow,
+}
+
+impl ExperimentArmRole {
+    /// The wire value carried by `ratel.experiment.role`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExperimentArmRole::Serving => "serving",
+            ExperimentArmRole::Shadow => "shadow",
+        }
+    }
+}
+
+/// Completion outcome of one experiment-arm dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentArmOutcome {
+    /// Selection returned a non-empty ranking — wire value `ok`.
+    Ok,
+    /// Selection returned an empty ranking — wire value `empty`.
+    Empty,
+    /// The arm rejected with a `TimeoutError` — wire value `timeout`.
+    Timeout,
+    /// Any other arm, transform, or ranking failure — wire value `error`.
+    Error,
+}
+
+impl ExperimentArmOutcome {
+    /// The wire value carried by `ratel.experiment.outcome`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExperimentArmOutcome::Ok => "ok",
+            ExperimentArmOutcome::Empty => "empty",
+            ExperimentArmOutcome::Timeout => "timeout",
+            ExperimentArmOutcome::Error => "error",
+        }
+    }
+}
+
+/// Reason a requested shadow dispatch did not start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentSkipReason {
+    /// No shadow slot was available — wire value `capacity`.
+    Capacity,
+}
+
+impl ExperimentSkipReason {
+    /// The wire value carried by `ratel.experiment.skip.reason`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExperimentSkipReason::Capacity => "capacity",
+        }
+    }
+}
+
+/// Terminal reason a peer-eligible shadow produced no comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentDropReason {
+    /// Shadow selection, transform, or ranking failed — wire value `arm-failed`.
+    ArmFailed,
+    /// The shadow result became the effective fallback — wire value `fallback-consumed`.
+    FallbackConsumed,
+    /// No arm produced an effective result — wire value `selection-failed`.
+    SelectionFailed,
+    /// The effective served ranking failed — wire value `served-ranking-failed`.
+    ServedRankingFailed,
+    /// Comparison itself failed — wire value `comparison-failed`.
+    ComparisonFailed,
+}
+
+impl ExperimentDropReason {
+    /// The wire value carried by `ratel.experiment.drop.reason`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExperimentDropReason::ArmFailed => "arm-failed",
+            ExperimentDropReason::FallbackConsumed => "fallback-consumed",
+            ExperimentDropReason::SelectionFailed => "selection-failed",
+            ExperimentDropReason::ServedRankingFailed => "served-ranking-failed",
+            ExperimentDropReason::ComparisonFailed => "comparison-failed",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +399,46 @@ mod tests {
     }
 
     #[test]
+    fn experiment_arm_role_maps_to_wire_strings() {
+        assert_eq!(ExperimentArmRole::Serving.as_str(), "serving");
+        assert_eq!(ExperimentArmRole::Shadow.as_str(), "shadow");
+    }
+
+    #[test]
+    fn experiment_arm_outcome_maps_to_wire_strings() {
+        assert_eq!(ExperimentArmOutcome::Ok.as_str(), "ok");
+        assert_eq!(ExperimentArmOutcome::Empty.as_str(), "empty");
+        assert_eq!(ExperimentArmOutcome::Timeout.as_str(), "timeout");
+        assert_eq!(ExperimentArmOutcome::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn experiment_skip_reason_maps_to_wire_strings() {
+        assert_eq!(ExperimentSkipReason::Capacity.as_str(), "capacity");
+    }
+
+    #[test]
+    fn experiment_drop_reason_maps_to_wire_strings() {
+        assert_eq!(ExperimentDropReason::ArmFailed.as_str(), "arm-failed");
+        assert_eq!(
+            ExperimentDropReason::FallbackConsumed.as_str(),
+            "fallback-consumed"
+        );
+        assert_eq!(
+            ExperimentDropReason::SelectionFailed.as_str(),
+            "selection-failed"
+        );
+        assert_eq!(
+            ExperimentDropReason::ServedRankingFailed.as_str(),
+            "served-ranking-failed"
+        );
+        assert_eq!(
+            ExperimentDropReason::ComparisonFailed.as_str(),
+            "comparison-failed"
+        );
+    }
+
+    #[test]
     fn ratel_attribute_keys_match_the_pin() {
         assert_eq!(RATEL_ORIGIN, "ratel.origin");
         assert_eq!(RATEL_SEARCH_TARGET, "ratel.search.target");
@@ -211,6 +451,142 @@ mod tests {
         assert_eq!(RATEL_UPSTREAM_TOOL_COUNT, "ratel.upstream.tool_count");
         assert_eq!(RATEL_SKILL_ID, "ratel.skill.id");
         assert_eq!(RATEL_AUTH_OUTCOME, "ratel.auth.outcome");
+        assert_eq!(RATEL_EXPERIMENT_ID, "ratel.experiment.id");
+        assert_eq!(
+            RATEL_EXPERIMENT_SELECTION_ID,
+            "ratel.experiment.selection_id"
+        );
+        assert_eq!(RATEL_EXPERIMENT_ARM, "ratel.experiment.arm");
+        assert_eq!(RATEL_EXPERIMENT_ROLE, "ratel.experiment.role");
+        assert_eq!(RATEL_EXPERIMENT_UNIT, "ratel.experiment.unit");
+        assert_eq!(RATEL_EXPERIMENT_COLD, "ratel.experiment.cold");
+        assert_eq!(RATEL_EXPERIMENT_OUTCOME, "ratel.experiment.outcome");
+        assert_eq!(RATEL_EXPERIMENT_DURATION_MS, "ratel.experiment.duration_ms");
+        assert_eq!(RATEL_EXPERIMENT_HIT_COUNT, "ratel.experiment.hit_count");
+        assert_eq!(
+            RATEL_EXPERIMENT_RANKING_ERROR,
+            "ratel.experiment.ranking_error"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+            "ratel.experiment.result_attributes_error"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR,
+            "ratel.experiment.result_attrs_encoding_error"
+        );
+        assert_eq!(RATEL_EXPERIMENT_RESULT_IDS, "ratel.experiment.result_ids");
+        assert_eq!(
+            RATEL_EXPERIMENT_RESULT_SCORES,
+            "ratel.experiment.result_scores"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_RESULT_ATTRS,
+            "ratel.experiment.result_attrs"
+        );
+        assert_eq!(RATEL_EXPERIMENT_SERVED_ARM, "ratel.experiment.served.arm");
+        assert_eq!(
+            RATEL_EXPERIMENT_SERVED_OUTCOME,
+            "ratel.experiment.served.outcome"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_SERVED_DURATION_MS,
+            "ratel.experiment.served.duration_ms"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_SERVED_HIT_COUNT,
+            "ratel.experiment.served.hit_count"
+        );
+        assert_eq!(RATEL_EXPERIMENT_SHADOW_ARM, "ratel.experiment.shadow.arm");
+        assert_eq!(
+            RATEL_EXPERIMENT_SHADOW_OUTCOME,
+            "ratel.experiment.shadow.outcome"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_SHADOW_DURATION_MS,
+            "ratel.experiment.shadow.duration_ms"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_SHADOW_HIT_COUNT,
+            "ratel.experiment.shadow.hit_count"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_TOP1,
+            "ratel.experiment.agreement.top1"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
+            "ratel.experiment.agreement.exact_order"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT,
+            "ratel.experiment.agreement.overlap_count"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
+            "ratel.experiment.agreement.jaccard_at_k"
+        );
+        assert_eq!(RATEL_EXPERIMENT_AGREEMENT_K, "ratel.experiment.agreement.k");
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
+            "ratel.experiment.agreement.item_attrs"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS,
+            "ratel.experiment.agreement.result_attrs"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_EFFECTIVE_ARM,
+            "ratel.experiment.effective_arm"
+        );
+        assert_eq!(RATEL_EXPERIMENT_SKIP_ARM, "ratel.experiment.skip.arm");
+        assert_eq!(
+            RATEL_EXPERIMENT_SKIP_CONCURRENCY,
+            "ratel.experiment.skip.concurrency"
+        );
+        assert_eq!(RATEL_EXPERIMENT_SKIP_REASON, "ratel.experiment.skip.reason");
+        assert_eq!(
+            RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM,
+            "ratel.experiment.fallback.effective_arm"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW,
+            "ratel.experiment.fallback.reused_shadow"
+        );
+        assert_eq!(RATEL_EXPERIMENT_DROP_REASON, "ratel.experiment.drop.reason");
+        assert_eq!(
+            RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED,
+            "ratel.experiment.invocation.attributed"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_INVOCATION_RANK,
+            "ratel.experiment.invocation.rank"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_INVOCATION_AGE_MS,
+            "ratel.experiment.invocation.age_ms"
+        );
+        assert_eq!(RATEL_EXPERIMENT_TURN, "ratel.experiment.turn");
+        assert_eq!(
+            RATEL_EXPERIMENT_OUTCOME_LABEL,
+            "ratel.experiment.outcome.label"
+        );
+        assert_eq!(
+            RATEL_EXPERIMENT_OUTCOME_SCORE,
+            "ratel.experiment.outcome.score"
+        );
+    }
+
+    #[test]
+    fn experiment_baggage_keys_alias_matching_span_attributes() {
+        assert_eq!(RATEL_EXPERIMENT_ID_BAGGAGE_KEY, RATEL_EXPERIMENT_ID);
+        assert_eq!(
+            RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY,
+            RATEL_EXPERIMENT_SELECTION_ID
+        );
+        assert_eq!(RATEL_EXPERIMENT_ARM_BAGGAGE_KEY, RATEL_EXPERIMENT_ARM);
+        assert_eq!(RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY, RATEL_EXPERIMENT_ROLE);
+        assert_eq!(RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY, RATEL_EXPERIMENT_UNIT);
     }
 
     #[test]
@@ -230,6 +606,13 @@ mod tests {
 
     #[test]
     fn event_record_names_match_the_pin() {
+        assert_eq!(RATEL_EXPERIMENT_RESULTS, "ratel.experiment.results");
+        assert_eq!(RATEL_EXPERIMENT_COMPARISON, "ratel.experiment.comparison");
+        assert_eq!(RATEL_EXPERIMENT_SKIP, "ratel.experiment.skip");
+        assert_eq!(RATEL_EXPERIMENT_FALLBACK, "ratel.experiment.fallback");
+        assert_eq!(RATEL_EXPERIMENT_DROP, "ratel.experiment.drop");
+        assert_eq!(RATEL_EXPERIMENT_INVOCATION, "ratel.experiment.invocation");
+        assert_eq!(RATEL_EXPERIMENT_OUTCOME, "ratel.experiment.outcome");
         assert_eq!(RATEL_SEARCH_RESULTS, "ratel.search.results");
         assert_eq!(RATEL_TOOL_EXECUTION_DETAILS, "ratel.tool.execution.details");
         assert_eq!(
@@ -261,6 +644,7 @@ mod tests {
     #[test]
     fn span_names_match_the_pin() {
         assert_eq!(RATEL_SEARCH, "ratel.search");
+        assert_eq!(RATEL_EXPERIMENT_ARM, "ratel.experiment.arm");
         assert_eq!(RATEL_SKILL_LOAD, "ratel.skill.load");
         assert_eq!(RATEL_UPSTREAM_REGISTER, "ratel.upstream.register");
         assert_eq!(RATEL_AUTH_FLOW, "ratel.auth.flow");
@@ -312,6 +696,49 @@ mod tests {
             RATEL_UPSTREAM_TOOL_COUNT,
             RATEL_SKILL_ID,
             RATEL_AUTH_OUTCOME,
+            RATEL_EXPERIMENT_ID,
+            RATEL_EXPERIMENT_SELECTION_ID,
+            RATEL_EXPERIMENT_ARM,
+            RATEL_EXPERIMENT_ROLE,
+            RATEL_EXPERIMENT_UNIT,
+            RATEL_EXPERIMENT_COLD,
+            RATEL_EXPERIMENT_OUTCOME,
+            RATEL_EXPERIMENT_DURATION_MS,
+            RATEL_EXPERIMENT_HIT_COUNT,
+            RATEL_EXPERIMENT_RANKING_ERROR,
+            RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+            RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR,
+            RATEL_EXPERIMENT_RESULT_IDS,
+            RATEL_EXPERIMENT_RESULT_SCORES,
+            RATEL_EXPERIMENT_RESULT_ATTRS,
+            RATEL_EXPERIMENT_SERVED_ARM,
+            RATEL_EXPERIMENT_SERVED_OUTCOME,
+            RATEL_EXPERIMENT_SERVED_DURATION_MS,
+            RATEL_EXPERIMENT_SERVED_HIT_COUNT,
+            RATEL_EXPERIMENT_SHADOW_ARM,
+            RATEL_EXPERIMENT_SHADOW_OUTCOME,
+            RATEL_EXPERIMENT_SHADOW_DURATION_MS,
+            RATEL_EXPERIMENT_SHADOW_HIT_COUNT,
+            RATEL_EXPERIMENT_AGREEMENT_TOP1,
+            RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
+            RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT,
+            RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
+            RATEL_EXPERIMENT_AGREEMENT_K,
+            RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
+            RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS,
+            RATEL_EXPERIMENT_EFFECTIVE_ARM,
+            RATEL_EXPERIMENT_SKIP_ARM,
+            RATEL_EXPERIMENT_SKIP_CONCURRENCY,
+            RATEL_EXPERIMENT_SKIP_REASON,
+            RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM,
+            RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW,
+            RATEL_EXPERIMENT_DROP_REASON,
+            RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED,
+            RATEL_EXPERIMENT_INVOCATION_RANK,
+            RATEL_EXPERIMENT_INVOCATION_AGE_MS,
+            RATEL_EXPERIMENT_TURN,
+            RATEL_EXPERIMENT_OUTCOME_LABEL,
+            RATEL_EXPERIMENT_OUTCOME_SCORE,
         ] {
             assert!(key.starts_with("ratel."), "{key} is not under ratel.*");
         }
@@ -333,6 +760,49 @@ mod tests {
             RATEL_UPSTREAM_TOOL_COUNT,
             RATEL_SKILL_ID,
             RATEL_AUTH_OUTCOME,
+            RATEL_EXPERIMENT_ID,
+            RATEL_EXPERIMENT_SELECTION_ID,
+            RATEL_EXPERIMENT_ARM,
+            RATEL_EXPERIMENT_ROLE,
+            RATEL_EXPERIMENT_UNIT,
+            RATEL_EXPERIMENT_COLD,
+            RATEL_EXPERIMENT_OUTCOME,
+            RATEL_EXPERIMENT_DURATION_MS,
+            RATEL_EXPERIMENT_HIT_COUNT,
+            RATEL_EXPERIMENT_RANKING_ERROR,
+            RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR,
+            RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR,
+            RATEL_EXPERIMENT_RESULT_IDS,
+            RATEL_EXPERIMENT_RESULT_SCORES,
+            RATEL_EXPERIMENT_RESULT_ATTRS,
+            RATEL_EXPERIMENT_SERVED_ARM,
+            RATEL_EXPERIMENT_SERVED_OUTCOME,
+            RATEL_EXPERIMENT_SERVED_DURATION_MS,
+            RATEL_EXPERIMENT_SERVED_HIT_COUNT,
+            RATEL_EXPERIMENT_SHADOW_ARM,
+            RATEL_EXPERIMENT_SHADOW_OUTCOME,
+            RATEL_EXPERIMENT_SHADOW_DURATION_MS,
+            RATEL_EXPERIMENT_SHADOW_HIT_COUNT,
+            RATEL_EXPERIMENT_AGREEMENT_TOP1,
+            RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
+            RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT,
+            RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
+            RATEL_EXPERIMENT_AGREEMENT_K,
+            RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
+            RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS,
+            RATEL_EXPERIMENT_EFFECTIVE_ARM,
+            RATEL_EXPERIMENT_SKIP_ARM,
+            RATEL_EXPERIMENT_SKIP_CONCURRENCY,
+            RATEL_EXPERIMENT_SKIP_REASON,
+            RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM,
+            RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW,
+            RATEL_EXPERIMENT_DROP_REASON,
+            RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED,
+            RATEL_EXPERIMENT_INVOCATION_RANK,
+            RATEL_EXPERIMENT_INVOCATION_AGE_MS,
+            RATEL_EXPERIMENT_TURN,
+            RATEL_EXPERIMENT_OUTCOME_LABEL,
+            RATEL_EXPERIMENT_OUTCOME_SCORE,
             GEN_AI_OPERATION_NAME,
             GEN_AI_TOOL_NAME,
             GEN_AI_TOOL_CALL_ID,
@@ -352,6 +822,7 @@ mod tests {
         let names = [
             RATEL_SEARCH,
             EXECUTE_TOOL,
+            RATEL_EXPERIMENT_ARM,
             RATEL_SKILL_LOAD,
             RATEL_UPSTREAM_REGISTER,
             RATEL_AUTH_FLOW,
@@ -366,6 +837,13 @@ mod tests {
         let names = [
             RATEL_SEARCH_RESULTS,
             RATEL_TOOL_EXECUTION_DETAILS,
+            RATEL_EXPERIMENT_RESULTS,
+            RATEL_EXPERIMENT_COMPARISON,
+            RATEL_EXPERIMENT_SKIP,
+            RATEL_EXPERIMENT_FALLBACK,
+            RATEL_EXPERIMENT_DROP,
+            RATEL_EXPERIMENT_INVOCATION,
+            RATEL_EXPERIMENT_OUTCOME,
             GEN_AI_INFERENCE_DETAILS,
         ];
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();

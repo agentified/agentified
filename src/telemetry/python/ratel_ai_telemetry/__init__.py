@@ -30,6 +30,9 @@ CAPTURE_CONTENT_ENV: Final = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
 #: ratel.search — capability search (unifies tool-search and skill-search).
 RATEL_SEARCH: Final = "ratel.search"
 
+#: ratel.experiment.arm — one serving or shadow experiment-arm dispatch.
+RATEL_EXPERIMENT_ARM: Final = "ratel.experiment.arm"
+
 #: execute_tool — the gen_ai.operation.name value for a tool invocation.
 #: Deliberately the standard OTel gen_ai operation, not a bespoke ratel.invoke span,
 #: so a generic OTel backend already understands it (locked 2026-07-05). The invoke
@@ -54,6 +57,24 @@ RATEL_SEARCH_RESULTS: Final = "ratel.search.results"
 
 #: ratel.tool.execution.details — Opt-In structured tool arguments/result event.
 RATEL_TOOL_EXECUTION_DETAILS: Final = "ratel.tool.execution.details"
+
+#: ratel.experiment.results — ranked measurement for one experiment arm.
+RATEL_EXPERIMENT_RESULTS: Final = "ratel.experiment.results"
+
+#: ratel.experiment.comparison — one shadow-vs-served comparison.
+RATEL_EXPERIMENT_COMPARISON: Final = "ratel.experiment.comparison"
+
+#: ratel.experiment.skip — one shadow dispatch skipped for capacity.
+RATEL_EXPERIMENT_SKIP: Final = "ratel.experiment.skip"
+
+#: ratel.experiment.fallback — one successful fallback selection.
+RATEL_EXPERIMENT_FALLBACK: Final = "ratel.experiment.fallback"
+
+#: ratel.experiment.drop — one peer comparison that could not be emitted.
+RATEL_EXPERIMENT_DROP: Final = "ratel.experiment.drop"
+
+#: ratel.experiment.invocation — attributed or unattributed tool invocation.
+RATEL_EXPERIMENT_INVOCATION: Final = "ratel.experiment.invocation"
 
 #: gen_ai.client.inference.operation.details — inference request/response content.
 GEN_AI_INFERENCE_DETAILS: Final = "gen_ai.client.inference.operation.details"
@@ -94,6 +115,142 @@ RATEL_SKILL_ID: Final = "ratel.skill.id"
 
 #: ratel.auth.outcome — "ok" / "refreshed" / "needs_auth" / "failed" (see AuthOutcome).
 RATEL_AUTH_OUTCOME: Final = "ratel.auth.outcome"
+
+#: ratel.experiment.id — configured experiment id.
+RATEL_EXPERIMENT_ID: Final = "ratel.experiment.id"
+
+#: ratel.experiment.selection_id — opaque selection correlation id.
+RATEL_EXPERIMENT_SELECTION_ID: Final = "ratel.experiment.selection_id"
+
+#: ratel.experiment.role — immutable dispatch role (see ExperimentArmRole).
+RATEL_EXPERIMENT_ROLE: Final = "ratel.experiment.role"
+
+#: ratel.experiment.unit — pseudonymous 16-hex unit hash.
+RATEL_EXPERIMENT_UNIT: Final = "ratel.experiment.unit"
+
+#: ratel.experiment.cold — whether warmup was unresolved when selection began.
+RATEL_EXPERIMENT_COLD: Final = "ratel.experiment.cold"
+
+#: ratel.experiment.outcome — arm completion attr and reported-outcome EventRecord name.
+RATEL_EXPERIMENT_OUTCOME: Final = "ratel.experiment.outcome"
+
+#: ratel.experiment.duration_ms — arm callback duration in milliseconds.
+RATEL_EXPERIMENT_DURATION_MS: Final = "ratel.experiment.duration_ms"
+
+#: ratel.experiment.hit_count — ranked result count when ranking succeeds.
+RATEL_EXPERIMENT_HIT_COUNT: Final = "ratel.experiment.hit_count"
+
+#: ratel.experiment.ranking_error — error type when ranking projection fails.
+RATEL_EXPERIMENT_RANKING_ERROR: Final = "ratel.experiment.ranking_error"
+
+#: ratel.experiment.result_attributes_error — result-level projection error type.
+RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR: Final = "ratel.experiment.result_attributes_error"
+
+#: ratel.experiment.result_attrs_encoding_error — item-attribute encoding error type.
+RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: Final = (
+    "ratel.experiment.result_attrs_encoding_error"
+)
+
+#: ratel.experiment.result_ids — ordered ranked result identifiers.
+RATEL_EXPERIMENT_RESULT_IDS: Final = "ratel.experiment.result_ids"
+
+#: ratel.experiment.result_scores — ordered finite scores when every item has one.
+RATEL_EXPERIMENT_RESULT_SCORES: Final = "ratel.experiment.result_scores"
+
+#: ratel.experiment.result_attrs — capture-gated item attrs aligned to result ids.
+RATEL_EXPERIMENT_RESULT_ATTRS: Final = "ratel.experiment.result_attrs"
+
+#: ratel.experiment.served.arm — effective served arm in a peer comparison.
+RATEL_EXPERIMENT_SERVED_ARM: Final = "ratel.experiment.served.arm"
+
+#: ratel.experiment.served.outcome — effective served arm outcome.
+RATEL_EXPERIMENT_SERVED_OUTCOME: Final = "ratel.experiment.served.outcome"
+
+#: ratel.experiment.served.duration_ms — effective served arm callback duration.
+RATEL_EXPERIMENT_SERVED_DURATION_MS: Final = "ratel.experiment.served.duration_ms"
+
+#: ratel.experiment.served.hit_count — effective served ranking size.
+RATEL_EXPERIMENT_SERVED_HIT_COUNT: Final = "ratel.experiment.served.hit_count"
+
+#: ratel.experiment.shadow.arm — compared shadow arm.
+RATEL_EXPERIMENT_SHADOW_ARM: Final = "ratel.experiment.shadow.arm"
+
+#: ratel.experiment.shadow.outcome — compared shadow arm outcome.
+RATEL_EXPERIMENT_SHADOW_OUTCOME: Final = "ratel.experiment.shadow.outcome"
+
+#: ratel.experiment.shadow.duration_ms — compared shadow arm callback duration.
+RATEL_EXPERIMENT_SHADOW_DURATION_MS: Final = "ratel.experiment.shadow.duration_ms"
+
+#: ratel.experiment.shadow.hit_count — compared shadow ranking size.
+RATEL_EXPERIMENT_SHADOW_HIT_COUNT: Final = "ratel.experiment.shadow.hit_count"
+
+#: ratel.experiment.agreement.top1 — whether first ranked ids agree.
+RATEL_EXPERIMENT_AGREEMENT_TOP1: Final = "ratel.experiment.agreement.top1"
+
+#: ratel.experiment.agreement.exact_order — whether complete ordered ids agree.
+RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER: Final = "ratel.experiment.agreement.exact_order"
+
+#: ratel.experiment.agreement.overlap_count — complete-set overlap count.
+RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT: Final = "ratel.experiment.agreement.overlap_count"
+
+#: ratel.experiment.agreement.jaccard_at_k — rank-window Jaccard agreement.
+RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K: Final = "ratel.experiment.agreement.jaccard_at_k"
+
+#: ratel.experiment.agreement.k — rank window used for Jaccard.
+RATEL_EXPERIMENT_AGREEMENT_K: Final = "ratel.experiment.agreement.k"
+
+#: ratel.experiment.agreement.item_attrs — rank-zero shared-key agreement map.
+RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS: Final = "ratel.experiment.agreement.item_attrs"
+
+#: ratel.experiment.agreement.result_attrs — result-level union-key agreement map.
+RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS: Final = "ratel.experiment.agreement.result_attrs"
+
+#: ratel.experiment.effective_arm — caller-visible arm after fallback.
+RATEL_EXPERIMENT_EFFECTIVE_ARM: Final = "ratel.experiment.effective_arm"
+
+#: ratel.experiment.skip.arm — shadow arm skipped for capacity.
+RATEL_EXPERIMENT_SKIP_ARM: Final = "ratel.experiment.skip.arm"
+
+#: ratel.experiment.skip.concurrency — configured shadow concurrency.
+RATEL_EXPERIMENT_SKIP_CONCURRENCY: Final = "ratel.experiment.skip.concurrency"
+
+#: ratel.experiment.skip.reason — skip reason (see ExperimentSkipReason).
+RATEL_EXPERIMENT_SKIP_REASON: Final = "ratel.experiment.skip.reason"
+
+#: ratel.experiment.fallback.effective_arm — fallback arm that served.
+RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM: Final = "ratel.experiment.fallback.effective_arm"
+
+#: ratel.experiment.fallback.reused_shadow — whether fallback reused admitted shadow work.
+RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW: Final = "ratel.experiment.fallback.reused_shadow"
+
+#: ratel.experiment.drop.reason — comparison drop reason (see ExperimentDropReason).
+RATEL_EXPERIMENT_DROP_REASON: Final = "ratel.experiment.drop.reason"
+
+#: ratel.experiment.invocation.attributed — whether an invocation matched a selection.
+RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED: Final = "ratel.experiment.invocation.attributed"
+
+#: ratel.experiment.invocation.rank — zero-based first rank, or -1 when absent.
+RATEL_EXPERIMENT_INVOCATION_RANK: Final = "ratel.experiment.invocation.rank"
+
+#: ratel.experiment.invocation.age_ms — selection age at invocation report time.
+RATEL_EXPERIMENT_INVOCATION_AGE_MS: Final = "ratel.experiment.invocation.age_ms"
+
+#: ratel.experiment.turn — optional caller-supplied turn annotation.
+RATEL_EXPERIMENT_TURN: Final = "ratel.experiment.turn"
+
+#: ratel.experiment.outcome.label — free non-empty reported outcome label.
+RATEL_EXPERIMENT_OUTCOME_LABEL: Final = "ratel.experiment.outcome.label"
+
+#: ratel.experiment.outcome.score — finite reported outcome score.
+RATEL_EXPERIMENT_OUTCOME_SCORE: Final = "ratel.experiment.outcome.score"
+
+# Experiment baggage keys intentionally equal their matching span-attribute keys
+# (ADR-0016). Explicit aliases keep baggage construction discoverable.
+RATEL_EXPERIMENT_ID_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_ID
+RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_SELECTION_ID
+RATEL_EXPERIMENT_ARM_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_ARM
+RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_ROLE
+RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_UNIT
 
 # ---------------------------------------------------------------------------
 # gen_ai.* interop keys (CONVENTIONS.md, Tier 1 — borrowed verbatim)
@@ -162,6 +319,38 @@ class AuthOutcome(str, Enum):
     FAILED = "failed"
 
 
+class ExperimentArmRole(str, Enum):
+    """Immutable role assigned when an experiment arm is dispatched."""
+
+    SERVING = "serving"
+    SHADOW = "shadow"
+
+
+class ExperimentArmOutcome(str, Enum):
+    """Completion outcome of one experiment-arm dispatch."""
+
+    OK = "ok"
+    EMPTY = "empty"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
+class ExperimentSkipReason(str, Enum):
+    """Reason a requested shadow dispatch did not start."""
+
+    CAPACITY = "capacity"
+
+
+class ExperimentDropReason(str, Enum):
+    """Terminal reason a peer-eligible shadow produced no comparison."""
+
+    ARM_FAILED = "arm-failed"
+    FALLBACK_CONSUMED = "fallback-consumed"
+    SELECTION_FAILED = "selection-failed"
+    SERVED_RANKING_FAILED = "served-ranking-failed"
+    COMPARISON_FAILED = "comparison-failed"
+
+
 # The OTLP exporter surface (init() + config/gate) lives in the opt-in .otlp
 # submodule behind the [otlp] extra, so plain constant imports stay OTel-free
 # (ADR-0007). A module-level __getattr__ lazily resolves it, so the ergonomic
@@ -221,6 +410,60 @@ __all__ = [
     "GEN_AI_TOOL_NAME",
     "RATEL_AUTH_FLOW",
     "RATEL_AUTH_OUTCOME",
+    "RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER",
+    "RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS",
+    "RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K",
+    "RATEL_EXPERIMENT_AGREEMENT_K",
+    "RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT",
+    "RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS",
+    "RATEL_EXPERIMENT_AGREEMENT_TOP1",
+    "RATEL_EXPERIMENT_ARM",
+    "RATEL_EXPERIMENT_ARM_BAGGAGE_KEY",
+    "RATEL_EXPERIMENT_COLD",
+    "RATEL_EXPERIMENT_COMPARISON",
+    "RATEL_EXPERIMENT_DROP",
+    "RATEL_EXPERIMENT_DROP_REASON",
+    "RATEL_EXPERIMENT_DURATION_MS",
+    "RATEL_EXPERIMENT_EFFECTIVE_ARM",
+    "RATEL_EXPERIMENT_FALLBACK",
+    "RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM",
+    "RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW",
+    "RATEL_EXPERIMENT_HIT_COUNT",
+    "RATEL_EXPERIMENT_ID",
+    "RATEL_EXPERIMENT_ID_BAGGAGE_KEY",
+    "RATEL_EXPERIMENT_INVOCATION",
+    "RATEL_EXPERIMENT_INVOCATION_AGE_MS",
+    "RATEL_EXPERIMENT_INVOCATION_ATTRIBUTED",
+    "RATEL_EXPERIMENT_INVOCATION_RANK",
+    "RATEL_EXPERIMENT_OUTCOME",
+    "RATEL_EXPERIMENT_OUTCOME_LABEL",
+    "RATEL_EXPERIMENT_OUTCOME_SCORE",
+    "RATEL_EXPERIMENT_RANKING_ERROR",
+    "RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR",
+    "RATEL_EXPERIMENT_RESULT_ATTRS",
+    "RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR",
+    "RATEL_EXPERIMENT_RESULT_IDS",
+    "RATEL_EXPERIMENT_RESULT_SCORES",
+    "RATEL_EXPERIMENT_RESULTS",
+    "RATEL_EXPERIMENT_ROLE",
+    "RATEL_EXPERIMENT_ROLE_BAGGAGE_KEY",
+    "RATEL_EXPERIMENT_SERVED_ARM",
+    "RATEL_EXPERIMENT_SERVED_DURATION_MS",
+    "RATEL_EXPERIMENT_SERVED_HIT_COUNT",
+    "RATEL_EXPERIMENT_SERVED_OUTCOME",
+    "RATEL_EXPERIMENT_SELECTION_ID",
+    "RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY",
+    "RATEL_EXPERIMENT_SHADOW_ARM",
+    "RATEL_EXPERIMENT_SHADOW_DURATION_MS",
+    "RATEL_EXPERIMENT_SHADOW_HIT_COUNT",
+    "RATEL_EXPERIMENT_SHADOW_OUTCOME",
+    "RATEL_EXPERIMENT_SKIP",
+    "RATEL_EXPERIMENT_SKIP_ARM",
+    "RATEL_EXPERIMENT_SKIP_CONCURRENCY",
+    "RATEL_EXPERIMENT_SKIP_REASON",
+    "RATEL_EXPERIMENT_TURN",
+    "RATEL_EXPERIMENT_UNIT",
+    "RATEL_EXPERIMENT_UNIT_BAGGAGE_KEY",
     "RATEL_ORIGIN",
     "RATEL_SEARCH",
     "RATEL_SEARCH_HIT_COUNT",
@@ -238,6 +481,10 @@ __all__ = [
     "RATEL_UPSTREAM_TRANSPORT",
     "SEMCONV_VERSION",
     "AuthOutcome",
+    "ExperimentArmOutcome",
+    "ExperimentArmRole",
+    "ExperimentDropReason",
+    "ExperimentSkipReason",
     "Origin",
     "SearchTarget",
     # The OTLP exporter surface, lazily resolved from `.otlp` via __getattr__ above
