@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -14,9 +15,10 @@ use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
 use crate::tool::Tool;
 use crate::trace::{
-    ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEvent, TraceSink,
+    ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEnvelope, TraceEvent, TraceSink,
 };
 use crate::usage::{ArmOutcome, Capability, IntentGraph, UsageArm};
+use crate::usage_learner::{self, ObservationPolicy};
 
 /// Whether adaptive usage ranking is currently contributing to a registry's
 /// results — the SDK-facing view of the model-compatibility check (ADR-0014).
@@ -314,6 +316,70 @@ impl ToolRegistry {
             g.rebuild_centroids(per_cluster, fp);
         }
         Ok(())
+    }
+
+    /// Build an [`IntentGraph`] by stepping through a trace log — the offline
+    /// half of baseline seeding.
+    ///
+    /// This is the same learning algorithm the live path runs, driven from a
+    /// file instead of live traffic: each accepted search opens a window for its
+    /// session, and each confirming invoke folds one observation in. It lives on
+    /// the registry rather than on `IntentGraph` because **the registry owns the
+    /// embedder**: every distinct query is embedded up front, so clusters form
+    /// at the dense tier exactly as they would live. A graph replayed without an
+    /// embedder clusters lexically, and a later
+    /// [`Self::rebuild_intent_graph`] cannot undo that — it replaces centroids
+    /// but never revisits cluster boundaries.
+    ///
+    /// **One call covers both catalogs.** A graph carries `tools` and `skills`
+    /// edges and is shared between the tool and skill registries, so a log
+    /// containing both kinds populates both maps here. There is no need to run
+    /// this again on the skill registry; that would double-count.
+    ///
+    /// Returns a **new** graph; attaching it is a separate, explicit step
+    /// ([`Self::set_intent_graph`]), so inspecting readiness before switching
+    /// anything on is the default rather than an opt-out.
+    ///
+    /// `policy` selects which searches count and how — see
+    /// [`ObservationPolicy`]. For a baseline capture that is
+    /// `OriginFilter::Exactly(Origin::Baseline)` with `Provenance::Seeded`.
+    ///
+    /// # Errors
+    ///
+    /// [`EmbedderError`] if the queries cannot be embedded — the model fails to
+    /// load, or an endpoint is unreachable. The log is untouched, so the call is
+    /// safe to retry.
+    pub fn initialize_intent_graph(
+        &self,
+        envelopes: impl IntoIterator<Item = TraceEnvelope>,
+        policy: ObservationPolicy,
+    ) -> Result<IntentGraph, EmbedderError> {
+        let envelopes: Vec<TraceEnvelope> = envelopes.into_iter().collect();
+
+        // Embed every distinct query once, in one batch: the log repeats
+        // questions heavily, and embedding per observation would pay for each
+        // repeat. Empty input short-circuits so a log with no accepted searches
+        // never loads a model.
+        let texts = usage_learner::queries_to_embed(&envelopes, policy);
+        let (vectors, fingerprint) = if texts.is_empty() {
+            (Vec::new(), None)
+        } else {
+            let (v, fp) = self
+                .dense
+                .embed_texts_with_identity(&texts, self.sink.as_ref())?;
+            (v, Some(fp))
+        };
+        let embeddings: HashMap<String, Vec<f32>> = texts.into_iter().zip(vectors).collect();
+
+        let mut graph = IntentGraph::empty();
+        usage_learner::replay_log_into(
+            &mut graph,
+            &envelopes,
+            policy,
+            &embeddings,
+            fingerprint.as_deref(),
+        );
+        Ok(graph)
     }
 
     /// Resolve the usage arm for one query, and record the outcome.
@@ -894,6 +960,7 @@ mod tests {
     };
     use crate::trace::MemorySink;
     use crate::usage::Capability;
+    use crate::usage_learner::{OriginFilter, Provenance};
 
     /// Deterministic, network-free embedder: a 3-d one-hot keyed on a keyword so
     /// dense ranking is predictable ("read" docs/queries collide, etc.).
@@ -1544,6 +1611,229 @@ mod tests {
             graph.intents[0].centroid.is_none(),
             "must not borrow another query's embedding"
         );
+    }
+
+    // ---- initialize_intent_graph: offline seeding (baseline capture) --------
+
+    fn env(ts: u64, session: &str, event: TraceEvent) -> TraceEnvelope {
+        TraceEnvelope {
+            v: 1,
+            ts,
+            session_id: session.into(),
+            event,
+        }
+    }
+
+    fn baseline_search(query: &str) -> TraceEvent {
+        TraceEvent::Search {
+            query: query.into(),
+            origin: Origin::Baseline,
+            top_k: 0,
+            hits: Vec::new(),
+            stages: Vec::new(),
+            took_ms: 0,
+        }
+    }
+
+    fn started(tool_id: &str) -> TraceEvent {
+        TraceEvent::InvokeStart {
+            tool_id: tool_id.into(),
+            args_size_bytes: 0,
+        }
+    }
+
+    fn seeding_policy() -> ObservationPolicy {
+        ObservationPolicy::default()
+            .with_origins(OriginFilter::Exactly(Origin::Baseline))
+            .with_provenance(Provenance::Seeded)
+    }
+
+    #[test]
+    fn initialization_clusters_densely_not_lexically() {
+        // The reason this lives on the registry rather than on IntentGraph.
+        // "delete a path" and "remove something" share NO content tokens, so the
+        // lexical tier keeps them apart; the stub embeds both to the same
+        // vector, so the dense tier merges them — which is what the live path
+        // would have done. A model-free replay would produce two clusters here,
+        // and a later rebuild_intent_graph could not merge them back.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("delete a path")),
+            env(2, "s1", started("delete_file")),
+            env(3, "s1", baseline_search("remove something")),
+            env(4, "s1", started("delete_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.len(), 1, "the two phrasings are one intent");
+        assert_eq!(graph.intents[0].support, 2);
+        assert_eq!(graph.intents[0].seeded_support, 2, "all of it seeded");
+        assert!(
+            graph.intents[0].centroid.is_some(),
+            "clustered densely, so the cluster carries a centroid"
+        );
+        assert_eq!(graph.intents[0].tools.get("delete_file"), Some(&2.0));
+    }
+
+    #[test]
+    fn an_interleaved_two_session_log_never_cross_pairs() {
+        // Sessions interleave in one log and share one graph. A single pending
+        // slot would attribute s2's invoke to s1's question and record an edge
+        // nobody produced.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("read a file")),
+            env(2, "s2", baseline_search("delete a path")),
+            // s1 acts only now — after s2's search landed in between.
+            env(3, "s1", started("read_file")),
+            env(4, "s2", started("delete_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.len(), 2, "two distinct questions");
+        for it in &graph.intents {
+            let (expected, got) = if it.members.iter().any(|m| m.contains("read")) {
+                ("read_file", &it.tools)
+            } else {
+                ("delete_file", &it.tools)
+            };
+            assert_eq!(
+                got.keys().collect::<Vec<_>>(),
+                vec![expected],
+                "cluster {:?} paired with the wrong session's invoke",
+                it.members
+            );
+        }
+    }
+
+    #[test]
+    fn initialization_ignores_searches_the_policy_rejects() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("read a file")),
+            // Ratel's own probe, mid-turn. It must not steal the invoke.
+            env(
+                2,
+                "s1",
+                TraceEvent::Search {
+                    query: "delete a path".into(),
+                    origin: Origin::Direct,
+                    top_k: 5,
+                    hits: Vec::new(),
+                    stages: Vec::new(),
+                    took_ms: 0,
+                },
+            ),
+            env(3, "s1", started("read_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.len(), 1);
+        assert!(graph.intents[0].members.iter().any(|m| m.contains("read")));
+        assert_eq!(graph.intents[0].tools.get("read_file"), Some(&1.0));
+    }
+
+    #[test]
+    fn observations_are_stamped_with_the_envelopes_own_timestamp() {
+        // Decay must reflect when the work happened, not when the replay ran,
+        // or a year-old log would come back looking brand new.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1_700_000_000_000, "s1", baseline_search("read a file")),
+            env(1_700_000_000_500, "s1", started("read_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.built_from_ts, 1_700_000_000_500);
+        assert_eq!(graph.intents[0].last_ts, 1_700_000_000_500);
+    }
+
+    #[test]
+    fn an_empty_log_yields_an_empty_graph_without_loading_a_model() {
+        // A failing embedder proves no model is resolved: with nothing accepted
+        // to embed, initialization must not reach for one.
+        let reg = catalog(Arc::new(FailingEmbedder));
+        let graph = reg
+            .initialize_intent_graph(Vec::new(), seeding_policy())
+            .expect("no queries to embed, so no embedder needed");
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn initialization_returns_a_detached_graph() {
+        // Building must not switch ranking on: inspecting readiness first is the
+        // default, and attaching stays an explicit separate act.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("read a file")),
+            env(2, "s1", started("read_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.len(), 1);
+        assert_eq!(
+            reg.adaptive_ranking_status(),
+            AdaptiveRankingStatus::Inactive,
+            "the registry is untouched until set_intent_graph is called"
+        );
+    }
+
+    #[test]
+    fn one_call_populates_both_tool_and_skill_edges() {
+        // A graph is shared between the two catalogs, so a log carrying both
+        // kinds fills both maps here — running this again on the skill registry
+        // would double-count.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("read a file")),
+            env(2, "s1", started("read_file")),
+            env(
+                3,
+                "s1",
+                TraceEvent::SkillInvoke {
+                    skill_id: "file-triage".into(),
+                    took_ms: 1,
+                },
+            ),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(log, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.intents[0].tools.get("read_file"), Some(&1.0));
+        assert_eq!(graph.intents[0].skills.get("file-triage"), Some(&1.0));
+        assert_eq!(
+            graph.intents[0].support, 1,
+            "one question, two capabilities"
+        );
+    }
+
+    #[test]
+    fn an_embedder_failure_surfaces_rather_than_degrading_to_lexical() {
+        // Silently producing a lexical graph would be worse than failing: the
+        // caller would ship a fragmented graph believing it was dense.
+        let reg = catalog(Arc::new(FailingEmbedder));
+        let log = vec![
+            env(1, "s1", baseline_search("read a file")),
+            env(2, "s1", started("read_file")),
+        ];
+        assert!(reg.initialize_intent_graph(log, seeding_policy()).is_err());
     }
 
     // ---- usage ranking on the dense paths (ADR-0014) -----------------------

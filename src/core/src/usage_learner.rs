@@ -42,6 +42,7 @@
 //! [`IntentGraph::arm`] picks the tier from what the graph carries, so either
 //! kind works on every [`crate::SearchMethod`].
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -159,6 +160,113 @@ impl ObservationPolicy {
     pub fn with_provenance(mut self, provenance: Provenance) -> Self {
         self.provenance = provenance;
         self
+    }
+}
+
+/// Replay a whole trace log into `graph`, pairing searches with invokes
+/// **per session** while walking the log in its own order.
+///
+/// Both halves of that are load-bearing:
+///
+/// - **Per-session pending state.** Sessions interleave in one log and share one
+///   graph; feeding them through a single pending slot would cross-pair one
+///   session's search with another's invoke and record edges nobody produced
+///   (the rule the module doc states for [`UsageLearner`] itself).
+/// - **Log order, never re-sorted.** `JsonlSink` appends, so file order *is*
+///   arrival order — what the live path saw. Sorting by `ts` would produce a
+///   graph the live path could not have grown, since cluster membership depends
+///   on which clusters existed when each query arrived. `ts` is used to *stamp*
+///   observations (so recency reflects when the work happened), never to order
+///   them.
+///
+/// `embeddings` maps query text to its vector. When present, an entry is stashed
+/// on the graph immediately before the observation that consumes it, so
+/// clustering happens at the **dense** tier — the same tier the live path uses,
+/// rather than the lexical fallback a model-free replay would fall back to. An
+/// absent entry simply clusters lexically.
+pub(crate) fn replay_log_into(
+    graph: &mut IntentGraph,
+    envelopes: &[TraceEnvelope],
+    policy: ObservationPolicy,
+    embeddings: &HashMap<String, Vec<f32>>,
+    fingerprint: Option<&str>,
+) {
+    // session id -> the query its next invoke attributes to.
+    let mut pending: HashMap<&str, &str> = HashMap::new();
+
+    for env in envelopes {
+        let session = env.session_id.as_str();
+        let (kind, capability_id) = match &env.event {
+            TraceEvent::Search { query, origin, .. }
+            | TraceEvent::SkillSearch { query, origin, .. } => {
+                if accepts(policy, *origin) {
+                    pending.insert(session, query.as_str());
+                    graph.arm_credit(query);
+                }
+                // A rejected search is ignored, not cleared — see `OriginFilter`.
+                continue;
+            }
+            TraceEvent::InvokeStart { tool_id, .. }
+                if policy.confirmation == Confirmation::Attempted =>
+            {
+                (Capability::Tool, tool_id.as_str())
+            }
+            TraceEvent::InvokeEnd { tool_id, .. }
+                if policy.confirmation == Confirmation::Succeeded =>
+            {
+                (Capability::Tool, tool_id.as_str())
+            }
+            TraceEvent::SkillInvoke { skill_id, .. } => (Capability::Skill, skill_id.as_str()),
+            _ => continue,
+        };
+
+        let Some(query) = pending.get(session).copied() else {
+            continue; // an invoke with no accepted search before it proves nothing
+        };
+        // Stash this query's vector right before the observation reads it. The
+        // slot holds one entry, so with sessions interleaved anything set
+        // earlier may belong to another session's question.
+        if let (Some(vector), Some(fp)) = (embeddings.get(query), fingerprint) {
+            graph.note_query_vector(query, vector, fp);
+        }
+        let first_confirmation = graph.claim_credit(query);
+        graph.observe(Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms: env.ts,
+            first_confirmation,
+            seeded: policy.provenance == Provenance::Seeded,
+        });
+    }
+}
+
+/// Every distinct query a `policy`-accepted search carries, in first-appearance
+/// order — the texts a caller must embed for [`replay_log_into`] to cluster
+/// densely.
+pub(crate) fn queries_to_embed(
+    envelopes: &[TraceEnvelope],
+    policy: ObservationPolicy,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for env in envelopes {
+        if let TraceEvent::Search { query, origin, .. }
+        | TraceEvent::SkillSearch { query, origin, .. } = &env.event
+            && accepts(policy, *origin)
+            && seen.insert(query.as_str())
+        {
+            out.push(query.clone());
+        }
+    }
+    out
+}
+
+/// Whether a search of `origin` may open an observation window under `policy`.
+fn accepts(policy: ObservationPolicy, origin: Origin) -> bool {
+    match policy.origins {
+        OriginFilter::Any => true,
+        OriginFilter::Exactly(wanted) => origin == wanted,
     }
 }
 
@@ -303,14 +411,6 @@ impl UsageLearner {
         self.learn_from(&envelope.event, envelope.ts);
     }
 
-    /// Whether a search of `origin` may open an observation window.
-    fn accepts(&self, origin: Origin) -> bool {
-        match self.policy.origins {
-            OriginFilter::Any => true,
-            OriginFilter::Exactly(wanted) => origin == wanted,
-        }
-    }
-
     /// The shared pairing step behind [`Self::replay`] and [`TraceSink::record`].
     ///
     /// A search the policy rejects falls through to `_ => {}` — **ignored, not
@@ -323,7 +423,7 @@ impl UsageLearner {
             // the tool and skill registries in turn with the same text.
             TraceEvent::Search { query, origin, .. }
             | TraceEvent::SkillSearch { query, origin, .. }
-                if self.accepts(*origin) =>
+                if accepts(self.policy, *origin) =>
             {
                 self.remember_query(query)
             }
