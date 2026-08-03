@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::trace::{TraceEnvelope, TraceEvent, TraceSink};
-use crate::usage::{Capability, IntentGraph};
+use crate::usage::{Capability, IntentGraph, Observation};
 
 /// The learner's most recent search — the query an invoke attributes to. Kept
 /// per-learner (not read from the shared graph) so a concurrent search from
@@ -150,7 +150,17 @@ impl UsageLearner {
             // graph, is what makes it an observation; the rest add edges for the
             // same question without re-bumping support.
             let first_confirmation = graph.claim_credit(&query);
-            graph.observe(&query, kind, capability_id, ts_ms, first_confirmation);
+            graph.observe(Observation {
+                query: &query,
+                kind,
+                capability_id,
+                ts_ms,
+                first_confirmation,
+                // Live traffic. Seeding passes set this through the policy
+                // added in a later step; today every learner observation is
+                // live, which is exactly today's behavior.
+                seeded: false,
+            });
         }
     }
 

@@ -158,6 +158,18 @@ export function validateGraph(doc) {
     if (!(isInt(it.support) && it.support >= 1)) {
       errs.push(`${at}.support must be an integer >= 1, got ${JSON.stringify(it.support)}`);
     }
+    // Optional provenance: how many of `support` came from a seeding pass. It
+    // counts a SUBSET of support, so a larger value is not expressible by any
+    // producer. Absent means zero.
+    if (it.seeded_support !== undefined) {
+      if (!(isInt(it.seeded_support) && it.seeded_support >= 0)) {
+        errs.push(
+          `${at}.seeded_support, when present, must be a non-negative integer, got ${JSON.stringify(it.seeded_support)}`,
+        );
+      } else if (isInt(it.support) && it.seeded_support > it.support) {
+        errs.push(`${at}.seeded_support (${it.seeded_support}) exceeds support (${it.support})`);
+      }
+    }
     for (const key of ['tools', 'skills']) {
       const edges = it[key];
       if (!isObj(edges)) { errs.push(`${at}.${key} must be an object`); continue; }

@@ -713,3 +713,51 @@ fn a_missed_query_stays_unfused_even_with_a_graph() {
         "no cluster matched → not fused"
     );
 }
+
+// ---- seeded_support is provenance, never a ranking input -------------------
+
+#[test]
+fn seeded_support_never_changes_ranking() {
+    // The whole point of the field is that it records WHERE evidence came from
+    // without changing what that evidence does. If it ever reached the arm
+    // weight, every producer — including Ratel Cloud — would have to get it
+    // exactly right or silently move a customer's rankings.
+    let plain = json!({
+        "v": 1, "built_from_ts": 1_753_000_000_000u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 3,
+            "tools": { "gh_run_list": 0.8 }, "skills": {}
+        }]
+    })
+    .to_string();
+    let seeded = json!({
+        "v": 1, "built_from_ts": 1_753_000_000_000u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 3,
+            "seeded_support": 3,
+            "tools": { "gh_run_list": 0.8 }, "skills": {}
+        }]
+    })
+    .to_string();
+
+    let mut a = registry();
+    a.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&plain).unwrap().into(),
+    )));
+    let mut b = registry();
+    b.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&seeded).unwrap().into(),
+    )));
+
+    let from_live = a.search("why is the build broken", 5);
+    let from_seeded = b.search("why is the build broken", 5);
+
+    assert_eq!(ids(&from_live), ids(&from_seeded));
+    for (l, s) in from_live.iter().zip(from_seeded.iter()) {
+        assert_eq!(l.score, s.score, "arm weight must not see provenance");
+        assert_eq!(l.rank, s.rank);
+        assert_eq!(l.fused, s.fused);
+    }
+}
