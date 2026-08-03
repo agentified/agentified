@@ -94,11 +94,14 @@ export type TraceSinkConfig =
 /**
  * Who initiated a search: `"direct"` for host code calling the SDK itself
  * (pre-fetch helpers, benchmarks), `"agent"` for a call the model synthesized
- * through the capability tools (`search_capabilities`). Recorded on trace
+ * through the capability tools (`search_capabilities`), `"baseline"` for a
+ * query recorded while Ratel was observing but not serving retrieval — the
+ * agent chose from its own full tool list and the host captured the turn's text
+ * so the invocations that follow can be attributed to it. Recorded on trace
  * events and the `ratel.origin` span attribute so consumers can separate the
- * two paths.
+ * paths.
  */
-export type SearchOrigin = "direct" | "agent";
+export type SearchOrigin = "direct" | "agent" | "baseline";
 
 /**
  * Retrieval engine for {@link ToolCatalog.search} (and the skill catalog's

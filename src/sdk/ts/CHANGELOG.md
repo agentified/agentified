@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `"baseline"` is now a valid `SearchOrigin`, for recording a query while Ratel observes but does not serve retrieval. Unknown origin strings still degrade to `"direct"` rather than failing a search.
+
 ## [0.6.0] - 2026-07-28
 
 > **Coming from `0.6.0-rc.0`?** That RC was tagged off a branch that predated 0.5.3, so it

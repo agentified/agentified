@@ -279,6 +279,115 @@ fn a_miss_is_recorded_so_staleness_is_observable() {
     assert_eq!(usage_events(&sink), vec![(None, 0, 0)]);
 }
 
+/// `(intent, support, promoted, dropped)` — the full `UsageBoost` shape, so the
+/// two ways a search ends up with no arm can be told apart.
+fn usage_boosts(sink: &MemorySink) -> Vec<(Option<String>, u32, u32, u32)> {
+    sink.snapshot()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            TraceEvent::UsageBoost {
+                intent,
+                support,
+                promoted,
+                dropped,
+                ..
+            } => Some((intent, support, promoted, dropped)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A cluster covering build/CI questions whose every remembered tool has since
+/// left the catalog.
+fn fully_ghosted_graph() -> IntentGraph {
+    let json = json!({
+        "v": 1, "built_from_ts": 1u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 9,
+            "tools": { "since_deleted_tool": 0.9, "also_deleted": 0.1 }, "skills": {}
+        }]
+    })
+    .to_string();
+    IntentGraph::from_json(&json).expect("valid graph")
+}
+
+#[test]
+fn a_cluster_whose_every_edge_is_unregistered_reports_a_match_with_zero_promoted() {
+    // Catalog drift and a coverage miss are different problems with different
+    // fixes, and before `dropped` they emitted byte-identical events: a reader
+    // watching miss rate would re-derive a graph that was never the issue.
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(fully_ghosted_graph().into())));
+
+    r.search("why is the build broken", 5);
+
+    assert_eq!(
+        usage_boosts(&sink),
+        vec![(Some("intent_0".to_string()), 9, 0, 2)],
+        "the cluster matched and contributed nothing; both its edges were dropped"
+    );
+}
+
+#[test]
+fn a_partially_ghosted_cluster_reports_the_dropped_count_beside_the_promoted_one() {
+    let json = json!({
+        "v": 1, "built_from_ts": 1u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 9,
+            "tools": { "since_deleted_tool": 0.9, "gh_run_list": 0.1 }, "skills": {}
+        }]
+    })
+    .to_string();
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&json).unwrap().into(),
+    )));
+
+    r.search("why is the build broken", 5);
+
+    assert_eq!(
+        usage_boosts(&sink),
+        vec![(Some("intent_0".to_string()), 9, 1, 1)],
+        "one edge still ranks, one is gone — drift is visible while the arm works"
+    );
+}
+
+#[test]
+fn a_genuine_miss_reports_no_intent_and_no_dropped_edges() {
+    // The counterpart to the two above: nothing matched, so nothing was
+    // dropped. `dropped: 0` with `intent: None` is a coverage miss.
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(graph(9).into())));
+
+    r.search("rotate the signing key", 5);
+
+    assert_eq!(usage_boosts(&sink), vec![(None, 0, 0, 0)]);
+}
+
+#[test]
+fn a_fully_ghosted_cluster_ranks_identically_to_no_graph() {
+    // Reporting drift must not change what the search returns.
+    let mut plain = registry();
+    let baseline = plain.search("why is the build broken", 5);
+
+    plain.set_intent_graph(Some(Arc::new(fully_ghosted_graph().into())));
+    let ghosted = plain.search("why is the build broken", 5);
+
+    assert_eq!(ids(&baseline), ids(&ghosted));
+    assert!(
+        ghosted.iter().all(|h| !h.fused),
+        "no arm reached the fusion, so scores stay raw"
+    );
+}
+
 #[test]
 fn a_boosted_search_reports_its_usage_and_fusion_stages() {
     let sink = Arc::new(MemorySink::new("s"));

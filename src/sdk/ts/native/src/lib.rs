@@ -20,6 +20,23 @@ use serde_json::Value;
 /// (so the owner can drain it later).
 type BuiltTraceSink = (Arc<dyn core::TraceSink>, Option<Arc<MemorySink>>);
 
+/// Map a `SearchOrigin` wire string to its core variant.
+///
+/// **One function, called from every site.** Each search entry point used to
+/// inline this `match`, which meant a new `Origin` variant was silently
+/// swallowed by the `_ =>` fallback at whichever sites nobody remembered to
+/// update — a wrong-but-plausible `direct` rather than a compile error. Adding
+/// a variant is still not a compile error here (unknown strings must stay
+/// tolerated, since `search_with_origin` is infallible), so the guard is
+/// `every_origin_wire_value_maps_to_its_own_variant` below, not the match.
+fn parse_origin(s: &str) -> Origin {
+    match s {
+        "agent" => Origin::Agent,
+        "baseline" => Origin::Baseline,
+        _ => Origin::Direct,
+    }
+}
+
 const REGISTRY_BUSY_MESSAGE: &str =
     "registry busy; await the active operation before registering more items";
 
@@ -112,10 +129,7 @@ impl Task for ToolSearchTask {
     type JsValue = Vec<SearchHit>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let parsed_origin = match self.origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(self.origin.as_str());
         let parsed_method: SearchMethod =
             self.method
                 .parse()
@@ -190,10 +204,7 @@ impl Task for SkillSearchTask {
     type JsValue = Vec<SkillHit>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let parsed_origin = match self.origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(self.origin.as_str());
         let parsed_method: SearchMethod =
             self.method
                 .parse()
@@ -623,10 +634,7 @@ impl ToolRegistry {
     /// identical to `search`.
     #[napi]
     pub fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SearchHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .read()
             .expect("tool registry lock poisoned")
@@ -651,10 +659,7 @@ impl ToolRegistry {
         origin: String,
         method: String,
     ) -> napi::Result<Vec<SearchHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method: SearchMethod =
             method
                 .parse()
@@ -1029,10 +1034,7 @@ impl SkillRegistry {
     /// BM25 search with an explicit origin — see `ToolRegistry.searchWithOrigin`.
     #[napi]
     pub fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SkillHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .read()
             .expect("skill registry lock poisoned")
@@ -1056,10 +1058,7 @@ impl SkillRegistry {
         origin: String,
         method: String,
     ) -> napi::Result<Vec<SkillHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method: SearchMethod =
             method
                 .parse()
@@ -1240,5 +1239,32 @@ impl SkillRegistry {
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every documented `SearchOrigin` wire value must reach its own variant.
+    ///
+    /// This is the real guard behind `parse_origin`. The `_ => Origin::Direct`
+    /// fallback is deliberate — an unknown string from an older or newer SDK
+    /// must not fail an infallible search — but it also means a newly added
+    /// `Origin` variant would be silently mapped to `direct` with no compile
+    /// error anywhere. Asserting each value maps somewhere distinct turns that
+    /// silent degrade into a failing test.
+    #[test]
+    fn every_origin_wire_value_maps_to_its_own_variant() {
+        assert_eq!(parse_origin("direct"), Origin::Direct);
+        assert_eq!(parse_origin("agent"), Origin::Agent);
+        assert_eq!(parse_origin("baseline"), Origin::Baseline);
+    }
+
+    #[test]
+    fn an_unrecognized_origin_degrades_to_direct_rather_than_failing() {
+        // Version skew between the SDK and the native must not break search.
+        assert_eq!(parse_origin("from_the_future"), Origin::Direct);
+        assert_eq!(parse_origin(""), Origin::Direct);
     }
 }

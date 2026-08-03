@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `Origin::Baseline` (wire value `baseline`): a query recorded while Ratel was observing but not serving retrieval — the agent chose from its own full tool list and the host captured the turn's text so the invocations that follow can be attributed to it. Ratel's own search path never produces it.
+- `dropped` on the `usage_boost` trace event: how many capability ids a matched cluster remembers that the registry no longer defines, so they were filtered out of the arm. Previously a cluster whose every edge had left the catalog emitted an event byte-identical to a query that matched nothing — the two are different problems (catalog drift vs a coverage gap) with different fixes, and `intent: Some(_)` with `promoted: 0` and `dropped > 0` now tells them apart. Ranking is unchanged: dropping ids the agent cannot invoke is still correct, and only an armed outcome reaches the fusion. Older log lines without the field replay as `dropped: 0`.
+
+### Changed
+
+- **BREAKING:** `Origin` is now `#[non_exhaustive]`. Downstream `match`es over it must include a `_ =>` arm; in return, future origins are non-breaking. Constructing existing variants is unaffected, as are the serde wire form and in-crate matches.
+
 ## [0.6.0] - 2026-07-28
 
 ### Added

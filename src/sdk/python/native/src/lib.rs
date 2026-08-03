@@ -14,6 +14,23 @@ use ratel_ai_core as core;
 use ratel_ai_core::{JsonlSink, MemorySink, NoopSink, Origin, TraceEvent, UsageLearner};
 use serde_json::Value;
 
+/// Map a `SearchOrigin` wire string to its core variant.
+///
+/// **One function, called from every site.** Each search entry point used to
+/// inline this `match`, which meant a new `Origin` variant was silently
+/// swallowed by the `_ =>` fallback at whichever sites nobody remembered to
+/// update — a wrong-but-plausible `direct` rather than a compile error. Adding
+/// a variant is still not a compile error here (unknown strings must stay
+/// tolerated, since `search_with_origin` is infallible), so the guard is
+/// `every_origin_wire_value_maps_to_its_own_variant` below, not the match.
+fn parse_origin(s: &str) -> Origin {
+    match s {
+        "agent" => Origin::Agent,
+        "baseline" => Origin::Baseline,
+        _ => Origin::Direct,
+    }
+}
+
 type ToolBatchItem = (String, String, String, Py<PyAny>, Py<PyAny>);
 type SkillBatchItem = (
     String,
@@ -424,10 +441,7 @@ impl ToolRegistry {
     /// capability tool) or anything else → `"direct"` (host code). The origin
     /// only labels the emitted trace event — ranking is identical to `search`.
     fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SearchHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .search_with_origin(&query, top_k as usize, parsed)
             .into_iter()
@@ -453,10 +467,7 @@ impl ToolRegistry {
         origin: String,
         method: String,
     ) -> PyResult<Vec<SearchHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -759,10 +770,7 @@ impl SkillRegistry {
     /// BM25 search tagged with who initiated it — see
     /// [`ToolRegistry::search_with_origin`].
     fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SkillHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .search_with_origin(&query, top_k as usize, parsed)
             .into_iter()
@@ -784,10 +792,7 @@ impl SkillRegistry {
         origin: String,
         method: String,
     ) -> PyResult<Vec<SkillHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;

@@ -143,6 +143,36 @@ async def test_search_with_origin_accepts_agent_and_direct() -> None:
     assert reg.search_with_origin("read file", 3, "direct")[0].tool_id == "read_file"
 
 
+async def test_every_origin_wire_value_reaches_its_own_variant() -> None:
+    # The native maps origin strings with a `_ => Direct` fallback so version
+    # skew can't fail an infallible search. The cost is that a newly added
+    # variant would be silently recorded as "direct" with no compile error.
+    # The binding's Cargo.toml sets `test = false` (a Rust test binary there
+    # links libpython and fails to find it), so this guard lives here.
+    reg = ToolRegistry()
+    reg.set_trace_sink("memory", "origins")
+    await _register_read_file(reg)
+
+    for value in ("direct", "agent", "baseline"):
+        reg.search_with_origin("read file", 3, value)
+
+    recorded = [e["origin"] for e in reg.drain_trace_events() if e["type"] == "search"]
+    assert recorded == ["direct", "agent", "baseline"], (
+        f"each wire value must survive the round trip, got {recorded}"
+    )
+
+
+async def test_an_unrecognized_origin_degrades_to_direct() -> None:
+    reg = ToolRegistry()
+    reg.set_trace_sink("memory", "unknown-origin")
+    await _register_read_file(reg)
+
+    reg.search_with_origin("read file", 3, "from_the_future")
+
+    recorded = [e["origin"] for e in reg.drain_trace_events() if e["type"] == "search"]
+    assert recorded == ["direct"], "unknown origins must not fail the search"
+
+
 async def test_memory_sink_captures_and_drains_events() -> None:
     reg = ToolRegistry()
     reg.set_trace_sink("memory", "sess-1")

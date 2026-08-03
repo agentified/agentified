@@ -136,6 +136,110 @@ pub(crate) struct UsageArm {
     pub weight: f32,
     /// Capability ids, best-first. Already filtered to ids the registry knows.
     pub ids: Vec<String>,
+    /// How many of the cluster's ids were dropped because the registry no
+    /// longer defines them. Never reaches the fusion — it is carried so
+    /// `TraceEvent::UsageBoost` can report catalog drift.
+    pub dropped: u32,
+}
+
+/// What a query's usage lookup produced.
+///
+/// Distinguishes the two ways a search ends up with no arm, which a bare
+/// `Option<UsageArm>` collapsed into one. Both leave ranking untouched, but they
+/// are different problems: [`Self::NoMatch`] means the graph does not cover the
+/// question, while [`Self::AllFiltered`] means it does and the *catalog* has
+/// moved out from under it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ArmOutcome {
+    /// No cluster cleared the match threshold.
+    NoMatch,
+    /// A cluster matched, but every capability it remembers of this kind names
+    /// an id the registry does not define.
+    AllFiltered {
+        /// The cluster that matched.
+        intent_id: String,
+        /// How well it matched.
+        similarity: f32,
+        /// Its observation count.
+        support: u32,
+        /// How many ids were dropped — all of them, by definition.
+        dropped: u32,
+    },
+    /// A cluster matched and contributed ids to the fusion.
+    Armed(UsageArm),
+}
+
+impl ArmOutcome {
+    /// The arm, if one was produced — the view the fusion path takes, and the
+    /// reason adding the outcome distinction leaves ranking bit-identical.
+    pub(crate) fn into_arm(self) -> Option<UsageArm> {
+        match self {
+            ArmOutcome::Armed(arm) => Some(arm),
+            _ => None,
+        }
+    }
+
+    /// `(intent, similarity, support, promoted, dropped)` for
+    /// [`crate::TraceEvent::UsageBoost`].
+    pub(crate) fn describe(&self) -> (Option<String>, f64, u32, u32, u32) {
+        match self {
+            ArmOutcome::NoMatch => (None, 0.0, 0, 0, 0),
+            ArmOutcome::AllFiltered {
+                intent_id,
+                similarity,
+                support,
+                dropped,
+            } => (
+                Some(intent_id.clone()),
+                *similarity as f64,
+                *support,
+                0,
+                *dropped,
+            ),
+            ArmOutcome::Armed(a) => (
+                Some(a.intent_id.clone()),
+                a.similarity as f64,
+                a.support,
+                a.ids.len() as u32,
+                a.dropped,
+            ),
+        }
+    }
+
+    /// Prefer an armed outcome, then a drift report, then a plain miss — used
+    /// where a dense attempt falls through to a lexical one and only the more
+    /// informative of the two failures is worth reporting.
+    fn or_else(self, next: impl FnOnce() -> ArmOutcome) -> ArmOutcome {
+        match self {
+            ArmOutcome::Armed(_) => self,
+            _ => match next() {
+                ArmOutcome::NoMatch => self,
+                other => other,
+            },
+        }
+    }
+}
+
+/// `Option`-shaped sugar for the tests that predate the outcome distinction.
+/// They assert on *whether an arm reached the fusion*, which is exactly what
+/// these expose; the `NoMatch`/`AllFiltered` split is asserted separately.
+#[cfg(test)]
+impl ArmOutcome {
+    fn expect(self, msg: &str) -> UsageArm {
+        self.into_arm().expect(msg)
+    }
+
+    fn unwrap(self) -> UsageArm {
+        self.into_arm().expect("expected an arm")
+    }
+
+    fn is_none(&self) -> bool {
+        !matches!(self, ArmOutcome::Armed(_))
+    }
+
+    fn is_some(&self) -> bool {
+        matches!(self, ArmOutcome::Armed(_))
+    }
 }
 
 impl UsageArm {
@@ -374,18 +478,24 @@ impl Intent {
     }
 
     /// The cluster's capabilities of `kind`, best-first, dropping any id the
-    /// registry does not currently define. Ordered `(weight desc, id asc)` —
-    /// the same total order the rankers use, so the arm is deterministic.
-    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> Vec<String> {
-        let mut ranked: Vec<(String, f32)> = self
-            .edges(kind)
+    /// registry does not currently define, plus **how many were dropped**.
+    /// Ordered `(weight desc, id asc)` — the same total order the rankers use,
+    /// so the arm is deterministic.
+    ///
+    /// The drop count is returned rather than discarded because an arm that
+    /// loses every id is indistinguishable, from the outside, from a cluster
+    /// that never matched — see [`ArmOutcome`].
+    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> (Vec<String>, u32) {
+        let edges = self.edges(kind);
+        let mut ranked: Vec<(String, f32)> = edges
             .iter()
             .filter(|(id, _)| known(id.as_str()))
             .map(|(id, w)| (id.clone(), *w))
             .collect();
+        let dropped = (edges.len() - ranked.len()) as u32;
         let len = ranked.len();
         sort_and_truncate(&mut ranked, len);
-        ranked.into_iter().map(|(id, _)| id).collect()
+        (ranked.into_iter().map(|(id, _)| id).collect(), dropped)
     }
 
     /// Fold `vector` into this cluster's centroid as a running mean over its
@@ -1155,7 +1265,7 @@ impl IntentGraph {
         query_vec: Option<&[f32]>,
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         match query_vec {
             Some(v) if self.has_centroids() => self
                 .arm_dense(v, kind, known)
@@ -1181,8 +1291,8 @@ impl IntentGraph {
         query_vec: &[f32],
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
-        let best = self
+    ) -> ArmOutcome {
+        let Some(best) = self
             .intents
             .iter()
             .filter_map(|it| {
@@ -1193,7 +1303,10 @@ impl IntentGraph {
                 Some((it, cosine(query_vec, c)))
             })
             .filter(|(_, sim)| *sim >= TAU_COSINE)
-            .max_by(pick_best)?;
+            .max_by(pick_best)
+        else {
+            return ArmOutcome::NoMatch;
+        };
         arm_from(best.0, best.1, self.built_from_ts, kind, known)
     }
 
@@ -1212,7 +1325,7 @@ impl IntentGraph {
         query: &str,
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         self.arm_lexical_matching(query, kind, known, false)
     }
 
@@ -1228,18 +1341,21 @@ impl IntentGraph {
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
         centroidless_only: bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         let q: std::collections::HashSet<String> = tokenize(query).into_iter().collect();
         if q.is_empty() {
-            return None;
+            return ArmOutcome::NoMatch;
         }
-        let best = self
+        let Some(best) = self
             .intents
             .iter()
             .filter(|it| !centroidless_only || it.centroid.is_none())
             .map(|it| (it, it.lexical_score(&q)))
             .filter(|(_, score)| *score >= TAU_LEXICAL)
-            .max_by(pick_best)?;
+            .max_by(pick_best)
+        else {
+            return ArmOutcome::NoMatch;
+        };
         arm_from(best.0, best.1, self.built_from_ts, kind, known)
     }
 }
@@ -1259,18 +1375,33 @@ fn arm_from(
     now_ts: u64,
     kind: Capability,
     known: &dyn Fn(&str) -> bool,
-) -> Option<UsageArm> {
-    let ids = intent.ranked(kind, known);
+) -> ArmOutcome {
+    let (ids, dropped) = intent.ranked(kind, known);
     if ids.is_empty() {
-        return None; // matched, but nothing it remembers still exists
+        // Matched, but nothing it remembers of this kind still exists. Two very
+        // different reasons: the catalog dropped every id it knew (`dropped >
+        // 0` — drift, worth reporting), or the cluster simply holds no edges of
+        // this kind at all, which a tools-only cluster asked for skills does
+        // legitimately and is not drift.
+        return if dropped > 0 {
+            ArmOutcome::AllFiltered {
+                intent_id: intent.id.clone(),
+                similarity,
+                support: intent.support,
+                dropped,
+            }
+        } else {
+            ArmOutcome::NoMatch
+        };
     }
     let weight = usage_weight(intent.support) * recency_factor(now_ts, intent.last_ts);
-    Some(UsageArm {
+    ArmOutcome::Armed(UsageArm {
         intent_id: intent.id.clone(),
         similarity,
         support: intent.support,
         weight,
         ids,
+        dropped,
     })
 }
 
@@ -1583,11 +1714,11 @@ mod tests {
     fn an_empty_graph_contributes_no_arm() {
         let g = IntentGraph::empty();
         assert!(g.is_empty());
-        assert_eq!(
-            g.arm_lexical("anything", Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm_lexical("anything", Capability::Tool, &all_known)
+                .is_none()
         );
-        assert_eq!(g.arm_dense(&[1.0], Capability::Tool, &all_known), None);
+        assert!(g.arm_dense(&[1.0], Capability::Tool, &all_known).is_none());
     }
 
     // ---- dense matching ----------------------------------------------------
@@ -1616,7 +1747,10 @@ mod tests {
         it.centroid = Some(vec![1.0, 0.0]);
         let g = graph(vec![it]);
         // Orthogonal query: cosine 0, far below TAU_COSINE.
-        assert_eq!(g.arm_dense(&[0.0, 1.0], Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_dense(&[0.0, 1.0], Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1625,7 +1759,10 @@ mod tests {
         let mut it = intent("i0", &["q"], &[("t", 1.0)]);
         it.centroid = Some(vec![1.0, 0.0, 0.0]);
         let g = graph(vec![it]);
-        assert_eq!(g.arm_dense(&[1.0, 0.0], Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_dense(&[1.0, 0.0], Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1667,16 +1804,19 @@ mod tests {
             &["why is the build broken"],
             &[("gh_run_list", 1.0)],
         )]);
-        assert_eq!(
-            g.arm_lexical("did CI pass", Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm_lexical("did CI pass", Capability::Tool, &all_known)
+                .is_none()
         );
     }
 
     #[test]
     fn lexical_match_ignores_stopwords_only_queries() {
         let g = graph(vec![intent("i0", &["build"], &[("t", 1.0)])]);
-        assert_eq!(g.arm_lexical("is the", Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_lexical("is the", Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     // ---- edge filtering ----------------------------------------------------
@@ -1701,9 +1841,31 @@ mod tests {
     #[test]
     fn a_match_whose_every_edge_is_gone_yields_no_arm() {
         let g = graph(vec![intent("i0", &["build broken"], &[("gone", 1.0)])]);
+        let outcome = g.arm_lexical("build broken", Capability::Tool, &|_| false);
+        assert!(outcome.is_none(), "nothing reaches the fusion");
+        // ...but the cluster DID match, and saying so is the whole point: a
+        // caller that only saw "no arm" would read catalog drift as a coverage
+        // gap and re-derive a graph that was never the problem.
         assert_eq!(
-            g.arm_lexical("build broken", Capability::Tool, &|_| false),
-            None
+            outcome,
+            ArmOutcome::AllFiltered {
+                intent_id: "i0".into(),
+                similarity: 1.0,
+                support: 5,
+                dropped: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_cluster_with_no_edges_of_the_asked_kind_is_a_plain_miss() {
+        // A tools-only cluster asked for skills has nothing to drop — that is
+        // not drift, and reporting it as such would cry wolf on every mixed
+        // graph.
+        let g = graph(vec![intent("i0", &["build broken"], &[("a_tool", 1.0)])]);
+        assert_eq!(
+            g.arm_lexical("build broken", Capability::Skill, &all_known),
+            ArmOutcome::NoMatch
         );
     }
 
@@ -1905,9 +2067,9 @@ mod tests {
             T0,
             true,
         );
-        assert_eq!(
-            g.arm("is the build ok", None, Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm("is the build ok", None, Capability::Tool, &all_known)
+                .is_none()
         );
     }
 

@@ -302,3 +302,52 @@ fn trace_event_round_trips_through_json() {
         assert_eq!(back, original);
     }
 }
+
+#[test]
+fn a_usage_boost_written_before_dropped_existed_still_replays() {
+    // Logs outlive builds: an envelope recorded by an older core has no
+    // `dropped` field, and refusing to parse it would make the trace log
+    // unreplayable across an upgrade (ADR-0007 additive-field rule).
+    let line = r#"{"v":1,"ts":1,"session_id":"s","type":"usage_boost",
+        "intent":"intent_0","similarity":0.9,"support":3,"promoted":2}"#;
+    let env: ratel_ai_core::TraceEnvelope = serde_json::from_str(line).expect("older line parses");
+    match env.event {
+        ratel_ai_core::TraceEvent::UsageBoost {
+            promoted, dropped, ..
+        } => {
+            assert_eq!(promoted, 2);
+            assert_eq!(dropped, 0, "absent means none were dropped");
+        }
+        other => panic!("expected UsageBoost, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_baseline_origin_round_trips_through_the_wire_form() {
+    // Baseline capture records the turn's query while Ratel serves nothing, so
+    // the origin has to survive the JSONL round trip that offline graph
+    // construction reads back.
+    let sink = Arc::new(MemorySink::new("session-baseline"));
+    let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+    registry.register(lookup_tool("alpha"));
+
+    let _ = registry.search_with_origin("lookup", 3, Origin::Baseline);
+
+    let envelope = sink
+        .snapshot()
+        .into_iter()
+        .find(|e| matches!(e.event, TraceEvent::Search { .. }))
+        .expect("expected a search event");
+
+    let json = serde_json::to_string(&envelope).expect("serializes");
+    assert!(
+        json.contains(r#""origin":"baseline""#),
+        "wire value must be `baseline`, got {json}"
+    );
+
+    let back: ratel_ai_core::TraceEnvelope = serde_json::from_str(&json).expect("parses");
+    match back.event {
+        TraceEvent::Search { origin, .. } => assert_eq!(origin, Origin::Baseline),
+        other => panic!("expected Search, got {other:?}"),
+    }
+}

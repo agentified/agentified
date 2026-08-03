@@ -147,6 +147,7 @@ describe("ratel telemetry vocabulary", () => {
   it("maps ratel.origin to its wire strings", () => {
     expect(Origin.Direct).toBe("direct");
     expect(Origin.Agent).toBe("agent");
+    expect(Origin.Baseline).toBe("baseline");
   });
 
   it("maps ratel.search.target to its wire strings", () => {
