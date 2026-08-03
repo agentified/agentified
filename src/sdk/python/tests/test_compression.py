@@ -40,10 +40,10 @@ async def test_short_prompt_is_returned_verbatim_without_loading_a_model() -> No
     assert result.dropped == []
 
 
-async def test_rate_one_is_returned_verbatim_without_loading_a_model() -> None:
-    result = await compressor().compress(LONG, rate=1.0)
+async def test_a_zero_bar_is_returned_verbatim_without_loading_a_model() -> None:
+    result = await compressor().compress(LONG, min_importance=0.0)
     assert result.text == LONG
-    assert result.stats.gate == "rate_one"
+    assert result.stats.gate == "keep_everything"
 
 
 async def test_instance_defaults_apply_and_a_call_overrides_them() -> None:
@@ -105,6 +105,5 @@ def test_conflicting_sources_raise_at_construction_not_on_first_use() -> None:
 
 async def test_gate_values_are_the_documented_set() -> None:
     result = await compressor().compress("too short to bother")
-    assert result.stats.gate in {"too_short_words", "too_short_tokens", "rate_one"}
-    assert result.stats.budget_exceeded is False
+    assert result.stats.gate in {"too_short_words", "too_short_tokens", "keep_everything"}
     assert result.stats.chunks == 0

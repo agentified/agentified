@@ -31,8 +31,8 @@ __all__ = [
 #:
 #: - ``too_short_words`` — fewer words than ``min_words``; no model was loaded.
 #: - ``too_short_tokens`` — fewer model tokens than ``min_tokens``.
-#: - ``rate_one`` — ``rate >= 1``, so there was nothing to remove.
-CompressionGate = Literal["too_short_words", "too_short_tokens", "rate_one"]
+#: - ``keep_everything`` — ``min_importance <= 0``, so nothing could be removed.
+CompressionGate = Literal["too_short_words", "too_short_tokens", "keep_everything"]
 
 
 class HuggingFaceCompressionConfig(TypedDict, total=False):
@@ -62,10 +62,14 @@ CompressionModelSpec = Union[str, HuggingFaceCompressionConfig, LocalCompression
 class CompressionOptions:
     """Per-call compression options. Omitted fields take the documented defaults."""
 
-    rate: float | None = None
-    """Approximate keep-ratio in the compression model's own tokens (default
-    ``0.4``). Approximate because protection is a hard promise and can overrun
-    it; :class:`CompressionStats` reports the exact counts."""
+    min_importance: float | None = None
+    """Keep every unit the model rates at or above this (default ``0.5``).
+
+    **A quality bar, not a size target** — the compression ratio is an *output*.
+    Redundant prose compresses hard; text where the model finds little filler
+    barely compresses, and never at the cost of dropping something it rated
+    important. Lower the bar to compress more aggressively; ``0`` keeps
+    everything."""
 
     min_words: int | None = None
     """Word count below which the input is returned verbatim. Checked **before**
@@ -134,7 +138,7 @@ class ExperimentalCompression:
         >>> from ratel_ai import ExperimentalCompression
         >>> compressor = ExperimentalCompression()
         >>> await compressor.preload()  # ~700 MB, once, not inside a request
-        >>> result = await compressor.compress(transcript, rate=0.4)
+        >>> result = await compressor.compress(transcript, min_importance=0.5)
         >>> result.stats.model_tokens_in, result.stats.model_tokens_out
         (623, 249)
 
@@ -187,7 +191,7 @@ class ExperimentalCompression:
         self,
         text: str,
         *,
-        rate: float | None = None,
+        min_importance: float | None = None,
         min_words: int | None = None,
         min_tokens: int | None = None,
         max_chunks: int | None = None,
@@ -205,7 +209,7 @@ class ExperimentalCompression:
 
         Args:
             text: The prose to compress. Not your system prompt.
-            rate: See :attr:`CompressionOptions.rate`.
+            min_importance: See :attr:`CompressionOptions.min_importance`.
             min_words: See :attr:`CompressionOptions.min_words`.
             min_tokens: See :attr:`CompressionOptions.min_tokens`.
             max_chunks: See :attr:`CompressionOptions.max_chunks`.
@@ -231,7 +235,7 @@ class ExperimentalCompression:
         return await asyncio.to_thread(
             self._native._compress,
             text,
-            rate=_pick(rate, d.rate),
+            min_importance=_pick(min_importance, d.min_importance),
             min_words=_pick(min_words, d.min_words),
             min_tokens=_pick(min_tokens, d.min_tokens),
             max_chunks=_pick(max_chunks, d.max_chunks),

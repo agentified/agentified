@@ -52,7 +52,7 @@
 //! compressor.preload()?; // pay the ~700 MB load on purpose, not in a request
 //!
 //! let options = CompressionOptions {
-//!     rate: 0.4,
+//!     min_importance: 0.5,
 //!     protect: vec![ProtectPattern::Regex(r"\$[\d,]+".into())],
 //!     ..Default::default()
 //! };
@@ -82,10 +82,13 @@ pub use policy::ProtectPattern;
 
 use crate::trace::{NoopSink, TraceEvent, TraceSink};
 
-/// Default keep-ratio. The prototype's best configuration: at `0.4` a 566-token
-/// transcript came back at 234 tokens with all six of its hand-checked critical
-/// facts intact. Unswept — see ADR-0016.
-const DEFAULT_RATE: f32 = 0.40;
+/// Default importance bar. A unit scoring at or above this is kept.
+///
+/// `0.5` sits in the trough of the classifier's output distribution — scores
+/// cluster near 0 and near 1, so the exact value is not delicate. On the
+/// reference transcript it keeps 41% of tokens; on a dense coding query it keeps
+/// 56–77%, which is the point: the ratio follows the text. Unswept — ADR-0016.
+const DEFAULT_MIN_IMPORTANCE: f32 = 0.50;
 
 /// Below this many whitespace-separated words, compression is skipped **before
 /// the model is touched**, so a short prompt never pays a 709 MB load.
@@ -105,10 +108,14 @@ const DEFAULT_MAX_CHUNKS: usize = 16;
 /// `CompressionOptions { rate: 0.3, ..Default::default() }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompressionOptions {
-    /// Approximate keep-ratio in the compression model's own tokens, `0.0` to
-    /// `1.0`. Approximate because protection is a hard promise and can overrun
-    /// it; [`CompressionStats`] reports the exact counts.
-    pub rate: f32,
+    /// Keep every unit the model rates at or above this, `0.0` to `1.0`.
+    ///
+    /// **This is a quality bar, not a size target** — the compression ratio is an
+    /// *output*. Redundant prose compresses hard; text where the model finds
+    /// little filler barely compresses at all, and never at the cost of dropping
+    /// something it rated important. Lower the bar to compress more aggressively;
+    /// `0.0` keeps everything.
+    pub min_importance: f32,
     /// Word count below which the input is returned verbatim, checked before any
     /// model load.
     pub min_words: usize,
@@ -147,7 +154,7 @@ pub struct CompressionOptions {
 impl Default for CompressionOptions {
     fn default() -> Self {
         Self {
-            rate: DEFAULT_RATE,
+            min_importance: DEFAULT_MIN_IMPORTANCE,
             min_words: DEFAULT_MIN_WORDS,
             min_tokens: DEFAULT_MIN_TOKENS,
             max_chunks: DEFAULT_MAX_CHUNKS,
@@ -169,8 +176,8 @@ pub enum CompressionGate {
     TooShortWords,
     /// Fewer model tokens than `min_tokens`.
     TooShortTokens,
-    /// `rate >= 1.0`, so there is nothing to remove.
-    RateOne,
+    /// `min_importance <= 0.0`, so nothing can be removed.
+    KeepEverything,
 }
 
 /// One scored unit of the input — an atom, which is a word in the intuitive
@@ -206,12 +213,10 @@ pub struct CompressionStats {
     pub chunks: u32,
     /// Units protected from removal.
     pub protected_units: u32,
-    /// The keep-ratio that was requested.
-    pub rate: f32,
+    /// The importance bar that was applied.
+    pub min_importance: f32,
     /// `Some` when the input was returned verbatim; nothing was compressed.
     pub gate: Option<CompressionGate>,
-    /// Protection alone exceeded the budget, so `rate` was overrun.
-    pub budget_exceeded: bool,
     /// Wall-clock milliseconds, excluding a cold model load.
     pub took_ms: u64,
 }
@@ -338,8 +343,8 @@ impl PromptCompressor {
 
         // Pre-gate, before any model work. `split_whitespace` is a cheap proxy
         // that only has to be right about "obviously too short".
-        if options.rate >= 1.0 {
-            return Ok(self.gated(text, options, CompressionGate::RateOne, started));
+        if options.min_importance <= 0.0 {
+            return Ok(self.gated(text, options, CompressionGate::KeepEverything, started));
         }
         if text.split_whitespace().count() < options.min_words {
             return Ok(self.gated(text, options, CompressionGate::TooShortWords, started));
@@ -367,7 +372,11 @@ impl PromptCompressor {
                 negation_terms: options.negation_terms.as_deref(),
             },
         );
-        let selection = policy::select(&atoms, options.rate);
+        let mut selection = policy::select(&atoms, options.min_importance);
+        // Selection decides what is worth keeping; this decides what is still
+        // *sayable* once the neighbours are gone. A function word whose target
+        // died would otherwise bond to the next survivor and forge a phrase.
+        policy::attach_function_words(text, &atoms, &mut selection);
         let out = render::render(text, &atoms, &selection.keep, options.preserve_paragraphs);
 
         let stats = CompressionStats {
@@ -377,9 +386,8 @@ impl PromptCompressor {
             words_out: selection.keep.iter().filter(|k| **k).count() as u32,
             chunks: chunks as u32,
             protected_units,
-            rate: options.rate,
+            min_importance: options.min_importance,
             gate: None,
-            budget_exceeded: selection.budget_exceeded,
             took_ms: started.elapsed().as_millis() as u64,
         };
         self.record(&stats);
@@ -443,9 +451,8 @@ impl PromptCompressor {
             words_out: 0,
             chunks: 0,
             protected_units: 0,
-            rate: options.rate,
+            min_importance: options.min_importance,
             gate: Some(gate),
-            budget_exceeded: false,
             took_ms: started.elapsed().as_millis() as u64,
         };
         self.record(&stats);
@@ -463,7 +470,7 @@ impl PromptCompressor {
             model_tokens_out: stats.model_tokens_out,
             words_in: stats.words_in,
             words_out: stats.words_out,
-            rate: stats.rate,
+            min_importance: stats.min_importance,
             chunks: stats.chunks,
             protected_units: stats.protected_units,
             gated: stats.gate.is_some(),
@@ -502,7 +509,7 @@ mod tests {
         // Pinned so a silent retune shows up as a failing test rather than as a
         // quiet change in everyone's output.
         let d = CompressionOptions::default();
-        assert_eq!(d.rate, 0.40);
+        assert_eq!(d.min_importance, 0.50);
         assert_eq!(d.min_words, 40);
         assert_eq!(d.min_tokens, 50);
         assert_eq!(d.max_chunks, 16);

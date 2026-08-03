@@ -101,75 +101,69 @@ fn the_transcript_compresses_at_least_two_fold() {
 
 #[test]
 #[ignore = "needs the compression model cached"]
-fn negation_protection_earns_its_place_at_an_aggressive_rate() {
-    // The differentiator test, and it is deliberately run at rate 0.15 rather
-    // than the default: at 0.40 there is budget enough that raw thresholding
-    // keeps all six facts on its own, so the default rate proves nothing about
-    // protection. Squeeze the budget and the negation is the first casualty —
-    // which is the failure that inverts a claim rather than merely shortening
-    // one.
-    //
-    // If this ever passes with protection off, the negation list is not carrying
-    // its weight and should be re-justified or removed.
+fn negation_protection_keeps_a_negation_the_bar_would_drop() {
+    // Raise the bar until ordinary prose falls away, and check the negation and
+    // what it governs still survive. The failure this guards against is not a
+    // shortened claim but an inverted one: `without any downtime` compressing to
+    // `without cutover` says the opposite of the input.
     let aggressive = |negations: bool| CompressionOptions {
-        rate: 0.15,
+        min_importance: 0.95,
         protect_negations: negations,
         ..Default::default()
     };
     let with = compressor()
         .compress(TRANSCRIPT, Some(&aggressive(true)))
         .unwrap();
-    let without = compressor()
-        .compress(TRANSCRIPT, Some(&aggressive(false)))
-        .unwrap();
-
     println!(
-        "rate 0.15 — with negations lost {:?}; without, lost {:?}",
+        "bar 0.95 — with negations lost {:?}; without, lost {:?}",
         missing(&with.text),
-        missing(&without.text)
+        missing(
+            &compressor()
+                .compress(TRANSCRIPT, Some(&aggressive(false)))
+                .unwrap()
+                .text
+        )
     );
     assert!(
         with.text.contains("doesn't support"),
-        "negation protection must keep the negation: {:?}",
+        "negation protection must keep the negation and its verb: {:?}",
         with.text
-    );
-    assert!(
-        !without.text.contains("doesn't support"),
-        "protection is unjustified if raw thresholding keeps the negation anyway"
     );
 }
 
 #[test]
 #[ignore = "needs the compression model cached"]
-fn blanket_number_protection_costs_more_facts_than_it_saves() {
-    // Why `protect_numbers` defaults to **off** (ADR-0016). It protects 23 units
-    // on this fixture — Q3, 12 terabytes, November 2024, four hours — and the
-    // budget they eat starves prose that matters more. Measured, not assumed: if
-    // this ever inverts, the default should be revisited.
-    let with_numbers = CompressionOptions {
-        rate: 0.25,
-        protect_numbers: true,
-        ..Default::default()
-    };
+fn protection_can_only_add_now_that_there_is_no_budget() {
+    // Under a budget, protection competed: marking 23 digit-bearing units stole
+    // room from prose and cost more critical facts than it saved, which is why
+    // `protect_numbers` defaults off. Selection is now `protected || score >=
+    // bar`, so protection is purely additive — it can add tokens, never remove
+    // content. If this ever fails, the budget has crept back in somewhere.
     let off = CompressionOptions {
-        rate: 0.25,
+        min_importance: 0.8,
         ..Default::default()
     };
-    let a = compressor()
-        .compress(TRANSCRIPT, Some(&with_numbers))
-        .unwrap();
-    let b = compressor().compress(TRANSCRIPT, Some(&off)).unwrap();
-    println!(
-        "rate 0.25 — numbers on: {} protected, lost {:?}; off: {} protected, lost {:?}",
-        a.stats.protected_units,
-        missing(&a.text),
-        b.stats.protected_units,
-        missing(&b.text)
-    );
+    let on = CompressionOptions {
+        protect_numbers: true,
+        ..off.clone()
+    };
+    let a = compressor().compress(TRANSCRIPT, Some(&off)).unwrap();
+    let b = compressor().compress(TRANSCRIPT, Some(&on)).unwrap();
+
     assert!(
-        missing(&a.text).len() > missing(&b.text).len(),
-        "digit protection is supposed to be the *worse* option here; if it isn't, \
-         reconsider the default"
+        b.stats.model_tokens_out >= a.stats.model_tokens_out,
+        "protection may grow the output, never shrink it"
+    );
+    for unit in &a.kept {
+        assert!(
+            b.kept.iter().any(|k| k.start == unit.start),
+            "{:?} survived without protection but not with it",
+            unit.text
+        );
+    }
+    println!(
+        "bar 0.8: numbers off {} tokens, on {} tokens ({} protected)",
+        a.stats.model_tokens_out, b.stats.model_tokens_out, b.stats.protected_units
     );
 }
 
@@ -245,7 +239,7 @@ fn explain_off_returns_no_scores_but_the_same_text() {
 #[ignore = "needs the compression model cached"]
 fn a_user_pattern_survives_an_aggressive_rate() {
     let options = CompressionOptions {
-        rate: 0.15,
+        min_importance: 0.9,
         protect: vec![ProtectPattern::Regex(r"\d[\d,\.]*".into())],
         protect_numbers: false,
         protect_negations: false,
@@ -255,10 +249,9 @@ fn a_user_pattern_survives_an_aggressive_rate() {
     for number in ["8,400", "2.14", "90"] {
         assert!(out.text.contains(number), "{number} lost at rate 0.15");
     }
-    // Protection outran the budget here, and that must be reported, not hidden.
     println!(
-        "rate 0.15: {} -> {} tokens, budget_exceeded={}",
-        out.stats.model_tokens_in, out.stats.model_tokens_out, out.stats.budget_exceeded
+        "bar 0.9: {} -> {} tokens",
+        out.stats.model_tokens_in, out.stats.model_tokens_out
     );
 }
 

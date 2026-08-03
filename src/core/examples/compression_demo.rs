@@ -77,15 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // --- the rate ladder -------------------------------------------------
-    println!("\nrate   tokens   ratio   units   protected");
-    for rate in [0.20, 0.33, 0.40, 0.50, 0.70] {
+    println!("\nbar    tokens   ratio   units   protected");
+    for bar in [0.9, 0.7, 0.5, 0.3, 0.1] {
         let options = CompressionOptions {
-            rate,
+            min_importance: bar,
             ..Default::default()
         };
         let r = compressor.compress(TRANSCRIPT, Some(&options))?;
         println!(
-            "{rate:<6.2} {:<8} {:<7.2} {:<7} {}",
+            "{bar:<6.2} {:<8} {:<7.2} {:<7} {}",
             r.stats.model_tokens_out,
             r.stats.model_tokens_in as f32 / r.stats.model_tokens_out.max(1) as f32,
             r.stats.words_out,

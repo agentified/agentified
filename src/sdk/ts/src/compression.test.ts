@@ -26,16 +26,17 @@ describe("ExperimentalCompression", () => {
     expect(result.dropped).toEqual([]);
   });
 
-  it("returns the input verbatim at rate 1 without loading a model", async () => {
-    const result = await compressor().compress(LONG, { rate: 1 });
+  it("returns the input verbatim at a zero bar without loading a model", async () => {
+    const result = await compressor().compress(LONG, { minImportance: 0 });
     expect(result.text).toBe(LONG);
-    expect(result.stats.gate).toBe("rate_one");
+    expect(result.stats.gate).toBe("keep_everything");
   });
 
   it("narrows stats.gate to a switchable union", async () => {
     const { stats } = await compressor().compress("too short");
     // Type-level: `gate` is the union, not `string`. Compiles only if narrowed.
-    const reason: "too_short_words" | "too_short_tokens" | "rate_one" | undefined = stats.gate;
+    const reason: "too_short_words" | "too_short_tokens" | "keep_everything" | undefined =
+      stats.gate;
     expect(reason).toBe("too_short_words");
   });
 

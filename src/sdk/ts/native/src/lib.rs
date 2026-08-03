@@ -1281,8 +1281,9 @@ pub struct ProtectPatternConfig {
 /// the core defaults.
 #[napi(object)]
 pub struct CompressionOptionsConfig {
-    /// Approximate keep-ratio in the model's own tokens. Default `0.4`.
-    pub rate: Option<f64>,
+    /// Keep every unit the model rates at or above this. Default `0.5`.
+    /// A quality bar, not a size target — the ratio is an output.
+    pub min_importance: Option<f64>,
     /// Words below which the input is returned verbatim, checked before any
     /// model load. Default `40`.
     pub min_words: Option<u32>,
@@ -1337,13 +1338,11 @@ pub struct CompressionStats {
     pub chunks: u32,
     /// Units protected from removal.
     pub protected_units: u32,
-    /// The keep-ratio that was requested.
-    pub rate: f64,
+    /// The importance bar that was applied.
+    pub min_importance: f64,
     /// `"too_short_words"` | `"too_short_tokens"` | `"rate_one"` when the input
     /// was returned verbatim; absent when it was compressed.
     pub gate: Option<String>,
-    /// Protected content alone exceeded the budget, so `rate` was overrun.
-    pub budget_exceeded: bool,
     /// Wall time in milliseconds, excluding a cold model load.
     pub took_ms: u32,
 }
@@ -1384,16 +1383,15 @@ fn to_compressed(out: core::CompressedPrompt) -> CompressedPrompt {
             words_out: out.stats.words_out,
             chunks: out.stats.chunks,
             protected_units: out.stats.protected_units,
-            rate: out.stats.rate as f64,
+            min_importance: out.stats.min_importance as f64,
             gate: out.stats.gate.map(|g| {
                 match g {
                     core::CompressionGate::TooShortWords => "too_short_words",
                     core::CompressionGate::TooShortTokens => "too_short_tokens",
-                    core::CompressionGate::RateOne => "rate_one",
+                    core::CompressionGate::KeepEverything => "keep_everything",
                 }
                 .to_string()
             }),
-            budget_exceeded: out.stats.budget_exceeded,
             took_ms: out.stats.took_ms as u32,
         },
     }
@@ -1405,8 +1403,8 @@ fn resolve_compression_options(
 ) -> napi::Result<core::CompressionOptions> {
     let mut options = core::CompressionOptions::default();
     let Some(c) = config else { return Ok(options) };
-    if let Some(v) = c.rate {
-        options.rate = v as f32;
+    if let Some(v) = c.min_importance {
+        options.min_importance = v as f32;
     }
     if let Some(v) = c.min_words {
         options.min_words = v as usize;

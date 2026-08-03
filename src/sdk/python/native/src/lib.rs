@@ -1000,13 +1000,11 @@ pub struct CompressionStats {
     pub chunks: u32,
     /// Units protected from removal.
     pub protected_units: u32,
-    /// The keep-ratio that was requested.
-    pub rate: f64,
+    /// The importance bar that was applied.
+    pub min_importance: f64,
     /// `"too_short_words"` | `"too_short_tokens"` | `"rate_one"` when the input
     /// was returned verbatim; `None` when it was compressed.
     pub gate: Option<String>,
-    /// Protected content alone exceeded the budget, so `rate` was overrun.
-    pub budget_exceeded: bool,
     /// Wall time in milliseconds, excluding a cold model load.
     pub took_ms: u64,
 }
@@ -1070,16 +1068,15 @@ fn to_compressed(out: core::CompressedPrompt) -> CompressedPrompt {
             words_out: out.stats.words_out,
             chunks: out.stats.chunks,
             protected_units: out.stats.protected_units,
-            rate: out.stats.rate as f64,
+            min_importance: out.stats.min_importance as f64,
             gate: out.stats.gate.map(|g| {
                 match g {
                     core::CompressionGate::TooShortWords => "too_short_words",
                     core::CompressionGate::TooShortTokens => "too_short_tokens",
-                    core::CompressionGate::RateOne => "rate_one",
+                    core::CompressionGate::KeepEverything => "keep_everything",
                 }
                 .to_string()
             }),
-            budget_exceeded: out.stats.budget_exceeded,
             took_ms: out.stats.took_ms,
         },
     }
@@ -1130,7 +1127,7 @@ impl PromptCompressor {
     }
 
     /// Compress `text`. GIL-releasing worker; the facade wraps it as `compress`.
-    #[pyo3(signature = (text, rate=None, min_words=None, min_tokens=None, max_chunks=None,
+    #[pyo3(signature = (text, min_importance=None, min_words=None, min_tokens=None, max_chunks=None,
         protect_literals=None, protect_regexes=None, protect_numbers=None,
         protect_negations=None, negation_terms=None, preserve_paragraphs=None, explain=None))]
     #[allow(clippy::too_many_arguments)]
@@ -1138,7 +1135,7 @@ impl PromptCompressor {
         &self,
         py: Python<'_>,
         text: String,
-        rate: Option<f64>,
+        min_importance: Option<f64>,
         min_words: Option<usize>,
         min_tokens: Option<usize>,
         max_chunks: Option<usize>,
@@ -1151,8 +1148,8 @@ impl PromptCompressor {
         explain: Option<bool>,
     ) -> PyResult<CompressedPrompt> {
         let mut options = core::CompressionOptions::default();
-        if let Some(v) = rate {
-            options.rate = v as f32;
+        if let Some(v) = min_importance {
+            options.min_importance = v as f32;
         }
         if let Some(v) = min_words {
             options.min_words = v;

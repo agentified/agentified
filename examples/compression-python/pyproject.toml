@@ -9,4 +9,7 @@ dependencies = [
 
 [tool.uv.sources]
 # Use the local SDK from this monorepo rather than PyPI.
-ratel-ai = { path = "../../src/sdk/python" }
+# `editable` so the example tracks the working tree. Without it uv installs a
+# copy on first run and never refreshes it, and you end up debugging a build
+# from several changes ago.
+ratel-ai = { path = "../../src/sdk/python", editable = true }

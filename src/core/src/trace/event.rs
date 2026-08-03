@@ -350,8 +350,8 @@ pub enum TraceEvent {
         words_in: u32,
         /// Scored units kept.
         words_out: u32,
-        /// The requested keep-ratio.
-        rate: f32,
+        /// The importance bar that was applied.
+        min_importance: f32,
         /// Encoder passes performed (`0` when gated).
         chunks: u32,
         /// Units protected from removal.

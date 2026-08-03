@@ -44,15 +44,15 @@ fn a_short_prompt_is_returned_verbatim_without_loading_a_model() {
 }
 
 #[test]
-fn rate_one_is_returned_verbatim_without_loading_a_model() {
+fn a_zero_bar_is_returned_verbatim_without_loading_a_model() {
     let input = "a b c ".repeat(200);
     let options = CompressionOptions {
-        rate: 1.0,
+        min_importance: 0.0,
         ..Default::default()
     };
     let out = compressor().compress(&input, Some(&options)).unwrap();
     assert_eq!(out.text, input);
-    assert_eq!(out.stats.gate, Some(CompressionGate::RateOne));
+    assert_eq!(out.stats.gate, Some(CompressionGate::KeepEverything));
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn options_defaults_are_the_documented_configuration() {
     // Pinned here as well as in the unit tests, because these values are the
     // public contract: a silent retune changes everyone's output.
     let d = CompressionOptions::default();
-    assert_eq!(d.rate, 0.40);
+    assert_eq!(d.min_importance, 0.50);
     assert_eq!(d.min_words, 40);
     assert_eq!(d.min_tokens, 50);
     assert_eq!(d.max_chunks, 16);

@@ -36,11 +36,14 @@ export type ProtectPattern = string | RegExp;
 /** Per-call compression options. Omitted fields take the documented defaults. */
 export interface CompressionOptions {
   /**
-   * Approximate keep-ratio, measured in the compression model's own tokens.
-   * Default `0.4`. Approximate because protection is a hard promise and can
-   * overrun it — {@link CompressionStats} reports the exact counts.
+   * Keep every unit the model rates at or above this. Default `0.5`.
+   *
+   * **A quality bar, not a size target** — the compression ratio is an *output*.
+   * Redundant prose compresses hard; text where the model finds little filler
+   * barely compresses, and never at the cost of dropping something it rated
+   * important. Lower the bar to compress more aggressively; `0` keeps everything.
    */
-  rate?: number;
+  minImportance?: number;
   /**
    * Word count below which the input is returned verbatim. Checked **before**
    * any model load, so a short prompt costs nothing. Default `40`.
@@ -93,9 +96,9 @@ export type { WordScore };
  *
  * - `too_short_words` — fewer words than `minWords`; no model was loaded.
  * - `too_short_tokens` — fewer model tokens than `minTokens`.
- * - `rate_one` — `rate >= 1`, so there was nothing to remove.
+ * - `keep_everything` — `minImportance <= 0`, so nothing could be removed.
  */
-export type CompressionGate = "too_short_words" | "too_short_tokens" | "rate_one";
+export type CompressionGate = "too_short_words" | "too_short_tokens" | "keep_everything";
 
 /**
  * What compression cost and produced. Narrows the native `gate: string` to
@@ -150,7 +153,7 @@ function toNativeModel(spec: CompressionModelSpec | undefined) {
 function toNativeOptions(options: CompressionOptions | undefined) {
   if (options === undefined) return undefined;
   return {
-    rate: options.rate,
+    minImportance: options.minImportance,
     minWords: options.minWords,
     minTokens: options.minTokens,
     maxChunks: options.maxChunks,
@@ -181,7 +184,7 @@ function toNativeOptions(options: CompressionOptions | undefined) {
  * await compressor.preload(); // ~700 MB, once, not inside a request
  *
  * const result = await compressor.compress(transcript, {
- *   rate: 0.4,
+ *   minImportance: 0.5,
  *   protect: [/\$[\d,]+/],
  * });
  * console.log(result.text);

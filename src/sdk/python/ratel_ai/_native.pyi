@@ -454,8 +454,8 @@ class CompressionStats:
         """Units protected from removal."""
 
     @property
-    def rate(self) -> float:
-        """The keep-ratio that was requested."""
+    def min_importance(self) -> float:
+        """The importance bar that was applied."""
 
     @property
     def gate(self) -> str | None:
@@ -464,10 +464,6 @@ class CompressionStats:
         ``"too_short_words"`` | ``"too_short_tokens"`` | ``"rate_one"``, or
         ``None`` when the input was compressed.
         """
-
-    @property
-    def budget_exceeded(self) -> bool:
-        """Protected content alone exceeded the budget, so ``rate`` was overrun."""
 
     @property
     def took_ms(self) -> int:
@@ -518,7 +514,7 @@ class PromptCompressor:
     def _compress(
         self,
         text: str,
-        rate: float | None = None,
+        min_importance: float | None = None,
         min_words: int | None = None,
         min_tokens: int | None = None,
         max_chunks: int | None = None,
