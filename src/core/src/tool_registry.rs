@@ -16,7 +16,7 @@ use crate::tool::Tool;
 use crate::trace::{
     ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEvent, TraceSink,
 };
-use crate::usage::{Capability, IntentGraph, UsageArm};
+use crate::usage::{ArmOutcome, Capability, IntentGraph, UsageArm};
 
 /// Whether adaptive usage ranking is currently contributing to a registry's
 /// results — the SDK-facing view of the model-compatibility check (ADR-0014).
@@ -334,7 +334,7 @@ impl ToolRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // A poisoned lock must not take down a search: usage ranking is an
         // enhancement, and losing it degrades to today's behavior.
-        let (arm, mismatch) = {
+        let (outcome, mismatch) = {
             let guard = graph.read().ok()?;
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
@@ -344,7 +344,7 @@ impl ToolRegistry {
                 // Paused: the graph's centroids belong to another model. Base
                 // ranking is untouched; the query is NOT noted, so the learner
                 // does not fold a foreign-model vector.
-                (None, mismatch)
+                (ArmOutcome::NoMatch, mismatch)
             } else {
                 // Hand the embedded query to the learner: it only sees trace
                 // events, which carry text and not vectors, so this is how a
@@ -369,13 +369,17 @@ impl ToolRegistry {
                 dim_mismatch,
             });
         }
+        let (intent, similarity, support, promoted, dropped) = outcome.describe();
         self.sink.record(TraceEvent::UsageBoost {
-            intent: arm.as_ref().map(|a| a.intent_id.clone()),
-            similarity: arm.as_ref().map_or(0.0, |a| a.similarity as f64),
-            support: arm.as_ref().map_or(0, |a| a.support),
-            promoted: arm.as_ref().map_or(0, |a| a.ids.len() as u32),
+            intent,
+            similarity,
+            support,
+            promoted,
+            dropped,
         });
-        arm
+        // Only an armed outcome reaches the fusion; a drift report is trace-only,
+        // so ranking is bit-identical to before this distinction existed.
+        outcome.into_arm()
     }
 
     /// Register a tool, or replace one in place if its id is already present.

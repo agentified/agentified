@@ -149,9 +149,10 @@ class ToolRegistry:
     def search_with_origin(self, query: str, top_k: int, origin: str) -> list[SearchHit]:
         """BM25 search tagged with who initiated it.
 
-        `origin` is "agent" (a model calling a capability tool) or anything
-        else → "direct" (host code). The origin only labels the emitted trace
-        event — ranking is identical to `search`.
+        `origin` is "agent" (a model calling a capability tool), "baseline" (a
+        query observed while Ratel served nothing), or anything else → "direct"
+        (host code). The origin only labels the emitted trace event — ranking is
+        identical to `search`.
         """
 
     def _search_with_method(

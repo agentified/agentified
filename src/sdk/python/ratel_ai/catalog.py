@@ -35,9 +35,11 @@ May be sync or async (tool inputs are heterogeneous across the catalog);
 """
 
 SearchOrigin = str
-"""Who initiated a search: ``"direct"`` (host code, the default) or ``"agent"``
-(a model calling a capability tool). Labels the emitted trace event only —
-ranking is unaffected.
+"""Who initiated a search: ``"direct"`` (host code, the default), ``"agent"``
+(a model calling a capability tool), or ``"baseline"`` (a query recorded while
+Ratel was observing but not serving retrieval, so the invocations that follow
+can be attributed to it). Labels the emitted trace event only — ranking is
+unaffected.
 """
 
 SearchMethod = str

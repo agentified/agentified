@@ -299,6 +299,7 @@ class Origin(str, Enum):
 
     DIRECT = "direct"
     AGENT = "agent"
+    BASELINE = "baseline"
 
 
 class SearchTarget(str, Enum):

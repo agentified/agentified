@@ -17,7 +17,7 @@ use crate::tool_registry::AdaptiveRankingStatus;
 use crate::trace::{
     ChurnKind, NoopSink, Origin, SearchStage, SkillHitTrace, TraceEvent, TraceSink,
 };
-use crate::usage::{Capability, IntentGraph, UsageArm};
+use crate::usage::{ArmOutcome, Capability, IntentGraph, UsageArm};
 
 /// One ranked match from a [`SkillRegistry`] search, best-first in the
 /// returned `Vec` — the skill-side twin of [`crate::SearchHit`].
@@ -262,14 +262,14 @@ impl SkillRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // Usage ranking is an enhancement; a poisoned lock degrades to today's
         // behavior rather than failing the search.
-        let (arm, mismatch) = {
+        let (outcome, mismatch) = {
             let guard = graph.read().ok()?;
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
                 _ => None,
             };
             if mismatch.is_some() {
-                (None, mismatch)
+                (ArmOutcome::NoMatch, mismatch)
             } else {
                 if let (Some(v), Some(fp)) = (query_vec, &fingerprint) {
                     guard.note_query_vector(query, v, fp);
@@ -287,13 +287,17 @@ impl SkillRegistry {
                 dim_mismatch,
             });
         }
+        let (intent, similarity, support, promoted, dropped) = outcome.describe();
         self.sink.record(TraceEvent::UsageBoost {
-            intent: arm.as_ref().map(|a| a.intent_id.clone()),
-            similarity: arm.as_ref().map_or(0.0, |a| a.similarity as f64),
-            support: arm.as_ref().map_or(0, |a| a.support),
-            promoted: arm.as_ref().map_or(0, |a| a.ids.len() as u32),
+            intent,
+            similarity,
+            support,
+            promoted,
+            dropped,
         });
-        arm
+        // Trace-only: a drift report never reaches the fusion, so ranking is
+        // bit-identical to before this distinction existed.
+        outcome.into_arm()
     }
 
     /// The corpus as `(id, searchable_text)` pairs for BM25.

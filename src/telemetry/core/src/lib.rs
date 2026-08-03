@@ -216,16 +216,19 @@ pub const GEN_AI_INPUT_MESSAGES: &str = "gen_ai.input.messages";
 /// `gen_ai.output.messages` — generated outputs; every message includes `finish_reason`.
 pub const GEN_AI_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
 
-/// Whether a `ratel.*` span was a direct library call or synthesized by the
-/// agent inside its loop. Emitted as the `ratel.origin` attribute; mirrors the
-/// local trace `Origin` (ADR-0007).
+/// Where a `ratel.*` span's search came from. Emitted as the `ratel.origin`
+/// attribute; mirrors the local trace `Origin` (ADR-0007).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Origin {
     /// A direct library/SDK call — wire value `direct`.
     Direct,
     /// A call the agent synthesized inside its loop (via the capability
     /// tools) — wire value `agent`.
     Agent,
+    /// A query recorded while Ratel was observing but not serving retrieval —
+    /// wire value `baseline`.
+    Baseline,
 }
 
 impl Origin {
@@ -234,6 +237,7 @@ impl Origin {
         match self {
             Origin::Direct => "direct",
             Origin::Agent => "agent",
+            Origin::Baseline => "baseline",
         }
     }
 }
@@ -385,6 +389,7 @@ mod tests {
     fn origin_maps_to_wire_strings() {
         assert_eq!(Origin::Direct.as_str(), "direct");
         assert_eq!(Origin::Agent.as_str(), "agent");
+        assert_eq!(Origin::Baseline.as_str(), "baseline");
     }
 
     #[test]
