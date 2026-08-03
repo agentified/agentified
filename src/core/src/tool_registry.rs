@@ -1409,7 +1409,14 @@ mod tests {
         let graph = IntentGraph::empty();
         graph.note_query_vector("some other query", &[1.0, 0.0, 0.0], "m");
         let mut graph = graph;
-        graph.observe("delete a path", Capability::Tool, "delete_file", 1, true);
+        graph.observe(crate::usage::Observation {
+            query: "delete a path",
+            kind: Capability::Tool,
+            capability_id: "delete_file",
+            ts_ms: 1,
+            first_confirmation: true,
+            seeded: false,
+        });
 
         assert_eq!(graph.len(), 1);
         assert!(
