@@ -401,9 +401,10 @@ fn map_adaptive_status(
 fn wrap_learner(
     sink: Arc<dyn core::TraceSink>,
     graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    policy: core::ObservationPolicy,
 ) -> Arc<dyn core::TraceSink> {
     match graph {
-        Some(graph) => Arc::new(UsageLearner::new(graph.clone(), sink)),
+        Some(graph) => Arc::new(UsageLearner::with_policy(graph.clone(), sink, policy)),
         None => sink,
     }
 }
@@ -504,6 +505,10 @@ pub struct ToolRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
 }
 
 #[pymethods]
@@ -550,6 +555,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
         })
     }
 
@@ -771,7 +777,11 @@ impl ToolRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -780,7 +790,11 @@ impl ToolRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -791,7 +805,11 @@ impl ToolRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -813,13 +831,26 @@ impl ToolRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
+    #[pyo3(signature = (graph, origins=None, confirmation=None, provenance=None))]
+    fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        origins: Option<&str>,
+        confirmation: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<()> {
+        self.usage_policy = parse_policy(origins, confirmation, provenance)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
-            .set_trace_sink(Arc::new(UsageLearner::new(handle.clone(), inner_sink)));
+            .set_trace_sink(Arc::new(UsageLearner::with_policy(
+                handle.clone(),
+                inner_sink,
+                self.usage_policy,
+            )));
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
     }
 
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
@@ -860,6 +891,10 @@ pub struct SkillRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
 }
 
 #[pymethods]
@@ -903,6 +938,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
         })
     }
 
@@ -1110,7 +1146,11 @@ impl SkillRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -1119,7 +1159,11 @@ impl SkillRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -1130,7 +1174,11 @@ impl SkillRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink = wrap_learner(
+                    self.base_sink.clone(),
+                    self.graph.as_ref(),
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -1152,13 +1200,26 @@ impl SkillRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
+    #[pyo3(signature = (graph, origins=None, confirmation=None, provenance=None))]
+    fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        origins: Option<&str>,
+        confirmation: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<()> {
+        self.usage_policy = parse_policy(origins, confirmation, provenance)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
-            .set_trace_sink(Arc::new(UsageLearner::new(handle.clone(), inner_sink)));
+            .set_trace_sink(Arc::new(UsageLearner::with_policy(
+                handle.clone(),
+                inner_sink,
+                self.usage_policy,
+            )));
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
     }
 
     /// Turn adaptive usage ranking off: ranking returns to the base engine and

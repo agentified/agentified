@@ -623,3 +623,66 @@ describe("baseline seeding", () => {
     expect(graph.clusterCount).toBe(0);
   });
 });
+
+describe("policy on the live path", () => {
+  it("honours the same policy offline initialization takes", async () => {
+    // The policy was reachable only when building from a log, so what counted
+    // as evidence depended on which path produced the graph.
+    const catalog = await buildCatalog();
+    const graph = new IntentGraph();
+    catalog.experimentalEnableAdaptiveRanking(graph, { confirmation: "succeeded" });
+
+    catalog.search("why is the build broken", 5);
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(0);
+
+    catalog.recordEvent({ type: "invoke_end", tool_id: "gh_run_list", took_ms: 1 });
+    expect(graph.clusterCount).toBe(1);
+  });
+
+  it("can be restricted by origin", async () => {
+    const catalog = await buildCatalog();
+    const graph = new IntentGraph();
+    catalog.experimentalEnableAdaptiveRanking(graph, { origins: "baseline" });
+
+    catalog.search("why is the build broken", 5); // origin "direct"
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(0);
+
+    catalog.experimentalRecordBaselineQuery("why is the build broken");
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(1);
+  });
+
+  it("rejects an unknown value rather than defaulting", async () => {
+    const catalog = await buildCatalog();
+    expect(() =>
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { confirmation: "done" }),
+    ).toThrow(/unknown confirmation/);
+  });
+
+  it("keeps the policy when the trace sink changes", async () => {
+    // Changing the sink rebuilds the learner that decorates it. Rebuilding at
+    // the default would silently drop a configured policy — the same trap the
+    // graph handle is retained for.
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "gh_run_list",
+      name: "gh_run_list",
+      description: "List CI workflow runs and whether the build passed",
+      inputSchema: {},
+      outputSchema: {},
+    });
+    const graph = new IntentGraph();
+    registry.experimentalEnableAdaptiveRanking(graph, { confirmation: "succeeded" });
+
+    registry.setTraceSink({ kind: "memory", sessionId: "after" });
+
+    registry.search("why is the build broken", 5);
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(0, "an attempt still is not a confirmation");
+
+    registry.recordEvent({ type: "invoke_end", tool_id: "gh_run_list", took_ms: 1 });
+    expect(graph.clusterCount).toBe(1);
+  });
+});

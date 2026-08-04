@@ -226,7 +226,13 @@ class ToolRegistry:
     ) -> tuple[str, str | None, str | None, bool | None]:
         """(status, built, active, dim_mismatch) — adaptive ranking model check."""
 
-    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+    def enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        origins: str | None = None,
+        confirmation: str | None = None,
+        provenance: str | None = None,
+    ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
         Wires both halves: this registry ranks against the graph, and its trace
@@ -418,7 +424,13 @@ class SkillRegistry:
     ) -> tuple[str, str | None, str | None, bool | None]:
         """(status, built, active, dim_mismatch) — adaptive ranking model check."""
 
-    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+    def enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        origins: str | None = None,
+        confirmation: str | None = None,
+        provenance: str | None = None,
+    ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
         Wires both halves: this registry ranks against the graph, and its trace

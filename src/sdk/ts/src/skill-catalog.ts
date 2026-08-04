@@ -1,5 +1,10 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import type {
+  ObservationPolicyOptions,
+  ReplaceOutcome,
+  Skill,
+  SkillHit,
+} from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import {
@@ -267,7 +272,7 @@ export class SkillCatalog {
     options: {
       warnOnModelMismatch?: boolean;
       rebuildOnModelChange?: boolean;
-    } = {},
+    } & ObservationPolicyOptions = {},
   ): void {
     this.registry.experimentalEnableAdaptiveRanking(graph, options);
   }

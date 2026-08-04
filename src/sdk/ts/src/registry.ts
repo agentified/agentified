@@ -220,12 +220,21 @@ export class ToolRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    this.native.enableAdaptiveRanking(graph);
+    // The same three knobs `experimentalInitializeIntentGraph` takes, so what
+    // counts as evidence does not depend on which path produced the graph.
+    this.native.enableAdaptiveRanking(graph, {
+      origins: options.origins,
+      confirmation: options.confirmation,
+      provenance: options.provenance,
+    });
     this.#maybeWarnModelMismatch();
   }
 
@@ -514,12 +523,21 @@ export class SkillRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    this.native.enableAdaptiveRanking(graph);
+    // The same three knobs `experimentalInitializeIntentGraph` takes, so what
+    // counts as evidence does not depend on which path produced the graph.
+    this.native.enableAdaptiveRanking(graph, {
+      origins: options.origins,
+      confirmation: options.confirmation,
+      provenance: options.provenance,
+    });
     this.#maybeWarnModelMismatch();
   }
 
