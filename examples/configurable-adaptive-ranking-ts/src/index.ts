@@ -27,21 +27,24 @@ const SUPPORT_FULL = 3;
 
 interface Readiness {
   clusters: number;
-  /** Each cluster's observation count, strongest first. Printed as `n/3`
-   *  because 3 is where the boost reaches full strength. */
-  support: number[];
+  /** Observations behind the cluster THIS turn landed in. Printed as `n/3`
+   *  because 3 is where the boost reaches full strength — reporting one cluster
+   *  per line, since a list of every cluster's support says nothing about which
+   *  one the turn just changed. */
+  support: number;
   observations: number;
   fromBaseline: number;
 }
 
 /** Score a candidate graph. Reads the graph only — nothing is attached. */
-function readiness(graph: IntentGraph): Readiness {
-  const intents: { support: number; seeded_support?: number }[] = JSON.parse(
+function readiness(graph: IntentGraph, turn: string): Readiness {
+  const intents: { support: number; seeded_support?: number; members: string[] }[] = JSON.parse(
     graph.toJson(),
   ).intents;
+  const landed = intents.find((it) => it.members.includes(turn));
   return {
     clusters: graph.clusterCount,
-    support: intents.map((it) => it.support).sort((a, b) => b - a),
+    support: landed?.support ?? 0,
     observations: intents.reduce((n, it) => n + it.support, 0),
     fromBaseline: intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0),
   };
@@ -75,10 +78,10 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
     origins: "baseline",
     provenance: "seeded",
   });
-  const r = readiness(soFar);
-  const support = r.support.map((n) => `${n}/${SUPPORT_FULL}`).join(", ");
+  const r = readiness(soFar, turn);
   console.log(
-    `  turn ${i + 1}  ${invoked.padEnd(13)} clusters=${r.clusters} support=${support} ` +
+    `  turn ${i + 1}  ${invoked.padEnd(13)} clusters=${r.clusters} ` +
+      `support=${r.support}/${SUPPORT_FULL} ` +
       `obs=${r.observations} fromBaseline=${r.fromBaseline}`,
   );
 }
@@ -122,8 +125,9 @@ console.log(`\npersist with graph.toJson() — rev=${graph.rev} marks what to sa
 console.log(`
 Reading the collection columns:
   clusters       distinct intents found so far
-  support        each cluster's observations, out of the 3 that reach full
-                 strength — below that the boost is scaled down proportionally
+  support        observations behind the cluster THIS turn landed in, out of
+                 the 3 that reach full strength — below that the boost is
+                 scaled down proportionally
   obs            confirmed observations across every cluster
   fromBaseline   how many of those came from this capture rather than live
                  traffic; after the flip it stays put while obs keeps growing
