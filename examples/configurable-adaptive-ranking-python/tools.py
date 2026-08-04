@@ -73,13 +73,20 @@ def top_ids(catalog: ToolCatalog, query: str) -> list[str]:
 
 
 HELD_OUT = [
-    "why is the build broken",
-    "rotate the signing key",
-    "read a file from disk",
+    "is the build broken today",
+    "rotate the key",
+    "read the file",
+    "is CI green on my branch",
 ]
 """Queries the graph is scored against — the coverage probe.
 
-Deliberately not fed back in as turns: coverage only means something measured
-against questions the graph has NOT been trained on. Cluster count and support
-rise whether or not it generalises; this is the one that says it will fire.
+None of these is a captured turn. Identical strings would test exact match,
+which is the easiest possible case and always passes; coverage only means
+something measured against questions the graph has not seen.
+
+The first three are near-repeats, which is as far as this demo can reach: it
+runs on BM25, where matching is word overlap. The fourth says the same thing as
+the first in an agent's vocabulary rather than a person's, and stays a MISS —
+that gap is what the dense tier exists to bridge, and why a real deployment
+wants ``method="semantic"``.
 """

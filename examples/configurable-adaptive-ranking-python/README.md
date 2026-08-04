@@ -25,20 +25,25 @@ query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
   ranking status   : inactive
 
-A. collecting — scoring after each turn against held-out: "why is the build broken", "rotate the signing key", "read a file from disk"
+A. collecting — scoring after each turn against held-out: "is the build broken today", "rotate the key", "read the file", "is CI green on my branch"
 
-  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  from_baseline=1 coverage=1/3
-  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  from_baseline=2 coverage=1/3
-  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  from_baseline=3 coverage=1/3
-  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  from_baseline=4 coverage=2/3
-  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  from_baseline=5 coverage=2/3
-  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  from_baseline=6 coverage=2/3
-  turn  7  read_file     clusters=3 support=1/3       obs=7  from_baseline=7 coverage=3/3
-  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  from_baseline=8 coverage=3/3
-  turn  9  read_file     clusters=3 support=2/3       obs=9  from_baseline=9 coverage=3/3
-  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10 coverage=3/3
+  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  from_baseline=1 coverage=1/4
+  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  from_baseline=2 coverage=1/4
+  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  from_baseline=3 coverage=1/4
+  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  from_baseline=4 coverage=2/4
+  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  from_baseline=5 coverage=2/4
+  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  from_baseline=6 coverage=2/4
+  turn  7  read_file     clusters=3 support=1/3       obs=7  from_baseline=7 coverage=3/4
+  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  from_baseline=8 coverage=3/4
+  turn  9  read_file     clusters=3 support=2/3       obs=9  from_baseline=9 coverage=3/4
+  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10 coverage=3/4
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
+
+  coverage stops at 3/4: "is CI green on my branch" never matches. It
+  means the same as a captured turn but shares no words with one, and
+  this demo runs on BM25. Bridging that is what the dense tier is for —
+  a real deployment wants method="semantic".
 
 B. built graph:
   "the build is broken"
@@ -137,7 +142,7 @@ Unknown values raise `ValueError` rather than silently defaulting: a policy is a
 | `support` | observations behind the cluster **this turn landed in**, out of the 3 that reach full strength — below that the boost is scaled down proportionally |
 | `obs` | confirmed observations across every cluster |
 | `from_baseline` | how many of those came from this capture rather than live traffic; after the flip it stays put while `obs` keeps growing |
-| `coverage` | held-out queries that matched a cluster. **The one to gate on** — the others rise whether or not the graph generalises, so a healthy-looking graph can still fire on none of your traffic |
+| `coverage` | held-out queries that matched a cluster — **none of them a captured turn**. The one to gate on: the others rise whether or not the graph generalises, so a healthy-looking graph can still fire on none of your traffic |
 
 **Gate on coverage.** Measured on a real embedding model against invented agent-style queries, a graph seeded from user turn text matched 9 of 13 — and the misses clustered entirely in one intent, where users described a *symptom* ("why is the build broken") while the agent searched by *action* ("list ci workflow runs"). Whether your traffic looks like that is not predictable from outside, and no other column tells you.
 
