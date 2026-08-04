@@ -323,7 +323,12 @@ impl ToolRegistry {
     ///
     /// This is the same learning algorithm the live path runs, driven from a
     /// file instead of live traffic: each accepted search opens a window for its
-    /// session, and each confirming invoke folds one observation in. It lives on
+    /// session, and each confirming invoke folds one observation in — asserted
+    /// by `initializing_from_a_log_reproduces_what_the_live_path_grows`, not
+    /// merely claimed here. It deliberately diverges in one place: interleaved
+    /// sessions asking identical text, where the live path's shared credit slot
+    /// loses an observation and this does not (see
+    /// `on_interleaved_sessions_offline_is_more_accurate_than_live`). It lives on
     /// the registry rather than on `IntentGraph` because **the registry owns the
     /// embedder**: every distinct query is embedded up front, so clusters form
     /// at the dense tier exactly as they would live. A graph replayed without an
@@ -1740,6 +1745,123 @@ mod tests {
         assert_eq!(graph.len(), 1);
         assert!(graph.intents[0].members.iter().any(|m| m.contains("read")));
         assert_eq!(graph.intents[0].tools.get("read_file"), Some(&1.0));
+    }
+
+    /// Drive the same turns through the LIVE path: a learner decorating the
+    /// sink, the graph attached so searches stash their query vectors. Returns
+    /// what live learning grew.
+    fn grow_live(turns: &[(&str, &str)], policy: ObservationPolicy) -> IntentGraph {
+        let reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().expect("stub embedder never fails");
+        let graph = Arc::new(RwLock::new(IntentGraph::empty()));
+        let learner = Arc::new(crate::UsageLearner::with_policy(
+            graph.clone(),
+            Arc::new(NoopSink),
+            policy,
+        ));
+        let mut reg = reg;
+        reg.set_trace_sink(learner);
+        reg.set_intent_graph(Some(graph.clone()));
+
+        for (query, invoked) in turns {
+            // Semantic, so the search stashes a query vector and the cluster
+            // grows a real centroid — the same tier initialization uses.
+            let _ = reg.search_with_method(query, 5, Origin::Baseline, SearchMethod::Semantic);
+            reg.record_event(TraceEvent::InvokeStart {
+                tool_id: (*invoked).into(),
+                args_size_bytes: 0,
+            });
+        }
+        // Clone out from under the lock: the caller compares values, and the
+        // learner still holds the handle.
+        graph.read().unwrap().clone()
+    }
+
+    #[test]
+    fn initializing_from_a_log_reproduces_what_the_live_path_grows() {
+        // The claim the whole offline design rests on, and the one that went
+        // undocumented-but-asserted long enough to hide a bug: a graph built
+        // from a log must BE the graph live learning would have grown, not an
+        // approximation of it.
+        let turns = [
+            ("read a file", "read_file"),
+            ("read the file now", "read_file"),
+            ("delete a path", "delete_file"),
+            // Shares no content token with "delete a path" but embeds to the
+            // same vector, so it merges densely and splits lexically. That makes
+            // this assertion sensitive to the TIER offline clusters at, not just
+            // to whether centroids exist.
+            ("remove something", "delete_file"),
+            ("read a file again", "read_file"),
+        ];
+        let policy = seeding_policy();
+
+        let live = grow_live(&turns, policy);
+
+        let reg = catalog(Arc::new(StubEmbedder));
+        let log: Vec<TraceEnvelope> = turns
+            .iter()
+            .enumerate()
+            .flat_map(|(i, (query, invoked))| {
+                let t = i as u64 + 1;
+                [
+                    env(t * 2, "s1", baseline_search(query)),
+                    env(t * 2 + 1, "s1", started(invoked)),
+                ]
+            })
+            .collect();
+        let offline = reg
+            .initialize_intent_graph(log, policy)
+            .expect("stub embedder never fails");
+
+        // `Intent` equality is the evidence — members, centroid, support, edges.
+        // Wall-clock stamps differ by construction, and are excluded from it.
+        assert_eq!(
+            offline.intents,
+            live.intents,
+            "offline built {:?}, live grew {:?}",
+            offline
+                .intents
+                .iter()
+                .map(|i| (&i.members, i.support))
+                .collect::<Vec<_>>(),
+            live.intents
+                .iter()
+                .map(|i| (&i.members, i.support))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(offline.rev(), live.rev());
+    }
+
+    #[test]
+    fn on_interleaved_sessions_offline_is_more_accurate_than_live() {
+        // The one place the two paths deliberately DIVERGE. Live shares a single
+        // credit slot keyed by query text across learners, so two sessions
+        // asking the same thing at once lose one observation. Offline knows the
+        // session id and counts both. Pinned so the divergence reads as a
+        // decision, and so nobody "fixes" offline back into agreement.
+        let turns = [("read a file", "read_file"), ("read a file", "read_file")];
+        let live = grow_live(&turns, seeding_policy());
+
+        let reg = catalog(Arc::new(StubEmbedder));
+        let interleaved = vec![
+            env(1, "A", baseline_search("read a file")),
+            env(2, "B", baseline_search("read a file")),
+            env(3, "A", started("read_file")),
+            env(4, "B", started("read_file")),
+        ];
+        let offline = reg
+            .initialize_intent_graph(interleaved, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(
+            offline.intents[0].support, 2,
+            "two askers, two observations"
+        );
+        assert_eq!(
+            live.intents[0].support, 2,
+            "sequential turns through one session credit normally"
+        );
     }
 
     #[test]
