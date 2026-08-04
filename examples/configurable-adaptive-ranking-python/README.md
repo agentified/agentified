@@ -1,8 +1,8 @@
-# `examples/configurable-adaptive-ranking-ts` — seed adaptive ranking from a baseline capture
+# `examples/configurable-adaptive-ranking-python` — seed adaptive ranking from a baseline capture
 
-Shows the **seed-first** path for [adaptive usage ranking](../../docs/adr/0014-adaptive-usage-ranking.md): record what an agent invokes while Ratel serves nothing, build an intent graph from that log offline, inspect it, and only then switch ranking on. **No model or API key** — a pure-Ratel feature demo over BM25.
+The Python mirror of [`examples/configurable-adaptive-ranking-ts`](../configurable-adaptive-ranking-ts/README.md). Shows the **seed-first** path for [adaptive usage ranking](../../docs/adr/0014-adaptive-usage-ranking.md): record what an agent invokes while Ratel serves nothing, build an intent graph from that log offline, inspect it, and only then switch ranking on. **No model or API key** — a pure-Ratel feature demo over BM25.
 
-The plain adaptive-ranking demo ([`examples/adaptive-ranking-ts`](../adaptive-ranking-ts/README.md)) learns live, starting from an empty graph. This one starts from evidence Ratel had no hand in. The Python mirror is [`examples/configurable-adaptive-ranking-python`](../configurable-adaptive-ranking-python/README.md).
+The plain adaptive-ranking demo ([`examples/adaptive-ranking-python`](../adaptive-ranking-python/README.md)) learns live, starting from an empty graph. This one starts from evidence Ratel had no hand in.
 
 ## Why seed first
 
@@ -15,8 +15,7 @@ The catch: a graph is keyed on query text, and a run where nobody searches has n
 ## Setup
 
 ```bash
-pnpm install
-pnpm -F @ratel-ai/example-configurable-adaptive-ranking start
+uv run main.py
 ```
 
 Expected output — cold BM25 is wrong, the seeded graph is right:
@@ -48,28 +47,33 @@ BM25 ranks `docker_build` first for *"why is the build broken"* on the token *bu
 
 Ratel is a tape recorder: no graph attached, no learner, no embedder, no search on the turn path. `ranking status: inactive` throughout.
 
-```ts
-const capture = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
+```python
+capture = await build_catalog(
+    TraceSinkConfig(kind="jsonl", session_id="session-1", path=str(log_path))
+)
 
-capture.experimentalRecordBaselineQuery(turn);                 // the turn's text
-capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
+capture.experimental_record_baseline_query(turn)          # the turn's text
+capture.record_event(
+    {"type": "invoke_start", "tool_id": invoked, "args_size_bytes": 0}
+)
 ```
 
 Two rules:
 
 - **Query before invokes.** Invocations attribute to the session's most recent query, so a call landing after the next turn's query is credited to the wrong question.
-- **Emission is your quality gate.** It is opt-in per turn, so gate it on whatever success signal you already have. The example skips a turn marked `ok: false`, and that mistake never enters the graph.
+- **Emission is your quality gate.** It is opt-in per turn, so gate it on whatever success signal you already have. The example skips a turn marked `"ok": False`, and that mistake never enters the graph.
 
 ### B. Initialize
 
-```ts
-const graph = await serving.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
-  origins: "baseline",    // only observed turns count, not Ratel's own searches
-  provenance: "seeded",   // record where this evidence came from
-});
+```python
+graph = await serving.experimental_initialize_intent_graph(
+    log_path.read_text(),
+    origins="baseline",    # only observed turns count, not Ratel's own searches
+    provenance="seeded",   # record where this evidence came from
+)
 ```
 
-Every distinct query is embedded up front, so clusters form at the **dense** tier — the same tier the live path uses. That is why this lives on the catalog: a model-free replay would cluster on word overlap, and `experimentalRebuildIntentGraph` cannot repair it later (it replaces centroids without revisiting cluster boundaries).
+Every distinct query is embedded up front, so clusters form at the **dense** tier — the same tier the live path uses. That is why this lives on the catalog: a model-free replay would cluster on word overlap, and `experimental_rebuild_intent_graph` cannot repair it later (it replaces centroids without revisiting cluster boundaries).
 
 One call covers both catalogs — a log carrying tool *and* skill events fills both edge maps.
 
@@ -79,25 +83,25 @@ The returned graph is **detached**. Building never switches ranking on, so inspe
 
 ### D. Serve
 
-```ts
-serving.experimentalEnableAdaptiveRanking(graph);
+```python
+serving.experimental_enable_adaptive_ranking(graph)
 ```
 
 From here the live learner keeps adding to the same graph. `support` grows while `seeded_support` stays put, so the gap between them tells you how much of each cluster still rests on the baseline versus what live traffic has since confirmed.
 
 ## Policy options
 
-`experimentalInitializeIntentGraph` takes the same three knobs everywhere; each defaults to reproducing live behavior.
+`experimental_initialize_intent_graph` takes the same three keywords everywhere; each defaults to reproducing live behavior.
 
-| Option | Values | Default |
+| Keyword | Values | Default |
 |---|---|---|
 | `origins` | `any` \| `direct` \| `agent` \| `baseline` | `any` |
 | `confirmation` | `attempted` \| `succeeded` | `attempted` |
 | `provenance` | `live` \| `seeded` | `live` |
 
-`confirmation: "succeeded"` counts only tool calls that *completed*, so a wrong-tool call that failed on its arguments never becomes an edge — stricter evidence, worth it for a seeding pass.
+`confirmation="succeeded"` counts only tool calls that *completed*, so a wrong-tool call that failed on its arguments never becomes an edge — stricter evidence, worth it for a seeding pass.
 
-Unknown values are rejected rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
+Unknown values raise `ValueError` rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 
 ## Caveats worth knowing
 
@@ -108,6 +112,6 @@ Unknown values are rejected rather than silently defaulting: a policy is a delib
 ## Files
 
 ```
-src/tools.ts   the catalog, and the baseline turns with their success flags
-src/index.ts   the four phases end to end
+tools.py   the catalog, and the baseline turns with their success flags
+main.py    the four phases end to end
 ```
