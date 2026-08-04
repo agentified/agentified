@@ -63,5 +63,3 @@ export const topIds = (catalog: ToolCatalog, query: string) =>
   catalog.search(query, 3).map((h) => h.toolId);
 
 
-/** Queries the graph is scored against — deliberately not the ones it trained on. */
-export const HELD_OUT = ["why is the build broken", "rotate the signing key"];

@@ -66,6 +66,3 @@ def top_ids(catalog: ToolCatalog, query: str) -> list[str]:
     return [hit.tool_id for hit in catalog.search(query, 3)]
 
 
-
-HELD_OUT = ["why is the build broken", "rotate the signing key"]
-"""Queries the graph is scored against — deliberately not the ones it trained on."""

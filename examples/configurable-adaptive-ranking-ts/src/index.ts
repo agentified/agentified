@@ -14,8 +14,8 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IntentGraph, ToolCatalog } from "@ratel-ai/sdk";
-import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
+import type { IntentGraph } from "@ratel-ai/sdk";
+import { BASELINE_TURNS, buildCatalog, topIds } from "./tools.js";
 
 const QUERY = "why is the build broken";
 const logPath = join(mkdtempSync(join(tmpdir(), "ratel-baseline-")), "telemetry.jsonl");
@@ -27,43 +27,23 @@ const SUPPORT_FULL = 3;
 
 interface Readiness {
   clusters: number;
-  mature: number;
+  /** Each cluster's observation count, strongest first. Printed as `n/3`
+   *  because 3 is where the boost reaches full strength. */
+  support: number[];
   observations: number;
-  seeded: number;
-  ghosts: string[];
-  coverage: { hits: number; probed: number };
+  fromBaseline: number;
 }
 
-/**
- * Score a candidate graph without attaching it to anything you serve.
- *
- * The coverage probe runs on a throwaway catalog, so the graph under test never
- * touches live ranking. `known` overrides which tool ids count as defined —
- * used below to simulate catalog drift.
- */
-async function readiness(
-  graph: IntentGraph,
-  serving: ToolCatalog,
-  known?: (id: string) => boolean,
-): Promise<Readiness> {
-  const intents: { support: number; seeded_support?: number; tools: Record<string, number> }[] =
-    JSON.parse(graph.toJson()).intents;
-  const defines = known ?? ((id: string) => serving.has(id));
-
-  const probe = await buildCatalog({ kind: "memory", sessionId: "probe" });
-  probe.experimentalEnableAdaptiveRanking(graph);
-  for (const query of HELD_OUT) probe.search(query, 5);
-  const boosts = probe
-    .drainTraceEvents()
-    .filter((e): e is { type: string; intent: string | null } => (e as any).type === "usage_boost");
-
+/** Score a candidate graph. Reads the graph only — nothing is attached. */
+function readiness(graph: IntentGraph): Readiness {
+  const intents: { support: number; seeded_support?: number }[] = JSON.parse(
+    graph.toJson(),
+  ).intents;
   return {
     clusters: graph.clusterCount,
-    mature: intents.filter((it) => it.support >= SUPPORT_FULL).length,
+    support: intents.map((it) => it.support).sort((a, b) => b - a),
     observations: intents.reduce((n, it) => n + it.support, 0),
-    seeded: intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0),
-    ghosts: intents.flatMap((it) => Object.keys(it.tools).filter((id) => !defines(id))),
-    coverage: { hits: boosts.filter((e) => e.intent !== null).length, probed: boosts.length },
+    fromBaseline: intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0),
   };
 }
 
@@ -82,9 +62,7 @@ console.log(`  ranking status   : ${capture.experimentalAdaptiveRankingStatus.st
 //    returning a DETACHED graph, so polling mid-capture is safe — nothing being
 //    served is touched.
 // ---------------------------------------------------------------------------
-console.log(
-  `\nA. collecting — scoring against held-out queries: ${HELD_OUT.map((q) => `"${q}"`).join(", ")}\n`,
-);
+console.log("\nA. collecting — Ratel records; the graph is scored after each turn\n");
 
 for (const [i, { turn, invoked, ok }] of BASELINE_TURNS.entries()) {
   // The quality gate. Emission is per turn and opt-in, so a turn you would not
@@ -102,17 +80,11 @@ for (const [i, { turn, invoked, ok }] of BASELINE_TURNS.entries()) {
     origins: "baseline",
     provenance: "seeded",
   });
-  const r = await readiness(soFar, serving);
-  const note =
-    r.mature === 1 && r.clusters === 1 && r.observations === SUPPORT_FULL
-      ? "   <- support hit 3: full arm weight"
-      : r.coverage.hits === r.coverage.probed
-        ? "   <- every probe covered"
-        : "";
+  const r = readiness(soFar);
+  const support = r.support.map((n) => `${n}/${SUPPORT_FULL}`).join(", ");
   console.log(
-    `  turn ${i + 1}  clusters=${r.clusters} mature=${r.mature} obs=${r.observations} ` +
-      `seeded=${r.seeded} ghosts=${r.ghosts.length} ` +
-      `coverage=${r.coverage.hits}/${r.coverage.probed}${note}`,
+    `  turn ${i + 1}  clusters=${r.clusters} support=${support} ` +
+      `obs=${r.observations} fromBaseline=${r.fromBaseline}`,
   );
 }
 
@@ -131,19 +103,13 @@ for (const intent of JSON.parse(graph.toJson()).intents) {
     .map(([id, weight]) => `${id} x${weight}`)
     .join(", ");
   console.log(`  "${intent.label}"`);
-  console.log(`    observations  : ${intent.support} (${intent.seeded_support ?? 0} seeded)`);
+  console.log(
+    `    observations  : ${intent.support} (${intent.seeded_support ?? 0} from this capture)`,
+  );
   console.log(`    invoked       : ${edges}`);
   console.log(`    phrasings     : ${intent.members.length}`);
 }
 
-// What catalog drift looks like. A graph outlives the catalog it was built
-// against — tools get renamed or removed. Those edges are dropped silently at
-// rank time, so a graph can look populated and boost nothing.
-const drifted = await readiness(graph, serving, (id) => id !== "gh_run_list" && serving.has(id));
-console.log(
-  `\n  if gh_run_list left the catalog: ghosts=${drifted.ghosts.length} ` +
-    `(${drifted.ghosts.join(", ")}) — those edges would rank nothing`,
-);
 // Still detached: building and scoring never switch ranking on.
 console.log(`  ranking status  : ${serving.experimentalAdaptiveRankingStatus.status}`);
 
@@ -160,12 +126,11 @@ console.log(`   ranking status  : ${serving.experimentalAdaptiveRankingStatus.st
 console.log(`\npersist with graph.toJson() — rev=${graph.rev} marks what to save.`);
 console.log(`
 Reading the collection columns:
-  clusters   distinct intents found so far
-  mature     clusters at support >= 3 — below that the boost is ramped down
-  obs        confirmed observations; seeded says how many came from capture
-  ghosts     edges naming tools the serving catalog no longer has (want 0)
-  coverage   held-out queries that matched a cluster — the generalisation check
+  clusters       distinct intents found so far
+  support        each cluster's observations, out of the 3 that reach full
+                 strength — below that the boost is scaled down proportionally
+  obs            confirmed observations across every cluster
+  fromBaseline   how many of those came from this capture rather than live
+                 traffic; after the flip it stays put while obs keeps growing
 
-Only coverage is measured against queries the graph has not seen. Clusters and
-support both rise whether or not it generalises, so gate on coverage and treat
-the rest as context — as a report for a person to read, not an auto-trigger.`);
+Treat these as a report for a person to read, not an auto-trigger.`);

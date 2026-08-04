@@ -22,13 +22,12 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ratel_ai import IntentGraph, ToolCatalog, TraceSinkConfig
+from ratel_ai import IntentGraph, TraceSinkConfig
 
-from tools import BASELINE_TURNS, HELD_OUT, build_catalog, top_ids
+from tools import BASELINE_TURNS, build_catalog, top_ids
 
 QUERY = "why is the build broken"
 
@@ -40,45 +39,24 @@ README's "rough edges"."""
 
 @dataclass(frozen=True)
 class Readiness:
-    """What a maturity check says about a candidate graph."""
+    """What the graph-so-far looks like."""
 
     clusters: int
-    mature: int
+    support: list[int]
+    """Each cluster's observation count, strongest first. Printed as ``n/3``
+    because 3 is where the boost reaches full strength."""
     observations: int
-    seeded: int
-    ghosts: list[str]
-    coverage_hits: int
-    coverage_probed: int
+    from_baseline: int
 
 
-async def readiness(
-    graph: IntentGraph,
-    serving: ToolCatalog,
-    known: Callable[[str], bool] | None = None,
-) -> Readiness:
-    """Score a candidate graph without attaching it to anything you serve.
-
-    The coverage probe runs on a throwaway catalog, so the graph under test
-    never touches live ranking. ``known`` overrides which tool ids count as
-    defined — used below to simulate catalog drift.
-    """
+def readiness(graph: IntentGraph) -> Readiness:
+    """Score a candidate graph. Reads the graph only — nothing is attached."""
     intents = json.loads(graph.to_json())["intents"]
-    defines = known or serving.has
-
-    probe = await build_catalog(TraceSinkConfig(kind="memory", session_id="probe"))
-    probe.experimental_enable_adaptive_ranking(graph)
-    for query in HELD_OUT:
-        probe.search(query, 5)
-    boosts = [e for e in probe.drain_trace_events() if e["type"] == "usage_boost"]
-
     return Readiness(
         clusters=graph.cluster_count,
-        mature=sum(1 for it in intents if it["support"] >= SUPPORT_FULL),
+        support=sorted((it["support"] for it in intents), reverse=True),
         observations=sum(it["support"] for it in intents),
-        seeded=sum(it.get("seeded_support", 0) for it in intents),
-        ghosts=[tool for it in intents for tool in it["tools"] if not defines(tool)],
-        coverage_hits=sum(1 for e in boosts if e["intent"] is not None),
-        coverage_probed=len(boosts),
+        from_baseline=sum(it.get("seeded_support", 0) for it in intents),
     )
 
 
@@ -102,8 +80,7 @@ async def main() -> None:
     #    policy) returning a DETACHED graph, so polling mid-capture is safe —
     #    nothing being served is touched.
     # -----------------------------------------------------------------------
-    probes = ", ".join(f'"{q}"' for q in HELD_OUT)
-    print(f"\nA. collecting — scoring against held-out queries: {probes}\n")
+    print("\nA. collecting — Ratel records; the graph is scored after each turn\n")
 
     for i, entry in enumerate(BASELINE_TURNS, start=1):
         # The quality gate. Emission is per turn and opt-in, so a turn you would
@@ -121,16 +98,11 @@ async def main() -> None:
         graph = await serving.experimental_initialize_intent_graph(
             log_path.read_text(), origins="baseline", provenance="seeded"
         )
-        r = await readiness(graph, serving)
-        note = ""
-        if r.mature == 1 and r.clusters == 1 and r.observations == SUPPORT_FULL:
-            note = "   <- support hit 3: full arm weight"
-        elif r.coverage_hits == r.coverage_probed:
-            note = "   <- every probe covered"
+        r = readiness(graph)
+        support = ", ".join(f"{n}/{SUPPORT_FULL}" for n in r.support)
         print(
-            f"  turn {i}  clusters={r.clusters} mature={r.mature} obs={r.observations} "
-            f"seeded={r.seeded} ghosts={len(r.ghosts)} "
-            f"coverage={r.coverage_hits}/{r.coverage_probed}{note}"
+            f"  turn {i}  clusters={r.clusters} support={support} "
+            f"obs={r.observations} from_baseline={r.from_baseline}"
         )
 
     print(f"\n  log -> {log_path}")
@@ -149,21 +121,11 @@ async def main() -> None:
         print(f'  "{intent["label"]}"')
         print(
             f"    observations  : {intent['support']} "
-            f"({intent.get('seeded_support', 0)} seeded)"
+            f"({intent.get('seeded_support', 0)} from this capture)"
         )
         print(f"    invoked       : {edges}")
         print(f"    phrasings     : {len(intent['members'])}")
 
-    # What catalog drift looks like. A graph outlives the catalog it was built
-    # against — tools get renamed or removed. Those edges are dropped silently
-    # at rank time, so a graph can look populated and boost nothing.
-    drifted = await readiness(
-        graph, serving, known=lambda tool: tool != "gh_run_list" and serving.has(tool)
-    )
-    print(
-        f"\n  if gh_run_list left the catalog: ghosts={len(drifted.ghosts)} "
-        f"({', '.join(drifted.ghosts)}) — those edges would rank nothing"
-    )
     # Still detached: building and scoring never switch ranking on.
     print(f"  ranking status  : {serving.experimental_adaptive_ranking_status}")
 
@@ -180,15 +142,14 @@ async def main() -> None:
     print(f"\npersist with graph.to_json() — rev={graph.rev} marks what to save.")
     print("""
 Reading the collection columns:
-  clusters   distinct intents found so far
-  mature     clusters at support >= 3 — below that the boost is ramped down
-  obs        confirmed observations; seeded says how many came from capture
-  ghosts     edges naming tools the serving catalog no longer has (want 0)
-  coverage   held-out queries that matched a cluster — the generalisation check
+  clusters        distinct intents found so far
+  support         each cluster's observations, out of the 3 that reach full
+                  strength — below that the boost is scaled down proportionally
+  obs             confirmed observations across every cluster
+  from_baseline   how many of those came from this capture rather than live
+                  traffic; after the flip it stays put while obs keeps growing
 
-Only coverage is measured against queries the graph has not seen. Clusters and
-support both rise whether or not it generalises, so gate on coverage and treat
-the rest as context — as a report for a person to read, not an auto-trigger.""")
+Treat these as a report for a person to read, not an auto-trigger.""")
 
 
 if __name__ == "__main__":
