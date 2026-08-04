@@ -72,3 +72,14 @@ def top_ids(catalog: ToolCatalog, query: str) -> list[str]:
     return [hit.tool_id for hit in catalog.search(query, 3)]
 
 
+HELD_OUT = [
+    "why is the build broken",
+    "rotate the signing key",
+    "read a file from disk",
+]
+"""Queries the graph is scored against — the coverage probe.
+
+Deliberately not fed back in as turns: coverage only means something measured
+against questions the graph has NOT been trained on. Cluster count and support
+rise whether or not it generalises; this is the one that says it will fire.
+"""
