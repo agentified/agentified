@@ -129,6 +129,12 @@ async def main() -> None:
         )
 
     print(f"\n  log -> {log_path}")
+    print(
+        '\n  coverage stops at 3/4: "is CI green on my branch" never matches. It'
+        "\n  means the same as a captured turn but shares no words with one, and"
+        "\n  this demo runs on BM25. Bridging that is what the dense tier is for —"
+        '\n  a real deployment wants method="semantic".'
+    )
 
     # -----------------------------------------------------------------------
     # B. Inspect — the finished graph, before switching anything on.
@@ -172,9 +178,10 @@ Reading the collection columns:
   obs             confirmed observations across every cluster
   from_baseline   how many of those came from this capture rather than live
                   traffic; after the flip it stays put while obs keeps growing
-  coverage        held-out queries that matched a cluster. THE ONE TO GATE ON:
-                  the others rise whether or not the graph generalises, so a
-                  healthy-looking graph can still fire on none of your traffic
+  coverage        held-out queries that matched a cluster — none of them a
+                  captured turn. THE ONE TO GATE ON: the others rise whether or
+                  not the graph generalises, so a healthy-looking graph can
+                  still fire on none of your traffic
 
 Treat these as a report for a person to read, not an auto-trigger.""")
 
