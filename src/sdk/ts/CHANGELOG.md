@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- `experimentalEnableAdaptiveRanking` accepts the same `origins` / `confirmation` / `provenance` options as `experimentalInitializeIntentGraph`, so what counts as evidence no longer depends on which path produced the graph. Defaults are unchanged, and the policy survives a `setTraceSink`.
 - `experimentalInitializeIntentGraph(jsonl, options?)` on `ToolCatalog` / `ToolRegistry` builds an intent graph from a JSONL trace log, and `experimentalRecordBaselineQuery(query)` records a turn observed while Ratel serves no retrieval. Together they are the seed-first path: capture what an agent invokes on its own, build a graph offline, inspect it, then enable ranking. Every distinct query is embedded up front so clusters form densely; the returned graph is detached, so enabling stays explicit. Policy options (`origins` / `confirmation` / `provenance`) default to live behavior and reject unknown values.
 - `"baseline"` is now a valid `SearchOrigin`, for recording a query while Ratel observes but does not serve retrieval. Unknown origin strings still degrade to `"direct"` rather than failing a search.
 

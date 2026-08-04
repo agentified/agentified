@@ -676,6 +676,10 @@ pub struct ToolRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
 }
 
 #[napi]
@@ -696,6 +700,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
         })
     }
 
@@ -883,9 +888,11 @@ impl ToolRegistry {
         // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
         // the sink outright would quietly stop learning.
         let sink = match &self.graph {
-            Some(graph) => {
-                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
-            }
+            Some(graph) => Arc::new(UsageLearner::with_policy(
+                graph.clone(),
+                sink,
+                self.usage_policy,
+            )) as Arc<dyn core::TraceSink>,
             None => sink,
         };
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
@@ -907,10 +914,19 @@ impl ToolRegistry {
     /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
     /// BM25 score — only ordering is comparable, as with hybrid search.
     #[napi]
-    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+    pub fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<()> {
+        self.usage_policy = parse_policy(options)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
-        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let learner = Arc::new(UsageLearner::with_policy(
+            handle.clone(),
+            inner_sink,
+            self.usage_policy,
+        ));
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(learner);
         registry.set_intent_graph(Some(handle.clone()));
@@ -930,6 +946,7 @@ impl ToolRegistry {
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
+        self.usage_policy = core::ObservationPolicy::default();
         Ok(())
     }
 
@@ -1072,6 +1089,10 @@ pub struct SkillRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
 }
 
 #[napi]
@@ -1090,6 +1111,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
         })
     }
 
@@ -1300,9 +1322,11 @@ impl SkillRegistry {
         // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
         // the sink outright would quietly stop learning.
         let sink = match &self.graph {
-            Some(graph) => {
-                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
-            }
+            Some(graph) => Arc::new(UsageLearner::with_policy(
+                graph.clone(),
+                sink,
+                self.usage_policy,
+            )) as Arc<dyn core::TraceSink>,
             None => sink,
         };
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
@@ -1324,10 +1348,19 @@ impl SkillRegistry {
     /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
     /// BM25 score — only ordering is comparable, as with hybrid search.
     #[napi]
-    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+    pub fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<()> {
+        self.usage_policy = parse_policy(options)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
-        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let learner = Arc::new(UsageLearner::with_policy(
+            handle.clone(),
+            inner_sink,
+            self.usage_policy,
+        ));
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(learner);
         registry.set_intent_graph(Some(handle.clone()));
@@ -1347,6 +1380,7 @@ impl SkillRegistry {
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
+        self.usage_policy = core::ObservationPolicy::default();
         Ok(())
     }
 

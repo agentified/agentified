@@ -1,5 +1,10 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import type {
+  ObservationPolicyOptions,
+  ReplaceOutcome,
+  Skill,
+  SkillHit,
+} from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
@@ -235,7 +240,10 @@ export class SkillCatalog {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.registry.experimentalEnableAdaptiveRanking(graph, options);
   }

@@ -163,6 +163,52 @@ impl ObservationPolicy {
     }
 }
 
+/// What one trace event means for learning, under a policy.
+///
+/// **The pairing rule, in one place.** The live path and the replay path differ
+/// in where they keep pending state — a per-session learner holds a `Mutex`
+/// slot, a replay holds a map keyed by `session_id` — but they must agree
+/// exactly on *which event does what*, or a graph built from a log stops
+/// matching the one live learning would have grown from the same events. Having
+/// written that match twice, a later change (a new confirming event, a pairing
+/// strategy) would have to land in both with nothing forcing the second.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Step<'a> {
+    /// This search opens an observation window for `query`.
+    Remember(&'a str),
+    /// This invocation closes one, confirming `capability_id` of `kind`.
+    Confirm(Capability, &'a str),
+    /// Not evidence — including a search the policy rejects, which is **ignored
+    /// rather than treated as a boundary**, so one of Ratel's own internal
+    /// searches landing mid-turn cannot discard the turn's evidence.
+    Ignore,
+}
+
+pub(crate) fn classify(event: &TraceEvent, policy: ObservationPolicy) -> Step<'_> {
+    match event {
+        // Both search kinds open a window: a capability search hits the tool and
+        // skill registries in turn with the same text.
+        TraceEvent::Search { query, origin, .. }
+        | TraceEvent::SkillSearch { query, origin, .. }
+            if accepts(policy, *origin) =>
+        {
+            Step::Remember(query)
+        }
+        // Tools confirm on the attempt or on completion, per the policy.
+        TraceEvent::InvokeStart { tool_id, .. }
+            if policy.confirmation == Confirmation::Attempted =>
+        {
+            Step::Confirm(Capability::Tool, tool_id)
+        }
+        TraceEvent::InvokeEnd { tool_id, .. } if policy.confirmation == Confirmation::Succeeded => {
+            Step::Confirm(Capability::Tool, tool_id)
+        }
+        // Skills have no start/end split, so they pair the same either way.
+        TraceEvent::SkillInvoke { skill_id, .. } => Step::Confirm(Capability::Skill, skill_id),
+        _ => Step::Ignore,
+    }
+}
+
 /// Replay a whole trace log into `graph`, pairing searches with invokes
 /// **per session** while walking the log in its own order.
 ///
@@ -196,28 +242,14 @@ pub(crate) fn replay_log_into(
 
     for env in envelopes {
         let session = env.session_id.as_str();
-        let (kind, capability_id) = match &env.event {
-            TraceEvent::Search { query, origin, .. }
-            | TraceEvent::SkillSearch { query, origin, .. } => {
-                if accepts(policy, *origin) {
-                    pending.insert(session, query.as_str());
-                    graph.arm_credit(query);
-                }
-                // A rejected search is ignored, not cleared — see `OriginFilter`.
+        let (kind, capability_id) = match classify(&env.event, policy) {
+            Step::Remember(query) => {
+                pending.insert(session, query);
+                graph.arm_credit(query);
                 continue;
             }
-            TraceEvent::InvokeStart { tool_id, .. }
-                if policy.confirmation == Confirmation::Attempted =>
-            {
-                (Capability::Tool, tool_id.as_str())
-            }
-            TraceEvent::InvokeEnd { tool_id, .. }
-                if policy.confirmation == Confirmation::Succeeded =>
-            {
-                (Capability::Tool, tool_id.as_str())
-            }
-            TraceEvent::SkillInvoke { skill_id, .. } => (Capability::Skill, skill_id.as_str()),
-            _ => continue,
+            Step::Confirm(kind, id) => (kind, id),
+            Step::Ignore => continue,
         };
 
         let Some(query) = pending.get(session).copied() else {
@@ -418,31 +450,10 @@ impl UsageLearner {
     /// landing between a captured query and its invokes, silently discard the
     /// turn's evidence.
     fn learn_from(&self, event: &TraceEvent, ts_ms: u64) {
-        match event {
-            // Both search kinds set the pending query: a capability search hits
-            // the tool and skill registries in turn with the same text.
-            TraceEvent::Search { query, origin, .. }
-            | TraceEvent::SkillSearch { query, origin, .. }
-                if accepts(self.policy, *origin) =>
-            {
-                self.remember_query(query)
-            }
-            // Tools confirm on the attempt or on completion, per the policy.
-            TraceEvent::InvokeStart { tool_id, .. }
-                if self.policy.confirmation == Confirmation::Attempted =>
-            {
-                self.confirm(Capability::Tool, tool_id, ts_ms)
-            }
-            TraceEvent::InvokeEnd { tool_id, .. }
-                if self.policy.confirmation == Confirmation::Succeeded =>
-            {
-                self.confirm(Capability::Tool, tool_id, ts_ms)
-            }
-            // Skills have no start/end split, so they pair the same either way.
-            TraceEvent::SkillInvoke { skill_id, .. } => {
-                self.confirm(Capability::Skill, skill_id, ts_ms)
-            }
-            _ => {}
+        match classify(event, self.policy) {
+            Step::Remember(query) => self.remember_query(query),
+            Step::Confirm(kind, capability_id) => self.confirm(kind, capability_id, ts_ms),
+            Step::Ignore => {}
         }
     }
 }
@@ -701,6 +712,76 @@ mod tests {
         let g = graph.read().unwrap();
         assert_eq!(g.intents[0].skills.get("ci-triage"), Some(&1.0));
         assert!(g.intents[0].tools.is_empty());
+    }
+
+    // ---- the shared pairing rule -------------------------------------------
+
+    #[test]
+    fn a_rejected_search_is_ignored_not_a_boundary() {
+        // The distinction the live and replay paths must agree on: `Ignore`
+        // leaves whatever window is open alone, so a stray internal search
+        // between a captured query and its invokes cannot discard the turn.
+        let policy =
+            ObservationPolicy::default().with_origins(OriginFilter::Exactly(Origin::Baseline));
+        assert_eq!(
+            classify(&search_from("q", Origin::Direct), policy),
+            Step::Ignore
+        );
+        assert_eq!(
+            classify(&search_from("q", Origin::Baseline), policy),
+            Step::Remember("q")
+        );
+    }
+
+    #[test]
+    fn confirmation_selects_which_invoke_event_closes_a_window() {
+        let attempted = ObservationPolicy::default();
+        let succeeded = ObservationPolicy::default().with_confirmation(Confirmation::Succeeded);
+
+        assert_eq!(
+            classify(&invoke("t"), attempted),
+            Step::Confirm(Capability::Tool, "t")
+        );
+        assert_eq!(classify(&invoke("t"), succeeded), Step::Ignore);
+
+        assert_eq!(classify(&invoke_end("t"), attempted), Step::Ignore);
+        assert_eq!(
+            classify(&invoke_end("t"), succeeded),
+            Step::Confirm(Capability::Tool, "t")
+        );
+    }
+
+    #[test]
+    fn skills_confirm_under_either_setting() {
+        // A skill load has no start/end split, so `Succeeded` cannot mean
+        // anything different for it. Asymmetric by necessity — pinned so it
+        // reads as a decision rather than an oversight.
+        let skill = TraceEvent::SkillInvoke {
+            skill_id: "ci-triage".into(),
+            took_ms: 1,
+        };
+        for policy in [
+            ObservationPolicy::default(),
+            ObservationPolicy::default().with_confirmation(Confirmation::Succeeded),
+        ] {
+            assert_eq!(
+                classify(&skill, policy),
+                Step::Confirm(Capability::Skill, "ci-triage")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrelated_event_is_never_evidence() {
+        assert_eq!(
+            classify(
+                &TraceEvent::AuthNeeds {
+                    upstream: "gh".into()
+                },
+                ObservationPolicy::default()
+            ),
+            Step::Ignore
+        );
     }
 
     // ---- ObservationPolicy -------------------------------------------------
