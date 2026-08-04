@@ -761,3 +761,101 @@ fn seeded_support_never_changes_ranking() {
         assert_eq!(l.fused, s.fused);
     }
 }
+
+// ---- the seed-first path, end to end ---------------------------------------
+
+/// The full integration a customer runs: capture a baseline to a JSONL log
+/// while Ratel serves nothing, build a graph from that log, attach it, and rank
+/// better than the cold catalog did — with no live learning in between.
+#[test]
+fn a_graph_seeded_from_a_baseline_log_ranks_better_once_attached() {
+    use ratel_ai_core::{JsonlSink, ObservationPolicy, Origin, OriginFilter, Provenance};
+    use std::io::{BufRead, BufReader};
+
+    let dir = std::env::temp_dir().join(format!("ratel-seed-{}", std::process::id()));
+    let log_path = dir.join("telemetry.jsonl");
+    let _ = std::fs::remove_file(&log_path);
+
+    // ---- Phase A: collect. Ratel records; it does not rank. ----------------
+    {
+        let mut capture = registry();
+        capture.set_trace_sink(Arc::new(
+            JsonlSink::new("session-1", &log_path).expect("open log"),
+        ));
+        // No graph attached: no arm, no embedder, no search on the turn path.
+        assert_eq!(
+            capture.adaptive_ranking_status(),
+            ratel_ai_core::AdaptiveRankingStatus::Inactive
+        );
+
+        // Three turns where people ask about builds and reach for gh_run_list,
+        // choosing from their own full tool list.
+        for turn in [
+            "why is the build broken",
+            "is the build broken again",
+            "the build broken on main",
+        ] {
+            capture.record_event(TraceEvent::Search {
+                query: turn.into(),
+                origin: Origin::Baseline,
+                top_k: 0,
+                hits: Vec::new(),
+                stages: Vec::new(),
+                took_ms: 0,
+            });
+            capture.record_event(TraceEvent::InvokeStart {
+                tool_id: "gh_run_list".into(),
+                args_size_bytes: 0,
+            });
+        }
+    }
+
+    // The log is a plain JSONL file the customer owns.
+    let envelopes: Vec<ratel_ai_core::TraceEnvelope> =
+        BufReader::new(std::fs::File::open(&log_path).expect("read log"))
+            .lines()
+            .map(|l| serde_json::from_str(&l.expect("line")).expect("envelope"))
+            .collect();
+    assert_eq!(envelopes.len(), 6, "three turns, two events each");
+
+    // ---- Phase B: build, offline. -----------------------------------------
+    let mut serving = registry();
+    let cold = serving.search("why is the build broken", 5);
+    assert_eq!(
+        cold.first().map(|h| h.tool_id.as_str()),
+        Some("docker_build"),
+        "cold, the token 'build' wins"
+    );
+
+    let graph = serving
+        .initialize_intent_graph(
+            envelopes,
+            ObservationPolicy::default()
+                .with_origins(OriginFilter::Exactly(Origin::Baseline))
+                .with_provenance(Provenance::Seeded),
+        )
+        .expect("build from the log");
+
+    // ---- Phase C: inspect before switching anything on. --------------------
+    assert_eq!(graph.len(), 1, "one intent behind those three turns");
+    assert_eq!(graph.intents[0].support, 3);
+    assert_eq!(
+        graph.intents[0].seeded_support, 3,
+        "all of it from baseline"
+    );
+    assert_eq!(graph.intents[0].tools.get("gh_run_list"), Some(&3.0));
+
+    // ---- Phase D: attach, and rank better. ---------------------------------
+    serving.set_intent_graph(Some(Arc::new(graph.into())));
+    let warm = serving.search("why is the build broken", 5);
+
+    let order = ids(&warm);
+    let gh = order.iter().position(|id| *id == "gh_run_list");
+    let docker = order.iter().position(|id| *id == "docker_build");
+    assert!(
+        gh < docker,
+        "the seeded graph should outrank the lexical decoy, got {order:?}"
+    );
+
+    let _ = std::fs::remove_file(&log_path);
+}
