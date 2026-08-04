@@ -1622,6 +1622,77 @@ mod tests {
     }
 
     #[test]
+    fn two_sessions_asking_the_same_question_each_count() {
+        // The shared credit slot on the graph is keyed by query text with one
+        // slot, so an interleaved pair of sessions asking the SAME thing had the
+        // second one's observation swallowed — its edge landed but its support
+        // did not. Rare enough live that ADR-0014 accepted it; routine in a
+        // replay, where sessions interleave by construction and popular
+        // questions repeat verbatim. Replay knows the session, so it tracks the
+        // credit itself rather than through the graph's global slot.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let interleaved = vec![
+            env(1, "A", baseline_search("read a file")),
+            env(2, "B", baseline_search("read a file")),
+            env(3, "A", started("read_file")),
+            env(4, "B", started("read_file")),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(interleaved, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.len(), 1);
+        assert_eq!(
+            graph.intents[0].support, 2,
+            "two people asked, so two observations"
+        );
+        assert_eq!(graph.intents[0].seeded_support, 2);
+        assert_eq!(graph.intents[0].tools.get("read_file"), Some(&2.0));
+    }
+
+    #[test]
+    fn one_question_answered_by_a_tool_and_a_skill_still_counts_once() {
+        // The other side of the same rule: `search_capabilities` fans one
+        // question to both catalogs, so a log holds a search and a skill search
+        // with identical text, then both kinds of invoke. Two edges, ONE
+        // observation — the thing the credit mark exists to protect.
+        let reg = catalog(Arc::new(StubEmbedder));
+        let fanned = vec![
+            env(1, "A", baseline_search("read a file")),
+            env(
+                2,
+                "A",
+                TraceEvent::SkillSearch {
+                    query: "read a file".into(),
+                    origin: Origin::Baseline,
+                    top_k: 0,
+                    hits: Vec::new(),
+                    stages: Vec::new(),
+                    took_ms: 0,
+                },
+            ),
+            env(3, "A", started("read_file")),
+            env(
+                4,
+                "A",
+                TraceEvent::SkillInvoke {
+                    skill_id: "file-triage".into(),
+                    took_ms: 1,
+                },
+            ),
+        ];
+
+        let graph = reg
+            .initialize_intent_graph(fanned, seeding_policy())
+            .expect("stub embedder never fails");
+
+        assert_eq!(graph.intents[0].support, 1, "one question, two catalogs");
+        assert_eq!(graph.intents[0].tools.len(), 1);
+        assert_eq!(graph.intents[0].skills.len(), 1);
+    }
+
+    #[test]
     fn observations_are_stamped_with_the_envelopes_own_timestamp() {
         // Decay must reflect when the work happened, not when the replay ran,
         // or a year-old log would come back looking brand new.
