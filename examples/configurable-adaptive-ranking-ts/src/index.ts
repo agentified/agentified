@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IntentGraph } from "@ratel-ai/sdk";
-import { BASELINE_TURNS, buildCatalog, topIds } from "./tools.js";
+import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
 
 const QUERY = "why is the build broken";
 const logPath = join(mkdtempSync(join(tmpdir(), "ratel-baseline-")), "telemetry.jsonl");
@@ -34,19 +34,37 @@ interface Readiness {
   support: number;
   observations: number;
   fromBaseline: number;
+  /** Held-out queries that matched a cluster, over the number probed. The only
+   *  field measured against questions the graph has NOT seen — the others rise
+   *  whether or not it generalises. */
+  coverage: { hits: number; probed: number };
 }
 
-/** Score a candidate graph. Reads the graph only — nothing is attached. */
-function readiness(graph: IntentGraph, turn: string): Readiness {
+/**
+ * Score a candidate graph without attaching it to anything you serve.
+ *
+ * The coverage probe runs on a throwaway catalog, so the graph under test never
+ * touches live ranking.
+ */
+async function readiness(graph: IntentGraph, turn: string): Promise<Readiness> {
   const intents: { support: number; seeded_support?: number; members: string[] }[] = JSON.parse(
     graph.toJson(),
   ).intents;
   const landed = intents.find((it) => it.members.includes(turn));
+
+  const probe = await buildCatalog({ kind: "memory", sessionId: "probe" });
+  probe.experimentalEnableAdaptiveRanking(graph);
+  for (const query of HELD_OUT) probe.search(query, 5);
+  const boosts = probe
+    .drainTraceEvents()
+    .filter((e): e is { type: string; intent: string | null } => (e as any).type === "usage_boost");
+
   return {
     clusters: graph.clusterCount,
     support: landed?.support ?? 0,
     observations: intents.reduce((n, it) => n + it.support, 0),
     fromBaseline: intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0),
+    coverage: { hits: boosts.filter((e) => e.intent !== null).length, probed: boosts.length },
   };
 }
 
@@ -65,7 +83,9 @@ console.log(`  ranking status   : ${capture.experimentalAdaptiveRankingStatus.st
 //    returning a DETACHED graph, so polling mid-capture is safe — nothing being
 //    served is touched.
 // ---------------------------------------------------------------------------
-console.log("\nA. collecting — Ratel records every invocation; the graph is scored after each\n");
+console.log(
+  `\nA. collecting — scoring after each turn against held-out: ${HELD_OUT.map((q) => `"${q}"`).join(", ")}\n`,
+);
 
 for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   // Every invocation is evidence. Nothing in a trace says whether a turn went
@@ -78,14 +98,15 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
     origins: "baseline",
     provenance: "seeded",
   });
-  const r = readiness(soFar, turn);
+  const r = await readiness(soFar, turn);
   // Past the threshold "5/3" reads like a bug, so say what it means.
   const support =
     r.support >= SUPPORT_FULL ? `${r.support} (full)` : `${r.support}/${SUPPORT_FULL}`;
   console.log(
     `  turn ${String(i + 1).padStart(2)}  ${invoked.padEnd(13)} clusters=${r.clusters} ` +
       `support=${support.padEnd(9)} ` +
-      `obs=${String(r.observations).padEnd(2)} fromBaseline=${r.fromBaseline}`,
+      `obs=${String(r.observations).padEnd(2)} fromBaseline=${r.fromBaseline} ` +
+      `coverage=${r.coverage.hits}/${r.coverage.probed}`,
   );
 }
 
@@ -134,5 +155,8 @@ Reading the collection columns:
   obs            confirmed observations across every cluster
   fromBaseline   how many of those came from this capture rather than live
                  traffic; after the flip it stays put while obs keeps growing
+  coverage       held-out queries that matched a cluster. THE ONE TO GATE ON:
+                 the others rise whether or not the graph generalises, so a
+                 healthy-looking graph can still fire on none of your traffic
 
 Treat these as a report for a person to read, not an auto-trigger.`);

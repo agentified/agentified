@@ -26,18 +26,18 @@ query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
   ranking status   : inactive
 
-A. collecting — Ratel records every invocation; the graph is scored after each
+A. collecting — scoring after each turn against held-out: "why is the build broken", "rotate the signing key", "read a file from disk"
 
-  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  fromBaseline=1
-  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  fromBaseline=2
-  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  fromBaseline=3
-  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  fromBaseline=4
-  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  fromBaseline=5
-  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  fromBaseline=6
-  turn  7  read_file     clusters=3 support=1/3       obs=7  fromBaseline=7
-  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  fromBaseline=8
-  turn  9  read_file     clusters=3 support=2/3       obs=9  fromBaseline=9
-  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 fromBaseline=10
+  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  fromBaseline=1 coverage=1/3
+  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  fromBaseline=2 coverage=1/3
+  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  fromBaseline=3 coverage=1/3
+  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  fromBaseline=4 coverage=2/3
+  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  fromBaseline=5 coverage=2/3
+  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  fromBaseline=6 coverage=2/3
+  turn  7  read_file     clusters=3 support=1/3       obs=7  fromBaseline=7 coverage=3/3
+  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  fromBaseline=8 coverage=3/3
+  turn  9  read_file     clusters=3 support=2/3       obs=9  fromBaseline=9 coverage=3/3
+  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 fromBaseline=10 coverage=3/3
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
@@ -133,6 +133,9 @@ Unknown values are rejected rather than silently defaulting: a policy is a delib
 | `support` | observations behind the cluster **this turn landed in**, out of the 3 that reach full strength — below that the boost is scaled down proportionally |
 | `obs` | confirmed observations across every cluster |
 | `fromBaseline` | how many of those came from this capture rather than live traffic; after the flip it stays put while `obs` keeps growing |
+| `coverage` | held-out queries that matched a cluster. **The one to gate on** — the others rise whether or not the graph generalises, so a healthy-looking graph can still fire on none of your traffic |
+
+**Gate on coverage.** Measured on a real embedding model against invented agent-style queries, a graph seeded from user turn text matched 9 of 13 — and the misses clustered entirely in one intent, where users described a *symptom* ("why is the build broken") while the agent searched by *action* ("list ci workflow runs"). Whether your traffic looks like that is not predictable from outside, and no other column tells you.
 
 Treat them as a report for a person to read, not an auto-trigger.
 

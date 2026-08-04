@@ -27,7 +27,7 @@ from pathlib import Path
 
 from ratel_ai import IntentGraph, TraceSinkConfig
 
-from tools import BASELINE_TURNS, build_catalog, top_ids
+from tools import BASELINE_TURNS, HELD_OUT, build_catalog, top_ids
 
 QUERY = "why is the build broken"
 
@@ -49,17 +49,35 @@ class Readiness:
     one the turn just changed."""
     observations: int
     from_baseline: int
+    coverage_hits: int
+    coverage_probed: int
+    """Held-out queries that matched a cluster, over the number probed. The only
+    column measured against questions the graph has NOT seen — the others rise
+    whether or not it generalises."""
 
 
-def readiness(graph: IntentGraph, turn: str) -> Readiness:
-    """Score a candidate graph. Reads the graph only — nothing is attached."""
+async def readiness(graph: IntentGraph, turn: str) -> Readiness:
+    """Score a candidate graph without attaching it to anything you serve.
+
+    The coverage probe runs on a throwaway catalog, so the graph under test never
+    touches live ranking.
+    """
     intents = json.loads(graph.to_json())["intents"]
     landed = next((it for it in intents if turn in it["members"]), None)
+
+    probe = await build_catalog(TraceSinkConfig(kind="memory", session_id="probe"))
+    probe.experimental_enable_adaptive_ranking(graph)
+    for query in HELD_OUT:
+        probe.search(query, 5)
+    boosts = [e for e in probe.drain_trace_events() if e["type"] == "usage_boost"]
+
     return Readiness(
         clusters=graph.cluster_count,
         support=landed["support"] if landed else 0,
         observations=sum(it["support"] for it in intents),
         from_baseline=sum(it.get("seeded_support", 0) for it in intents),
+        coverage_hits=sum(1 for e in boosts if e["intent"] is not None),
+        coverage_probed=len(boosts),
     )
 
 
@@ -83,7 +101,8 @@ async def main() -> None:
     #    policy) returning a DETACHED graph, so polling mid-capture is safe —
     #    nothing being served is touched.
     # -----------------------------------------------------------------------
-    print("\nA. collecting — Ratel records every invocation; the graph is scored after each\n")
+    probes = ", ".join(f'"{q}"' for q in HELD_OUT)
+    print(f"\nA. collecting — scoring after each turn against held-out: {probes}\n")
 
     for i, (turn, invoked) in enumerate(BASELINE_TURNS, start=1):
         # Every invocation is evidence. Nothing in a trace says whether a turn
@@ -97,7 +116,7 @@ async def main() -> None:
         graph = await serving.experimental_initialize_intent_graph(
             log_path.read_text(), origins="baseline", provenance="seeded"
         )
-        r = readiness(graph, turn)
+        r = await readiness(graph, turn)
         # Past the threshold "5/3" reads like a bug, so say what it means.
         support = (
             f"{r.support} (full)" if r.support >= SUPPORT_FULL else f"{r.support}/{SUPPORT_FULL}"
@@ -105,7 +124,8 @@ async def main() -> None:
         print(
             f"  turn {i:>2}  {invoked:<13} clusters={r.clusters} "
             f"support={support:<9} "
-            f"obs={r.observations:<2} from_baseline={r.from_baseline}"
+            f"obs={r.observations:<2} from_baseline={r.from_baseline} "
+            f"coverage={r.coverage_hits}/{r.coverage_probed}"
         )
 
     print(f"\n  log -> {log_path}")
@@ -152,6 +172,9 @@ Reading the collection columns:
   obs             confirmed observations across every cluster
   from_baseline   how many of those came from this capture rather than live
                   traffic; after the flip it stays put while obs keeps growing
+  coverage        held-out queries that matched a cluster. THE ONE TO GATE ON:
+                  the others rise whether or not the graph generalises, so a
+                  healthy-looking graph can still fire on none of your traffic
 
 Treat these as a report for a person to read, not an auto-trigger.""")
 
