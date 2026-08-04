@@ -15,6 +15,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - `seeded_support` on `Intent` (`protocol/v1`): how many of a cluster's `support` observations came from a seeding pass rather than live traffic. Provenance only — nothing reads it during ranking, and two graphs differing only here rank identically and compare equal. Bumped in lockstep with `support`, so one fanned-out question stays one observation. Omitted from the wire form when zero, so a live-only graph serializes byte-identically to one produced before the field existed; a value exceeding `support` is rejected on load.
 - `dropped` on the `usage_boost` trace event: how many capability ids a matched cluster remembers that the registry no longer defines, so they were filtered out of the arm. Previously a cluster whose every edge had left the catalog emitted an event byte-identical to a query that matched nothing — the two are different problems (catalog drift vs a coverage gap) with different fixes, and `intent: Some(_)` with `promoted: 0` and `dropped > 0` now tells them apart. Ranking is unchanged: dropping ids the agent cannot invoke is still correct, and only an armed outcome reaches the fusion. Older log lines without the field replay as `dropped: 0`.
 
+### Fixed
+
+- Trace-log initialization under-counted `support` when two sessions asked the same question with their events interleaved — the second session's edge landed but its observation did not. The credit mark is a single slot on the graph keyed by query text, which is enough for the live path (two learners sharing one graph need somewhere common to agree, and identical text from concurrent sessions is rare there) but not for a replay, where sessions interleave by construction and popular questions repeat verbatim. Replay now tracks the mark per session, which it can do exactly because it knows the session id.
+
 ### Changed
 
 - **BREAKING:** `Origin` is now `#[non_exhaustive]`. Downstream `match`es over it must include a `_ =>` arm; in return, future origins are non-breaking. Constructing existing variants is unaffected, as are the serde wire form and in-crate matches.

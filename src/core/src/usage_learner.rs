@@ -237,31 +237,45 @@ pub(crate) fn replay_log_into(
     embeddings: &HashMap<String, Vec<f32>>,
     fingerprint: Option<&str>,
 ) {
-    // session id -> the query its next invoke attributes to.
-    let mut pending: HashMap<&str, &str> = HashMap::new();
+    // session id -> (the query its next invoke attributes to, already credited).
+    //
+    // The credit is tracked HERE rather than through [`IntentGraph::arm_credit`]
+    // / [`claim_credit`]. That slot is global and keyed by query text, which is
+    // enough live — two learners sharing one graph need somewhere common to
+    // agree, and identical text from two concurrent sessions is rare. In a
+    // replay it is not rare: sessions interleave by construction and popular
+    // questions repeat verbatim, so a shared slot loses the second session's
+    // observation every time. Replay knows the session, so it can be exact.
+    let mut pending: HashMap<&str, (&str, bool)> = HashMap::new();
 
     for env in envelopes {
         let session = env.session_id.as_str();
         let (kind, capability_id) = match classify(&env.event, policy) {
             Step::Remember(query) => {
-                pending.insert(session, query);
-                graph.arm_credit(query);
+                // Re-arming with the same text is idempotent: a capability
+                // search fans one question to both catalogs, and both of those
+                // land before any invoke, so the turn still credits once.
+                pending.insert(session, (query, false));
                 continue;
             }
             Step::Confirm(kind, id) => (kind, id),
             Step::Ignore => continue,
         };
 
-        let Some(query) = pending.get(session).copied() else {
+        let Some(entry) = pending.get_mut(session) else {
             continue; // an invoke with no accepted search before it proves nothing
         };
+        let query = entry.0;
+        // The first confirming invoke of THIS session's question is what makes
+        // it an observation; later ones add edges for the same question.
+        let first_confirmation = !entry.1;
+        entry.1 = true;
         // Stash this query's vector right before the observation reads it. The
         // slot holds one entry, so with sessions interleaved anything set
         // earlier may belong to another session's question.
         if let (Some(vector), Some(fp)) = (embeddings.get(query), fingerprint) {
             graph.note_query_vector(query, vector, fp);
         }
-        let first_confirmation = graph.claim_credit(query);
         graph.observe(Observation {
             query,
             kind,
