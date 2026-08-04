@@ -57,6 +57,12 @@ export const BASELINE_TURNS: [turn: string, invoked: string][] = [
   ["is the build broken again", "gh_run_list"],
   ["the build broken on main", "gh_run_list"],
   ["rotate the signing key", "vault_rotate"],
+  ["the build is broken", "gh_run_list"],
+  ["rotate signing key now", "vault_rotate"],
+  ["read a file from disk", "read_file"],
+  ["rotate the signing key again", "vault_rotate"],
+  ["read the file from disk", "read_file"],
+  ["build broken after merge", "gh_run_list"],
 ];
 
 export const topIds = (catalog: ToolCatalog, query: string) =>

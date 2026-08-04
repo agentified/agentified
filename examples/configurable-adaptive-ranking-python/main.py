@@ -98,10 +98,14 @@ async def main() -> None:
             log_path.read_text(), origins="baseline", provenance="seeded"
         )
         r = readiness(graph, turn)
+        # Past the threshold "5/3" reads like a bug, so say what it means.
+        support = (
+            f"{r.support} (full)" if r.support >= SUPPORT_FULL else f"{r.support}/{SUPPORT_FULL}"
+        )
         print(
-            f"  turn {i}  {invoked:<13} clusters={r.clusters} "
-            f"support={r.support}/{SUPPORT_FULL} "
-            f"obs={r.observations} from_baseline={r.from_baseline}"
+            f"  turn {i:>2}  {invoked:<13} clusters={r.clusters} "
+            f"support={support:<9} "
+            f"obs={r.observations:<2} from_baseline={r.from_baseline}"
         )
 
     print(f"\n  log -> {log_path}")

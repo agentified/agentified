@@ -27,31 +27,43 @@ query: "why is the build broken"
 
 A. collecting — Ratel records every invocation; the graph is scored after each
 
-  turn 1  gh_run_list   clusters=1 support=1/3 obs=1 from_baseline=1
-  turn 2  gh_run_list   clusters=1 support=2/3 obs=2 from_baseline=2
-  turn 3  gh_run_list   clusters=1 support=3/3 obs=3 from_baseline=3
-  turn 4  vault_rotate  clusters=2 support=1/3 obs=4 from_baseline=4
+  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  from_baseline=1
+  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  from_baseline=2
+  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  from_baseline=3
+  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  from_baseline=4
+  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  from_baseline=5
+  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  from_baseline=6
+  turn  7  read_file     clusters=3 support=1/3       obs=7  from_baseline=7
+  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  from_baseline=8
+  turn  9  read_file     clusters=3 support=2/3       obs=9  from_baseline=9
+  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
 B. built graph:
-  "why is the build broken"
-    observations  : 3 (3 from this capture)
-    invoked       : gh_run_list x3
-    phrasings     : 3
+  "the build is broken"
+    observations  : 5 (5 from this capture)
+    invoked       : gh_run_list x5
+    phrasings     : 5
   "rotate the signing key"
-    observations  : 1 (1 from this capture)
-    invoked       : vault_rotate x1
-    phrasings     : 1
+    observations  : 3 (3 from this capture)
+    invoked       : vault_rotate x3
+    phrasings     : 3
+  "read a file from disk"
+    observations  : 2 (2 from this capture)
+    invoked       : read_file x2
+    phrasings     : 2
   ranking status  : inactive
 
 C. after seeding   : gh_run_list > docker_build
    ranking status  : active
 
-persist with graph.to_json() — rev=4 marks what to save.
+persist with graph.to_json() — rev=10 marks what to save.
 ```
 
-BM25 ranks `docker_build` first for *"why is the build broken"* on the token *build*. Three real turns say people reach for `gh_run_list`, and the seeded graph closes the gap — with no live learning in between.
+BM25 ranks `docker_build` first for *"why is the build broken"* on the token *build*. Ten turns across three intents say people reach for `gh_run_list` on build questions, and the seeded graph closes the gap — with no live learning in between.
+
+The intents interleave, so you can watch clusters form and reach full strength at different points: the build cluster at turn 3, the key-rotation one at turn 8, and file reading still ramping when capture ends.
 
 ## The four phases
 
