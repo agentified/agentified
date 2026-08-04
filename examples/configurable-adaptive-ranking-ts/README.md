@@ -31,7 +31,7 @@ A. collecting — Ratel records every invocation; the graph is scored after each
   turn 1  gh_run_list   clusters=1 support=1/3 obs=1 fromBaseline=1
   turn 2  gh_run_list   clusters=1 support=2/3 obs=2 fromBaseline=2
   turn 3  gh_run_list   clusters=1 support=3/3 obs=3 fromBaseline=3
-  turn 4  vault_rotate  clusters=2 support=3/3, 1/3 obs=4 fromBaseline=4
+  turn 4  vault_rotate  clusters=2 support=1/3 obs=4 fromBaseline=4
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
@@ -118,7 +118,7 @@ Unknown values are rejected rather than silently defaulting: a policy is a delib
 | column | meaning |
 |---|---|
 | `clusters` | distinct intents found so far |
-| `support` | each cluster's observations, out of the 3 that reach full strength — below that the boost is scaled down proportionally |
+| `support` | observations behind the cluster **this turn landed in**, out of the 3 that reach full strength — below that the boost is scaled down proportionally |
 | `obs` | confirmed observations across every cluster |
 | `fromBaseline` | how many of those came from this capture rather than live traffic; after the flip it stays put while `obs` keeps growing |
 

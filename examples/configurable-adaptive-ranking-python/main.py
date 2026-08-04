@@ -42,19 +42,22 @@ class Readiness:
     """What the graph-so-far looks like."""
 
     clusters: int
-    support: list[int]
-    """Each cluster's observation count, strongest first. Printed as ``n/3``
-    because 3 is where the boost reaches full strength."""
+    support: int
+    """Observations behind the cluster THIS turn landed in. Printed as ``n/3``
+    because 3 is where the boost reaches full strength — reporting one cluster
+    per line, since a list of every cluster's support says nothing about which
+    one the turn just changed."""
     observations: int
     from_baseline: int
 
 
-def readiness(graph: IntentGraph) -> Readiness:
+def readiness(graph: IntentGraph, turn: str) -> Readiness:
     """Score a candidate graph. Reads the graph only — nothing is attached."""
     intents = json.loads(graph.to_json())["intents"]
+    landed = next((it for it in intents if turn in it["members"]), None)
     return Readiness(
         clusters=graph.cluster_count,
-        support=sorted((it["support"] for it in intents), reverse=True),
+        support=landed["support"] if landed else 0,
         observations=sum(it["support"] for it in intents),
         from_baseline=sum(it.get("seeded_support", 0) for it in intents),
     )
@@ -94,10 +97,10 @@ async def main() -> None:
         graph = await serving.experimental_initialize_intent_graph(
             log_path.read_text(), origins="baseline", provenance="seeded"
         )
-        r = readiness(graph)
-        support = ", ".join(f"{n}/{SUPPORT_FULL}" for n in r.support)
+        r = readiness(graph, turn)
         print(
-            f"  turn {i}  {invoked:<13} clusters={r.clusters} support={support} "
+            f"  turn {i}  {invoked:<13} clusters={r.clusters} "
+            f"support={r.support}/{SUPPORT_FULL} "
             f"obs={r.observations} from_baseline={r.from_baseline}"
         )
 
@@ -139,8 +142,9 @@ async def main() -> None:
     print("""
 Reading the collection columns:
   clusters        distinct intents found so far
-  support         each cluster's observations, out of the 3 that reach full
-                  strength — below that the boost is scaled down proportionally
+  support         observations behind the cluster THIS turn landed in, out of
+                  the 3 that reach full strength — below that the boost is
+                  scaled down proportionally
   obs             confirmed observations across every cluster
   from_baseline   how many of those came from this capture rather than live
                   traffic; after the flip it stays put while obs keeps growing
