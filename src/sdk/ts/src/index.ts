@@ -16,6 +16,7 @@
 export type { JSONSchema7 } from "json-schema";
 export type {
   AdaptiveRankingStatus,
+  ObservationPolicyOptions,
   ReplaceOutcome,
   SearchHit,
   Skill,

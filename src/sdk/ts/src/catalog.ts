@@ -1,5 +1,5 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { SearchHit, Tool } from "../native/index.cjs";
+import type { ObservationPolicyOptions, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import {
@@ -467,6 +467,44 @@ export class ToolCatalog {
    */
   async experimentalRebuildIntentGraph(): Promise<void> {
     await this.registry.experimentalRebuildIntentGraph();
+  }
+
+  /**
+   * Record a query observed while Ratel is **not** serving retrieval — the
+   * collection half of baseline seeding.
+   *
+   * Call it at the top of each turn, before any tool call: the invocations that
+   * follow are attributed to the most recent query in the session, so a call
+   * that lands after the next turn's query is credited to the wrong question.
+   *
+   * Emission is per turn and opt-in, which makes it the place to apply your own
+   * quality gate — skip turns you would not want the graph to learn from, and
+   * they never enter it.
+   *
+   * Sugar over {@link recordEvent}; the raw event shape is easy to get wrong.
+   */
+  experimentalRecordBaselineQuery(query: string): void {
+    this.recordEvent({
+      type: "search",
+      query,
+      origin: "baseline",
+      top_k: 0,
+      hits: [],
+      stages: [],
+      took_ms: 0,
+    });
+  }
+
+  /**
+   * Build an {@link IntentGraph} from a JSONL trace log. See
+   * {@link ToolRegistry.experimentalInitializeIntentGraph} — the returned graph
+   * is detached, and one call covers both the tool and skill catalogs.
+   */
+  async experimentalInitializeIntentGraph(
+    jsonl: string,
+    options: ObservationPolicyOptions = {},
+  ): Promise<IntentGraph> {
+    return this.registry.experimentalInitializeIntentGraph(jsonl, options);
   }
 
   /** Whether adaptive usage ranking is active, inactive, or paused by a model

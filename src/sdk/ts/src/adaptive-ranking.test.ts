@@ -514,3 +514,112 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
     expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
   });
 });
+
+describe("baseline seeding", () => {
+  /** Capture three build/CI turns to a JSONL log with Ratel serving nothing. */
+  async function captureBaseline(): Promise<{ catalog: ToolCatalog; logPath: string }> {
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-seed-`)}/telemetry.jsonl`;
+    const catalog = new ToolCatalog({
+      trace: { kind: "jsonl", sessionId: "session-1", path: logPath },
+    });
+    await catalog.register([
+      {
+        id: "docker_build",
+        name: "docker_build",
+        description: "Build a Docker image from a Dockerfile",
+        inputSchema: {},
+        outputSchema: {},
+        execute: async () => "built",
+      },
+      {
+        id: "gh_run_list",
+        name: "gh_run_list",
+        description: "List CI workflow runs and whether the build passed",
+        inputSchema: {},
+        outputSchema: {},
+        execute: async () => "listed",
+      },
+    ]);
+
+    for (const turn of [
+      "why is the build broken",
+      "is the build broken again",
+      "the build broken on main",
+    ]) {
+      catalog.experimentalRecordBaselineQuery(turn);
+      catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    }
+    return { catalog, logPath };
+  }
+
+  it("builds a graph from a log the agent produced without Ratel ranking", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    // Nothing was attached during capture, so ranking never changed.
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("inactive");
+
+    const graph = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "baseline",
+      provenance: "seeded",
+    });
+
+    expect(graph.clusterCount).toBe(1);
+    const parsed = JSON.parse(graph.toJson());
+    expect(parsed.intents[0].support).toBe(3);
+    expect(parsed.intents[0].seeded_support).toBe(3);
+    expect(parsed.intents[0].tools.gh_run_list).toBe(3);
+  });
+
+  it("returns a detached graph so enabling stays an explicit act", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    const graph = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "baseline",
+    });
+    expect(graph.clusterCount).toBe(1);
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("inactive");
+
+    catalog.experimentalEnableAdaptiveRanking(graph);
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+  });
+
+  it("ignores searches the policy does not accept", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    // Default policy accepts every origin; a baseline-only one still sees these.
+    const seeded = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "agent",
+    });
+    expect(seeded.clusterCount).toBe(0);
+  });
+
+  it("rejects an unknown policy value instead of silently defaulting", async () => {
+    const { logPath } = await captureBaseline();
+    const catalog = new ToolCatalog();
+    await expect(
+      catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+        provenance: "seedd",
+      }),
+    ).rejects.toThrow(/unknown provenance/);
+  });
+
+  it("names the line number of a malformed log entry", async () => {
+    // A truncated tail is the realistic case (a crash mid-write). Failing loudly
+    // beats silently dropping it: the log is the only record of a capture, and a
+    // thinner graph with no explanation is worse than an error you can act on.
+    const good =
+      '{"v":1,"ts":1,"session_id":"s","type":"search","query":"q",' +
+      '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
+    const catalog = new ToolCatalog();
+    await expect(
+      catalog.experimentalInitializeIntentGraph(`${good}\n{"v":1,"ts":2,"sess`),
+    ).rejects.toThrow(/line 2/);
+  });
+
+  it("skips blank lines rather than failing on them", async () => {
+    const good =
+      '{"v":1,"ts":1,"session_id":"s","type":"search","query":"q",' +
+      '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
+    const catalog = new ToolCatalog();
+    const graph = await catalog.experimentalInitializeIntentGraph(`\n${good}\n\n`);
+    // The search was never acted on, so it teaches nothing — but parsing worked.
+    expect(graph.clusterCount).toBe(0);
+  });
+});

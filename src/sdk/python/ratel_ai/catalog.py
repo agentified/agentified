@@ -636,6 +636,45 @@ class ToolRegistry:
         self._adaptive_warned = False
         self._maybe_warn_model_mismatch()
 
+    async def experimental_initialize_intent_graph(
+        self,
+        jsonl: str,
+        *,
+        origins: str | None = None,
+        confirmation: str | None = None,
+        provenance: str | None = None,
+    ) -> IntentGraph:
+        """Build an IntentGraph from a JSONL trace log — offline baseline seeding.
+
+        Every distinct query is embedded up front, so clusters form at the dense
+        tier exactly as the live path would grow them. A model-free replay would
+        cluster on word overlap instead, and ``experimental_rebuild_intent_graph``
+        cannot repair that later: it replaces centroids without revisiting
+        cluster boundaries.
+
+        The returned graph is **detached** — pass it to
+        ``experimental_enable_adaptive_ranking`` once you decide it is ready. One
+        call covers both catalogs, so do not run it again on the skill registry.
+
+        Args:
+            jsonl: the trace log, exactly as the ``jsonl`` sink writes it. Blank
+                lines are skipped; a malformed line raises, naming its line number.
+            origins: which searches count — ``any`` (default), ``direct``,
+                ``agent``, or ``baseline``.
+            confirmation: ``attempted`` (default) or ``succeeded``.
+            provenance: ``live`` (default) or ``seeded``.
+
+        Raises:
+            ValueError: an unknown policy value, or a malformed log line.
+            EmbedderError: the queries could not be embedded.
+        """
+        json = await self._run_dense(
+            lambda: self._native._initialize_intent_graph(
+                jsonl, origins, confirmation, provenance
+            )
+        )
+        return IntentGraph.from_json(json)
+
     @property
     def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
         """Adaptive-ranking status; a str that also carries a pause's model detail."""
@@ -957,6 +996,46 @@ class ToolCatalog:
     async def experimental_rebuild_intent_graph(self) -> None:
         """Re-embed the graph's members under the current model; preserves learning."""
         await self._registry.experimental_rebuild_intent_graph()
+
+    def experimental_record_baseline_query(self, query: str) -> None:
+        """Record a query observed while Ratel is *not* serving retrieval.
+
+        Call at the top of each turn, before any tool call: the invocations that
+        follow are attributed to the session's most recent query, so a call that
+        lands after the next turn's query is credited to the wrong question.
+
+        Emission is per turn and opt-in, which makes it the place to apply your
+        own quality gate — skip turns you would not want the graph to learn from
+        and they never enter it.
+        """
+        self.record_event(
+            {
+                "type": "search",
+                "query": query,
+                "origin": "baseline",
+                "top_k": 0,
+                "hits": [],
+                "stages": [],
+                "took_ms": 0,
+            }
+        )
+
+    async def experimental_initialize_intent_graph(
+        self,
+        jsonl: str,
+        *,
+        origins: str | None = None,
+        confirmation: str | None = None,
+        provenance: str | None = None,
+    ) -> IntentGraph:
+        """Build an IntentGraph from a JSONL trace log; returns a detached graph.
+
+        See `ToolRegistry.experimental_initialize_intent_graph`. One call covers
+        both the tool and skill catalogs.
+        """
+        return await self._registry.experimental_initialize_intent_graph(
+            jsonl, origins=origins, confirmation=confirmation, provenance=provenance
+        )
 
     @property
     def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
