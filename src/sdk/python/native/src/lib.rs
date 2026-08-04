@@ -31,6 +31,74 @@ fn parse_origin(s: &str) -> Origin {
     }
 }
 
+/// Resolve the observation-policy strings, **rejecting** unknown values.
+///
+/// Deliberately stricter than [`parse_origin`], which tolerates an unknown wire
+/// string so version skew cannot fail an infallible search. A policy is a
+/// deliberate configuration a caller typed: silently reading `"seedd"` as
+/// `"live"` would produce a graph with no provenance and no error.
+fn parse_policy(
+    origins: Option<&str>,
+    confirmation: Option<&str>,
+    provenance: Option<&str>,
+) -> PyResult<core::ObservationPolicy> {
+    let mut policy = core::ObservationPolicy::default();
+    if let Some(o) = origins {
+        policy = policy.with_origins(match o {
+            "any" => core::OriginFilter::Any,
+            "direct" => core::OriginFilter::Exactly(Origin::Direct),
+            "agent" => core::OriginFilter::Exactly(Origin::Agent),
+            "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown origins {other:?}: expected any | direct | agent | baseline"
+                )));
+            }
+        });
+    }
+    if let Some(c) = confirmation {
+        policy = policy.with_confirmation(match c {
+            "attempted" => core::Confirmation::Attempted,
+            "succeeded" => core::Confirmation::Succeeded,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown confirmation {other:?}: expected attempted | succeeded"
+                )));
+            }
+        });
+    }
+    if let Some(p) = provenance {
+        policy = policy.with_provenance(match p {
+            "live" => core::Provenance::Live,
+            "seeded" => core::Provenance::Seeded,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown provenance {other:?}: expected live | seeded"
+                )));
+            }
+        });
+    }
+    Ok(policy)
+}
+
+/// Parse a JSONL trace log into envelopes.
+///
+/// Blank lines are skipped — common and harmless. A malformed line is an error
+/// naming its line number rather than a silent skip: a log is the only record of
+/// a baseline capture, and quietly dropping part of it would produce a thinner
+/// graph with nothing to explain why.
+fn parse_trace_log(jsonl: &str) -> PyResult<Vec<core::TraceEnvelope>> {
+    jsonl
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, line)| {
+            serde_json::from_str::<core::TraceEnvelope>(line)
+                .map_err(|e| PyValueError::new_err(format!("trace log line {}: {e}", i + 1)))
+        })
+        .collect()
+}
+
 type ToolBatchItem = (String, String, String, Py<PyAny>, Py<PyAny>);
 type SkillBatchItem = (
     String,
@@ -508,6 +576,30 @@ impl ToolRegistry {
     fn _rebuild_intent_graph(&self, py: Python<'_>) -> PyResult<()> {
         py.allow_threads(|| self.inner.rebuild_intent_graph())
             .map_err(map_embedder_err)
+    }
+
+    /// Build an intent graph from a JSONL trace log, returning its wire form.
+    ///
+    /// Embeds every distinct query so clusters form densely — the same tier the
+    /// live path uses. Releases the GIL for the embedding pass. The returned
+    /// graph is NOT attached to this registry; enabling adaptive ranking stays a
+    /// separate, explicit call.
+    #[pyo3(signature = (jsonl, origins=None, confirmation=None, provenance=None))]
+    fn _initialize_intent_graph(
+        &self,
+        py: Python<'_>,
+        jsonl: &str,
+        origins: Option<&str>,
+        confirmation: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<String> {
+        // Policy errors surface before the embedding pass, so a typo fails fast.
+        let policy = parse_policy(origins, confirmation, provenance)?;
+        let envelopes = parse_trace_log(jsonl)?;
+        let graph = py
+            .allow_threads(|| self.inner.initialize_intent_graph(envelopes, policy))
+            .map_err(map_embedder_err)?;
+        serde_json::to_string(&graph).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// `(status, built, active, dim_mismatch)` — whether adaptive usage ranking

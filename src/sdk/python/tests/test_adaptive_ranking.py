@@ -518,3 +518,95 @@ async def test_rebuild_on_model_change_recovers_without_a_manual_rebuild() -> No
 
     await catalog.search_async("why is the build broken", 5, method="semantic")
     assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+# ---- baseline seeding ------------------------------------------------------
+
+
+async def _capture_baseline(tmp_path: Path) -> tuple[ToolCatalog, str]:
+    """Three build/CI turns recorded to a JSONL log with Ratel serving nothing."""
+    log_path = str(tmp_path / "telemetry.jsonl")
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="jsonl", session_id="s1", path=log_path))
+    await catalog.register(
+        [
+            ExecutableTool(
+                id="docker_build",
+                name="docker_build",
+                description="Build a Docker image from a Dockerfile",
+                execute=lambda _args: "built",
+            ),
+            ExecutableTool(
+                id="gh_run_list",
+                name="gh_run_list",
+                description="List CI workflow runs and whether the build passed",
+                execute=lambda _args: "listed",
+            ),
+        ]
+    )
+    for turn in (
+        "why is the build broken",
+        "is the build broken again",
+        "the build broken on main",
+    ):
+        catalog.experimental_record_baseline_query(turn)
+        catalog.record_event(
+            {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
+        )
+    return catalog, log_path
+
+
+async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    # Nothing was attached during capture, so ranking never changed.
+    assert catalog.experimental_adaptive_ranking_status == "inactive"
+
+    with open(log_path) as fh:
+        graph = await catalog.experimental_initialize_intent_graph(
+            fh.read(), origins="baseline", provenance="seeded"
+        )
+
+    assert graph.cluster_count == 1
+    parsed = json.loads(graph.to_json())
+    assert parsed["intents"][0]["support"] == 3
+    assert parsed["intents"][0]["seeded_support"] == 3
+    assert parsed["intents"][0]["tools"]["gh_run_list"] == 3
+
+
+async def test_initialization_returns_a_detached_graph(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    with open(log_path) as fh:
+        graph = await catalog.experimental_initialize_intent_graph(fh.read(), origins="baseline")
+
+    assert graph.cluster_count == 1
+    assert catalog.experimental_adaptive_ranking_status == "inactive"
+
+    catalog.experimental_enable_adaptive_ranking(graph)
+    assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+async def test_an_unknown_policy_value_is_rejected(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    with open(log_path) as fh:
+        log = fh.read()
+    with pytest.raises(ValueError, match="unknown provenance"):
+        await catalog.experimental_initialize_intent_graph(log, provenance="seedd")
+
+
+async def test_a_malformed_log_line_names_its_line_number() -> None:
+    catalog = ToolCatalog()
+    good = json.dumps(
+        {
+            "v": 1,
+            "ts": 1,
+            "session_id": "s",
+            "type": "search",
+            "query": "q",
+            "origin": "baseline",
+            "top_k": 0,
+            "hits": [],
+            "stages": [],
+            "took_ms": 0,
+        }
+    )
+    with pytest.raises(ValueError, match="line 2"):
+        await catalog.experimental_initialize_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')

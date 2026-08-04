@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- `experimental_initialize_intent_graph(jsonl, *, origins, confirmation, provenance)` on `ToolCatalog` / `ToolRegistry` builds an intent graph from a JSONL trace log, and `experimental_record_baseline_query(query)` records a turn observed while Ratel serves no retrieval. Together they are the seed-first path: capture what an agent invokes on its own, build a graph offline, inspect it, then enable ranking. Every distinct query is embedded up front so clusters form densely; the returned graph is detached, so enabling stays explicit. Policy keywords default to live behavior and reject unknown values.
 - `"baseline"` is now a valid `SearchOrigin`, for recording a query while Ratel observes but does not serve retrieval. Unknown origin strings still degrade to `"direct"` rather than failing a search.
 
 ## [0.6.0] - 2026-07-28

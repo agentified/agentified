@@ -199,6 +199,19 @@ class ToolRegistry:
         jsonl path that cannot be opened.
         """
 
+    def _initialize_intent_graph(
+        self,
+        jsonl: str,
+        origins: str | None = None,
+        confirmation: str | None = None,
+        provenance: str | None = None,
+    ) -> str:
+        """Build an intent graph from a JSONL trace log; returns its wire JSON.
+
+        Embeds every distinct query so clusters form densely. Unknown policy
+        values and malformed log lines raise `ValueError`.
+        """
+
     def _rebuild_intent_graph(self) -> None:
         """Re-embed the intent graph's members under the current model (worker)."""
 

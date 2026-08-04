@@ -7,6 +7,7 @@ Runnable demos of Ratel wired into real agent frameworks and protocol surfaces. 
 ```
 adaptive-ranking-ts/     Ratel adaptive usage ranking — learn from invocations, persist/reload the graph (TS)
 adaptive-ranking-python/ Ratel adaptive usage ranking — the Python mirror, plus model-swap recovery
+configurable-adaptive-ranking-ts/ Seed an intent graph from a baseline capture, then switch ranking on (TS)
 ai-sdk/           Ratel + Vercel AI SDK — top-K filtering + capability tools in ToolLoopAgent.generate
 mastra/           Ratel + Mastra — capability tools + per-turn recall processor via @ratel-ai/mastra
 mcp-chat/         Interactive REPL against an MCP-backed agent (Vercel AI SDK + OpenAI)

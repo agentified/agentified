@@ -37,6 +37,90 @@ fn parse_origin(s: &str) -> Origin {
     }
 }
 
+/// How a trace log is turned into an intent graph — the wire form of
+/// `ObservationPolicy`. Every field is optional and defaults to today's live
+/// behavior, so `{}` means "learn exactly as the live path does".
+#[napi(object)]
+pub struct ObservationPolicyOptions {
+    /// Which searches open an observation window: `"any"` (default), or one of
+    /// `"direct"` / `"agent"` / `"baseline"` to accept only that origin.
+    pub origins: Option<String>,
+    /// What confirms an observation: `"attempted"` (default, an `invoke_start`)
+    /// or `"succeeded"` (an `invoke_end`).
+    pub confirmation: Option<String>,
+    /// Whether learning is marked as seeded: `"live"` (default) or `"seeded"`.
+    pub provenance: Option<String>,
+}
+
+/// Resolve the policy options, **rejecting** unknown values.
+///
+/// Deliberately stricter than [`parse_origin`], which tolerates an unknown wire
+/// string so version skew cannot fail an infallible search. A policy is a
+/// deliberate configuration a caller typed: silently reading `"seedd"` as
+/// `"live"` would produce a graph with no provenance and no error, which is far
+/// worse than a rejected call.
+fn parse_policy(opts: Option<ObservationPolicyOptions>) -> napi::Result<core::ObservationPolicy> {
+    let Some(opts) = opts else {
+        return Ok(core::ObservationPolicy::default());
+    };
+    let mut policy = core::ObservationPolicy::default();
+    if let Some(o) = opts.origins.as_deref() {
+        policy = policy.with_origins(match o {
+            "any" => core::OriginFilter::Any,
+            "direct" => core::OriginFilter::Exactly(Origin::Direct),
+            "agent" => core::OriginFilter::Exactly(Origin::Agent),
+            "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown origins {other:?}: expected any | direct | agent | baseline"
+                )));
+            }
+        });
+    }
+    if let Some(c) = opts.confirmation.as_deref() {
+        policy = policy.with_confirmation(match c {
+            "attempted" => core::Confirmation::Attempted,
+            "succeeded" => core::Confirmation::Succeeded,
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown confirmation {other:?}: expected attempted | succeeded"
+                )));
+            }
+        });
+    }
+    if let Some(p) = opts.provenance.as_deref() {
+        policy = policy.with_provenance(match p {
+            "live" => core::Provenance::Live,
+            "seeded" => core::Provenance::Seeded,
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown provenance {other:?}: expected live | seeded"
+                )));
+            }
+        });
+    }
+    Ok(policy)
+}
+
+/// Parse a JSONL trace log into envelopes.
+///
+/// Blank lines are skipped — they are common and harmless. A malformed line is
+/// an error naming its line number rather than a silent skip: a log is the only
+/// record of a baseline capture, and quietly dropping part of it would produce a
+/// thinner graph with nothing to explain why. A truncated final line (a crash
+/// mid-write) therefore surfaces, and the caller trims it.
+fn parse_trace_log(jsonl: &str) -> napi::Result<Vec<core::TraceEnvelope>> {
+    jsonl
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, line)| {
+            serde_json::from_str::<core::TraceEnvelope>(line)
+                .map_err(|e| napi::Error::from_reason(format!("trace log line {}: {e}", i + 1)))
+        })
+        .collect()
+}
+
 const REGISTRY_BUSY_MESSAGE: &str =
     "registry busy; await the active operation before registering more items";
 
@@ -96,6 +180,44 @@ pub struct SkillSearchTask {
     origin: String,
     method: String,
     _permit: Option<DenseOperationPermit>,
+}
+
+/// Builds an intent graph from a trace log off the event loop — it embeds every
+/// distinct query, which is far too slow to run inline.
+pub struct InitializeGraphTask {
+    inner: Arc<RwLock<core::ToolRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    jsonl: String,
+    policy: core::ObservationPolicy,
+    _permit: DenseOperationPermit,
+}
+
+impl Task for InitializeGraphTask {
+    /// The graph's `protocol/v1` JSON. Crossing the boundary as its wire form
+    /// rather than as an `IntentGraph` handle keeps the task's output a plain
+    /// value; the SDK facade rehydrates it, so callers still get the class.
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let envelopes = parse_trace_log(&self.jsonl)?;
+        let _dense = self
+            .dense_gate
+            .lock()
+            .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
+        let graph = registry
+            .initialize_intent_graph(envelopes, self.policy)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&graph).map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 impl Task for ToolEmbeddingTask {
@@ -809,6 +931,30 @@ impl ToolRegistry {
         drop(registry);
         self.graph = None;
         Ok(())
+    }
+
+    /// Build an intent graph from a JSONL trace log, returning its wire form.
+    ///
+    /// Embeds every distinct query so clusters form densely — the same tier the
+    /// live path uses. Runs off the event loop. Returns a graph that is **not**
+    /// attached to this registry; enabling adaptive ranking stays a separate,
+    /// explicit call.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn initialize_intent_graph(
+        &self,
+        jsonl: String,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<AsyncTask<InitializeGraphTask>> {
+        // Policy errors are reported before the task is queued, so a typo in a
+        // config object fails immediately rather than after an embedding pass.
+        let policy = parse_policy(options)?;
+        Ok(AsyncTask::new(InitializeGraphTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            jsonl,
+            policy,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        }))
     }
 
     /// Re-embed the intent graph's members under the current model and replace
