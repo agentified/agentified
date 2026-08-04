@@ -25,13 +25,12 @@ query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
   ranking status   : inactive
 
-A. collecting — Ratel records; the graph is scored after each turn
+A. collecting — Ratel records every invocation; the graph is scored after each
 
-  turn 1  clusters=1 support=1/3 obs=1 from_baseline=1
-  turn 2  clusters=1 support=2/3 obs=2 from_baseline=2
-  turn 3  clusters=1 support=3/3 obs=3 from_baseline=3
-  turn 4  "why is the build broken" -> docker_build   SKIPPED (unsuccessful)
-  turn 5  clusters=2 support=3/3, 1/3 obs=4 from_baseline=4
+  turn 1  gh_run_list   clusters=1 support=1/3 obs=1 from_baseline=1
+  turn 2  gh_run_list   clusters=1 support=2/3 obs=2 from_baseline=2
+  turn 3  gh_run_list   clusters=1 support=3/3 obs=3 from_baseline=3
+  turn 4  vault_rotate  clusters=2 support=3/3, 1/3 obs=4 from_baseline=4
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
@@ -74,7 +73,7 @@ capture.record_event(
 Two rules:
 
 - **Query before invokes.** Invocations attribute to the session's most recent query, so a call landing after the next turn's query is credited to the wrong question.
-- **Emission is your quality gate.** It is opt-in per turn, so gate it on whatever success signal you already have. The example skips a turn marked `"ok": False`, and that mistake never enters the graph.
+- **Every invocation counts.** There is no per-turn filter, because success is not observable from a trace. Seed from an agent you already trust.
 
 ### B. Initialize
 
@@ -136,7 +135,9 @@ Treat them as a report for a person to read, not an auto-trigger.
 
 ## Caveats worth knowing
 
-- **Baseline data is unbiased, not correct.** It removes Ratel's influence on what the agent chose; it does nothing about the agent's own mistakes. The support ramp damps one-off errors, but three *consistent* wrong invocations reach full weight. Seed from an agent that already performs well, and use the per-turn gate.
+- **Every invocation is evidence, and the graph assumes it is good evidence.** Nothing in a trace says whether a turn went well, so nothing is filtered. This demo seeds from an agent that already performs well, which is the precondition the mode rests on.
+
+  It matters more than the support ramp suggests. Edge weights inside a cluster set only their *order*, never their magnitude — so `gh_run_list x3` against `docker_build x1` is arm rank 0 against rank 1, a difference of `0.5/60` vs `0.5/61`. Measured on this catalog, adding a single wrong invocation of `docker_build` moves it from `0.016667` to `0.024863` and puts it back above `gh_run_list` at `0.024727`. A mistake that names the tool the base ranker already favours — the common case, since that is *why* the agent got it wrong — is close to free, and more good data does not dislodge it.
 - **Turn text is not agent query text.** Members here are what a *user* wrote; after the flip, queries are what the *agent* writes when calling `search_capabilities`. The dense tier is what bridges that gap, so use `"semantic"` or `"hybrid"` for a real deployment — this demo runs on BM25 because near-repeat phrasings cluster without a model.
 - **Tool ids must match.** An id recorded during capture that no longer exists in the serving catalog is dropped at rank time. The `usage_boost` trace event reports `dropped` so that shows up rather than looking like a coverage gap.
 

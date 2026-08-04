@@ -80,19 +80,15 @@ async def main() -> None:
     #    policy) returning a DETACHED graph, so polling mid-capture is safe —
     #    nothing being served is touched.
     # -----------------------------------------------------------------------
-    print("\nA. collecting — Ratel records; the graph is scored after each turn\n")
+    print("\nA. collecting — Ratel records every invocation; the graph is scored after each\n")
 
-    for i, entry in enumerate(BASELINE_TURNS, start=1):
-        # The quality gate. Emission is per turn and opt-in, so a turn you would
-        # not want the graph to learn from simply never enters it.
-        if not entry["ok"]:
-            print(f'  turn {i}  "{entry["turn"]}" -> {entry["invoked"]}   SKIPPED (unsuccessful)')
-            continue
-
-        # The query first: invocations attribute to the session's most recent one.
-        capture.experimental_record_baseline_query(str(entry["turn"]))
+    for i, (turn, invoked) in enumerate(BASELINE_TURNS, start=1):
+        # Every invocation is evidence. Nothing in a trace says whether a turn
+        # went well, so none of them is filtered — including the wrong one.
+        # The query first: invocations attribute to the session's most recent.
+        capture.experimental_record_baseline_query(turn)
         capture.record_event(
-            {"type": "invoke_start", "tool_id": entry["invoked"], "args_size_bytes": 0}
+            {"type": "invoke_start", "tool_id": invoked, "args_size_bytes": 0}
         )
 
         graph = await serving.experimental_initialize_intent_graph(
@@ -101,7 +97,7 @@ async def main() -> None:
         r = readiness(graph)
         support = ", ".join(f"{n}/{SUPPORT_FULL}" for n in r.support)
         print(
-            f"  turn {i}  clusters={r.clusters} support={support} "
+            f"  turn {i}  {invoked:<13} clusters={r.clusters} support={support} "
             f"obs={r.observations} from_baseline={r.from_baseline}"
         )
 

@@ -48,17 +48,17 @@ async def build_catalog(trace: TraceSinkConfig | None = None) -> ToolCatalog:
 
 
 BASELINE_TURNS = [
-    {"turn": "why is the build broken", "invoked": "gh_run_list", "ok": True},
-    {"turn": "is the build broken again", "invoked": "gh_run_list", "ok": True},
-    {"turn": "the build broken on main", "invoked": "gh_run_list", "ok": True},
-    {"turn": "why is the build broken", "invoked": "docker_build", "ok": False},
-    {"turn": "rotate the signing key", "invoked": "vault_rotate", "ok": True},
+    ("why is the build broken", "gh_run_list"),
+    ("is the build broken again", "gh_run_list"),
+    ("the build broken on main", "gh_run_list"),
+    ("rotate the signing key", "vault_rotate"),
 ]
 """What the customer's agent did on its own, before Ratel ranked anything.
 
-``ok`` is their success signal — an eval verdict, a thumbs-up, a completed
-workflow. Only successful turns are seeded, which is the main defence against
-teaching the graph a mistake.
+Every invocation becomes evidence — nothing in a trace says whether a turn went
+well, so none is filtered. That rests on a precondition: seed from an agent that
+already performs well. See the README's caveats for what happens when it does
+not.
 """
 
 
