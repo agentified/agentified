@@ -18,25 +18,40 @@ The catch: a graph is keyed on query text, and a run where nobody searches has n
 uv run main.py
 ```
 
-Expected output — cold BM25 is wrong, the seeded graph is right:
+Expected output — the graph matures as turns are captured, then the flip:
 
 ```
 query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
   ranking status   : inactive
 
-captured 3 turns -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
+A. collecting — scoring against held-out queries: "why is the build broken", "rotate the signing key"
 
-built graph:
-  clusters        : 1
+  turn 1  clusters=1 mature=0 obs=1 seeded=1 ghosts=0 coverage=1/2
+  turn 2  clusters=1 mature=0 obs=2 seeded=2 ghosts=0 coverage=1/2
+  turn 3  clusters=1 mature=1 obs=3 seeded=3 ghosts=0 coverage=1/2   <- support hit 3: full arm weight
+  turn 4  "why is the build broken" -> docker_build   SKIPPED (unsuccessful)
+  turn 5  clusters=2 mature=1 obs=4 seeded=4 ghosts=0 coverage=2/2   <- every probe covered
+
+  log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
+
+B. built graph:
   "why is the build broken"
     observations  : 3 (3 seeded)
     invoked       : gh_run_list x3
     phrasings     : 3
+  "rotate the signing key"
+    observations  : 1 (1 seeded)
+    invoked       : vault_rotate x1
+    phrasings     : 1
+
+  if gh_run_list left the catalog: ghosts=1 (gh_run_list) — those edges would rank nothing
   ranking status  : inactive
 
-  after seeding   : gh_run_list > docker_build
-  ranking status  : active
+C. after seeding   : gh_run_list > docker_build
+   ranking status  : active
+
+persist with graph.to_json() — rev=4 marks what to save.
 ```
 
 BM25 ranks `docker_build` first for *"why is the build broken"* on the token *build*. Three real turns say people reach for `gh_run_list`, and the seeded graph closes the gap — with no live learning in between.
@@ -105,22 +120,9 @@ Unknown values raise `ValueError` rather than silently defaulting: a policy is a
 
 ## Watching it mature
 
-`experimental_initialize_intent_graph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. That makes the "when do we flip?" decision measurable rather than a guess.
+`experimental_initialize_intent_graph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. The demo does exactly that — it scores after every captured turn, so the progression is visible inline rather than in a separate script. That makes the "when do we flip?" decision measurable rather than a guess.
 
-```bash
-uv run monitor.py
-```
 
-```
-probing with held-out queries: "why is the build broken", "rotate the signing key"
-
-turn 1: clusters=1 mature=0 obs=1 seeded=1 ghosts=0 coverage=1/2
-turn 2: clusters=1 mature=0 obs=2 seeded=2 ghosts=0 coverage=1/2
-turn 3: clusters=1 mature=1 obs=3 seeded=3 ghosts=0 coverage=1/2   <- support hit 3: full arm weight
-turn 4: clusters=2 mature=1 obs=4 seeded=4 ghosts=0 coverage=2/2   <- every probe covered
-
-if gh_run_list left the catalog: ghosts=1 (gh_run_list) — those edges rank nothing
-```
 
 | column | meaning |
 |---|---|
@@ -132,7 +134,7 @@ if gh_run_list left the catalog: ghosts=1 (gh_run_list) — those edges rank not
 
 **Gate on coverage.** It is the only column measured against queries the graph has *not* seen — clusters and support both rise whether or not it generalises.
 
-The `readiness()` helper in `tools.py` is the piece worth copying into your own harness. It scores a candidate graph against a throwaway catalog, so the graph under test never touches live ranking.
+The `readiness()` helper in `main.py` is the piece worth copying into your own harness. It scores a candidate graph against a throwaway catalog, so the graph under test never touches live ranking.
 
 ### Rough edges
 
@@ -149,7 +151,6 @@ The `readiness()` helper in `tools.py` is the piece worth copying into your own 
 ## Files
 
 ```
-tools.py     the catalog, the baseline turns, and the readiness() helper
-main.py      the four phases end to end
-monitor.py   polling the log to watch the graph mature
+tools.py   the catalog and the baseline turns with their success flags
+main.py    everything: collect + score, inspect, serve
 ```
