@@ -62,17 +62,12 @@ console.log(`  ranking status   : ${capture.experimentalAdaptiveRankingStatus.st
 //    returning a DETACHED graph, so polling mid-capture is safe — nothing being
 //    served is touched.
 // ---------------------------------------------------------------------------
-console.log("\nA. collecting — Ratel records; the graph is scored after each turn\n");
+console.log("\nA. collecting — Ratel records every invocation; the graph is scored after each\n");
 
-for (const [i, { turn, invoked, ok }] of BASELINE_TURNS.entries()) {
-  // The quality gate. Emission is per turn and opt-in, so a turn you would not
-  // want the graph to learn from simply never enters it.
-  if (!ok) {
-    console.log(`  turn ${i + 1}  "${turn}" -> ${invoked}   SKIPPED (unsuccessful)`);
-    continue;
-  }
-
-  // The query first: invocations attribute to the session's most recent one.
+for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
+  // Every invocation is evidence. Nothing in a trace says whether a turn went
+  // well, so none of them is filtered.
+  // The query first: invocations attribute to the session's most recent.
   capture.experimentalRecordBaselineQuery(turn);
   capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
 
@@ -83,7 +78,7 @@ for (const [i, { turn, invoked, ok }] of BASELINE_TURNS.entries()) {
   const r = readiness(soFar);
   const support = r.support.map((n) => `${n}/${SUPPORT_FULL}`).join(", ");
   console.log(
-    `  turn ${i + 1}  clusters=${r.clusters} support=${support} ` +
+    `  turn ${i + 1}  ${invoked.padEnd(13)} clusters=${r.clusters} support=${support} ` +
       `obs=${r.observations} fromBaseline=${r.fromBaseline}`,
   );
 }
