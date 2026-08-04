@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "pnpm -F @ratel-ai/sdk build && tsx src/index.ts",
+    "start:monitor": "pnpm -F @ratel-ai/sdk build && tsx src/monitor.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

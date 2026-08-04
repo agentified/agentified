@@ -99,6 +99,43 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 Unknown values are rejected rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 
+## Watching it mature
+
+`experimentalInitializeIntentGraph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. That makes the "when do we flip?" decision measurable rather than a guess.
+
+```bash
+pnpm -F @ratel-ai/example-configurable-adaptive-ranking start:monitor
+```
+
+```
+probing with held-out queries: "why is the build broken", "rotate the signing key"
+
+turn 1: clusters=1 mature=0 obs=1 seeded=1 ghosts=0 coverage=1/2
+turn 2: clusters=1 mature=0 obs=2 seeded=2 ghosts=0 coverage=1/2
+turn 3: clusters=1 mature=1 obs=3 seeded=3 ghosts=0 coverage=1/2   <- support hit 3: full arm weight
+turn 4: clusters=2 mature=1 obs=4 seeded=4 ghosts=0 coverage=2/2   <- every probe covered
+
+if gh_run_list left the catalog: ghosts=1 (gh_run_list) — those edges rank nothing
+```
+
+| column | meaning |
+|---|---|
+| `clusters` | distinct intents found so far |
+| `mature` | clusters at `support >= 3` — below that the arm's weight is ramped down proportionally |
+| `obs` / `seeded` | confirmed observations, and how many came from the capture rather than live traffic |
+| `ghosts` | edges naming tools the serving catalog no longer defines. Dropped silently at rank time, so a graph can look populated and boost nothing |
+| `coverage` | held-out queries that matched a cluster |
+
+**Gate on coverage.** It is the only column measured against queries the graph has *not* seen — clusters and support both rise whether or not it generalises.
+
+The `readiness()` helper in `src/tools.ts` is the piece worth copying into your own harness. It scores a candidate graph against a throwaway catalog, so the graph under test never touches live ranking.
+
+### Rough edges
+
+- **`SUPPORT_FULL` is not exposed.** The helper hardcodes `3`. The threshold is Ratel's, so you should not have to know it — a first-class readiness API is still to come.
+- **Rebuilding is O(whole log).** Fine nightly or every few hundred turns; wasteful per turn. There is no incremental "add these envelopes" path yet.
+- **Keep it a report, not a trigger.** Auto-enabling on a threshold would flip on coverage that looks healthy while the clusters behind it are wrong. Build detached precisely so a person reads the numbers first.
+
 ## Caveats worth knowing
 
 - **Baseline data is unbiased, not correct.** It removes Ratel's influence on what the agent chose; it does nothing about the agent's own mistakes. The support ramp damps one-off errors, but three *consistent* wrong invocations reach full weight. Seed from an agent that already performs well, and use the per-turn gate.
@@ -108,6 +145,7 @@ Unknown values are rejected rather than silently defaulting: a policy is a delib
 ## Files
 
 ```
-src/tools.ts   the catalog, and the baseline turns with their success flags
-src/index.ts   the four phases end to end
+src/tools.ts     the catalog, the baseline turns, and the readiness() helper
+src/index.ts     the four phases end to end
+src/monitor.ts   polling the log to watch the graph mature
 ```
