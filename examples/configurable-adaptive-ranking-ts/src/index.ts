@@ -79,10 +79,13 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
     provenance: "seeded",
   });
   const r = readiness(soFar, turn);
+  // Past the threshold "5/3" reads like a bug, so say what it means.
+  const support =
+    r.support >= SUPPORT_FULL ? `${r.support} (full)` : `${r.support}/${SUPPORT_FULL}`;
   console.log(
-    `  turn ${i + 1}  ${invoked.padEnd(13)} clusters=${r.clusters} ` +
-      `support=${r.support}/${SUPPORT_FULL} ` +
-      `obs=${r.observations} fromBaseline=${r.fromBaseline}`,
+    `  turn ${String(i + 1).padStart(2)}  ${invoked.padEnd(13)} clusters=${r.clusters} ` +
+      `support=${support.padEnd(9)} ` +
+      `obs=${String(r.observations).padEnd(2)} fromBaseline=${r.fromBaseline}`,
   );
 }
 
