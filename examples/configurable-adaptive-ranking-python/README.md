@@ -124,7 +124,7 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 | Keyword | Values | Default |
 |---|---|---|
-| `origins` | `any` \| `direct` \| `agent` \| `baseline` | `any` |
+| `origins` | `any` \| `agent` \| `baseline` | `any` |
 | `provenance` | `live` \| `seeded` | `live` |
 
 Unknown values raise `ValueError` rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.

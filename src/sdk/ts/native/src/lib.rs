@@ -64,12 +64,11 @@ fn parse_policy(opts: Option<ObservationPolicyOptions>) -> napi::Result<core::Ob
     if let Some(o) = opts.origins.as_deref() {
         policy = policy.with_origins(match o {
             "any" => core::OriginFilter::Any,
-            "direct" => core::OriginFilter::Exactly(Origin::Direct),
             "agent" => core::OriginFilter::Exactly(Origin::Agent),
             "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "unknown origins {other:?}: expected any | direct | agent | baseline"
+                    "unknown origins {other:?}: expected any | agent | baseline"
                 )));
             }
         });

@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- `origins` accepts `any` / `agent` / `baseline`. `direct` is a valid search origin but not a filter — learning only from searches your own code made means learning from your plumbing.
 - Policy options are now a closed set of literal types (`OriginFilterOption`, `ProvenanceOption`) declared by the SDK rather than the native binding's generated `string` fields, so `{ origins: "baselien" }` is a compile error with completion on the legal values. Runtime validation is unchanged for callers without types.
 - `experimentalEnableAdaptiveRanking` accepts the same `origins` / `provenance` options as `experimentalInitializeIntentGraph`, so what counts as evidence no longer depends on which path produced the graph. Defaults are unchanged, and the policy survives a `setTraceSink`.
 - `experimentalInitializeIntentGraph(jsonl, options?)` on `ToolCatalog` / `ToolRegistry` builds an intent graph from a JSONL trace log, and `experimentalRecordBaselineQuery(query)` records a turn observed while Ratel serves no retrieval. Together they are the seed-first path: capture what an agent invokes on its own, build a graph offline, inspect it, then enable ranking. Every distinct query is embedded up front so clusters form densely; the returned graph is detached, so enabling stays explicit. Policy options (`origins` / `provenance`) default to live behavior and reject unknown values.
