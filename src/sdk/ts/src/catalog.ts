@@ -108,8 +108,8 @@ export type SearchOrigin = "direct" | "agent" | "baseline";
  *
  * - `"any"` (the default) — every search in the stream.
  * - `"baseline"` — only turns recorded with
- *   {@link ToolCatalog.experimentalRecordBaselineQuery}, so Ratel's own
- *   searches during a capture period do not become clusters.
+ *   {@link ToolCatalog.experimentalBaselineTurn}, so Ratel's own searches
+ *   during a capture period do not become clusters.
  * - `"agent"` — only searches the model made through the capability tools,
  *   for rebuilding a graph from a period when Ratel was already serving.
  *
@@ -142,6 +142,25 @@ export interface ObservationPolicyOptions {
   origins?: OriginFilterOption;
   /** Whether learning is marked as seeded. Default `"live"`. */
   provenance?: ProvenanceOption;
+}
+
+/**
+ * One baseline turn being assembled — the query, plus the capabilities the
+ * agent chose after it. Created by
+ * {@link ToolCatalog.experimentalBaselineTurn}.
+ *
+ * Buffered: nothing reaches the trace log until {@link record}, so a turn that
+ * fails your quality gate can simply be dropped. Recording twice throws, as
+ * does adding to a turn already recorded — both are the same mistake, evidence
+ * counted more than once.
+ */
+export interface BaselineTurn {
+  /** Attribute a tool invocation to this turn. Chainable. */
+  invoked(toolId: string): BaselineTurn;
+  /** Attribute a skill load to this turn. Chainable. */
+  invokedSkill(skillId: string): BaselineTurn;
+  /** Write the turn to the trace log. Throws if called twice. */
+  record(): void;
 }
 
 /**
@@ -487,29 +506,59 @@ export class ToolCatalog {
   }
 
   /**
-   * Record a query observed while Ratel is **not** serving retrieval — the
-   * collection half of baseline seeding.
+   * Begin recording a turn observed while Ratel is **not** serving retrieval —
+   * the collection half of baseline seeding.
    *
-   * Call it at the top of each turn, before any tool call: the invocations that
-   * follow are attributed to the most recent query in the session, so a call
-   * that lands after the next turn's query is credited to the wrong question.
+   * Name the turn's query, then name what the agent chose after it:
    *
-   * Emission is per turn and opt-in, which makes it the place to apply your own
-   * quality gate — skip turns you would not want the graph to learn from, and
-   * they never enter it.
+   * ```ts
+   * catalog.experimentalBaselineTurn("why is the build broken")
+   *   .invoked("gh_run_list")
+   *   .record();
+   * ```
    *
-   * Sugar over {@link recordEvent}; the raw event shape is easy to get wrong.
+   * Nothing reaches the trace log until {@link BaselineTurn.record}, so the
+   * turn is also where your own quality gate goes — a turn you would not want
+   * the graph to learn from is simply never recorded.
+   *
+   * Sugar over {@link recordEvent}: it writes one `search` event with origin
+   * `"baseline"` followed by one event per invocation, which is the adjacency
+   * the graph builder pairs on. The raw shapes are easy to get wrong.
    */
-  experimentalRecordBaselineQuery(query: string): void {
-    this.recordEvent({
-      type: "search",
-      query,
-      origin: "baseline",
-      top_k: 0,
-      hits: [],
-      stages: [],
-      took_ms: 0,
-    });
+  experimentalBaselineTurn(query: string): BaselineTurn {
+    const events: object[] = [
+      {
+        type: "search",
+        query,
+        origin: "baseline",
+        top_k: 0,
+        hits: [],
+        stages: [],
+        took_ms: 0,
+      },
+    ];
+    let recorded = false;
+    const stillOpen = () => {
+      if (recorded) throw new Error("this baseline turn was already recorded");
+    };
+    const turn: BaselineTurn = {
+      invoked: (toolId) => {
+        stillOpen();
+        events.push({ type: "invoke_start", tool_id: toolId, args_size_bytes: 0 });
+        return turn;
+      },
+      invokedSkill: (skillId) => {
+        stillOpen();
+        events.push({ type: "skill_invoke", skill_id: skillId, took_ms: 0 });
+        return turn;
+      },
+      record: () => {
+        stillOpen();
+        recorded = true;
+        for (const event of events) this.recordEvent(event);
+      },
+    };
+    return turn;
   }
 
   /**

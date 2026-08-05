@@ -44,6 +44,7 @@ export {
   searchCapabilitiesTool,
 } from "./capabilities.js";
 export type {
+  BaselineTurn,
   EmbeddingModelConfig,
   EmbeddingSpec,
   ExecutableTool,

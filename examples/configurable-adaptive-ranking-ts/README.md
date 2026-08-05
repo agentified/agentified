@@ -99,14 +99,16 @@ Ratel is a tape recorder: no graph attached, no learner, no embedder, no search 
 ```ts
 const capture = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
 
-capture.experimentalRecordBaselineQuery(turn);                 // the turn's text
-capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
+capture
+  .experimentalBaselineTurn(turn)   // the turn's text
+  .invoked(invoked)                 // what the agent chose after it
+  .record();                        // nothing is written until here
 ```
 
 Two rules:
 
-- **Query before invokes.** Invocations attribute to the session's most recent query, so a call landing after the next turn's query is credited to the wrong question.
-- **Every invocation counts.** There is no per-turn filter, because success is not observable from a trace. Seed from an agent you already trust.
+- **The turn is the unit.** Nothing reaches the log until `record()`, so skipping it is how you drop a turn you would not want the graph to learn from. Success is not observable from a trace, so that gate is yours — seed from an agent you already trust.
+- **One query, N invocations.** Everything named on a turn attributes to its query; the graph counts one observation and one edge per capability.
 
 ### B. Initialize
 
