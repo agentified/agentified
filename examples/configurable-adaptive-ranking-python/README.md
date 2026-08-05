@@ -39,87 +39,48 @@ A. collecting — scoring after each turn against held-out: "is the build broken
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
-B. graph
+intent graph  
+  schema v1   rev 10   clusters 3   built 2026-08-05 12:00:00Z
+  model  BAAI/bge-small-en-v1.5
 
-{
-  "v": 1,
-  "built_from_ts": 1785000000000,
-  "rev": 10,
-  "model": "hf|repo=22:BAAI/bge-small-en-v1.5|revision=40:5c38ec7c405ec4b44b94cc5a9bb96e735b38267a|pool=3:cls|q=57:Represent this sentence for searching relevant passages: ",
-  "intents": [
-    {
-      "id": "intent_0",
-      "label": "the build is broken",
-      "terms": [
-        "broken",
-        "build",
-        "after",
-        "main",
-        "merge"
-      ],
-      "members": [
-        "why is the build broken",
-        "is the build broken again",
-        "the build broken on main",
-        "the build is broken",
-        "build broken after merge"
-      ],
-      "centroid": "<384 floats>",
-      "support": 5,
-      "seeded_support": 5,
-      "last_ts": 1785000000000,
-      "tools": {
-        "gh_run_list": 5.0
-      },
-      "skills": {}
-    },
-    {
-      "id": "intent_1",
-      "label": "rotate the signing key",
-      "terms": [
-        "key",
-        "rotate",
-        "signing",
-        "now",
-        "again"
-      ],
-      "members": [
-        "rotate the signing key",
-        "rotate signing key now",
-        "rotate the signing key again"
-      ],
-      "centroid": "<384 floats>",
-      "support": 3,
-      "seeded_support": 3,
-      "last_ts": 1785000000000,
-      "tools": {
-        "vault_rotate": 3.0
-      },
-      "skills": {}
-    },
-    {
-      "id": "intent_2",
-      "label": "read a file from disk",
-      "terms": [
-        "disk",
-        "file",
-        "read"
-      ],
-      "members": [
-        "read a file from disk",
-        "read the file from disk"
-      ],
-      "centroid": "<384 floats>",
-      "support": 2,
-      "seeded_support": 2,
-      "last_ts": 1785000000000,
-      "tools": {
-        "read_file": 2.0
-      },
-      "skills": {}
-    }
-  ]
-}
+┌ intent_0  the build is broken
+│ support   ████████████ 5  (full weight, 5 from a capture)
+│ terms     broken, build, after, main, merge
+│ edges
+│   ████████   5.0  tool  gh_run_list
+│ members   (5 queries)
+│     why is the build broken
+│     is the build broken again
+│     the build broken on main
+│   * the build is broken
+│     build broken after merge
+│ centroid  384 dims
+└ last seen 2026-08-05 12:00:00Z
+
+┌ intent_1  rotate the signing key
+│ support   ████████████ 3  (full weight, 3 from a capture)
+│ terms     key, rotate, signing, now, again
+│ edges
+│   ████████   3.0  tool  vault_rotate
+│ members   (3 queries)
+│   * rotate the signing key
+│     rotate signing key now
+│     rotate the signing key again
+│ centroid  384 dims
+└ last seen 2026-08-05 12:00:00Z
+
+┌ intent_2  read a file from disk
+│ support   ████████···· 2  (67% of full weight, 2 from a capture)
+│ terms     disk, file, read
+│ edges
+│   ████████   2.0  tool  read_file
+│ members   (2 queries)
+│   * read a file from disk
+│     read the file from disk
+│ centroid  384 dims
+└ last seen 2026-08-05 12:00:00Z
+
+* = cluster label (the most central member)
 
 C. after seeding : gh_run_list > docker_build
 ```
