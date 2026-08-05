@@ -1,10 +1,10 @@
 import {
   DimensionMismatchError,
   EmbedderError,
-  IntentGraph,
-  type ObservationPolicyOptions,
   type EmbeddingSpec,
   type Executor,
+  IntentGraph,
+  type ObservationPolicyOptions,
   type Skill,
   SkillCatalog,
   SkillRegistry,
