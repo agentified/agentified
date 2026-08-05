@@ -1,20 +1,9 @@
-"""Catalog and baseline turns for the seeding demo.
-
-The Python mirror of ``examples/configurable-adaptive-ranking-ts/src/tools.ts``.
-"""
-
 from __future__ import annotations
-
 from ratel_ai import ExecutableTool, ToolCatalog, TraceSinkConfig
 
 
 async def build_catalog(trace: TraceSinkConfig | None = None) -> ToolCatalog:
-    """A catalog where lexical retrieval is confidently wrong.
 
-    "why is the build broken" hits ``docker_build`` on the token *build*, while
-    the tool people actually reach for is ``gh_run_list``. That gap is what
-    usage history closes.
-    """
     catalog = ToolCatalog(trace=trace) if trace else ToolCatalog()
     await catalog.register(
         [
@@ -59,13 +48,7 @@ BASELINE_TURNS = [
     ("read the file from disk", "read_file"),
     ("build broken after merge", "gh_run_list"),
 ]
-"""What the customer's agent did on its own, before Ratel ranked anything.
 
-Every invocation becomes evidence — nothing in a trace says whether a turn went
-well, so none is filtered. That rests on a precondition: seed from an agent that
-already performs well. See the README's caveats for what happens when it does
-not.
-"""
 
 
 def top_ids(catalog: ToolCatalog, query: str) -> list[str]:
@@ -78,15 +61,3 @@ HELD_OUT = [
     "read the file",
     "is CI green on my branch",
 ]
-"""Queries the graph is scored against — the coverage probe.
-
-None of these is a captured turn. Identical strings would test exact match,
-which is the easiest possible case and always passes; coverage only means
-something measured against questions the graph has not seen.
-
-The first three are near-repeats, which is as far as this demo can reach: it
-runs on BM25, where matching is word overlap. The fourth says the same thing as
-the first in an agent's vocabulary rather than a person's, and stays a MISS —
-that gap is what the dense tier exists to bridge, and why a real deployment
-wants ``method="semantic"``.
-"""

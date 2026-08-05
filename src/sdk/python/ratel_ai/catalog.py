@@ -15,6 +15,7 @@ import time
 import warnings
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Callable, Literal, TypedDict, TypeVar, Union, overload
 
 from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
@@ -51,8 +52,8 @@ OriginFilterOption = Literal["any", "agent", "baseline"]
 """Which searches open an observation window when learning.
 
 - ``"any"`` (the default) — every search in the stream.
-- ``"baseline"`` — only turns recorded with ``experimental_record_baseline_query``,
-  so Ratel's own searches during a capture period do not become clusters.
+- ``"baseline"`` — only turns recorded with ``experimental_baseline_turn``, so
+  Ratel's own searches during a capture period do not become clusters.
 - ``"agent"`` — only searches the model made through the capability tools, for
   rebuilding a graph from a period when Ratel was already serving.
 
@@ -800,6 +801,76 @@ class ToolRegistry:
             raise RuntimeError(_REGISTRY_BUSY)
 
 
+class BaselineTurn:
+    """One baseline turn being assembled — the query, plus what the agent chose.
+
+    Created by :meth:`ToolCatalog.experimental_baseline_turn`, not directly.
+
+    Buffered: nothing reaches the trace log until :meth:`record`, so a turn that
+    fails your quality gate can simply be dropped. Recording twice raises, as
+    does adding to a turn already recorded — both are the same mistake, evidence
+    counted more than once.
+    """
+
+    def __init__(self, catalog: ToolCatalog, query: str) -> None:
+        """Open a turn for ``query``; use `ToolCatalog.experimental_baseline_turn`."""
+        self._catalog = catalog
+        self._recorded = False
+        self._events: list[dict[str, Any]] = [
+            {
+                "type": "search",
+                "query": query,
+                "origin": "baseline",
+                "top_k": 0,
+                "hits": [],
+                "stages": [],
+                "took_ms": 0,
+            }
+        ]
+
+    def _still_open(self) -> None:
+        if self._recorded:
+            raise RuntimeError("this baseline turn was already recorded")
+
+    def invoked(self, tool_id: str) -> BaselineTurn:
+        """Attribute a tool invocation to this turn. Chainable."""
+        self._still_open()
+        self._events.append(
+            {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
+        )
+        return self
+
+    def invoked_skill(self, skill_id: str) -> BaselineTurn:
+        """Attribute a skill load to this turn. Chainable."""
+        self._still_open()
+        self._events.append({"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0})
+        return self
+
+    def record(self) -> None:
+        """Write the turn to the trace log. Raises if called twice."""
+        self._still_open()
+        self._recorded = True
+        for event in self._events:
+            self._catalog.record_event(event)
+
+    def __enter__(self) -> BaselineTurn:
+        """Enter the turn; the block names what the agent invoked."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Record the turn on a clean exit; discard it if the block raised."""
+        # A raising turn is exactly the turn you would not want the graph to
+        # learn from, so the block failing discards it rather than recording a
+        # half-finished one.
+        if exc_type is None:
+            self.record()
+
+
 class ToolCatalog:
     """Registry + executors. Register tools once, then search and invoke by id."""
 
@@ -1029,28 +1100,26 @@ class ToolCatalog:
         """Re-embed the graph's members under the current model; preserves learning."""
         await self._registry.experimental_rebuild_intent_graph()
 
-    def experimental_record_baseline_query(self, query: str) -> None:
-        """Record a query observed while Ratel is *not* serving retrieval.
+    def experimental_baseline_turn(self, query: str) -> BaselineTurn:
+        """Begin recording a turn observed while Ratel is *not* serving retrieval.
 
-        Call at the top of each turn, before any tool call: the invocations that
-        follow are attributed to the session's most recent query, so a call that
-        lands after the next turn's query is credited to the wrong question.
+        Name the turn's query, then name what the agent chose after it::
 
-        Emission is per turn and opt-in, which makes it the place to apply your
-        own quality gate — skip turns you would not want the graph to learn from
-        and they never enter it.
+            catalog.experimental_baseline_turn("why is the build broken").invoked(
+                "gh_run_list"
+            ).record()
+
+        Nothing reaches the trace log until :meth:`BaselineTurn.record`, so the
+        turn is also where your own quality gate goes — a turn you would not
+        want the graph to learn from is simply never recorded. Also usable as a
+        context manager, which records on a clean exit and discards on an
+        exception.
+
+        Sugar over :meth:`record_event`: it writes one ``search`` event with
+        origin ``"baseline"`` followed by one event per invocation, which is the
+        adjacency the graph builder pairs on.
         """
-        self.record_event(
-            {
-                "type": "search",
-                "query": query,
-                "origin": "baseline",
-                "top_k": 0,
-                "hits": [],
-                "stages": [],
-                "took_ms": 0,
-            }
-        )
+        return BaselineTurn(self, query)
 
     async def experimental_build_intent_graph(
         self,

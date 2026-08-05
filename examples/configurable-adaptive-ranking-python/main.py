@@ -63,11 +63,10 @@ async def main() -> None:
     print(f"\nA. collecting — scoring after each turn against held-out: {probes}\n")
 
     for i, (turn, invoked) in enumerate(BASELINE_TURNS, start=1):
+        print('turn:', turn)
+        print('invoked:', invoked)
 
-        capture.experimental_record_baseline_query(turn)
-        capture.record_event(
-            {"type": "invoke_start", "tool_id": invoked, "args_size_bytes": 0}
-        )
+        capture.experimental_baseline_turn(turn).invoked(invoked).record()
 
         graph = await serving.experimental_build_intent_graph(log_path.read_text())
         r = await readiness(graph, turn)

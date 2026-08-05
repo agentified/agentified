@@ -51,8 +51,7 @@ const probes = HELD_OUT.map((q) => `"${q}"`).join(", ");
 console.log(`\nA. collecting — scoring after each turn against held-out: ${probes}\n`);
 
 for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
-  capture.experimentalRecordBaselineQuery(turn);
-  capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
+  capture.experimentalBaselineTurn(turn).invoked(invoked).record();
 
   const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
   const r = await readiness(soFar, turn);

@@ -29,6 +29,7 @@ from .capabilities import (
 )
 from .catalog import (
     AdaptiveRankingStatus,
+    BaselineTurn,
     EmbeddingModelConfig,
     EmbeddingSpec,
     EndpointEmbeddingConfig,
@@ -108,6 +109,7 @@ __all__ = [
     "SkillHit",
     "SkillRegistry",
     "Tool",
+    "BaselineTurn",
     "ToolCatalog",
     "ToolRegistry",
     "TraceSinkConfig",

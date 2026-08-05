@@ -8,6 +8,7 @@ import {
   SkillRegistry,
   ToolCatalog,
   ToolRegistry,
+  type TraceSinkConfig,
 } from "./index.js";
 
 /**
@@ -15,8 +16,8 @@ import {
  * broken" hits `docker_build` on the token *build*, while the tool people
  * actually reach for is `gh_run_list`.
  */
-async function buildCatalog(): Promise<ToolCatalog> {
-  const catalog = new ToolCatalog();
+async function buildCatalog(trace?: TraceSinkConfig): Promise<ToolCatalog> {
+  const catalog = new ToolCatalog(trace ? { trace } : {});
   await catalog.register([
     {
       id: "docker_build",
@@ -546,11 +547,44 @@ describe("baseline seeding", () => {
       "is the build broken again",
       "the build broken on main",
     ]) {
-      catalog.experimentalRecordBaselineQuery(turn);
-      catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+      catalog.experimentalBaselineTurn(turn).invoked("gh_run_list").record();
     }
     return { catalog, logPath };
   }
+
+  it("writes nothing until the turn is recorded", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    const turn = catalog.experimentalBaselineTurn("why is the build broken");
+    turn.invoked("gh_run_list");
+    expect(catalog.drainTraceEvents()).toHaveLength(0);
+
+    turn.record();
+    // The quality gate is "call record, or don't" — a dropped turn leaves no trace.
+    const types = catalog.drainTraceEvents().map((e) => (e as { type: string }).type);
+    expect(types).toEqual(["search", "invoke_start"]);
+  });
+
+  it("attributes several invocations to one turn", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    catalog
+      .experimentalBaselineTurn("why is the build broken")
+      .invoked("gh_run_list")
+      .invokedSkill("triage")
+      .record();
+
+    const events = catalog.drainTraceEvents() as { type: string }[];
+    expect(events.map((e) => e.type)).toEqual(["search", "invoke_start", "skill_invoke"]);
+  });
+
+  it("refuses to record the same turn twice", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    const turn = catalog.experimentalBaselineTurn("why is the build broken");
+    turn.record();
+    expect(() => turn.record()).toThrow(/already recorded/);
+    expect(() => turn.invoked("gh_run_list")).toThrow(/already recorded/);
+  });
 
   it("builds a graph from a log the agent produced without Ratel ranking", async () => {
     const { catalog, logPath } = await captureBaseline();
@@ -634,8 +668,7 @@ describe("policy on the live path", () => {
     catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
     expect(graph.clusterCount).toBe(0);
 
-    catalog.experimentalRecordBaselineQuery("why is the build broken");
-    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    catalog.experimentalBaselineTurn("why is the build broken").invoked("gh_run_list").record();
     expect(graph.clusterCount).toBe(1);
   });
 

@@ -17,13 +17,13 @@ from ratel_ai import ExecutableTool, IntentGraph, SkillCatalog, ToolCatalog, Tra
 from ratel_ai.skill_catalog import Skill
 
 
-async def build_catalog() -> ToolCatalog:
+async def build_catalog(trace: TraceSinkConfig | None = None) -> ToolCatalog:
     """A catalog where lexical retrieval is confidently wrong.
 
     "why is the build broken" hits `docker_build` on the token *build*, while
     the tool people actually reach for is `gh_run_list`.
     """
-    catalog = ToolCatalog()
+    catalog = ToolCatalog(trace=trace) if trace else ToolCatalog()
     await catalog.register(
         [
             ExecutableTool(
@@ -548,11 +548,57 @@ async def _capture_baseline(tmp_path: Path) -> tuple[ToolCatalog, str]:
         "is the build broken again",
         "the build broken on main",
     ):
-        catalog.experimental_record_baseline_query(turn)
-        catalog.record_event(
-            {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
-        )
+        catalog.experimental_baseline_turn(turn).invoked("gh_run_list").record()
     return catalog, log_path
+
+
+async def test_a_baseline_turn_writes_nothing_until_it_is_recorded() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    turn = catalog.experimental_baseline_turn("why is the build broken")
+    turn.invoked("gh_run_list")
+    assert catalog.drain_trace_events() == []
+
+    turn.record()
+    # The quality gate is "call record, or don't" — a dropped turn leaves no trace.
+    assert [e["type"] for e in catalog.drain_trace_events()] == ["search", "invoke_start"]
+
+
+async def test_a_baseline_turn_attributes_several_invocations() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    catalog.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).invoked_skill("triage").record()
+
+    types = [e["type"] for e in catalog.drain_trace_events()]
+    assert types == ["search", "invoke_start", "skill_invoke"]
+
+
+async def test_a_baseline_turn_refuses_to_be_recorded_twice() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    turn = catalog.experimental_baseline_turn("why is the build broken")
+    turn.record()
+    with pytest.raises(RuntimeError, match="already recorded"):
+        turn.record()
+    with pytest.raises(RuntimeError, match="already recorded"):
+        turn.invoked("gh_run_list")
+
+
+async def test_a_baseline_turn_used_as_a_context_manager() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    with catalog.experimental_baseline_turn("why is the build broken") as turn:
+        turn.invoked("gh_run_list")
+    assert [e["type"] for e in catalog.drain_trace_events()] == ["search", "invoke_start"]
+
+    # A raising block is exactly the turn you would not want the graph to learn
+    # from, so it discards rather than recording a half-finished one.
+    with pytest.raises(ZeroDivisionError):
+        with catalog.experimental_baseline_turn("rotate the signing key") as turn:
+            turn.invoked("vault_rotate")
+            raise ZeroDivisionError
+    assert catalog.drain_trace_events() == []
 
 
 async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path: Path) -> None:
@@ -623,10 +669,9 @@ async def test_live_learning_can_be_restricted_by_origin() -> None:
     )
     assert graph.cluster_count == 0
 
-    catalog.experimental_record_baseline_query("why is the build broken")
-    catalog.record_event(
-        {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
-    )
+    catalog.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).record()
     assert graph.cluster_count == 1
 
 
@@ -676,8 +721,7 @@ async def test_build_defaults_to_baseline_and_enable_defaults_to_any(tmp_path: P
         [ExecutableTool(id="t", name="t", description="a tool", execute=lambda _a: "")]
     )
     # One captured turn, and one plain search that is NOT a capture.
-    catalog.experimental_record_baseline_query("why is the build broken")
-    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+    catalog.experimental_baseline_turn("why is the build broken").invoked("t").record()
     catalog.search("something else entirely", 5)  # origin "direct"
     catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
 
