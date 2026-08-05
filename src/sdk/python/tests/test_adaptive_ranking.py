@@ -525,7 +525,7 @@ async def test_rebuild_on_model_change_recovers_without_a_manual_rebuild() -> No
 
 async def _capture_baseline(tmp_path: Path) -> tuple[ToolCatalog, str]:
     """Three build/CI turns recorded to a JSONL log with Ratel serving nothing."""
-    log_path = str(tmp_path / "telemetry.jsonl")
+    log_path = str(tmp_path / "trace.jsonl")
     catalog = ToolCatalog(trace=TraceSinkConfig(kind="jsonl", session_id="s1", path=log_path))
     await catalog.register(
         [

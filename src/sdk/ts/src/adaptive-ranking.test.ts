@@ -519,7 +519,7 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
 describe("baseline seeding", () => {
   /** Capture three build/CI turns to a JSONL log with Ratel serving nothing. */
   async function captureBaseline(): Promise<{ catalog: ToolCatalog; logPath: string }> {
-    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-seed-`)}/telemetry.jsonl`;
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-seed-`)}/trace.jsonl`;
     const catalog = new ToolCatalog({
       trace: { kind: "jsonl", sessionId: "session-1", path: logPath },
     });

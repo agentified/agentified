@@ -49,7 +49,7 @@ async def readiness(graph: IntentGraph, turn: str) -> Readiness:
 
 
 async def main() -> None:
-    log_path = Path(tempfile.mkdtemp(prefix="ratel-baseline-")) / "telemetry.jsonl"
+    log_path = Path(tempfile.mkdtemp(prefix="ratel-baseline-")) / "trace.jsonl"
 
     capture = await build_catalog(
         TraceSinkConfig(kind="jsonl", session_id="session-1", path=str(log_path))

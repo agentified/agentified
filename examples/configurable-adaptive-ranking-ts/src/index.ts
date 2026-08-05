@@ -6,7 +6,7 @@ import { show } from "./show-graph.js";
 import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
 
 const QUERY = "why is the build broken";
-const logPath = join(mkdtempSync(join(tmpdir(), "ratel-baseline-")), "telemetry.jsonl");
+const logPath = join(mkdtempSync(join(tmpdir(), "ratel-baseline-")), "trace.jsonl");
 
 const SUPPORT_FULL = 3;
 
