@@ -104,12 +104,19 @@ export type TraceSinkConfig =
 export type SearchOrigin = "direct" | "agent" | "baseline";
 
 /**
- * Which searches open an observation window when learning — `"any"` (the
- * default) or one origin to the exclusion of the others. A baseline capture
- * uses `"baseline"`, so Ratel's own searches during the capture period do not
- * become clusters.
+ * Which searches open an observation window when learning.
+ *
+ * - `"any"` (the default) — every search in the stream.
+ * - `"baseline"` — only turns recorded with
+ *   {@link ToolCatalog.experimentalRecordBaselineQuery}, so Ratel's own
+ *   searches during a capture period do not become clusters.
+ * - `"agent"` — only searches the model made through the capability tools,
+ *   for rebuilding a graph from a period when Ratel was already serving.
+ *
+ * `"direct"` is a valid {@link SearchOrigin} but not a filter: learning only
+ * from searches your own code made means learning from your plumbing.
  */
-export type OriginFilterOption = "any" | SearchOrigin;
+export type OriginFilterOption = "any" | "agent" | "baseline";
 
 /**
  * Whether what is learned is marked as coming from a seeding pass. `"seeded"`

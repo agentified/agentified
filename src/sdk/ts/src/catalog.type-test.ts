@@ -137,13 +137,16 @@ const validPolicies: ObservationPolicyOptions[] = [
   {},
   { origins: "any" },
   { origins: "baseline", provenance: "seeded" },
-  { origins: "direct", provenance: "live" },
+  { origins: "agent", provenance: "live" },
   { origins: "agent" },
 ];
 void validPolicies;
 
 // @ts-expect-error "baselien" is not an origin — the whole point of narrowing
 const typoOrigin: ObservationPolicyOptions = { origins: "baselien" };
+// @ts-expect-error "direct" is a real SearchOrigin but not a filter
+const directNotAFilter: ObservationPolicyOptions = { origins: "direct" };
+void directNotAFilter;
 // @ts-expect-error provenance is live | seeded
 const typoProvenance: ObservationPolicyOptions = { provenance: "seedd" };
 void [typoOrigin, typoProvenance];

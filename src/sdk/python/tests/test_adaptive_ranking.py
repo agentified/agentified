@@ -635,6 +635,11 @@ async def test_an_unknown_policy_value_is_rejected_when_enabling() -> None:
     with pytest.raises(ValueError, match="unknown origins"):
         catalog.experimental_enable_adaptive_ranking(IntentGraph(), origins="nope")  # type: ignore[arg-type]
 
+    # "direct" is a real origin but not a filter — learning only from searches
+    # your own code made means learning from your plumbing.
+    with pytest.raises(ValueError, match="unknown origins"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), origins="direct")  # type: ignore[arg-type]
+
 
 async def test_policy_values_are_a_closed_set() -> None:
     # The three policy keywords are `Literal`s, so mypy rejects a typo in user

@@ -42,12 +42,17 @@ SearchMethod = str
 ``"semantic"`` (dense embeddings) or ``"hybrid"`` (both, fused).
 """
 
-OriginFilterOption = Literal["any", "direct", "agent", "baseline"]
+OriginFilterOption = Literal["any", "agent", "baseline"]
 """Which searches open an observation window when learning.
 
-``"any"`` (the default) or one origin to the exclusion of the others. A baseline
-capture uses ``"baseline"``, so Ratel's own searches during the capture period
-do not become clusters.
+- ``"any"`` (the default) — every search in the stream.
+- ``"baseline"`` — only turns recorded with ``experimental_record_baseline_query``,
+  so Ratel's own searches during a capture period do not become clusters.
+- ``"agent"`` — only searches the model made through the capability tools, for
+  rebuilding a graph from a period when Ratel was already serving.
+
+``"direct"`` is a valid ``SearchOrigin`` but not a filter: learning only from
+searches your own code made means learning from your plumbing.
 """
 
 ProvenanceOption = Literal["live", "seeded"]
@@ -610,8 +615,7 @@ class ToolRegistry:
         Args:
             jsonl: the trace log, exactly as the ``jsonl`` sink writes it. Blank
                 lines are skipped; a malformed line raises, naming its line number.
-            origins: which searches count — ``any`` (default), ``direct``,
-                ``agent``, or ``baseline``.
+            origins: which searches count — ``any`` (default), ``agent``, or ``baseline``.
             provenance: ``live`` (default) or ``seeded``.
 
         Raises:

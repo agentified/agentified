@@ -45,12 +45,11 @@ fn parse_policy(
     if let Some(o) = origins {
         policy = policy.with_origins(match o {
             "any" => core::OriginFilter::Any,
-            "direct" => core::OriginFilter::Exactly(Origin::Direct),
             "agent" => core::OriginFilter::Exactly(Origin::Agent),
             "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown origins {other:?}: expected any | direct | agent | baseline"
+                    "unknown origins {other:?}: expected any | agent | baseline"
                 )));
             }
         });
