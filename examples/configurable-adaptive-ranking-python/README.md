@@ -37,7 +37,7 @@ A. collecting — scoring after each turn against held-out: "is the build broken
   turn  9  read_file     clusters=3 support=2/3       obs=9  from_baseline=9 coverage=3/4
   turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10 coverage=3/4
 
-  log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
+  log -> /tmp/ratel-baseline-XXXX/trace.jsonl
 
 intent graph  
   schema v1   rev 10   clusters 3   built 2026-08-05 12:00:00Z

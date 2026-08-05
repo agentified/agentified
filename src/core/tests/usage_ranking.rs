@@ -773,7 +773,7 @@ fn a_graph_seeded_from_a_baseline_log_ranks_better_once_attached() {
     use std::io::{BufRead, BufReader};
 
     let dir = std::env::temp_dir().join(format!("ratel-seed-{}", std::process::id()));
-    let log_path = dir.join("telemetry.jsonl");
+    let log_path = dir.join("trace.jsonl");
     let _ = std::fs::remove_file(&log_path);
 
     // ---- Phase A: collect. Ratel records; it does not rank. ----------------
