@@ -42,6 +42,34 @@ SearchMethod = str
 ``"semantic"`` (dense embeddings) or ``"hybrid"`` (both, fused).
 """
 
+OriginFilterOption = Literal["any", "direct", "agent", "baseline"]
+"""Which searches open an observation window when learning.
+
+``"any"`` (the default) or one origin to the exclusion of the others. A baseline
+capture uses ``"baseline"``, so Ratel's own searches during the capture period
+do not become clusters.
+"""
+
+ConfirmationOption = Literal["attempted", "succeeded"]
+"""What confirms an observation.
+
+``"attempted"`` (the default — an ``invoke_start``, the tool the agent chose) or
+``"succeeded"`` (an ``invoke_end``, so a call that failed on its arguments never
+becomes an edge). Skills have no start/end split and confirm the same way under
+both.
+"""
+
+ProvenanceOption = Literal["live", "seeded"]
+"""Whether what is learned is marked as coming from a seeding pass.
+
+``"seeded"`` records it on each cluster's provenance count; ``"live"`` (the
+default) does not. Never affects ranking.
+
+These three are closed sets rather than plain ``str`` so a typo is caught by a
+type checker instead of at runtime. The native still validates, for callers
+without types.
+"""
+
 
 class _PrefixOptions(TypedDict, total=False):
     query_prefix: str
@@ -499,9 +527,9 @@ class ToolRegistry:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -574,9 +602,9 @@ class ToolRegistry:
         self,
         jsonl: str,
         *,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> IntentGraph:
         """Build an IntentGraph from a JSONL trace log — offline baseline seeding.
 
@@ -882,9 +910,9 @@ class ToolCatalog:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -943,9 +971,9 @@ class ToolCatalog:
         self,
         jsonl: str,
         *,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> IntentGraph:
         """Build an IntentGraph from a JSONL trace log; returns a detached graph.
 

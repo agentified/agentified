@@ -1,11 +1,16 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type {
-  ObservationPolicyOptions,
   ReplaceOutcome,
   Skill,
   SkillHit,
 } from "../native/index.cjs";
-import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import type {
+  EmbeddingSpec,
+  ObservationPolicyOptions,
+  SearchMethod,
+  SearchOrigin,
+  TraceSinkConfig,
+} from "./catalog.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 

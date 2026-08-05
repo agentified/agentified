@@ -4,14 +4,19 @@ import {
   type EmbeddingConfig as NativeEmbeddingConfig,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
-  type ObservationPolicyOptions,
   type ReplaceOutcome,
   type SearchHit,
   type Skill,
   type SkillHit,
   type Tool,
 } from "../native/index.cjs";
-import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import type {
+  EmbeddingSpec,
+  ObservationPolicyOptions,
+  SearchMethod,
+  SearchOrigin,
+  TraceSinkConfig,
+} from "./catalog.js";
 import { mapEmbedderError } from "./errors.js";
 
 export { IntentGraph };
