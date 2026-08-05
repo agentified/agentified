@@ -282,7 +282,7 @@ pub struct SkillWarmArtifactTask {
 
 /// Builds an intent graph from a trace log off the event loop — it embeds every
 /// distinct query, which is far too slow to run inline.
-pub struct InitializeGraphTask {
+pub struct BuildGraphTask {
     inner: Arc<RwLock<core::ToolRegistry>>,
     dense_gate: Arc<Mutex<()>>,
     jsonl: String,
@@ -290,7 +290,7 @@ pub struct InitializeGraphTask {
     _permit: DenseOperationPermit,
 }
 
-impl Task for InitializeGraphTask {
+impl Task for BuildGraphTask {
     /// The graph's `protocol/v1` JSON. Crossing the boundary as its wire form
     /// rather than as an `IntentGraph` handle keeps the task's output a plain
     /// value; the SDK facade rehydrates it, so callers still get the class.
@@ -308,7 +308,7 @@ impl Task for InitializeGraphTask {
             .read()
             .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
         let graph = registry
-            .initialize_intent_graph(envelopes, self.policy)
+            .build_intent_graph(envelopes, self.policy)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         serde_json::to_string(&graph).map_err(|e| napi::Error::from_reason(e.to_string()))
     }
@@ -1181,15 +1181,15 @@ impl ToolRegistry {
     /// attached to this registry; enabling adaptive ranking stays a separate,
     /// explicit call.
     #[napi(ts_return_type = "Promise<string>")]
-    pub fn initialize_intent_graph(
+    pub fn build_intent_graph(
         &self,
         jsonl: String,
         options: Option<ObservationPolicyOptions>,
-    ) -> napi::Result<AsyncTask<InitializeGraphTask>> {
+    ) -> napi::Result<AsyncTask<BuildGraphTask>> {
         // Policy errors are reported before the task is queued, so a typo in a
         // config object fails immediately rather than after an embedding pass.
         let policy = parse_policy(options)?;
-        Ok(AsyncTask::new(InitializeGraphTask {
+        Ok(AsyncTask::new(BuildGraphTask {
             inner: self.inner.clone(),
             dense_gate: self.dense_gate.clone(),
             jsonl,

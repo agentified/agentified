@@ -557,7 +557,7 @@ describe("baseline seeding", () => {
     // Nothing was attached during capture, so ranking never changed.
     expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("inactive");
 
-    const graph = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+    const graph = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
       origins: "baseline",
       provenance: "seeded",
     });
@@ -571,7 +571,7 @@ describe("baseline seeding", () => {
 
   it("returns a detached graph so enabling stays an explicit act", async () => {
     const { catalog, logPath } = await captureBaseline();
-    const graph = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+    const graph = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
       origins: "baseline",
     });
     expect(graph.clusterCount).toBe(1);
@@ -584,7 +584,7 @@ describe("baseline seeding", () => {
   it("ignores searches the policy does not accept", async () => {
     const { catalog, logPath } = await captureBaseline();
     // Default policy accepts every origin; a baseline-only one still sees these.
-    const seeded = await catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+    const seeded = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
       origins: "agent",
     });
     expect(seeded.clusterCount).toBe(0);
@@ -594,7 +594,7 @@ describe("baseline seeding", () => {
     const { logPath } = await captureBaseline();
     const catalog = new ToolCatalog();
     await expect(
-      catalog.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+      catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
         provenance: "seedd",
       }),
     ).rejects.toThrow(/unknown provenance/);
@@ -609,7 +609,7 @@ describe("baseline seeding", () => {
       '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
     const catalog = new ToolCatalog();
     await expect(
-      catalog.experimentalInitializeIntentGraph(`${good}\n{"v":1,"ts":2,"sess`),
+      catalog.experimentalBuildIntentGraph(`${good}\n{"v":1,"ts":2,"sess`),
     ).rejects.toThrow(/line 2/);
   });
 
@@ -618,7 +618,7 @@ describe("baseline seeding", () => {
       '{"v":1,"ts":1,"session_id":"s","type":"search","query":"q",' +
       '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
     const catalog = new ToolCatalog();
-    const graph = await catalog.experimentalInitializeIntentGraph(`\n${good}\n\n`);
+    const graph = await catalog.experimentalBuildIntentGraph(`\n${good}\n\n`);
     // The search was never acted on, so it teaches nothing — but parsing worked.
     expect(graph.clusterCount).toBe(0);
   });

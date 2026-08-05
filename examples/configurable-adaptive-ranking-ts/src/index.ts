@@ -79,7 +79,7 @@ console.log(`  ranking status   : ${capture.experimentalAdaptiveRankingStatus.st
 // A. Collect — the agent runs on its own full tool list; Ratel only records.
 //
 //    After each turn we rebuild the graph from the log SO FAR and score it.
-//    `experimentalInitializeIntentGraph` is a pure function of (log, policy)
+//    `experimentalBuildIntentGraph` is a pure function of (log, policy)
 //    returning a DETACHED graph, so polling mid-capture is safe — nothing being
 //    served is touched.
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   capture.experimentalRecordBaselineQuery(turn);
   capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
 
-  const soFar = await serving.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+  const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
     origins: "baseline",
     provenance: "seeded",
   });
@@ -121,7 +121,7 @@ console.log(
 // ---------------------------------------------------------------------------
 // B. Inspect — the finished graph, before switching anything on.
 // ---------------------------------------------------------------------------
-const graph = await serving.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
   origins: "baseline", // only observed turns count, not Ratel's own searches
   provenance: "seeded", // record that this came from a capture, not live traffic
 });
@@ -144,7 +144,13 @@ console.log(`  ranking status  : ${serving.experimentalAdaptiveRankingStatus.sta
 // ---------------------------------------------------------------------------
 // C. Serve — attach, and rank on what the agent actually did.
 // ---------------------------------------------------------------------------
-serving.experimentalEnableAdaptiveRanking(graph);
+// `origins` matters on this side too, and the default is not automatically the
+// right answer. Live learning teaches from every search reaching the catalog,
+// and `catalog.search(...)` is tagged "direct" — so a pre-fetch helper, health
+// check or eval harness would become clusters of its own. "agent" keeps
+// learning to what the model asked through the capability tools. Drop it
+// (defaulting to "any") only if nothing but the agent searches this catalog.
+serving.experimentalEnableAdaptiveRanking(graph, { origins: "agent" });
 console.log(`\nC. after seeding   : ${topIds(serving, QUERY).join(" > ")}`);
 console.log(`   ranking status  : ${serving.experimentalAdaptiveRankingStatus.status}`);
 

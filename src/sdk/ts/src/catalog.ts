@@ -135,7 +135,7 @@ export type ProvenanceOption = "live" | "seeded";
 /**
  * How a trace stream is turned into observations — the same three knobs for
  * live learning ({@link ToolCatalog.experimentalEnableAdaptiveRanking}) and
- * offline construction ({@link ToolCatalog.experimentalInitializeIntentGraph}),
+ * offline construction ({@link ToolCatalog.experimentalBuildIntentGraph}),
  * so what counts as evidence does not depend on which path produced the graph.
  * Every field defaults to reproducing live behavior.
  *
@@ -545,14 +545,14 @@ export class ToolCatalog {
 
   /**
    * Build an {@link IntentGraph} from a JSONL trace log. See
-   * {@link ToolRegistry.experimentalInitializeIntentGraph} — the returned graph
+   * {@link ToolRegistry.experimentalBuildIntentGraph} — the returned graph
    * is detached, and one call covers both the tool and skill catalogs.
    */
-  async experimentalInitializeIntentGraph(
+  async experimentalBuildIntentGraph(
     jsonl: string,
     options: ObservationPolicyOptions = {},
   ): Promise<IntentGraph> {
-    return this.registry.experimentalInitializeIntentGraph(jsonl, options);
+    return this.registry.experimentalBuildIntentGraph(jsonl, options);
   }
 
   /** Whether adaptive usage ranking is active, inactive, or paused by a model
