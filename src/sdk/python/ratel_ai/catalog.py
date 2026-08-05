@@ -615,7 +615,10 @@ class ToolRegistry:
         Args:
             jsonl: the trace log, exactly as the ``jsonl`` sink writes it. Blank
                 lines are skipped; a malformed line raises, naming its line number.
-            origins: which searches count — ``any`` (default), ``agent``, or ``baseline``.
+            origins: which searches count. Defaults to ``baseline`` here, since
+                building from a log is seeding; pass ``agent`` to re-derive a
+                graph from a period when Ratel was serving, or ``any`` for a log
+                you know holds only one kind.
             provenance: ``live`` (default) or ``seeded``.
 
         Raises:

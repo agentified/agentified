@@ -233,9 +233,9 @@ export class ToolRegistry {
    *
    * @param jsonl - the trace log, exactly as `JsonlSink` writes it. Blank lines
    *   are skipped; a malformed line throws, naming its line number.
-   * @param options - which searches count and how. Defaults reproduce live
-   *   learning; a baseline capture wants
-   *   `{ origins: "baseline", provenance: "seeded" }`.
+   * @param options - which searches count and how. `origins` defaults to
+   *   `"baseline"` here, since building from a log is seeding; pass
+   *   `"agent"` to re-derive a graph from a period when Ratel was serving.
    */
   async experimentalBuildIntentGraph(
     jsonl: string,
