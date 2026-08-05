@@ -313,7 +313,7 @@ impl ToolRegistry {
     /// This is the same learning algorithm the live path runs, driven from a
     /// file instead of live traffic: each accepted search opens a window for its
     /// session, and each confirming invoke folds one observation in — asserted
-    /// by `initializing_from_a_log_reproduces_what_the_live_path_grows`, not
+    /// by `building_from_a_log_reproduces_what_the_live_path_grows`, not
     /// merely claimed here. It deliberately diverges in one place: interleaved
     /// sessions asking identical text, where the live path's shared credit slot
     /// loses an observation and this does not (see
@@ -343,7 +343,7 @@ impl ToolRegistry {
     /// [`EmbedderError`] if the queries cannot be embedded — the model fails to
     /// load, or an endpoint is unreachable. The log is untouched, so the call is
     /// safe to retry.
-    pub fn initialize_intent_graph(
+    pub fn build_intent_graph(
         &self,
         envelopes: impl IntoIterator<Item = TraceEnvelope>,
         policy: ObservationPolicy,
@@ -1497,7 +1497,7 @@ mod tests {
         );
     }
 
-    // ---- initialize_intent_graph: offline seeding (baseline capture) --------
+    // ---- build_intent_graph: offline seeding (baseline capture) --------
 
     fn env(ts: u64, session: &str, event: TraceEvent) -> TraceEnvelope {
         TraceEnvelope {
@@ -1549,7 +1549,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.len(), 1, "the two phrasings are one intent");
@@ -1577,7 +1577,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.len(), 2, "two distinct questions");
@@ -1618,7 +1618,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.len(), 1);
@@ -1657,7 +1657,7 @@ mod tests {
     }
 
     #[test]
-    fn initializing_from_a_log_reproduces_what_the_live_path_grows() {
+    fn building_from_a_log_reproduces_what_the_live_path_grows() {
         // The claim the whole offline design rests on, and the one that went
         // undocumented-but-asserted long enough to hide a bug: a graph built
         // from a log must BE the graph live learning would have grown, not an
@@ -1690,7 +1690,7 @@ mod tests {
             })
             .collect();
         let offline = reg
-            .initialize_intent_graph(log, policy)
+            .build_intent_graph(log, policy)
             .expect("stub embedder never fails");
 
         // `Intent` equality is the evidence — members, centroid, support, edges.
@@ -1730,7 +1730,7 @@ mod tests {
             env(4, "B", started("read_file")),
         ];
         let offline = reg
-            .initialize_intent_graph(interleaved, seeding_policy())
+            .build_intent_graph(interleaved, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(
@@ -1761,7 +1761,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(interleaved, seeding_policy())
+            .build_intent_graph(interleaved, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.len(), 1);
@@ -1806,7 +1806,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(fanned, seeding_policy())
+            .build_intent_graph(fanned, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.intents[0].support, 1, "one question, two catalogs");
@@ -1825,7 +1825,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.built_from_ts, 1_700_000_000_500);
@@ -1838,7 +1838,7 @@ mod tests {
         // to embed, initialization must not reach for one.
         let reg = catalog(Arc::new(FailingEmbedder));
         let graph = reg
-            .initialize_intent_graph(Vec::new(), seeding_policy())
+            .build_intent_graph(Vec::new(), seeding_policy())
             .expect("no queries to embed, so no embedder needed");
         assert!(graph.is_empty());
     }
@@ -1854,7 +1854,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.len(), 1);
@@ -1885,7 +1885,7 @@ mod tests {
         ];
 
         let graph = reg
-            .initialize_intent_graph(log, seeding_policy())
+            .build_intent_graph(log, seeding_policy())
             .expect("stub embedder never fails");
 
         assert_eq!(graph.intents[0].tools.get("read_file"), Some(&1.0));
@@ -1905,7 +1905,7 @@ mod tests {
             env(1, "s1", baseline_search("read a file")),
             env(2, "s1", started("read_file")),
         ];
-        assert!(reg.initialize_intent_graph(log, seeding_policy()).is_err());
+        assert!(reg.build_intent_graph(log, seeding_policy()).is_err());
     }
 
     // ---- usage ranking on the dense paths (ADR-0014) -----------------------

@@ -190,7 +190,7 @@ export class ToolRegistry {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    // The same three knobs `experimentalInitializeIntentGraph` takes, so what
+    // The same three knobs `experimentalBuildIntentGraph` takes, so what
     // counts as evidence does not depend on which path produced the graph.
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,
@@ -238,13 +238,13 @@ export class ToolRegistry {
    *   learning; a baseline capture wants
    *   `{ origins: "baseline", provenance: "seeded" }`.
    */
-  async experimentalInitializeIntentGraph(
+  async experimentalBuildIntentGraph(
     jsonl: string,
     options: ObservationPolicyOptions = {},
   ): Promise<IntentGraph> {
     let json: string;
     try {
-      json = await this.native.initializeIntentGraph(jsonl, options);
+      json = await this.native.buildIntentGraph(jsonl, options);
     } catch (error) {
       throw mapEmbedderError(error);
     }
@@ -460,7 +460,7 @@ export class SkillRegistry {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    // The same three knobs `experimentalInitializeIntentGraph` takes, so what
+    // The same three knobs `experimentalBuildIntentGraph` takes, so what
     // counts as evidence does not depend on which path produced the graph.
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,

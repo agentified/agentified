@@ -828,7 +828,7 @@ fn a_graph_seeded_from_a_baseline_log_ranks_better_once_attached() {
     );
 
     let graph = serving
-        .initialize_intent_graph(
+        .build_intent_graph(
             envelopes,
             ObservationPolicy::default()
                 .with_origins(OriginFilter::Exactly(Origin::Baseline))

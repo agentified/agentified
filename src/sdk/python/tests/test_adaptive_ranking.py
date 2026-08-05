@@ -561,7 +561,7 @@ async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path
     assert catalog.experimental_adaptive_ranking_status == "inactive"
 
     with open(log_path) as fh:
-        graph = await catalog.experimental_initialize_intent_graph(
+        graph = await catalog.experimental_build_intent_graph(
             fh.read(), origins="baseline", provenance="seeded"
         )
 
@@ -575,7 +575,7 @@ async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path
 async def test_initialization_returns_a_detached_graph(tmp_path: Path) -> None:
     catalog, log_path = await _capture_baseline(tmp_path)
     with open(log_path) as fh:
-        graph = await catalog.experimental_initialize_intent_graph(fh.read(), origins="baseline")
+        graph = await catalog.experimental_build_intent_graph(fh.read(), origins="baseline")
 
     assert graph.cluster_count == 1
     assert catalog.experimental_adaptive_ranking_status == "inactive"
@@ -589,7 +589,7 @@ async def test_an_unknown_policy_value_is_rejected(tmp_path: Path) -> None:
     with open(log_path) as fh:
         log = fh.read()
     with pytest.raises(ValueError, match="unknown provenance"):
-        await catalog.experimental_initialize_intent_graph(log, provenance="seedd")
+        await catalog.experimental_build_intent_graph(log, provenance="seedd")
 
 
 async def test_a_malformed_log_line_names_its_line_number() -> None:
@@ -609,7 +609,7 @@ async def test_a_malformed_log_line_names_its_line_number() -> None:
         }
     )
     with pytest.raises(ValueError, match="line 2"):
-        await catalog.experimental_initialize_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')
+        await catalog.experimental_build_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')
 
 
 async def test_live_learning_honours_the_same_policy_as_offline() -> None:

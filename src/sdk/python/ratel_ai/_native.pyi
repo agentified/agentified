@@ -199,7 +199,7 @@ class ToolRegistry:
         jsonl path that cannot be opened.
         """
 
-    def _initialize_intent_graph(
+    def _build_intent_graph(
         self,
         jsonl: str,
         origins: str | None = None,

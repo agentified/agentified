@@ -95,7 +95,7 @@ Two rules:
 ### B. Initialize
 
 ```python
-graph = await serving.experimental_initialize_intent_graph(
+graph = await serving.experimental_build_intent_graph(
     log_path.read_text(),
     origins="baseline",    # only observed turns count, not Ratel's own searches
     provenance="seeded",   # record where this evidence came from
@@ -120,7 +120,7 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 ## Policy options
 
-`experimental_initialize_intent_graph` takes the same three keywords everywhere; each defaults to reproducing live behavior.
+`experimental_build_intent_graph` takes the same three keywords everywhere; each defaults to reproducing live behavior.
 
 | Keyword | Values | Default |
 |---|---|---|
@@ -134,7 +134,7 @@ Unknown values raise `ValueError` rather than silently defaulting: a policy is a
 
 ## Watching it mature
 
-`experimental_initialize_intent_graph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. The demo does exactly that — it scores after every captured turn, so the progression is visible inline rather than in a separate script. That makes the "when do we flip?" decision measurable rather than a guess.
+`experimental_build_intent_graph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. The demo does exactly that — it scores after every captured turn, so the progression is visible inline rather than in a separate script. That makes the "when do we flip?" decision measurable rather than a guess.
 
 | column | meaning |
 |---|---|

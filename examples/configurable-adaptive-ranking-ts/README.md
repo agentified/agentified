@@ -92,7 +92,7 @@ Two rules:
 ### B. Initialize
 
 ```ts
-const graph = await serving.experimentalInitializeIntentGraph(readFileSync(logPath, "utf8"), {
+const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
   origins: "baseline",    // only observed turns count, not Ratel's own searches
   provenance: "seeded",   // record where this evidence came from
 });
@@ -116,7 +116,7 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 ## Policy options
 
-`experimentalInitializeIntentGraph` takes the same three knobs everywhere; each defaults to reproducing live behavior.
+`experimentalBuildIntentGraph` takes the same three knobs everywhere; each defaults to reproducing live behavior.
 
 | Option | Values | Default |
 |---|---|---|
@@ -130,7 +130,7 @@ Unknown values are rejected rather than silently defaulting: a policy is a delib
 
 ## Watching it mature
 
-`experimentalInitializeIntentGraph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. The demo does exactly that — it scores after every captured turn, so the progression is visible inline rather than in a separate script. That makes the "when do we flip?" decision measurable rather than a guess.
+`experimentalBuildIntentGraph` is a **pure function of (log, policy)** returning a detached graph, so you can rebuild from the log so far as often as you like while capture continues. The demo does exactly that — it scores after every captured turn, so the progression is visible inline rather than in a separate script. That makes the "when do we flip?" decision measurable rather than a guess.
 
 | column | meaning |
 |---|---|

@@ -598,7 +598,7 @@ class ToolRegistry:
         self._adaptive_warned = False
         self._maybe_warn_model_mismatch()
 
-    async def experimental_initialize_intent_graph(
+    async def experimental_build_intent_graph(
         self,
         jsonl: str,
         *,
@@ -631,7 +631,7 @@ class ToolRegistry:
             EmbedderError: the queries could not be embedded.
         """
         json = await self._run_dense(
-            lambda: self._native._initialize_intent_graph(
+            lambda: self._native._build_intent_graph(
                 jsonl, origins, confirmation, provenance
             )
         )
@@ -967,7 +967,7 @@ class ToolCatalog:
             }
         )
 
-    async def experimental_initialize_intent_graph(
+    async def experimental_build_intent_graph(
         self,
         jsonl: str,
         *,
@@ -977,10 +977,10 @@ class ToolCatalog:
     ) -> IntentGraph:
         """Build an IntentGraph from a JSONL trace log; returns a detached graph.
 
-        See `ToolRegistry.experimental_initialize_intent_graph`. One call covers
+        See `ToolRegistry.experimental_build_intent_graph`. One call covers
         both the tool and skill catalogs.
         """
-        return await self._registry.experimental_initialize_intent_graph(
+        return await self._registry.experimental_build_intent_graph(
             jsonl, origins=origins, confirmation=confirmation, provenance=provenance
         )
 

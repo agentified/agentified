@@ -591,7 +591,7 @@ impl ToolRegistry {
     /// graph is NOT attached to this registry; enabling adaptive ranking stays a
     /// separate, explicit call.
     #[pyo3(signature = (jsonl, origins=None, confirmation=None, provenance=None))]
-    fn _initialize_intent_graph(
+    fn _build_intent_graph(
         &self,
         py: Python<'_>,
         jsonl: &str,
@@ -603,7 +603,7 @@ impl ToolRegistry {
         let policy = parse_policy(origins, confirmation, provenance)?;
         let envelopes = parse_trace_log(jsonl)?;
         let graph = py
-            .allow_threads(|| self.inner.initialize_intent_graph(envelopes, policy))
+            .allow_threads(|| self.inner.build_intent_graph(envelopes, policy))
             .map_err(map_embedder_err)?;
         serde_json::to_string(&graph).map_err(|e| PyValueError::new_err(e.to_string()))
     }

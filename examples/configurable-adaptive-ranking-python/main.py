@@ -97,7 +97,7 @@ async def main() -> None:
     # A. Collect — the agent runs on its own full tool list; Ratel only records.
     #
     #    After each turn we rebuild the graph from the log SO FAR and score it.
-    #    `experimental_initialize_intent_graph` is a pure function of (log,
+    #    `experimental_build_intent_graph` is a pure function of (log,
     #    policy) returning a DETACHED graph, so polling mid-capture is safe —
     #    nothing being served is touched.
     # -----------------------------------------------------------------------
@@ -113,7 +113,7 @@ async def main() -> None:
             {"type": "invoke_start", "tool_id": invoked, "args_size_bytes": 0}
         )
 
-        graph = await serving.experimental_initialize_intent_graph(
+        graph = await serving.experimental_build_intent_graph(
             log_path.read_text(), origins="baseline", provenance="seeded"
         )
         r = await readiness(graph, turn)
@@ -139,7 +139,7 @@ async def main() -> None:
     # -----------------------------------------------------------------------
     # B. Inspect — the finished graph, before switching anything on.
     # -----------------------------------------------------------------------
-    graph = await serving.experimental_initialize_intent_graph(
+    graph = await serving.experimental_build_intent_graph(
         log_path.read_text(),
         origins="baseline",  # only observed turns count, not Ratel's own searches
         provenance="seeded",  # record that this came from a capture, not live traffic
@@ -161,7 +161,14 @@ async def main() -> None:
     # -----------------------------------------------------------------------
     # C. Serve — attach, and rank on what the agent actually did.
     # -----------------------------------------------------------------------
-    serving.experimental_enable_adaptive_ranking(graph)
+    # `origins` matters on this side too, and the default is not automatically
+    # the right answer. Live learning teaches from every search reaching the
+    # catalog, and `catalog.search(...)` is tagged "direct" — so a pre-fetch
+    # helper, health check or eval harness would become clusters of its own.
+    # "agent" keeps learning to what the model asked through the capability
+    # tools. Drop it (defaulting to "any") only if nothing but the agent
+    # searches this catalog.
+    serving.experimental_enable_adaptive_ranking(graph, origins="agent")
     print(f"\nC. after seeding   : {' > '.join(top_ids(serving, QUERY))}")
     print(f"   ranking status  : {serving.experimental_adaptive_ranking_status}")
 

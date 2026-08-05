@@ -153,7 +153,7 @@ void [typoOrigin, typoConfirmation, typoProvenance];
 // The same options reach both learning paths, so neither accepts a value the
 // other rejects.
 const catalogForPolicy = new ToolCatalog();
-void catalogForPolicy.experimentalInitializeIntentGraph("", { origins: "baseline" });
+void catalogForPolicy.experimentalBuildIntentGraph("", { origins: "baseline" });
 void catalogForPolicy.experimentalEnableAdaptiveRanking(new IntentGraph(), {
   confirmation: "succeeded",
   warnOnModelMismatch: false,
