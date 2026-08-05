@@ -59,12 +59,9 @@ async def main() -> None:
     print(f'query: "{QUERY}"')
     print(f"  cold (BM25 only) : {' > '.join(top_ids(capture, QUERY))}")
 
-    probes = ", ".join(f'"{q}"' for q in HELD_OUT)
-    print(f"\nA. collecting — scoring after each turn against held-out: {probes}\n")
+    print("OFFLINE MODE")
 
     for i, (turn, invoked) in enumerate(BASELINE_TURNS, start=1):
-        print('turn:', turn)
-        print('invoked:', invoked)
 
         capture.experimental_baseline_turn(turn).invoked(invoked).record()
 
@@ -73,14 +70,14 @@ async def main() -> None:
         support = (
             f"{r.support} (full)" if r.support >= SUPPORT_FULL else f"{r.support}/{SUPPORT_FULL}"
         )
+        label = f'"{turn}"'
         print(
-            f"  turn {i:>2}  {invoked:<13} clusters={r.clusters} "
+            f"  turn {i:>2}  {label:<30} {invoked:<13} clusters={r.clusters} "
             f"support={support:<9} "
             f"obs={r.observations:<2} from_baseline={r.from_baseline} "
             f"coverage={r.coverage_hits}/{r.coverage_probed}"
         )
 
-    print(f"\n  log -> {log_path}")
 
     graph = await serving.experimental_build_intent_graph(log_path.read_text())
     show(json.loads(graph.to_json()))

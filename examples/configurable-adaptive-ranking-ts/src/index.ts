@@ -47,8 +47,7 @@ const serving = await buildCatalog();
 console.log(`query: "${QUERY}"`);
 console.log(`  cold (BM25 only) : ${topIds(capture, QUERY).join(" > ")}`);
 
-const probes = HELD_OUT.map((q) => `"${q}"`).join(", ");
-console.log(`\nA. collecting — scoring after each turn against held-out: ${probes}\n`);
+console.log("OFFLINE MODE");
 
 for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   capture.experimentalBaselineTurn(turn).invoked(invoked).record();
@@ -57,7 +56,8 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   const r = await readiness(soFar, turn);
   const support = r.support >= SUPPORT_FULL ? `${r.support} (full)` : `${r.support}/${SUPPORT_FULL}`;
   console.log(
-    `  turn ${String(i + 1).padStart(2)}  ${invoked.padEnd(13)} clusters=${r.clusters} ` +
+    `  turn ${String(i + 1).padStart(2)}  ${`"${turn}"`.padEnd(30)} ${invoked.padEnd(13)} ` +
+      `clusters=${r.clusters} ` +
       `support=${support.padEnd(9)} ` +
       `obs=${String(r.observations).padEnd(2)} fromBaseline=${r.fromBaseline} ` +
       `coverage=${r.coverage.hits}/${r.coverage.probed}`,
