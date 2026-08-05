@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IntentGraph } from "@ratel-ai/sdk";
+import { show } from "./show-graph.js";
 import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
 
 const QUERY = "why is the build broken";
@@ -40,15 +41,6 @@ async function readiness(graph: IntentGraph, turn: string): Promise<Readiness> {
   };
 }
 
-/** The graph's wire form, with centroids elided — they are 384 floats each. */
-function render(graph: IntentGraph): string {
-  const wire = JSON.parse(graph.toJson());
-  for (const intent of wire.intents) {
-    if (intent.centroid) intent.centroid = `<${intent.centroid.length} floats>`;
-  }
-  return JSON.stringify(wire, null, 2);
-}
-
 const capture = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
 const serving = await buildCatalog();
 
@@ -76,8 +68,7 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
 console.log(`\n  log -> ${logPath}`);
 
 const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
-console.log("\nB. graph\n");
-console.log(render(graph));
+show(JSON.parse(graph.toJson()));
 
 serving.experimentalEnableAdaptiveRanking(graph, { origins: "agent" });
 console.log(`\nC. after seeding : ${topIds(serving, QUERY).join(" > ")}`);

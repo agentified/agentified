@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ratel_ai import IntentGraph, TraceSinkConfig
 
+from show_graph import show
 from tools import BASELINE_TURNS, HELD_OUT, build_catalog, top_ids
 
 QUERY = "why is the build broken"
@@ -47,15 +48,6 @@ async def readiness(graph: IntentGraph, turn: str) -> Readiness:
     )
 
 
-def render(graph: IntentGraph) -> str:
-    """The graph's wire form, with centroids elided — they are 384 floats each."""
-    wire = json.loads(graph.to_json())
-    for intent in wire["intents"]:
-        if "centroid" in intent:
-            intent["centroid"] = f"<{len(intent['centroid'])} floats>"
-    return json.dumps(wire, indent=2)
-
-
 async def main() -> None:
     log_path = Path(tempfile.mkdtemp(prefix="ratel-baseline-")) / "telemetry.jsonl"
 
@@ -92,8 +84,7 @@ async def main() -> None:
     print(f"\n  log -> {log_path}")
 
     graph = await serving.experimental_build_intent_graph(log_path.read_text())
-    print("\nB. graph\n")
-    print(render(graph))
+    show(json.loads(graph.to_json()))
 
     serving.experimental_enable_adaptive_ranking(graph, origins="agent")
     print(f"\nC. after seeding : {' > '.join(top_ids(serving, QUERY))}")
