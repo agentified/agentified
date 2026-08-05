@@ -94,7 +94,7 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   capture.experimentalRecordBaselineQuery(turn);
   capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
 
-  const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), { provenance: "seeded" });
+  const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
   const r = await readiness(soFar, turn);
   // Past the threshold "5/3" reads like a bug, so say what it means.
   const support =
@@ -118,10 +118,10 @@ console.log(
 // ---------------------------------------------------------------------------
 // B. Inspect — the finished graph, before switching anything on.
 // ---------------------------------------------------------------------------
-const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
-  // origins defaults to "baseline" here — building from a log is seeding.
-  provenance: "seeded", // record that this came from a capture
-});
+// Building from a log IS a seeding pass, so both knobs already default to it:
+// origins "baseline", provenance "seeded". Pass origins "agent" to re-derive a
+// graph from a period when Ratel was serving.
+const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
 console.log("\nB. built graph:");
 for (const intent of JSON.parse(graph.toJson()).intents) {
   const edges = Object.entries(intent.tools as Record<string, number>)

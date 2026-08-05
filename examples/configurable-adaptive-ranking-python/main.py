@@ -113,9 +113,7 @@ async def main() -> None:
             {"type": "invoke_start", "tool_id": invoked, "args_size_bytes": 0}
         )
 
-        graph = await serving.experimental_build_intent_graph(
-            log_path.read_text(), provenance="seeded"
-        )
+        graph = await serving.experimental_build_intent_graph(log_path.read_text())
         r = await readiness(graph, turn)
         # Past the threshold "5/3" reads like a bug, so say what it means.
         support = (
@@ -139,11 +137,10 @@ async def main() -> None:
     # -----------------------------------------------------------------------
     # B. Inspect — the finished graph, before switching anything on.
     # -----------------------------------------------------------------------
-    graph = await serving.experimental_build_intent_graph(
-        log_path.read_text(),
-        # origins defaults to "baseline" here — building from a log is seeding.
-        provenance="seeded",  # record that this came from a capture
-    )
+    # Building from a log IS a seeding pass, so both knobs already default to
+    # it: origins="baseline", provenance="seeded". Pass origins="agent" to
+    # re-derive a graph from a period when Ratel was serving.
+    graph = await serving.experimental_build_intent_graph(log_path.read_text())
     print("\nB. built graph:")
     for intent in json.loads(graph.to_json())["intents"]:
         edges = ", ".join(f"{tool} x{weight:g}" for tool, weight in intent["tools"].items())

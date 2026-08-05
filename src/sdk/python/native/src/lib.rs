@@ -37,15 +37,18 @@ fn parse_origin(s: &str) -> Origin {
 /// string so version skew cannot fail an infallible search. A policy is a
 /// deliberate configuration a caller typed: silently reading `"seedd"` as
 /// `"live"` would produce a graph with no provenance and no error.
-/// `default_origins` differs per entry point: building from a log means
-/// seeding, so it defaults to `baseline`; enabling live learning keeps `any`,
-/// which is what it has always done.
+/// Defaults differ per entry point: building from a log IS a seeding pass, so
+/// it defaults to `baseline` + `seeded`; enabling live learning keeps `any` +
+/// `live`, which is what it has always done.
 fn parse_policy(
     origins: Option<&str>,
     provenance: Option<&str>,
     default_origins: core::OriginFilter,
+    default_provenance: core::Provenance,
 ) -> PyResult<core::ObservationPolicy> {
-    let mut policy = core::ObservationPolicy::default().with_origins(default_origins);
+    let mut policy = core::ObservationPolicy::default()
+        .with_origins(default_origins)
+        .with_provenance(default_provenance);
     if let Some(o) = origins {
         policy = policy.with_origins(match o {
             "any" => core::OriginFilter::Any,
@@ -594,6 +597,7 @@ impl ToolRegistry {
             origins,
             provenance,
             core::OriginFilter::Exactly(Origin::Baseline),
+            core::Provenance::Seeded,
         )?;
         let envelopes = parse_trace_log(jsonl)?;
         let graph = py
@@ -697,7 +701,12 @@ impl ToolRegistry {
         origins: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, provenance, core::OriginFilter::Any)?;
+        self.usage_policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Any,
+            core::Provenance::Live,
+        )?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
@@ -1045,7 +1054,12 @@ impl SkillRegistry {
         origins: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, provenance, core::OriginFilter::Any)?;
+        self.usage_policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Any,
+            core::Provenance::Live,
+        )?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner

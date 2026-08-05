@@ -56,14 +56,17 @@ pub struct ObservationPolicyOptions {
 /// deliberate configuration a caller typed: silently reading `"seedd"` as
 /// `"live"` would produce a graph with no provenance and no error, which is far
 /// worse than a rejected call.
-/// `default_origins` differs per entry point: building from a log means
-/// seeding, so it defaults to `baseline`; enabling live learning keeps `any`,
-/// which is what it has always done.
+/// Defaults differ per entry point: building from a log IS a seeding pass, so
+/// it defaults to `baseline` + `seeded`; enabling live learning keeps `any` +
+/// `live`, which is what it has always done.
 fn parse_policy(
     opts: Option<ObservationPolicyOptions>,
     default_origins: core::OriginFilter,
+    default_provenance: core::Provenance,
 ) -> napi::Result<core::ObservationPolicy> {
-    let mut policy = core::ObservationPolicy::default().with_origins(default_origins);
+    let mut policy = core::ObservationPolicy::default()
+        .with_origins(default_origins)
+        .with_provenance(default_provenance);
     let Some(opts) = opts else {
         return Ok(policy);
     };
@@ -910,7 +913,7 @@ impl ToolRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
-        self.usage_policy = parse_policy(options, core::OriginFilter::Any)?;
+        self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         let learner = Arc::new(UsageLearner::with_policy(
@@ -955,7 +958,11 @@ impl ToolRegistry {
     ) -> napi::Result<AsyncTask<BuildGraphTask>> {
         // Policy errors are reported before the task is queued, so a typo in a
         // config object fails immediately rather than after an embedding pass.
-        let policy = parse_policy(options, core::OriginFilter::Exactly(Origin::Baseline))?;
+        let policy = parse_policy(
+            options,
+            core::OriginFilter::Exactly(Origin::Baseline),
+            core::Provenance::Seeded,
+        )?;
         Ok(AsyncTask::new(BuildGraphTask {
             inner: self.inner.clone(),
             dense_gate: self.dense_gate.clone(),
@@ -1344,7 +1351,7 @@ impl SkillRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
-        self.usage_policy = parse_policy(options, core::OriginFilter::Any)?;
+        self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         let learner = Arc::new(UsageLearner::with_policy(

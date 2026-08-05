@@ -687,3 +687,16 @@ async def test_build_defaults_to_baseline_and_enable_defaults_to_any(tmp_path: P
 
     everything = await catalog.experimental_build_intent_graph(log, origins="any")
     assert everything.cluster_count == 2, "opting into any picks up the rest"
+
+    # provenance defaults the same way: an offline build is a seeding pass.
+    seeded = json.loads(default_build.to_json())["intents"][0]
+    assert seeded["support"] == seeded["seeded_support"] == 1
+
+    # Live learning still defaults to "live", so nothing is marked seeded.
+    live_graph = IntentGraph()
+    catalog.experimental_enable_adaptive_ranking(live_graph)
+    catalog.search("why is the build broken", 5)
+    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+    live = json.loads(live_graph.to_json())["intents"][0]
+    assert live["support"] == 1
+    assert live.get("seeded_support", 0) == 0
