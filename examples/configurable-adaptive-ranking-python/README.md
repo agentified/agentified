@@ -23,7 +23,6 @@ Expected output — the graph matures as turns are captured, then the flip:
 ```
 query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
-  ranking status   : inactive
 
 A. collecting — scoring after each turn against held-out: "is the build broken today", "rotate the key", "read the file", "is CI green on my branch"
 
@@ -40,30 +39,89 @@ A. collecting — scoring after each turn against held-out: "is the build broken
 
   log -> /tmp/ratel-baseline-XXXX/telemetry.jsonl
 
-  coverage stops at 3/4: "is CI green on my branch" never matches. It
-  means the same as a captured turn but shares no words with one, and
-  this demo runs on BM25. Bridging that is what the dense tier is for —
-  a real deployment wants method="semantic".
+B. graph
 
-B. built graph:
-  "the build is broken"
-    observations  : 5 (5 from this capture)
-    invoked       : gh_run_list x5
-    phrasings     : 5
-  "rotate the signing key"
-    observations  : 3 (3 from this capture)
-    invoked       : vault_rotate x3
-    phrasings     : 3
-  "read a file from disk"
-    observations  : 2 (2 from this capture)
-    invoked       : read_file x2
-    phrasings     : 2
-  ranking status  : inactive
+{
+  "v": 1,
+  "built_from_ts": 1785000000000,
+  "rev": 10,
+  "model": "hf|repo=22:BAAI/bge-small-en-v1.5|revision=40:5c38ec7c405ec4b44b94cc5a9bb96e735b38267a|pool=3:cls|q=57:Represent this sentence for searching relevant passages: ",
+  "intents": [
+    {
+      "id": "intent_0",
+      "label": "the build is broken",
+      "terms": [
+        "broken",
+        "build",
+        "after",
+        "main",
+        "merge"
+      ],
+      "members": [
+        "why is the build broken",
+        "is the build broken again",
+        "the build broken on main",
+        "the build is broken",
+        "build broken after merge"
+      ],
+      "centroid": "<384 floats>",
+      "support": 5,
+      "seeded_support": 5,
+      "last_ts": 1785000000000,
+      "tools": {
+        "gh_run_list": 5.0
+      },
+      "skills": {}
+    },
+    {
+      "id": "intent_1",
+      "label": "rotate the signing key",
+      "terms": [
+        "key",
+        "rotate",
+        "signing",
+        "now",
+        "again"
+      ],
+      "members": [
+        "rotate the signing key",
+        "rotate signing key now",
+        "rotate the signing key again"
+      ],
+      "centroid": "<384 floats>",
+      "support": 3,
+      "seeded_support": 3,
+      "last_ts": 1785000000000,
+      "tools": {
+        "vault_rotate": 3.0
+      },
+      "skills": {}
+    },
+    {
+      "id": "intent_2",
+      "label": "read a file from disk",
+      "terms": [
+        "disk",
+        "file",
+        "read"
+      ],
+      "members": [
+        "read a file from disk",
+        "read the file from disk"
+      ],
+      "centroid": "<384 floats>",
+      "support": 2,
+      "seeded_support": 2,
+      "last_ts": 1785000000000,
+      "tools": {
+        "read_file": 2.0
+      },
+      "skills": {}
+    }
+  ]
+}
 
-C. after seeding   : gh_run_list > docker_build
-   ranking status  : active
-
-persist with graph.to_json() — rev=10 marks what to save.
+C. after seeding : gh_run_list > docker_build
 ```
 
 BM25 ranks `docker_build` first for *"why is the build broken"* on the token *build*. Ten turns across three intents say people reach for `gh_run_list` on build questions, and the seeded graph closes the gap — with no live learning in between.
