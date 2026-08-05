@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- `origins` now defaults to `baseline` when building a graph from a log, since that is what an offline build is for. Enabling live learning still defaults to `any` — changing that would alter existing behavior. Pass `origins="agent"` to re-derive a graph from a period when Ratel was already serving.
 - `origins` accepts `any` / `agent` / `baseline`. `direct` is a valid search origin but not a filter — learning only from searches your own code made means learning from your plumbing.
 - Policy options are now a closed set of literal types (`OriginFilterOption`, `ProvenanceOption`) declared by the SDK rather than the native binding's generated `string` fields, so `{ origins: "baselien" }` is a compile error with completion on the legal values. Runtime validation is unchanged for callers without types.
 - `experimentalEnableAdaptiveRanking` accepts the same `origins` / `provenance` options as `experimentalInitializeIntentGraph`, so what counts as evidence no longer depends on which path produced the graph. Defaults are unchanged, and the policy survives a `setTraceSink`.

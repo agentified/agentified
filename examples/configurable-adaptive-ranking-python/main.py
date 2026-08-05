@@ -114,7 +114,7 @@ async def main() -> None:
         )
 
         graph = await serving.experimental_build_intent_graph(
-            log_path.read_text(), origins="baseline", provenance="seeded"
+            log_path.read_text(), provenance="seeded"
         )
         r = await readiness(graph, turn)
         # Past the threshold "5/3" reads like a bug, so say what it means.
@@ -141,8 +141,8 @@ async def main() -> None:
     # -----------------------------------------------------------------------
     graph = await serving.experimental_build_intent_graph(
         log_path.read_text(),
-        origins="baseline",  # only observed turns count, not Ratel's own searches
-        provenance="seeded",  # record that this came from a capture, not live traffic
+        # origins defaults to "baseline" here — building from a log is seeding.
+        provenance="seeded",  # record that this came from a capture
     )
     print("\nB. built graph:")
     for intent in json.loads(graph.to_json())["intents"]:

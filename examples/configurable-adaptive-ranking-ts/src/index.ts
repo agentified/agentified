@@ -94,10 +94,7 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   capture.experimentalRecordBaselineQuery(turn);
   capture.recordEvent({ type: "invoke_start", tool_id: invoked, args_size_bytes: 0 });
 
-  const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
-    origins: "baseline",
-    provenance: "seeded",
-  });
+  const soFar = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), { provenance: "seeded" });
   const r = await readiness(soFar, turn);
   // Past the threshold "5/3" reads like a bug, so say what it means.
   const support =
@@ -122,8 +119,8 @@ console.log(
 // B. Inspect — the finished graph, before switching anything on.
 // ---------------------------------------------------------------------------
 const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
-  origins: "baseline", // only observed turns count, not Ratel's own searches
-  provenance: "seeded", // record that this came from a capture, not live traffic
+  // origins defaults to "baseline" here — building from a log is seeding.
+  provenance: "seeded", // record that this came from a capture
 });
 console.log("\nB. built graph:");
 for (const intent of JSON.parse(graph.toJson()).intents) {

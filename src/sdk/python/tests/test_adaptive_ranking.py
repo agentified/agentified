@@ -662,3 +662,28 @@ async def test_valid_policy_values_are_accepted() -> None:
         IntentGraph(), origins="baseline", provenance="seeded"
     )
     assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+async def test_build_defaults_to_baseline_and_enable_defaults_to_any(tmp_path: Path) -> None:
+    # Asymmetric on purpose: building from a log means seeding, so it defaults
+    # to the origin a capture produces. Enabling keeps "any", which is what live
+    # learning has always done — changing it would alter existing behavior.
+    log_path = tmp_path / "t.jsonl"
+    catalog = ToolCatalog(
+        trace=TraceSinkConfig(kind="jsonl", session_id="s", path=str(log_path))
+    )
+    await catalog.register(
+        [ExecutableTool(id="t", name="t", description="a tool", execute=lambda _a: "")]
+    )
+    # One captured turn, and one plain search that is NOT a capture.
+    catalog.experimental_record_baseline_query("why is the build broken")
+    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+    catalog.search("something else entirely", 5)  # origin "direct"
+    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+
+    log = log_path.read_text()
+    default_build = await catalog.experimental_build_intent_graph(log)
+    assert default_build.cluster_count == 1, "only the captured turn counts"
+
+    everything = await catalog.experimental_build_intent_graph(log, origins="any")
+    assert everything.cluster_count == 2, "opting into any picks up the rest"

@@ -40,11 +40,15 @@ fn parse_origin(s: &str) -> Origin {
 /// string so version skew cannot fail an infallible search. A policy is a
 /// deliberate configuration a caller typed: silently reading `"seedd"` as
 /// `"live"` would produce a graph with no provenance and no error.
+/// `default_origins` differs per entry point: building from a log means
+/// seeding, so it defaults to `baseline`; enabling live learning keeps `any`,
+/// which is what it has always done.
 fn parse_policy(
     origins: Option<&str>,
     provenance: Option<&str>,
+    default_origins: core::OriginFilter,
 ) -> PyResult<core::ObservationPolicy> {
-    let mut policy = core::ObservationPolicy::default();
+    let mut policy = core::ObservationPolicy::default().with_origins(default_origins);
     if let Some(o) = origins {
         policy = policy.with_origins(match o {
             "any" => core::OriginFilter::Any,
@@ -721,7 +725,11 @@ impl ToolRegistry {
         provenance: Option<&str>,
     ) -> PyResult<String> {
         // Policy errors surface before the embedding pass, so a typo fails fast.
-        let policy = parse_policy(origins, provenance)?;
+        let policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Exactly(Origin::Baseline),
+        )?;
         let envelopes = parse_trace_log(jsonl)?;
         let graph = py
             .allow_threads(|| self.inner.build_intent_graph(envelopes, policy))
@@ -824,7 +832,7 @@ impl ToolRegistry {
         origins: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, provenance)?;
+        self.usage_policy = parse_policy(origins, provenance, core::OriginFilter::Any)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
@@ -1192,7 +1200,7 @@ impl SkillRegistry {
         origins: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, provenance)?;
+        self.usage_policy = parse_policy(origins, provenance, core::OriginFilter::Any)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
