@@ -39,7 +39,6 @@ fn parse_origin(s: &str) -> Origin {
 /// `"live"` would produce a graph with no provenance and no error.
 fn parse_policy(
     origins: Option<&str>,
-    confirmation: Option<&str>,
     provenance: Option<&str>,
 ) -> PyResult<core::ObservationPolicy> {
     let mut policy = core::ObservationPolicy::default();
@@ -52,17 +51,6 @@ fn parse_policy(
             other => {
                 return Err(PyValueError::new_err(format!(
                     "unknown origins {other:?}: expected any | direct | agent | baseline"
-                )));
-            }
-        });
-    }
-    if let Some(c) = confirmation {
-        policy = policy.with_confirmation(match c {
-            "attempted" => core::Confirmation::Attempted,
-            "succeeded" => core::Confirmation::Succeeded,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown confirmation {other:?}: expected attempted | succeeded"
                 )));
             }
         });
@@ -590,17 +578,16 @@ impl ToolRegistry {
     /// live path uses. Releases the GIL for the embedding pass. The returned
     /// graph is NOT attached to this registry; enabling adaptive ranking stays a
     /// separate, explicit call.
-    #[pyo3(signature = (jsonl, origins=None, confirmation=None, provenance=None))]
+    #[pyo3(signature = (jsonl, origins=None, provenance=None))]
     fn _build_intent_graph(
         &self,
         py: Python<'_>,
         jsonl: &str,
         origins: Option<&str>,
-        confirmation: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<String> {
         // Policy errors surface before the embedding pass, so a typo fails fast.
-        let policy = parse_policy(origins, confirmation, provenance)?;
+        let policy = parse_policy(origins, provenance)?;
         let envelopes = parse_trace_log(jsonl)?;
         let graph = py
             .allow_threads(|| self.inner.build_intent_graph(envelopes, policy))
@@ -696,15 +683,14 @@ impl ToolRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, confirmation=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
-        confirmation: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, confirmation, provenance)?;
+        self.usage_policy = parse_policy(origins, provenance)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner
@@ -1045,15 +1031,14 @@ impl SkillRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, confirmation=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
-        confirmation: Option<&str>,
         provenance: Option<&str>,
     ) -> PyResult<()> {
-        self.usage_policy = parse_policy(origins, confirmation, provenance)?;
+        self.usage_policy = parse_policy(origins, provenance)?;
         let handle = graph.inner.clone();
         let inner_sink = self.base_sink.clone();
         self.inner

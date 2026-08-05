@@ -45,9 +45,6 @@ pub struct ObservationPolicyOptions {
     /// Which searches open an observation window: `"any"` (default), or one of
     /// `"direct"` / `"agent"` / `"baseline"` to accept only that origin.
     pub origins: Option<String>,
-    /// What confirms an observation: `"attempted"` (default, an `invoke_start`)
-    /// or `"succeeded"` (an `invoke_end`).
-    pub confirmation: Option<String>,
     /// Whether learning is marked as seeded: `"live"` (default) or `"seeded"`.
     pub provenance: Option<String>,
 }
@@ -73,17 +70,6 @@ fn parse_policy(opts: Option<ObservationPolicyOptions>) -> napi::Result<core::Ob
             other => {
                 return Err(napi::Error::from_reason(format!(
                     "unknown origins {other:?}: expected any | direct | agent | baseline"
-                )));
-            }
-        });
-    }
-    if let Some(c) = opts.confirmation.as_deref() {
-        policy = policy.with_confirmation(match c {
-            "attempted" => core::Confirmation::Attempted,
-            "succeeded" => core::Confirmation::Succeeded,
-            other => {
-                return Err(napi::Error::from_reason(format!(
-                    "unknown confirmation {other:?}: expected attempted | succeeded"
                 )));
             }
         });

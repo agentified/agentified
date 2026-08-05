@@ -77,24 +77,6 @@ pub enum OriginFilter {
     Exactly(Origin),
 }
 
-/// What counts as the confirming half of an observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum Confirmation {
-    /// An invocation the agent **chose** to make (`invoke_start`). Choice is
-    /// the relevance signal: which tool it reached for says what it thought
-    /// fit, and a later argument error does not retract that.
-    #[default]
-    Attempted,
-    /// Only an invocation that **completed** (`invoke_end`). Stricter evidence
-    /// for a seeding pass, where a wrong-tool call that failed on arguments
-    /// should not become an edge.
-    ///
-    /// Asymmetric by necessity: a skill load has no start/end split, so skills
-    /// pair on `skill_invoke` under both settings.
-    Succeeded,
-}
-
 /// Whether observations are recorded as seeded evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -114,13 +96,12 @@ pub enum Provenance {
 /// the `with_*` setters:
 ///
 /// ```
-/// use ratel_ai_core::{Confirmation, ObservationPolicy, Origin, OriginFilter, Provenance};
+/// use ratel_ai_core::{ObservationPolicy, Origin, OriginFilter, Provenance};
 ///
-/// // A baseline capture: only observed queries teach, only completed calls
-/// // confirm, and everything learned is marked as seeded.
+/// // A baseline capture: only observed queries teach, and everything learned
+/// // is marked as seeded.
 /// let seeding = ObservationPolicy::default()
 ///     .with_origins(OriginFilter::Exactly(Origin::Baseline))
-///     .with_confirmation(Confirmation::Succeeded)
 ///     .with_provenance(Provenance::Seeded);
 ///
 /// assert_eq!(seeding.provenance, Provenance::Seeded);
@@ -137,8 +118,6 @@ pub enum Provenance {
 pub struct ObservationPolicy {
     /// Which searches open an observation window.
     pub origins: OriginFilter,
-    /// What counts as the confirming invocation.
-    pub confirmation: Confirmation,
     /// Whether what is learned is marked as seeded.
     pub provenance: Provenance,
 }
@@ -147,12 +126,6 @@ impl ObservationPolicy {
     /// Set which searches open an observation window.
     pub fn with_origins(mut self, origins: OriginFilter) -> Self {
         self.origins = origins;
-        self
-    }
-
-    /// Set what counts as the confirming invocation.
-    pub fn with_confirmation(mut self, confirmation: Confirmation) -> Self {
-        self.confirmation = confirmation;
         self
     }
 
@@ -194,16 +167,11 @@ pub(crate) fn classify(event: &TraceEvent, policy: ObservationPolicy) -> Step<'_
         {
             Step::Remember(query)
         }
-        // Tools confirm on the attempt or on completion, per the policy.
-        TraceEvent::InvokeStart { tool_id, .. }
-            if policy.confirmation == Confirmation::Attempted =>
-        {
-            Step::Confirm(Capability::Tool, tool_id)
-        }
-        TraceEvent::InvokeEnd { tool_id, .. } if policy.confirmation == Confirmation::Succeeded => {
-            Step::Confirm(Capability::Tool, tool_id)
-        }
-        // Skills have no start/end split, so they pair the same either way.
+        // The invocation the agent CHOSE to make. A trace records which tool was
+        // called, never whether calling it was right, so completion is not a
+        // second signal: filtering on `invoke_end` would drop good choices that
+        // failed on their arguments while keeping wrong ones that ran fine.
+        TraceEvent::InvokeStart { tool_id, .. } => Step::Confirm(Capability::Tool, tool_id),
         TraceEvent::SkillInvoke { skill_id, .. } => Step::Confirm(Capability::Skill, skill_id),
         _ => Step::Ignore,
     }
@@ -748,41 +716,20 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_selects_which_invoke_event_closes_a_window() {
-        let attempted = ObservationPolicy::default();
-        let succeeded = ObservationPolicy::default().with_confirmation(Confirmation::Succeeded);
-
+    fn only_the_attempt_confirms_an_observation() {
+        // A trace records which tool was called, never whether calling it was
+        // right. `invoke_end` is not a second, better signal — it filters on
+        // execution outcome, which is leaky in both directions: a wrong tool
+        // that ran fine is kept, a right one that failed on arguments is
+        // dropped. So the choice is the only signal, and there is nothing to
+        // configure.
+        let policy = ObservationPolicy::default();
         assert_eq!(
-            classify(&invoke("t"), attempted),
+            classify(&invoke("t"), policy),
             Step::Confirm(Capability::Tool, "t")
         );
-        assert_eq!(classify(&invoke("t"), succeeded), Step::Ignore);
-
-        assert_eq!(classify(&invoke_end("t"), attempted), Step::Ignore);
-        assert_eq!(
-            classify(&invoke_end("t"), succeeded),
-            Step::Confirm(Capability::Tool, "t")
-        );
-    }
-
-    #[test]
-    fn skills_confirm_under_either_setting() {
-        // A skill load has no start/end split, so `Succeeded` cannot mean
-        // anything different for it. Asymmetric by necessity — pinned so it
-        // reads as a decision rather than an oversight.
-        let skill = TraceEvent::SkillInvoke {
-            skill_id: "ci-triage".into(),
-            took_ms: 1,
-        };
-        for policy in [
-            ObservationPolicy::default(),
-            ObservationPolicy::default().with_confirmation(Confirmation::Succeeded),
-        ] {
-            assert_eq!(
-                classify(&skill, policy),
-                Step::Confirm(Capability::Skill, "ci-triage")
-            );
-        }
+        assert_eq!(classify(&invoke_end("t"), policy), Step::Ignore);
+        assert_eq!(classify(&invoke_error("t"), policy), Step::Ignore);
     }
 
     #[test]
@@ -919,25 +866,6 @@ mod tests {
     }
 
     #[test]
-    fn a_succeeded_policy_ignores_an_invocation_that_failed() {
-        let (l, graph) =
-            policy_learner(ObservationPolicy::default().with_confirmation(Confirmation::Succeeded));
-
-        l.record(search("why is the build broken"));
-        l.record(invoke("gh_run_list")); // InvokeStart — not a confirmation here
-        l.record(invoke_error("gh_run_list"));
-        assert!(
-            graph.read().unwrap().is_empty(),
-            "a call that errored is not evidence the tool was the right choice"
-        );
-
-        l.record(invoke_end("gh_run_list"));
-        let g = graph.read().unwrap();
-        assert_eq!(g.len(), 1);
-        assert_eq!(g.intents[0].tools.get("gh_run_list"), Some(&1.0));
-    }
-
-    #[test]
     fn the_default_policy_still_pairs_on_the_attempt() {
         // Choice is the relevance signal: which tool the agent reached for says
         // what it thought fit, and a later argument error does not retract that.
@@ -966,32 +894,24 @@ mod tests {
     }
 
     #[test]
-    fn skills_pair_on_skill_invoke_under_both_confirmation_settings() {
-        // A skill load has no start/end split, so `Succeeded` cannot mean
-        // anything different for skills. Asymmetric by necessity — pinned so it
-        // is a decision rather than an oversight.
-        for confirmation in [Confirmation::Attempted, Confirmation::Succeeded] {
-            let (l, graph) =
-                policy_learner(ObservationPolicy::default().with_confirmation(confirmation));
-            l.record(TraceEvent::SkillSearch {
-                query: "why is the build broken".into(),
-                origin: Origin::Agent,
-                top_k: 5,
-                hits: Vec::new(),
-                stages: Vec::new(),
-                took_ms: 0,
-            });
-            l.record(TraceEvent::SkillInvoke {
-                skill_id: "ci-triage".into(),
-                took_ms: 1,
-            });
-            let g = graph.read().unwrap();
-            assert_eq!(
-                g.intents[0].skills.get("ci-triage"),
-                Some(&1.0),
-                "{confirmation:?} must still pair skills"
-            );
-        }
+    fn a_skill_invoke_confirms_like_a_tool_invoke() {
+        let (l, graph) = policy_learner(ObservationPolicy::default());
+        l.record(TraceEvent::SkillSearch {
+            query: "why is the build broken".into(),
+            origin: Origin::Agent,
+            top_k: 5,
+            hits: Vec::new(),
+            stages: Vec::new(),
+            took_ms: 0,
+        });
+        l.record(TraceEvent::SkillInvoke {
+            skill_id: "ci-triage".into(),
+            took_ms: 1,
+        });
+        assert_eq!(
+            graph.read().unwrap().intents[0].skills.get("ci-triage"),
+            Some(&1.0)
+        );
     }
 
     #[test]

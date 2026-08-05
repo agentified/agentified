@@ -203,7 +203,6 @@ class ToolRegistry:
         self,
         jsonl: str,
         origins: str | None = None,
-        confirmation: str | None = None,
         provenance: str | None = None,
     ) -> str:
         """Build an intent graph from a JSONL trace log; returns its wire JSON.
@@ -224,7 +223,6 @@ class ToolRegistry:
         self,
         graph: IntentGraph,
         origins: str | None = None,
-        confirmation: str | None = None,
         provenance: str | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
@@ -396,7 +394,6 @@ class SkillRegistry:
         self,
         graph: IntentGraph,
         origins: str | None = None,
-        confirmation: str | None = None,
         provenance: str | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).

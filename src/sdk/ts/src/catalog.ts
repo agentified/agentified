@@ -112,15 +112,6 @@ export type SearchOrigin = "direct" | "agent" | "baseline";
 export type OriginFilterOption = "any" | SearchOrigin;
 
 /**
- * What confirms an observation: `"attempted"` (the default — an `invoke_start`,
- * i.e. the tool the agent chose) or `"succeeded"` (an `invoke_end`, so a call
- * that failed on its arguments never becomes an edge).
- *
- * Skills have no start/end split, so they confirm the same way under both.
- */
-export type ConfirmationOption = "attempted" | "succeeded";
-
-/**
  * Whether what is learned is marked as coming from a seeding pass. `"seeded"`
  * records it on each cluster's provenance count; `"live"` (the default) does
  * not. Never affects ranking.
@@ -142,8 +133,6 @@ export type ProvenanceOption = "live" | "seeded";
 export interface ObservationPolicyOptions {
   /** Which searches open an observation window. Default `"any"`. */
   origins?: OriginFilterOption;
-  /** What confirms an observation. Default `"attempted"`. */
-  confirmation?: ConfirmationOption;
   /** Whether learning is marked as seeded. Default `"live"`. */
   provenance?: ProvenanceOption;
 }

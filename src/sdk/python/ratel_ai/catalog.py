@@ -50,15 +50,6 @@ capture uses ``"baseline"``, so Ratel's own searches during the capture period
 do not become clusters.
 """
 
-ConfirmationOption = Literal["attempted", "succeeded"]
-"""What confirms an observation.
-
-``"attempted"`` (the default — an ``invoke_start``, the tool the agent chose) or
-``"succeeded"`` (an ``invoke_end``, so a call that failed on its arguments never
-becomes an edge). Skills have no start/end split and confirm the same way under
-both.
-"""
-
 ProvenanceOption = Literal["live", "seeded"]
 """Whether what is learned is marked as coming from a seeding pass.
 
@@ -528,7 +519,6 @@ class ToolRegistry:
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
@@ -563,7 +553,7 @@ class ToolRegistry:
             self._warn_on_model_mismatch = warn_on_model_mismatch
             self._rebuild_on_model_change = rebuild_on_model_change
             self._adaptive_warned = False
-            self._native.enable_adaptive_ranking(graph, origins, confirmation, provenance)
+            self._native.enable_adaptive_ranking(graph, origins, provenance)
         self._maybe_warn_model_mismatch()
 
     def experimental_disable_adaptive_ranking(self) -> None:
@@ -603,7 +593,6 @@ class ToolRegistry:
         jsonl: str,
         *,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> IntentGraph:
         """Build an IntentGraph from a JSONL trace log — offline baseline seeding.
@@ -623,7 +612,6 @@ class ToolRegistry:
                 lines are skipped; a malformed line raises, naming its line number.
             origins: which searches count — ``any`` (default), ``direct``,
                 ``agent``, or ``baseline``.
-            confirmation: ``attempted`` (default) or ``succeeded``.
             provenance: ``live`` (default) or ``seeded``.
 
         Raises:
@@ -632,7 +620,7 @@ class ToolRegistry:
         """
         json = await self._run_dense(
             lambda: self._native._build_intent_graph(
-                jsonl, origins, confirmation, provenance
+                jsonl, origins, provenance
             )
         )
         return IntentGraph.from_json(json)
@@ -911,7 +899,6 @@ class ToolCatalog:
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
@@ -936,7 +923,6 @@ class ToolCatalog:
             warn_on_model_mismatch=warn_on_model_mismatch,
             rebuild_on_model_change=rebuild_on_model_change,
             origins=origins,
-            confirmation=confirmation,
             provenance=provenance,
         )
 
@@ -972,7 +958,6 @@ class ToolCatalog:
         jsonl: str,
         *,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> IntentGraph:
         """Build an IntentGraph from a JSONL trace log; returns a detached graph.
@@ -981,7 +966,7 @@ class ToolCatalog:
         both the tool and skill catalogs.
         """
         return await self._registry.experimental_build_intent_graph(
-            jsonl, origins=origins, confirmation=confirmation, provenance=provenance
+            jsonl, origins=origins, provenance=provenance
         )
 
     @property

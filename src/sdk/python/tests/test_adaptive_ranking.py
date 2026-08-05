@@ -612,24 +612,6 @@ async def test_a_malformed_log_line_names_its_line_number() -> None:
         await catalog.experimental_build_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')
 
 
-async def test_live_learning_honours_the_same_policy_as_offline() -> None:
-    # The policy was reachable only when building from a log, so what counted as
-    # evidence depended on which path produced the graph. Nothing about live
-    # learning makes it inapplicable.
-    catalog = await build_catalog()
-    graph = IntentGraph()
-    catalog.experimental_enable_adaptive_ranking(graph, confirmation="succeeded")
-
-    catalog.search("why is the build broken", 5)
-    catalog.record_event(
-        {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
-    )
-    assert graph.cluster_count == 0, "an attempt is not a confirmation under this policy"
-
-    catalog.record_event({"type": "invoke_end", "tool_id": "gh_run_list", "took_ms": 1})
-    assert graph.cluster_count == 1, "completion is"
-
-
 async def test_live_learning_can_be_restricted_by_origin() -> None:
     catalog = await build_catalog()
     graph = IntentGraph()
@@ -650,8 +632,8 @@ async def test_live_learning_can_be_restricted_by_origin() -> None:
 
 async def test_an_unknown_policy_value_is_rejected_when_enabling() -> None:
     catalog = await build_catalog()
-    with pytest.raises(ValueError, match="unknown confirmation"):
-        catalog.experimental_enable_adaptive_ranking(IntentGraph(), confirmation="done")
+    with pytest.raises(ValueError, match="unknown origins"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), origins="nope")  # type: ignore[arg-type]
 
 
 async def test_policy_values_are_a_closed_set() -> None:
@@ -663,7 +645,6 @@ async def test_policy_values_are_a_closed_set() -> None:
     catalog = await build_catalog()
     for kwargs, message in (
         ({"origins": "baselien"}, "unknown origins"),
-        ({"confirmation": "done"}, "unknown confirmation"),
         ({"provenance": "seedd"}, "unknown provenance"),
     ):
         with pytest.raises(ValueError, match=message):
@@ -673,6 +654,6 @@ async def test_policy_values_are_a_closed_set() -> None:
 async def test_valid_policy_values_are_accepted() -> None:
     catalog = await build_catalog()
     catalog.experimental_enable_adaptive_ranking(
-        IntentGraph(), origins="baseline", confirmation="succeeded", provenance="seeded"
+        IntentGraph(), origins="baseline", provenance="seeded"
     )
     assert catalog.experimental_adaptive_ranking_status == "active"

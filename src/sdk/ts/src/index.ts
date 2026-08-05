@@ -44,7 +44,6 @@ export {
   searchCapabilitiesTool,
 } from "./capabilities.js";
 export type {
-  ConfirmationOption,
   EmbeddingModelConfig,
   EmbeddingSpec,
   ExecutableTool,

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Removed
+
+- Removed `Confirmation` from `ObservationPolicy`. It selected whether an `invoke_start` or an `invoke_end` closed an observation, framed as filtering wrong tool choices — but a trace records which tool was called, never whether calling it was right. Filtering on completion is leaky in both directions: a wrong tool that ran fine is kept, a right one that failed on its arguments is dropped. The choice is the only signal, so there is nothing to configure.
+
 ### Added
 
 - `ObservationPolicy` now drives one shared `classify` step used by both the live learner and trace-log initialization, so the pairing rule — which event opens an observation window, which confirms one — exists once rather than in two implementations that could drift.

@@ -103,4 +103,4 @@ pub use trace::{
     SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceSink,
 };
 pub use usage::{Intent, IntentGraph, IntentGraphError};
-pub use usage_learner::{Confirmation, ObservationPolicy, OriginFilter, Provenance, UsageLearner};
+pub use usage_learner::{ObservationPolicy, OriginFilter, Provenance, UsageLearner};
