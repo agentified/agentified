@@ -29,6 +29,7 @@ from .capabilities import (
 )
 from .catalog import (
     AdaptiveRankingStatus,
+    ConfirmationOption,
     EmbeddingModelConfig,
     EmbeddingSpec,
     EndpointEmbeddingConfig,
@@ -38,6 +39,8 @@ from .catalog import (
     IntentGraph,
     LocalEmbeddingConfig,
     OllamaEmbeddingConfig,
+    OriginFilterOption,
+    ProvenanceOption,
     SearchMethod,
     SearchOrigin,
     Tool,
@@ -97,6 +100,9 @@ __all__ = [
     "PendingReplace",
     "ReplaceOutcome",
     "SearchHit",
+    "ConfirmationOption",
+    "OriginFilterOption",
+    "ProvenanceOption",
     "SearchMethod",
     "SearchOrigin",
     "Skill",

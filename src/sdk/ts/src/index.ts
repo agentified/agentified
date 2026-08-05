@@ -16,7 +16,6 @@
 export type { JSONSchema7 } from "json-schema";
 export type {
   AdaptiveRankingStatus,
-  ObservationPolicyOptions,
   ReplaceOutcome,
   SearchHit,
   Skill,
@@ -45,12 +44,16 @@ export {
   searchCapabilitiesTool,
 } from "./capabilities.js";
 export type {
+  ConfirmationOption,
   EmbeddingModelConfig,
   EmbeddingSpec,
   ExecutableTool,
   Executor,
   InputValidationResult,
   InputValidator,
+  ObservationPolicyOptions,
+  OriginFilterOption,
+  ProvenanceOption,
   SearchMethod,
   SearchOrigin,
   ToolCatalogOptions,

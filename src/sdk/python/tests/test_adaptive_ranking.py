@@ -652,3 +652,27 @@ async def test_an_unknown_policy_value_is_rejected_when_enabling() -> None:
     catalog = await build_catalog()
     with pytest.raises(ValueError, match="unknown confirmation"):
         catalog.experimental_enable_adaptive_ranking(IntentGraph(), confirmation="done")
+
+
+async def test_policy_values_are_a_closed_set() -> None:
+    # The three policy keywords are `Literal`s, so mypy rejects a typo in user
+    # code before it runs. This file is outside mypy's scope (it checks
+    # `ratel_ai`), so the `type: ignore` is just silencing the deliberate bad
+    # value — what it asserts is the RUNTIME half, which still has to reject for
+    # callers with no type checker at all.
+    catalog = await build_catalog()
+    for kwargs, message in (
+        ({"origins": "baselien"}, "unknown origins"),
+        ({"confirmation": "done"}, "unknown confirmation"),
+        ({"provenance": "seedd"}, "unknown provenance"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            catalog.experimental_enable_adaptive_ranking(IntentGraph(), **kwargs)  # type: ignore[arg-type]
+
+
+async def test_valid_policy_values_are_accepted() -> None:
+    catalog = await build_catalog()
+    catalog.experimental_enable_adaptive_ranking(
+        IntentGraph(), origins="baseline", confirmation="succeeded", provenance="seeded"
+    )
+    assert catalog.experimental_adaptive_ranking_status == "active"

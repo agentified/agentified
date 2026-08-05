@@ -6,7 +6,6 @@ import {
   FactRegistry as NativeFactRegistry,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
-  type ObservationPolicyOptions,
   type ReplaceOutcome,
   type SearchHit,
   type Skill,
@@ -14,7 +13,13 @@ import {
   type Tool,
 } from "../native/index.cjs";
 import { assertNotArtifactBusy } from "./artifact-source-warm.js";
-import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import type {
+  EmbeddingSpec,
+  ObservationPolicyOptions,
+  SearchMethod,
+  SearchOrigin,
+  TraceSinkConfig,
+} from "./catalog.js";
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
 

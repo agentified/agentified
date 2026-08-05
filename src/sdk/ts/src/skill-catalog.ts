@@ -1,12 +1,17 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type {
-  ObservationPolicyOptions,
   ReplaceOutcome,
   Skill,
   SkillHit,
 } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
-import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import type {
+  EmbeddingSpec,
+  ObservationPolicyOptions,
+  SearchMethod,
+  SearchOrigin,
+  TraceSinkConfig,
+} from "./catalog.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,

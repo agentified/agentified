@@ -22,7 +22,10 @@ from .catalog import (
     _REGISTRY_BUSY,
     _UNAWAITED_REGISTER,
     AdaptiveRankingStatus,
+    ConfirmationOption,
     EmbeddingSpec,
+    OriginFilterOption,
+    ProvenanceOption,
     SearchMethod,
     SearchOrigin,
     TraceSinkConfig,
@@ -432,9 +435,9 @@ class SkillRegistry:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -819,9 +822,9 @@ class SkillCatalog:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
-        origins: str | None = None,
-        confirmation: str | None = None,
-        provenance: str | None = None,
+        origins: OriginFilterOption | None = None,
+        confirmation: ConfirmationOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
