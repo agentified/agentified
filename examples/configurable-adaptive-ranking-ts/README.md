@@ -92,10 +92,8 @@ Two rules:
 ### B. Initialize
 
 ```ts
-const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
-  origins: "baseline",    // only observed turns count, not Ratel's own searches
-  provenance: "seeded",   // record where this evidence came from
-});
+// Both knobs default to seeding, so the common call passes nothing.
+const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
 ```
 
 Every distinct query is embedded up front, so clusters form at the **dense** tier — the same tier the live path uses. That is why this lives on the catalog: a model-free replay would cluster on word overlap, and `experimentalRebuildIntentGraph` cannot repair it later (it replaces centroids without revisiting cluster boundaries).
@@ -120,8 +118,8 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 | Option | Values | Default |
 |---|---|---|
-| `origins` | `any` \| `agent` \| `baseline` | `any` |
-| `provenance` | `live` \| `seeded` | `live` |
+| `origins` | `any` \| `agent` \| `baseline` | `baseline` |
+| `provenance` | `live` \| `seeded` | `seeded` |
 
 Unknown values are rejected rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 

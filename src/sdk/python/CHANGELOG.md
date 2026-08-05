@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- `origins` now defaults to `baseline` when building a graph from a log, since that is what an offline build is for. Enabling live learning still defaults to `any` — changing that would alter existing behavior. Pass `origins="agent"` to re-derive a graph from a period when Ratel was already serving.
+- Building a graph from a log now defaults to seeding — `origins: baseline`, `provenance: seeded` — since that is what an offline build is. The common call passes nothing. Enabling live learning still defaults to `any` / `live`; changing that would alter existing behavior. Pass `origins: agent`, `provenance: live` to re-derive a graph from a period when Ratel was already serving.
 - `origins` accepts `any` / `agent` / `baseline`. `direct` is a valid search origin but not a filter — learning only from searches your own code made means learning from your plumbing.
 - Policy keywords are now `Literal` types (`OriginFilterOption`, `ProvenanceOption`) rather than `str`, so `origins="baselien"` is a type error rather than a runtime one. Runtime validation is unchanged for callers without a type checker.
 - `experimental_enable_adaptive_ranking` accepts the same `origins` / `provenance` keywords as `experimental_build_intent_graph`, so what counts as evidence no longer depends on which path produced the graph. Defaults are unchanged, and the policy survives a `set_trace_sink`.

@@ -95,11 +95,8 @@ Two rules:
 ### B. Initialize
 
 ```python
-graph = await serving.experimental_build_intent_graph(
-    log_path.read_text(),
-    origins="baseline",    # only observed turns count, not Ratel's own searches
-    provenance="seeded",   # record where this evidence came from
-)
+# Both knobs default to seeding, so the common call passes nothing.
+graph = await serving.experimental_build_intent_graph(log_path.read_text())
 ```
 
 Every distinct query is embedded up front, so clusters form at the **dense** tier — the same tier the live path uses. That is why this lives on the catalog: a model-free replay would cluster on word overlap, and `experimental_rebuild_intent_graph` cannot repair it later (it replaces centroids without revisiting cluster boundaries).
@@ -124,8 +121,8 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 | Keyword | Values | Default |
 |---|---|---|
-| `origins` | `any` \| `agent` \| `baseline` | `any` |
-| `provenance` | `live` \| `seeded` | `live` |
+| `origins` | `any` \| `agent` \| `baseline` | `baseline` |
+| `provenance` | `live` \| `seeded` | `seeded` |
 
 Unknown values raise `ValueError` rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 

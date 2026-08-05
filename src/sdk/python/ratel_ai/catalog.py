@@ -688,7 +688,9 @@ class ToolRegistry:
                 building from a log is seeding; pass ``agent`` to re-derive a
                 graph from a period when Ratel was serving, or ``any`` for a log
                 you know holds only one kind.
-            provenance: ``live`` (default) or ``seeded``.
+            provenance: defaults to ``seeded`` here, since building from a log is
+                a seeding pass. Pass ``live`` when re-deriving a graph that was
+                grown from live traffic.
 
         Raises:
             ValueError: an unknown policy value, or a malformed log line.
