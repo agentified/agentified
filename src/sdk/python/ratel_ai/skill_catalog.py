@@ -22,7 +22,6 @@ from .catalog import (
     _REGISTRY_BUSY,
     _UNAWAITED_REGISTER,
     AdaptiveRankingStatus,
-    ConfirmationOption,
     EmbeddingSpec,
     OriginFilterOption,
     ProvenanceOption,
@@ -436,7 +435,6 @@ class SkillRegistry:
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
@@ -468,7 +466,7 @@ class SkillRegistry:
             self._warn_on_model_mismatch = warn_on_model_mismatch
             self._rebuild_on_model_change = rebuild_on_model_change
             self._adaptive_warned = False
-            self._native.enable_adaptive_ranking(graph, origins, confirmation, provenance)
+            self._native.enable_adaptive_ranking(graph, origins, provenance)
         self._maybe_warn_model_mismatch()
 
     def experimental_disable_adaptive_ranking(self) -> None:
@@ -823,7 +821,6 @@ class SkillCatalog:
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
-        confirmation: ConfirmationOption | None = None,
         provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
@@ -848,7 +845,6 @@ class SkillCatalog:
             warn_on_model_mismatch=warn_on_model_mismatch,
             rebuild_on_model_change=rebuild_on_model_change,
             origins=origins,
-            confirmation=confirmation,
             provenance=provenance,
         )
 

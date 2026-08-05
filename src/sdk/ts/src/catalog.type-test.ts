@@ -137,25 +137,23 @@ const validPolicies: ObservationPolicyOptions[] = [
   {},
   { origins: "any" },
   { origins: "baseline", provenance: "seeded" },
-  { origins: "direct", confirmation: "succeeded", provenance: "live" },
+  { origins: "direct", provenance: "live" },
   { origins: "agent" },
 ];
 void validPolicies;
 
 // @ts-expect-error "baselien" is not an origin — the whole point of narrowing
 const typoOrigin: ObservationPolicyOptions = { origins: "baselien" };
-// @ts-expect-error confirmation is attempted | succeeded, not an arbitrary string
-const typoConfirmation: ObservationPolicyOptions = { confirmation: "done" };
 // @ts-expect-error provenance is live | seeded
 const typoProvenance: ObservationPolicyOptions = { provenance: "seedd" };
-void [typoOrigin, typoConfirmation, typoProvenance];
+void [typoOrigin, typoProvenance];
 
 // The same options reach both learning paths, so neither accepts a value the
 // other rejects.
 const catalogForPolicy = new ToolCatalog();
 void catalogForPolicy.experimentalBuildIntentGraph("", { origins: "baseline" });
 void catalogForPolicy.experimentalEnableAdaptiveRanking(new IntentGraph(), {
-  confirmation: "succeeded",
+  origins: "agent",
   warnOnModelMismatch: false,
 });
 // @ts-expect-error a typo is caught on the live path too, not just offline

@@ -237,7 +237,6 @@ export class ToolRegistry {
     // counts as evidence does not depend on which path produced the graph.
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,
-      confirmation: options.confirmation,
       provenance: options.provenance,
     });
     this.#maybeWarnModelMismatch();
@@ -540,7 +539,6 @@ export class SkillRegistry {
     // counts as evidence does not depend on which path produced the graph.
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,
-      confirmation: options.confirmation,
       provenance: options.provenance,
     });
     this.#maybeWarnModelMismatch();

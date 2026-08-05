@@ -120,15 +120,12 @@ From here the live learner keeps adding to the same graph. `support` grows while
 
 ## Policy options
 
-`experimental_build_intent_graph` takes the same three keywords everywhere; each defaults to reproducing live behavior.
+`experimental_build_intent_graph` takes the same two keywords everywhere; each defaults to reproducing live behavior.
 
 | Keyword | Values | Default |
 |---|---|---|
 | `origins` | `any` \| `direct` \| `agent` \| `baseline` | `any` |
-| `confirmation` | `attempted` \| `succeeded` | `attempted` |
 | `provenance` | `live` \| `seeded` | `live` |
-
-`confirmation="succeeded"` counts only tool calls that *completed*, so a wrong-tool call that failed on its arguments never becomes an edge — stricter evidence, worth it for a seeding pass.
 
 Unknown values raise `ValueError` rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 

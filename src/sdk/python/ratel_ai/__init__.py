@@ -29,7 +29,6 @@ from .capabilities import (
 )
 from .catalog import (
     AdaptiveRankingStatus,
-    ConfirmationOption,
     EmbeddingModelConfig,
     EmbeddingSpec,
     EndpointEmbeddingConfig,
@@ -100,7 +99,6 @@ __all__ = [
     "PendingReplace",
     "ReplaceOutcome",
     "SearchHit",
-    "ConfirmationOption",
     "OriginFilterOption",
     "ProvenanceOption",
     "SearchMethod",
