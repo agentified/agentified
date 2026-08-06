@@ -616,6 +616,22 @@ fn build_trace_sink(config: TraceSinkConfig) -> napi::Result<BuiltTraceSink> {
 /// returns would never exit. Tracing must not decide a process's lifetime.
 type TraceLineCallback = ThreadsafeFunction<String, Unknown<'static>, String, Status, false, true>;
 
+/// Decorate `sink` with the usage learner when a graph is attached.
+///
+/// Every path that installs a sink on either registry goes through here.
+/// Adaptive ranking learns by wrapping the sink, so an install that forgot to
+/// re-wrap would leave ranking on while silently ending learning.
+fn with_learner(
+    sink: Arc<dyn core::TraceSink>,
+    graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    policy: core::ObservationPolicy,
+) -> Arc<dyn core::TraceSink> {
+    match graph {
+        Some(graph) => Arc::new(UsageLearner::with_policy(graph.clone(), sink, policy)),
+        None => sink,
+    }
+}
+
 /// Wrap a JS callback as a trace sink. Shared by both registries'
 /// `setTraceSinkCallback` so the two cannot drift in what they hand JS.
 fn callback_sink(session_id: String, callback: TraceLineCallback) -> Arc<dyn core::TraceSink> {
@@ -1134,14 +1150,7 @@ impl ToolRegistry {
         self.base_sink = sink.clone();
         // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
         // the sink outright would quietly stop learning.
-        let sink = match &self.graph {
-            Some(graph) => Arc::new(UsageLearner::with_policy(
-                graph.clone(),
-                sink,
-                self.usage_policy,
-            )) as Arc<dyn core::TraceSink>,
-            None => sink,
-        };
+        let sink = with_learner(sink, self.graph.as_ref(), self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
@@ -1178,14 +1187,7 @@ impl ToolRegistry {
         // in the learner when a graph is attached, or setting a sink after
         // enabling adaptive ranking would quietly stop learning.
         self.base_sink = sink.clone();
-        let sink = match &self.graph {
-            Some(graph) => Arc::new(UsageLearner::with_policy(
-                graph.clone(),
-                sink,
-                self.usage_policy,
-            )) as Arc<dyn core::TraceSink>,
-            None => sink,
-        };
+        let sink = with_learner(sink, self.graph.as_ref(), self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
@@ -2017,14 +2019,7 @@ impl SkillRegistry {
     ) -> napi::Result<()> {
         let sink = callback_sink(session_id, callback);
         self.base_sink = sink.clone();
-        let sink = match &self.graph {
-            Some(graph) => Arc::new(UsageLearner::with_policy(
-                graph.clone(),
-                sink,
-                self.usage_policy,
-            )) as Arc<dyn core::TraceSink>,
-            None => sink,
-        };
+        let sink = with_learner(sink, self.graph.as_ref(), self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
@@ -2041,14 +2036,7 @@ impl SkillRegistry {
         self.base_sink = sink.clone();
         // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
         // the sink outright would quietly stop learning.
-        let sink = match &self.graph {
-            Some(graph) => Arc::new(UsageLearner::with_policy(
-                graph.clone(),
-                sink,
-                self.usage_policy,
-            )) as Arc<dyn core::TraceSink>,
-            None => sink,
-        };
+        let sink = with_learner(sink, self.graph.as_ref(), self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);

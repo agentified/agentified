@@ -174,11 +174,6 @@ impl<F: Fn(&str) + Send + Sync> FnSink<F> {
             emit,
         }
     }
-
-    /// The session id stamped on every envelope this sink records.
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
 }
 
 impl<F: Fn(&str) + Send + Sync> TraceSink for FnSink<F> {
