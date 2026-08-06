@@ -137,6 +137,59 @@ impl TraceSink for JsonlSink {
     }
 }
 
+/// A sink that hands each enveloped event to a closure, for hosts whose trace
+/// destination this crate cannot own — a process-per-request server writing to
+/// a database, a language binding forwarding to its runtime, anything
+/// distributed enough that a local file is the wrong answer.
+///
+/// The closure receives the **serialized envelope line**, byte-for-byte what
+/// [`JsonlSink`] would have written for the same event and session. That
+/// identity is the point: a host can collect lines from many processes, join
+/// them with newlines, and feed the result straight back to
+/// [`crate::ToolRegistry::build_intent_graph`] without re-deriving the wire
+/// form. It also keeps language bindings trivial — they forward a string
+/// rather than re-modelling [`TraceEnvelope`].
+///
+/// The session id stamped here is a **default, not an identity**: a host that
+/// reassembles a turn from its own storage generally knows a better one (per
+/// turn, or per client/actor/workspace unit) and may restamp the line before
+/// persisting it. Replay pairs searches with invokes *per session*, so
+/// concurrent turns sharing one id is the mistake to avoid.
+///
+/// Best-effort like every sink: a serialization failure drops the event. A
+/// closure that panics is the host's bug and unwinds normally — keep it cheap
+/// and non-blocking, per [`TraceSink::record`].
+pub struct FnSink<F: Fn(&str) + Send + Sync> {
+    session_id: String,
+    emit: F,
+}
+
+impl<F: Fn(&str) + Send + Sync> FnSink<F> {
+    /// A sink whose envelopes are stamped with `session_id` and handed to
+    /// `emit` as JSON lines.
+    pub fn new(session_id: impl Into<String>, emit: F) -> Self {
+        Self {
+            session_id: session_id.into(),
+            emit,
+        }
+    }
+
+    /// The session id stamped on every envelope this sink records.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+}
+
+impl<F: Fn(&str) + Send + Sync> TraceSink for FnSink<F> {
+    fn record(&self, event: TraceEvent) {
+        let envelope = wrap(self.session_id.clone(), event);
+        let Ok(line) = serde_json::to_string(&envelope) else {
+            return;
+        };
+        (self.emit)(&line);
+    }
+}
+
 fn wrap(session_id: String, event: TraceEvent) -> TraceEnvelope {
     TraceEnvelope {
         v: ENVELOPE_VERSION,
