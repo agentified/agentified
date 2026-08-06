@@ -107,29 +107,62 @@ console.log("\nE. distributed capture (no process sees a whole turn)");
 // whatever it already runs. Lines arrive from anywhere; order is not assumed.
 const collected: string[] = [];
 
-// Stands in for the request that ran the search: the host stashes the query,
-// keyed by whatever it can correlate on, and moves on.
+// Stands in for the cross-request stash: Redis, or a table with a TTL. A query
+// has to outlive the request that produced it, because the invocation it
+// belongs to arrives in a later one.
 const pendingQuery = new Map<string, string>();
 
-for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
-  const turnId = `turn-${i + 1}`;
+// The requests as a server actually receives them, with turns overlapping: two
+// searches land before either invocation does. The stash is what absorbs that;
+// nothing is recorded until a turn is whole.
+type Request =
+  | { kind: "search"; turnId: string; query: string }
+  | { kind: "invoke"; turnId: string; toolId: string };
 
-  // Request 1 — the search. Nothing is recorded: there is no invocation yet.
-  pendingQuery.set(turnId, turn);
+const requests: Request[] = [];
+for (let i = 0; i < BASELINE_TURNS.length; i += 2) {
+  const overlapping = BASELINE_TURNS.slice(i, i + 2).map(([query, toolId], k) => ({
+    turnId: `turn-${i + k + 1}`,
+    query,
+    toolId,
+  }));
+  for (const { turnId, query } of overlapping) requests.push({ kind: "search", turnId, query });
+  for (const { turnId, toolId } of overlapping) requests.push({ kind: "invoke", turnId, toolId });
+}
 
-  // Request 2 — the invocation, in a fresh catalog because a per-request server
-  // builds one per request. A recorder needs no registered tools and no graph.
+for (const request of requests) {
+  if (request.kind === "search") {
+    // Nothing is recorded yet: a search with no invocation after it is not a turn.
+    pendingQuery.set(request.turnId, request.query);
+    continue;
+  }
+
+  const query = pendingQuery.get(request.turnId);
+  if (query === undefined) {
+    // The stash expired, or this invocation followed no search of ours. Drop it
+    // rather than guess: a wrong pair is evidence the graph cannot tell from a
+    // right one.
+    continue;
+  }
+  pendingQuery.delete(request.turnId);
+
+  // A fresh catalog, because a per-request server builds one per request. A
+  // recorder needs no registered tools, no embedder and no graph.
   //
-  // sessionId is per turn: replay pairs searches with invokes *per session*, so
-  // concurrent turns sharing one id would cross-pair. One sink per turn is how
-  // a host that cannot restamp lines afterwards gets that for free.
+  // sessionId is per turn. Recording the turn whole already emits its search and
+  // its invoke back to back, so a shared id pairs correctly as long as that
+  // adjacency survives — replay tracks a pending query per session, in log
+  // order. What a per-turn id buys is safety once lines from many processes are
+  // merged into one log and their relative order is no longer guaranteed: only
+  // then can one turn's search end up followed by another turn's invoke.
   const recorder = new ToolCatalog({
-    trace: { kind: "callback", sessionId: turnId, onEvent: (line) => collected.push(line) },
+    trace: {
+      kind: "callback",
+      sessionId: request.turnId,
+      onEvent: (line) => collected.push(line),
+    },
   });
-  const query = pendingQuery.get(turnId);
-  if (query === undefined) throw new Error(`no pending query for ${turnId}`);
-  recorder.experimentalRecordBaselineTurn({ query, invoked: [invoked] });
-  pendingQuery.delete(turnId);
+  recorder.experimentalRecordBaselineTurn({ query, invoked: [request.toolId] });
 }
 
 // Delivery is asynchronous — recording queues the line and returns. A real host

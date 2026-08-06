@@ -52,7 +52,9 @@ Two properties to design around:
 
 Replay pairs a search with the invokes that follow it **per session** — deliberately, so interleaved sessions in one log cannot cross-pair. The sink's `sessionId` is therefore a *default, not an identity*: it is fixed when the sink is built, which a process-wide catalog serving concurrent requests cannot make unique.
 
-So either build the sink per turn, or — simpler — restamp `session_id` on each line when you re-serialize from your storage. Any id works as long as **concurrent turns never share one**. A per-turn id is safest; a per-client/actor/workspace unit id is usually enough and groups more naturally for analysis.
+Recording a turn whole already emits its search and its invoke back to back, so a shared id pairs correctly as long as that adjacency survives. The risk appears once lines from many processes land in one table and are re-serialized in some other order: only then can one turn's search be followed by another turn's invoke.
+
+So either build the sink per turn, or restamp `session_id` when you re-serialize. A per-turn id is safest and makes the ordering question moot; a per-client/actor/workspace unit id is usually enough and groups more naturally for analysis. If you preserve per-turn adjacency when you serialize, either works.
 
 ## What to record, and what that evidence is worth
 
