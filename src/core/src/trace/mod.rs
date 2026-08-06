@@ -10,4 +10,4 @@ pub use event::{
     ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, Origin, SearchHitTrace,
     SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent,
 };
-pub use sink::{JsonlSink, MemorySink, NoopSink, TraceSink};
+pub use sink::{FnSink, JsonlSink, MemorySink, NoopSink, TraceSink};

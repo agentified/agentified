@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ratel_ai_core::{
-    ChurnKind, JsonlSink, MemorySink, NoopSink, Origin, Tool, ToolRegistry, TraceEnvelope,
+    ChurnKind, FnSink, JsonlSink, MemorySink, NoopSink, Origin, Tool, ToolRegistry, TraceEnvelope,
     TraceEvent, TraceSink,
 };
 use serde_json::{Value, json};
@@ -213,6 +213,94 @@ fn jsonl_sink_creates_parent_directory() {
     });
     drop(sink);
     assert!(path.exists());
+}
+
+/// Lines collected from an [`FnSink`], shared with the closure that fills them.
+type CollectedLines = Arc<Mutex<Vec<String>>>;
+
+/// An [`FnSink`] that appends every line it is handed, for the tests below.
+/// Returned as `dyn TraceSink` so callers can pass it straight to
+/// `with_trace_sink` without naming the closure type.
+fn collecting_sink(session_id: &str) -> (Arc<dyn TraceSink>, CollectedLines) {
+    let lines: CollectedLines = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let lines = lines.clone();
+        Arc::new(FnSink::new(session_id, move |line: &str| {
+            lines.lock().expect("lines poisoned").push(line.to_string());
+        }))
+    };
+    (sink, lines)
+}
+
+#[test]
+fn fn_sink_hands_one_line_per_event() {
+    let (sink, lines) = collecting_sink("session-fn-1");
+    sink.record(TraceEvent::AuthNeeds {
+        upstream: "github".into(),
+    });
+    sink.record(TraceEvent::AuthRefresh {
+        upstream: "github".into(),
+        ok: true,
+    });
+
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 2);
+
+    let first: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(first["v"], 1);
+    assert_eq!(first["session_id"], "session-fn-1");
+    assert_eq!(first["type"], "auth_needs");
+    assert_eq!(first["upstream"], "github");
+    assert!(first["ts"].as_u64().unwrap() > 0);
+
+    let second: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(second["type"], "auth_refresh");
+    assert_eq!(second["ok"], true);
+}
+
+/// The contract a host reassembling turns depends on: what the callback hands
+/// out is what `JsonlSink` would have written, so `lines.join("\n")` is a valid
+/// input to `build_intent_graph` with no re-derivation. `ts` is sampled per
+/// record, so it is the one field that legitimately differs.
+#[test]
+fn fn_sink_lines_match_jsonl_modulo_timestamp() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("trace.jsonl");
+    let event = || TraceEvent::Search {
+        query: "why is the build broken".into(),
+        origin: Origin::Baseline,
+        top_k: 0,
+        hits: Vec::new(),
+        stages: Vec::new(),
+        took_ms: 0,
+    };
+
+    let jsonl = JsonlSink::new("session-fn-2", &path).expect("open sink");
+    jsonl.record(event());
+    drop(jsonl);
+
+    let (sink, lines) = collecting_sink("session-fn-2");
+    sink.record(event());
+
+    let from_file = std::fs::read_to_string(&path).unwrap();
+    let mut expected: Value = serde_json::from_str(from_file.lines().next().unwrap()).unwrap();
+    let mut actual: Value = serde_json::from_str(&lines.lock().unwrap()[0]).unwrap();
+    expected["ts"] = Value::Null;
+    actual["ts"] = Value::Null;
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn fn_sink_composes_as_a_registry_sink() {
+    let (sink, lines) = collecting_sink("session-fn-3");
+    let mut registry = ToolRegistry::with_trace_sink(sink);
+    registry.register(lookup_tool("alpha"));
+
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    let env: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(env["session_id"], "session-fn-3");
+    assert_eq!(env["type"], "index_churn");
 }
 
 #[test]
