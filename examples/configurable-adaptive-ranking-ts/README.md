@@ -2,7 +2,7 @@
 
 Shows the **seed-first** path for [adaptive usage ranking](../../docs/adr/0014-adaptive-usage-ranking.md): record what an agent invokes while Ratel serves nothing, build an intent graph from that log offline, inspect it, and only then switch ranking on. **No model or API key** — a pure-Ratel feature demo over BM25.
 
-The plain adaptive-ranking demo ([`examples/adaptive-ranking-ts`](../adaptive-ranking-ts/README.md)) learns live, starting from an empty graph. This one starts from evidence Ratel had no hand in. The Python mirror is [`examples/configurable-adaptive-ranking-python`](../configurable-adaptive-ranking-python/README.md).
+The plain adaptive-ranking demo ([`examples/adaptive-ranking-ts`](../adaptive-ranking-ts/README.md)) learns live, starting from an empty graph. This one starts from evidence Ratel had no hand in. The Python mirror is [`examples/configurable-adaptive-ranking-python`](../configurable-adaptive-ranking-python/README.md) — it covers phases A–D; phase E needs a surface the Python SDK has not shipped yet.
 
 ## Why seed first
 
@@ -90,7 +90,7 @@ BM25 ranks `docker_build` first for *"why is the build broken"* on the token *bu
 
 The intents interleave, so you can watch clusters form and reach full strength at different points: the build cluster at turn 3, the key-rotation one at turn 8, and file reading still ramping when capture ends.
 
-## The four phases
+## The phases
 
 ### A. Collect
 
@@ -132,6 +132,49 @@ serving.experimentalEnableAdaptiveRanking(graph);
 ```
 
 From here the live learner keeps adding to the same graph. `support` grows while `seeded_support` stays put, so the gap between them tells you how much of each cluster still rests on the baseline versus what live traffic has since confirmed.
+
+### E. The same capture, distributed
+
+Phases A–D assume one process holds the turn open while it happens. A per-request server does not: the search and the invocation that follows are different requests, on possibly different machines, so there is no `BaselineTurn` to keep alive between them.
+
+The demo replays the same ten turns with that assumption removed, and ends up with the same graph:
+
+```
+E. distributed capture (no process sees a whole turn)
+  lines collected  20 (from 10 turns)
+  sessions         10
+  clusters         3
+  same as phase B  yes
+```
+
+Three things change.
+
+**The turn arrives in pieces.** The host stashes the query when the search happens and replays it when the invocation lands, then hands the turn over whole:
+
+```ts
+recorder.experimentalRecordBaselineTurn({ query, invoked: [invoked] });
+```
+
+Do not record one turn per invocation. The graph counts **one observation per turn**, so a search followed by three invocations recorded as three turns counts the query three times — inflating the support that scales the boost and gates the flip.
+
+**The destination is the host's.** `"jsonl"` writes to a local file, which is the wrong answer on ephemeral disk across N instances:
+
+```ts
+new ToolCatalog({
+  trace: { kind: "callback", sessionId: turnId, onEvent: (line) => collected.push(line) },
+});
+```
+
+Each line is byte-identical to what `"jsonl"` would have written, so `collected.join("\n")` is the same artifact phase B read off disk — which is why the last line of the output can claim parity rather than approximate it.
+
+**Session ids are yours to assign.** Replay pairs a search with the invokes that follow it *per session*, so concurrent turns sharing one id cross-pair. The demo uses one sink per turn (`sessionId: turnId`), which is the simplest way to get that right; a host that would rather build one sink can restamp `session_id` on each line when it re-serializes.
+
+Two properties to design around, both visible in the code:
+
+- **Delivery is asynchronous.** Recording queues the line and returns; the callback runs on a later turn of the event loop, with no ordering guarantee against your own microtasks. The demo waits a tick before building — a real host flushes before its handler resolves.
+- **Delivery is lossy.** Per ADR-0007 a sink may drop events under backpressure but must never block the agent loop. Treat a capture window as best-effort, and keep `onEvent` cheap: enqueue, don't await.
+
+The full walkthrough is [`docs/baseline-capture-distributed.md`](../../docs/baseline-capture-distributed.md).
 
 ## Policy options
 
@@ -177,5 +220,5 @@ Treat them as a report for a person to read, not an auto-trigger.
 
 ```
 src/tools.ts   the catalog and the baseline turns with their success flags
-src/index.ts   everything: collect + score, inspect, serve
+src/index.ts   everything: collect + score, inspect, serve, then recapture distributed
 ```

@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IntentGraph } from "@ratel-ai/sdk";
+import { type IntentGraph, ToolCatalog } from "@ratel-ai/sdk";
 import { show } from "./show-graph.js";
 import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
 
@@ -87,3 +87,63 @@ for (const origin of ["direct", "agent"] as const) {
       `obs=${String(obs).padEnd(3)} fromBaseline=${seeded}`,
   );
 }
+
+// ── E. the same capture, from a host that never sees a whole turn ────────────
+//
+// Everything above assumes one process holds the turn open. A per-request
+// server does not: the search and the invocation that follows are different
+// requests, on possibly different machines. Same ten turns, same graph, none of
+// that assumption.
+
+console.log("\nE. distributed capture (no process sees a whole turn)");
+
+// Stands in for the durable store a real host would use — Postgres, a queue,
+// whatever it already runs. Lines arrive from anywhere; order is not assumed.
+const collected: string[] = [];
+
+// Stands in for the request that ran the search: the host stashes the query,
+// keyed by whatever it can correlate on, and moves on.
+const pendingQuery = new Map<string, string>();
+
+for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
+  const turnId = `turn-${i + 1}`;
+
+  // Request 1 — the search. Nothing is recorded: there is no invocation yet.
+  pendingQuery.set(turnId, turn);
+
+  // Request 2 — the invocation, in a fresh catalog because a per-request server
+  // builds one per request. A recorder needs no registered tools and no graph.
+  //
+  // sessionId is per turn: replay pairs searches with invokes *per session*, so
+  // concurrent turns sharing one id would cross-pair. One sink per turn is how
+  // a host that cannot restamp lines afterwards gets that for free.
+  const recorder = new ToolCatalog({
+    trace: { kind: "callback", sessionId: turnId, onEvent: (line) => collected.push(line) },
+  });
+  const query = pendingQuery.get(turnId);
+  if (query === undefined) throw new Error(`no pending query for ${turnId}`);
+  recorder.experimentalRecordBaselineTurn({ query, invoked: [invoked] });
+  pendingQuery.delete(turnId);
+}
+
+// Delivery is asynchronous — recording queues the line and returns. A real host
+// flushes before its handler resolves; a script waits a tick.
+await new Promise((resolve) => setTimeout(resolve, 20));
+
+// Lines are byte-identical to what the jsonl sink writes, so the log a host
+// reassembles is the same artifact phase B read off disk.
+const distributed = await serving.experimentalBuildIntentGraph(collected.join("\n"));
+
+const same =
+  distributed.clusterCount === graph.clusterCount &&
+  topIds(serving, QUERY).join(" > ") ===
+    (await (async () => {
+      const check = await buildCatalog();
+      check.experimentalEnableAdaptiveRanking(distributed);
+      return topIds(check, QUERY).join(" > ");
+    })());
+
+console.log(`  lines collected  ${collected.length} (from ${BASELINE_TURNS.length} turns)`);
+console.log(`  sessions         ${new Set(collected.map((l) => JSON.parse(l).session_id)).size}`);
+console.log(`  clusters         ${distributed.clusterCount}`);
+console.log(`  same as phase B  ${same ? "yes" : "NO"}`);
