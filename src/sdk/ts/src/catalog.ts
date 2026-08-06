@@ -75,6 +75,10 @@ export interface ExecutableTool extends Tool {
  *   {@link ToolCatalog.drainTraceEvents}. `sessionId` is stamped on each envelope.
  * - `"jsonl"` — append one JSON envelope per line to the file at `path`
  *   (parent directories are created). `sessionId` is stamped on each envelope.
+ * - `"callback"` — hand each envelope to `onEvent` as a JSON line, for hosts
+ *   whose destination the SDK cannot own (a process-per-request server writing
+ *   to a database, say). The line is byte-identical to what `"jsonl"` would
+ *   have written.
  */
 export type TraceSinkConfig =
   | {
@@ -94,6 +98,35 @@ export type TraceSinkConfig =
       sessionId: string;
       /** File to append to; parent directories are created. */
       path: string;
+    }
+  | {
+      /** Hand each envelope to {@link onEvent} instead of writing it. */
+      kind: "callback";
+      /**
+       * Session id stamped on every envelope — a **default, not an identity**.
+       * Replay pairs searches with invokes *per session*, so a host that
+       * reassembles turns from its own storage should restamp each line with an
+       * id unique to each concurrent turn before building a graph.
+       */
+      sessionId: string;
+      /**
+       * Receives one JSON envelope per event, byte-identical to a `"jsonl"`
+       * line — so lines collected across processes can be joined with newlines
+       * and passed straight to
+       * {@link ToolCatalog.experimentalBuildIntentGraph}.
+       *
+       * **Delivered asynchronously.** Recording queues the line and returns;
+       * the callback runs on a later turn of the event loop, with no ordering
+       * guarantee against your own microtasks or `setImmediate`. Do not assert
+       * on what it has received in the same tick that recorded it, and flush
+       * before a process exits if you need the tail of a capture.
+       *
+       * **Lossy by design.** Per ADR-0007 a trace sink may drop events under
+       * backpressure but must never block the agent loop, so a queue that
+       * cannot keep up drops silently. Treat a capture window as best-effort
+       * rather than exact, and keep this cheap — enqueue, don't await.
+       */
+      onEvent: (line: string) => void;
     };
 
 /**
@@ -586,6 +619,67 @@ export class ToolCatalog {
       },
     };
     return turn;
+  }
+
+  /**
+   * Record a complete baseline turn in one call — the same evidence
+   * {@link experimentalBaselineTurn} collects, for hosts that cannot hold a
+   * turn open while it happens.
+   *
+   * ```ts
+   * catalog.experimentalRecordBaselineTurn({
+   *   query: "why is the build broken",
+   *   invoked: ["gh_run_list"],
+   * });
+   * ```
+   *
+   * Use this when the query and the invocations arrive separately — a
+   * process-per-request server, where the search and the invocation that
+   * follows are different requests on possibly different machines. Reassemble
+   * the turn from your own storage, then hand it over whole.
+   *
+   * Two reasons to prefer it over the builder in that setting, beyond
+   * ergonomics:
+   *
+   * - **It cannot interleave.** The builder lets you `await` between
+   *   `invoked()` calls, so two turns recorded concurrently can interleave
+   *   their events in one sink and break the search-then-invoke adjacency the
+   *   graph pairs on. This emits its events back to back.
+   * - **One turn stays one observation.** Splitting a search with three
+   *   invocations into three recorded turns counts the query three times, which
+   *   inflates the support that scales the boost and gates the flip.
+   *
+   * Nothing is buffered, so the quality gate is simply whether you call it:
+   * a turn you would not want the graph to learn from is never recorded.
+   */
+  experimentalRecordBaselineTurn(turn: {
+    /** The turn's query — what the agent was answering when it chose. */
+    query: string;
+    /** Tool ids the agent invoked on this turn. */
+    invoked?: readonly string[];
+    /** Skill ids the agent loaded on this turn. */
+    invokedSkills?: readonly string[];
+  }): void {
+    // Deliberately not shared with `experimentalBaselineTurn`: that path emits
+    // invocations in call order, which a `{invoked, invokedSkills}` object
+    // cannot express for a turn mixing the two. Delegating either way would
+    // reorder events on a path that already ships. `adaptive-ranking.test.ts`
+    // holds the two in parity instead.
+    this.recordEvent({
+      type: "search",
+      query: turn.query,
+      origin: "baseline",
+      top_k: 0,
+      hits: [],
+      stages: [],
+      took_ms: 0,
+    });
+    for (const toolId of turn.invoked ?? []) {
+      this.recordEvent({ type: "invoke_start", tool_id: toolId, args_size_bytes: 0 });
+    }
+    for (const skillId of turn.invokedSkills ?? []) {
+      this.recordEvent({ type: "skill_invoke", skill_id: skillId, took_ms: 0 });
+    }
   }
 
   /**

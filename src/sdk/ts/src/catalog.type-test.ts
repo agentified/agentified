@@ -10,6 +10,7 @@ import {
   SkillRegistry,
   ToolCatalog,
   ToolRegistry,
+  type TraceSinkConfig,
 } from "./index.js";
 
 const legacyExecutor: Executor = (_input) => ({});
@@ -161,3 +162,30 @@ void catalogForPolicy.experimentalEnableAdaptiveRanking(new IntentGraph(), {
 });
 // @ts-expect-error a typo is caught on the live path too, not just offline
 void catalogForPolicy.experimentalEnableAdaptiveRanking(new IntentGraph(), { origins: "nope" });
+
+// ---- trace sinks: each kind carries exactly its own fields -----------------
+
+const validSinks: TraceSinkConfig[] = [
+  { kind: "noop" },
+  { kind: "memory", sessionId: "s" },
+  { kind: "jsonl", sessionId: "s", path: "/tmp/trace.jsonl" },
+  { kind: "callback", sessionId: "s", onEvent: (line) => void line.length },
+];
+void validSinks;
+
+// @ts-expect-error a callback sink needs somewhere to hand the line
+const callbackWithoutHandler: TraceSinkConfig = { kind: "callback", sessionId: "s" };
+const callbackWrongArg: TraceSinkConfig = {
+  kind: "callback",
+  sessionId: "s",
+  // @ts-expect-error `onEvent` receives the envelope line, not a parsed object
+  onEvent: (e: { type: string }) => void e,
+};
+const jsonlWithHandler: TraceSinkConfig = {
+  kind: "jsonl",
+  sessionId: "s",
+  path: "/t",
+  // @ts-expect-error a jsonl sink writes to a path; it has no handler
+  onEvent: () => {},
+};
+void [callbackWithoutHandler, callbackWrongArg, jsonlWithHandler];

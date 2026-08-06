@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
-use napi::bindgen_prelude::{AsyncTask, Buffer};
-use napi::{Env, Task};
+use napi::bindgen_prelude::{AsyncTask, Buffer, Unknown};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Env, Status, Task};
 use ratel_ai_core as core;
 use ratel_ai_core::{
     ArtifactError, EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, OnArtifactMiss,
@@ -599,6 +600,34 @@ fn build_trace_sink(config: TraceSinkConfig) -> napi::Result<BuiltTraceSink> {
     }
 }
 
+/// The trace-line callback JS supplies: one string argument and no error
+/// channel.
+///
+/// Both non-default const generics matter here.
+///
+/// `CalleeHandled = false`: left at its `true` default, napi generates the
+/// error-first `(err, line) => ...` convention — but a sink has no failure to
+/// report to JS (a drop is silent by design), so the leading argument would
+/// exist only to always be `null`, and the SDK's `onEvent(line)` would receive
+/// it as its first parameter.
+///
+/// `Weak = true`: a referenced threadsafe function keeps the event loop alive
+/// for as long as the sink exists, so a script that records a few turns and
+/// returns would never exit. Tracing must not decide a process's lifetime.
+type TraceLineCallback = ThreadsafeFunction<String, Unknown<'static>, String, Status, false, true>;
+
+/// Wrap a JS callback as a trace sink. Shared by both registries'
+/// `setTraceSinkCallback` so the two cannot drift in what they hand JS.
+fn callback_sink(session_id: String, callback: TraceLineCallback) -> Arc<dyn core::TraceSink> {
+    Arc::new(core::FnSink::new(session_id, move |line: &str| {
+        // Non-blocking: `record` runs on the hot path and ADR-0007 prefers a
+        // dropped event to a stalled agent loop. The returned status is
+        // deliberately ignored — a full queue is a drop, not an error to raise
+        // into whatever happened to be tracing.
+        let _ = callback.call(line.to_string(), ThreadsafeFunctionCallMode::NonBlocking);
+    }))
+}
+
 /// A tool's searchable metadata: what the registry indexes and what a search
 /// hit resolves back to. Execution lives a layer up (the SDK's `ToolCatalog`
 /// pairs each `Tool` with its executor).
@@ -1117,6 +1146,52 @@ impl ToolRegistry {
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
+        Ok(())
+    }
+
+    /// Replace the trace sink with one that hands every event to `callback` as
+    /// a JSON line — the destination for hosts this crate cannot write to
+    /// itself, such as a process-per-request server persisting to a database.
+    ///
+    /// Each line is byte-identical to what the `"jsonl"` sink would have
+    /// written, so lines collected across processes can be joined with newlines
+    /// and fed straight back to `buildIntentGraph`.
+    ///
+    /// `sessionId` is stamped on every envelope, but it is a default rather
+    /// than an identity: replay pairs searches with invokes *per session*, so a
+    /// host reassembling turns should restamp each line with an id unique to
+    /// each concurrent turn.
+    ///
+    /// The callback runs in non-blocking mode — per ADR-0007 a sink may drop
+    /// events under backpressure but must never block the agent loop.
+    // `ts_args_type` because napi renders the `TraceLineCallback` alias by name
+    // into the `.d.cts` without emitting its definition, leaving a dangling
+    // type. Spelling the signature here also pins the public shape.
+    #[napi(ts_args_type = "sessionId: string, callback: (line: string) => void")]
+    pub fn set_trace_sink_callback(
+        &mut self,
+        session_id: String,
+        callback: TraceLineCallback,
+    ) -> napi::Result<()> {
+        let sink = callback_sink(session_id, callback);
+        // Same contract as `set_trace_sink`: retain the raw sink, then re-wrap
+        // in the learner when a graph is attached, or setting a sink after
+        // enabling adaptive ranking would quietly stop learning.
+        self.base_sink = sink.clone();
+        let sink = match &self.graph {
+            Some(graph) => Arc::new(UsageLearner::with_policy(
+                graph.clone(),
+                sink,
+                self.usage_policy,
+            )) as Arc<dyn core::TraceSink>,
+            None => sink,
+        };
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(sink);
+        drop(registry);
+        // A callback sink is not drainable; drop any prior memory sink so
+        // `drainTraceEvents` cannot keep returning a stale buffer.
+        self.memory_sink = None;
         Ok(())
     }
 
@@ -1926,6 +2001,34 @@ impl SkillRegistry {
             .read()
             .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?
             .record_event(event);
+        Ok(())
+    }
+
+    /// Replace the trace sink with a JS callback — see
+    /// `ToolRegistry.setTraceSinkCallback`.
+    // `ts_args_type` because napi renders the `TraceLineCallback` alias by name
+    // into the `.d.cts` without emitting its definition, leaving a dangling
+    // type. Spelling the signature here also pins the public shape.
+    #[napi(ts_args_type = "sessionId: string, callback: (line: string) => void")]
+    pub fn set_trace_sink_callback(
+        &mut self,
+        session_id: String,
+        callback: TraceLineCallback,
+    ) -> napi::Result<()> {
+        let sink = callback_sink(session_id, callback);
+        self.base_sink = sink.clone();
+        let sink = match &self.graph {
+            Some(graph) => Arc::new(UsageLearner::with_policy(
+                graph.clone(),
+                sink,
+                self.usage_policy,
+            )) as Arc<dyn core::TraceSink>,
+            None => sink,
+        };
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(sink);
+        drop(registry);
+        self.memory_sink = None;
         Ok(())
     }
 

@@ -202,6 +202,12 @@ export class ToolRegistry {
 
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
+    // `"callback"` carries a function, which the native config object cannot,
+    // so it routes to its own binding rather than through `setTraceSink`.
+    if (config.kind === "callback") {
+      this.native.setTraceSinkCallback(config.sessionId, config.onEvent);
+      return;
+    }
     this.native.setTraceSink(config);
   }
 
@@ -505,6 +511,12 @@ export class SkillRegistry {
 
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
+    // `"callback"` carries a function, which the native config object cannot,
+    // so it routes to its own binding rather than through `setTraceSink`.
+    if (config.kind === "callback") {
+      this.native.setTraceSinkCallback(config.sessionId, config.onEvent);
+      return;
+    }
     this.native.setTraceSink(config);
   }
 
