@@ -71,7 +71,13 @@ const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "
 show(JSON.parse(graph.toJson()));
 
 serving.experimentalEnableAdaptiveRanking(graph, { origins: "agent" });
-console.log(`\nC. after seeding : ${topIds(serving, QUERY).join(" > ")}`);
+
+// Snapshot what seeding alone achieved. ONLINE MODE below keeps learning into
+// this same graph, so reading either the graph or `serving` after that point
+// answers a different question than phase B did.
+const seededOrder = topIds(serving, QUERY).join(" > ");
+const seededClusters = graph.clusterCount;
+console.log(`\nC. after seeding : ${seededOrder}`);
 
 console.log("\nONLINE MODE (learning from agent searches only)");
 for (const origin of ["direct", "agent"] as const) {
@@ -134,14 +140,13 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 // reassembles is the same artifact phase B read off disk.
 const distributed = await serving.experimentalBuildIntentGraph(collected.join("\n"));
 
-const same =
-  distributed.clusterCount === graph.clusterCount &&
-  topIds(serving, QUERY).join(" > ") ===
-    (await (async () => {
-      const check = await buildCatalog();
-      check.experimentalEnableAdaptiveRanking(distributed);
-      return topIds(check, QUERY).join(" > ");
-    })());
+// Rank against the distributed graph on a catalog of its own, so the answer
+// cannot be coloured by what `serving` has since learned.
+const check = await buildCatalog();
+check.experimentalEnableAdaptiveRanking(distributed);
+const distributedOrder = topIds(check, QUERY).join(" > ");
+
+const same = distributed.clusterCount === seededClusters && distributedOrder === seededOrder;
 
 console.log(`  lines collected  ${collected.length} (from ${BASELINE_TURNS.length} turns)`);
 console.log(`  sessions         ${new Set(collected.map((l) => JSON.parse(l).session_id)).size}`);
