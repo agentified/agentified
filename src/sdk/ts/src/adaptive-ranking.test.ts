@@ -779,6 +779,40 @@ describe("distributed capture", () => {
     expect(strip(viaObject.drainTraceEvents())).toEqual(strip(viaBuilder.drainTraceEvents()));
   });
 
+  it("pairs correctly when overlapping turns share one session id", async () => {
+    // Recording a turn whole emits its search and its invoke back to back, and
+    // replay tracks a pending query per session in log order. So a shared id is
+    // safe as long as that adjacency survives — a per-turn id matters only once
+    // lines from several producers are merged out of order. Pinned because the
+    // docs make this claim.
+    const lines: string[] = [];
+    for (const [query, toolId] of [
+      ["why is the build broken", "gh_run_list"],
+      ["rotate the signing key", "vault_rotate"],
+    ] as const) {
+      const recorder = new ToolCatalog({
+        trace: { kind: "callback", sessionId: "shared", onEvent: (l) => lines.push(l) },
+      });
+      recorder.experimentalRecordBaselineTurn({ query, invoked: [toolId] });
+    }
+    await flush();
+
+    const serving = await buildCatalog();
+    const graph = await serving.experimentalBuildIntentGraph(lines.join("\n"));
+    const wire = JSON.parse(graph.toJson()) as {
+      intents: { members: string[]; tools: Record<string, unknown> }[];
+    };
+
+    // Each query keeps its own tool: no edge crossed between the two turns.
+    for (const intent of wire.intents) {
+      const expected = intent.members.some((m) => m.includes("build"))
+        ? "gh_run_list"
+        : "vault_rotate";
+      expect(Object.keys(intent.tools)).toEqual([expected]);
+    }
+    expect(wire.intents).toHaveLength(2);
+  });
+
   it("records skills on a turn alongside tools", async () => {
     // `invokedSkills` is the half of the API the parity test above does not
     // reach, since that one compares an all-tools turn.

@@ -153,8 +153,9 @@ impl TraceSink for JsonlSink {
 /// The session id stamped here is a **default, not an identity**: a host that
 /// reassembles a turn from its own storage generally knows a better one (per
 /// turn, or per client/actor/workspace unit) and may restamp the line before
-/// persisting it. Replay pairs searches with invokes *per session*, so
-/// concurrent turns sharing one id is the mistake to avoid.
+/// persisting it. Replay tracks one pending query per session in log order, so
+/// a shared id is only a problem once lines from several producers are merged
+/// without preserving each turn's search-then-invoke adjacency.
 ///
 /// Best-effort like every sink: a serialization failure drops the event. A
 /// closure that panics is the host's bug and unwinds normally — keep it cheap
