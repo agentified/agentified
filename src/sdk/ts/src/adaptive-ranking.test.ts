@@ -701,3 +701,153 @@ describe("policy on the live path", () => {
     expect(graph.clusterCount).toBe(0);
   });
 });
+
+describe("distributed capture", () => {
+  /** The two tools `buildCatalog` registers, for a catalog with a callback sink. */
+  async function callbackCatalog(
+    sessionId = "session-1",
+  ): Promise<{ catalog: ToolCatalog; lines: string[] }> {
+    const lines: string[] = [];
+    const catalog = await buildCatalog({
+      kind: "callback",
+      sessionId,
+      onEvent: (line) => lines.push(line),
+    });
+    return { catalog, lines };
+  }
+
+  /**
+   * Let queued callback deliveries run. A `ThreadsafeFunction` schedules onto
+   * the event loop rather than calling inline, so nothing has arrived until the
+   * recording tick yields.
+   */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  /** Envelopes minus `ts`, which is sampled per record and never matches. */
+  function withoutTimestamps(lines: string[]): unknown[] {
+    return lines.map((line) => {
+      const { ts: _ts, ...rest } = JSON.parse(line);
+      return rest;
+    });
+  }
+
+  it("hands out the same lines a jsonl sink would have written", async () => {
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-cb-`)}/trace.jsonl`;
+    const toFile = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
+    toFile.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+    });
+
+    const { catalog, lines } = await callbackCatalog();
+    catalog.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+    });
+
+    await flush();
+    // The contract a distributed host rests on: collect lines from anywhere,
+    // join them, and the result is a log `experimentalBuildIntentGraph` reads.
+    expect(withoutTimestamps(lines)).toEqual(
+      withoutTimestamps(readFileSync(logPath, "utf8").trimEnd().split("\n")),
+    );
+  });
+
+  it("records the same events as the chained builder", async () => {
+    // The two paths construct their event shapes independently — neither calls
+    // the other, so that they agree is a test, not a guarantee.
+    const viaBuilder = await buildCatalog({ kind: "memory", sessionId: "s" });
+    viaBuilder.drainTraceEvents();
+    viaBuilder
+      .experimentalBaselineTurn("why is the build broken")
+      .invoked("gh_run_list")
+      .invoked("docker_build")
+      .record();
+
+    const viaObject = await buildCatalog({ kind: "memory", sessionId: "s" });
+    viaObject.drainTraceEvents();
+    viaObject.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list", "docker_build"],
+    });
+
+    const strip = (events: unknown[]) =>
+      events.map((e) => {
+        const { ts: _ts, ...rest } = e as { ts: number };
+        return rest;
+      });
+    expect(strip(viaObject.drainTraceEvents())).toEqual(strip(viaBuilder.drainTraceEvents()));
+  });
+
+  it("builds the same graph from collected lines as from a file", async () => {
+    const turns = [
+      "why is the build broken",
+      "is the build broken again",
+      "the build broken on main",
+    ];
+
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-cb-`)}/trace.jsonl`;
+    const toFile = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
+    for (const query of turns) {
+      toFile.experimentalRecordBaselineTurn({ query, invoked: ["gh_run_list"] });
+    }
+
+    const { catalog, lines } = await callbackCatalog();
+    for (const query of turns) {
+      catalog.experimentalRecordBaselineTurn({ query, invoked: ["gh_run_list"] });
+    }
+    await flush();
+
+    const fromFile = await toFile.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
+    const fromLines = await catalog.experimentalBuildIntentGraph(lines.join("\n"));
+
+    expect(fromLines.clusterCount).toBe(fromFile.clusterCount);
+    expect(fromLines.clusterCount).toBe(1);
+  });
+
+  it("keeps learning when the callback sink is set after enabling ranking", async () => {
+    // `setTraceSinkCallback` must re-wrap in the learner exactly as
+    // `setTraceSink` does; skipping it would silently stop learning.
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "gh_run_list",
+      name: "gh_run_list",
+      description: "List CI workflow runs and whether the build passed",
+      inputSchema: {},
+      outputSchema: {},
+    });
+    const graph = new IntentGraph();
+    registry.experimentalEnableAdaptiveRanking(graph);
+
+    const lines: string[] = [];
+    registry.setTraceSink({
+      kind: "callback",
+      sessionId: "after",
+      onEvent: (line) => lines.push(line),
+    });
+
+    registry.searchWithOrigin("why is the build broken", 5, "agent");
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    await flush();
+    expect(graph.clusterCount).toBe(1);
+    expect(lines.length).toBeGreaterThan(0);
+  });
+
+  it("stops draining once a callback sink replaces a memory sink", async () => {
+    // A callback sink is not drainable; leaving the old memory handle in place
+    // would keep serving a buffer nothing writes to any more.
+    const registry = new ToolRegistry();
+    registry.setTraceSink({ kind: "memory", sessionId: "s" });
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(registry.drainTraceEvents()).toHaveLength(1);
+
+    const lines: string[] = [];
+    registry.setTraceSink({ kind: "callback", sessionId: "s", onEvent: (l) => lines.push(l) });
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    await flush();
+    expect(registry.drainTraceEvents()).toHaveLength(0);
+    expect(lines).toHaveLength(1);
+  });
+});
