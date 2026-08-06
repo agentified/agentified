@@ -12,6 +12,7 @@ from show_graph import show
 from tools import BASELINE_TURNS, HELD_OUT, build_catalog, top_ids
 
 QUERY = "why is the build broken"
+LIVE_QUERY = "is the build broken today"
 
 SUPPORT_FULL = 3
 
@@ -84,6 +85,18 @@ async def main() -> None:
 
     serving.experimental_enable_adaptive_ranking(graph, origins="agent")
     print(f"\nC. after seeding : {' > '.join(top_ids(serving, QUERY))}")
+
+    print("\nONLINE MODE (learning from agent searches only)")
+    for origin in ("direct", "agent"):
+        serving.search(LIVE_QUERY, 5, origin=origin)
+        await serving.invoke("gh_run_list", {})
+        intents = json.loads(graph.to_json())["intents"]
+        obs = sum(it["support"] for it in intents)
+        seeded = sum(it.get("seeded_support", 0) for it in intents)
+        print(
+            f"  {origin:<8} search  {f'\"{LIVE_QUERY}\"':<30} gh_run_list   "
+            f"obs={obs:<3} from_baseline={seeded}"
+        )
 
 
 

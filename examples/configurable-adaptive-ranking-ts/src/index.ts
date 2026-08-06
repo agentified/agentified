@@ -6,6 +6,7 @@ import { show } from "./show-graph.js";
 import { BASELINE_TURNS, buildCatalog, HELD_OUT, topIds } from "./tools.js";
 
 const QUERY = "why is the build broken";
+const LIVE_QUERY = "is the build broken today";
 const logPath = join(mkdtempSync(join(tmpdir(), "ratel-baseline-")), "trace.jsonl");
 
 const SUPPORT_FULL = 3;
@@ -71,3 +72,18 @@ show(JSON.parse(graph.toJson()));
 
 serving.experimentalEnableAdaptiveRanking(graph, { origins: "agent" });
 console.log(`\nC. after seeding : ${topIds(serving, QUERY).join(" > ")}`);
+
+console.log("\nONLINE MODE (learning from agent searches only)");
+for (const origin of ["direct", "agent"] as const) {
+  serving.search(LIVE_QUERY, 5, origin);
+  await serving.invoke("gh_run_list", {});
+  const intents: { support: number; seeded_support?: number }[] = JSON.parse(
+    graph.toJson(),
+  ).intents;
+  const obs = intents.reduce((n, it) => n + it.support, 0);
+  const seeded = intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0);
+  console.log(
+    `  ${origin.padEnd(8)} search  ${`"${LIVE_QUERY}"`.padEnd(30)} gh_run_list   ` +
+      `obs=${String(obs).padEnd(3)} fromBaseline=${seeded}`,
+  );
+}
