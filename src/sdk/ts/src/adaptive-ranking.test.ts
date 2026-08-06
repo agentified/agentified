@@ -779,6 +779,28 @@ describe("distributed capture", () => {
     expect(strip(viaObject.drainTraceEvents())).toEqual(strip(viaBuilder.drainTraceEvents()));
   });
 
+  it("records skills on a turn alongside tools", async () => {
+    // `invokedSkills` is the half of the API the parity test above does not
+    // reach, since that one compares an all-tools turn.
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    catalog.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+      invokedSkills: ["triage"],
+    });
+
+    expect(catalog.drainTraceEvents()).toEqual([
+      expect.objectContaining({
+        type: "search",
+        query: "why is the build broken",
+        origin: "baseline",
+      }),
+      expect.objectContaining({ type: "invoke_start", tool_id: "gh_run_list" }),
+      expect.objectContaining({ type: "skill_invoke", skill_id: "triage" }),
+    ]);
+  });
+
   it("builds the same graph from collected lines as from a file", async () => {
     const turns = [
       "why is the build broken",
