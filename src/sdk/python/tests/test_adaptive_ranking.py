@@ -9,6 +9,7 @@ import json
 import os
 import warnings
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -599,6 +600,77 @@ async def test_a_baseline_turn_used_as_a_context_manager() -> None:
             turn.invoked("vault_rotate")
             raise ZeroDivisionError
     assert catalog.drain_trace_events() == []
+
+
+async def test_recording_a_whole_turn_matches_the_chained_builder() -> None:
+    """The two paths build their events independently, so agreement is a test."""
+    via_builder = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    via_builder.drain_trace_events()  # discard the registration churn
+    via_builder.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).invoked("docker_build").record()
+
+    via_object = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    via_object.drain_trace_events()
+    via_object.experimental_record_baseline_turn(
+        query="why is the build broken", invoked=["gh_run_list", "docker_build"]
+    )
+
+    def strip(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in e.items() if k != "ts"} for e in events]
+
+    assert strip(via_object.drain_trace_events()) == strip(via_builder.drain_trace_events())
+
+
+async def test_recording_a_whole_turn_carries_skills() -> None:
+    """`invoked_skills` is the half the parity test above does not reach."""
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    catalog.experimental_record_baseline_turn(
+        query="why is the build broken",
+        invoked=["gh_run_list"],
+        invoked_skills=["triage"],
+    )
+
+    events = catalog.drain_trace_events()
+    assert [e["type"] for e in events] == ["search", "invoke_start", "skill_invoke"]
+    assert events[0]["origin"] == "baseline"
+    assert events[1]["tool_id"] == "gh_run_list"
+    assert events[2]["skill_id"] == "triage"
+
+
+async def test_a_turn_reassembled_across_requests_builds_the_same_graph(
+    tmp_path: Path,
+) -> None:
+    """The distributed shape: drain per turn, keep the lines, build from them.
+
+    No single catalog sees a whole turn's worth of state — each is built,
+    recorded into and drained inside what would be one request handler.
+    """
+    turns = [
+        ("why is the build broken", "gh_run_list"),
+        ("is the build broken again", "gh_run_list"),
+        ("the build broken on main", "gh_run_list"),
+    ]
+
+    # Stands in for the durable store lines are collected into.
+    collected: list[str] = []
+    pending: dict[str, str] = {}
+
+    for index, (query, tool_id) in enumerate(turns):
+        turn_id = f"turn-{index + 1}"
+        pending[turn_id] = query  # the search request
+
+        # The invoke request, in a catalog of its own.
+        recorder = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id=turn_id))
+        recorder.experimental_record_baseline_turn(
+            query=pending.pop(turn_id), invoked=[tool_id]
+        )
+        collected.extend(json.dumps(e) for e in recorder.drain_trace_events())
+
+    serving = await build_catalog()
+    graph = await serving.experimental_build_intent_graph("\n".join(collected))
+    assert graph.cluster_count == 1
 
 
 async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ import json
 import threading
 import time
 import warnings
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Iterable, Sequence
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Callable, Literal, TypedDict, TypeVar, Union, overload
@@ -1120,6 +1120,58 @@ class ToolCatalog:
         adjacency the graph builder pairs on.
         """
         return BaselineTurn(self, query)
+
+    def experimental_record_baseline_turn(
+        self,
+        query: str,
+        invoked: Sequence[str] | None = None,
+        invoked_skills: Sequence[str] | None = None,
+    ) -> None:
+        """Record a complete baseline turn in one call.
+
+        The same evidence :meth:`experimental_baseline_turn` collects, for hosts
+        that cannot hold a turn open while it happens::
+
+            catalog.experimental_record_baseline_turn(
+                query="why is the build broken", invoked=["gh_run_list"]
+            )
+
+        Use this when the query and the invocations arrive separately — a
+        process-per-request server, where the search and the invocation that
+        follows are different requests on possibly different machines.
+        Reassemble the turn from your own storage, then hand it over whole.
+
+        One turn stays one observation. Splitting a search with three
+        invocations into three recorded turns counts the query three times,
+        which inflates the support that scales the boost and gates the flip.
+
+        Nothing is buffered, so the quality gate is simply whether you call it:
+        a turn you would not want the graph to learn from is never recorded.
+        """
+        # Deliberately not shared with `experimental_baseline_turn`: that path
+        # emits invocations in call order, which separate `invoked` and
+        # `invoked_skills` sequences cannot express for a turn mixing the two.
+        # `test_recording_a_whole_turn_matches_the_chained_builder` holds the
+        # two in parity instead.
+        self.record_event(
+            {
+                "type": "search",
+                "query": query,
+                "origin": "baseline",
+                "top_k": 0,
+                "hits": [],
+                "stages": [],
+                "took_ms": 0,
+            }
+        )
+        for tool_id in invoked or ():
+            self.record_event(
+                {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
+            )
+        for skill_id in invoked_skills or ():
+            self.record_event(
+                {"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0}
+            )
 
     async def experimental_build_intent_graph(
         self,

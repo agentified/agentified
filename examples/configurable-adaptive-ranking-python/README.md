@@ -2,7 +2,7 @@
 
 The Python mirror of [`examples/configurable-adaptive-ranking-ts`](../configurable-adaptive-ranking-ts/README.md). Shows the **seed-first** path for [adaptive usage ranking](../../docs/adr/0014-adaptive-usage-ranking.md): record what an agent invokes while Ratel serves nothing, build an intent graph from that log offline, inspect it, and only then switch ranking on. **No model or API key** — a pure-Ratel feature demo over BM25.
 
-> **Phases A–D only.** The TypeScript demo has a fifth phase, recapturing the same turns from a host where no single process sees a whole turn. It needs a callback trace sink and `experimentalRecordBaselineTurn`, which the TypeScript SDK shipped in `0.6.1-rc.1` and the Python SDK has not yet. Everything through phase D behaves identically in both.
+> **Phases A–D only.** The TypeScript demo has a fifth phase, recapturing the same turns from a host where no single process sees a whole turn. Python has the API that needs — `experimental_record_baseline_turn` — but not the `callback` trace sink, so a Python host collects lines with the `memory` sink and `drain_trace_events()` per request instead. Everything through phase D behaves identically in both.
 
 The plain adaptive-ranking demo ([`examples/adaptive-ranking-python`](../adaptive-ranking-python/README.md)) learns live, starting from an empty graph. This one starts from evidence Ratel had no hand in.
 

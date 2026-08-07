@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- `experimental_record_baseline_turn(query, invoked=..., invoked_skills=...)` records a whole baseline turn in one call, for hosts that cannot hold a turn open while it happens — a process-per-request server where the search and the invocation that follows are different requests, on possibly different machines. Reassemble the turn from your own storage, then hand it over whole. One turn stays one observation: splitting a search with three invocations into three recorded turns counts the query three times, inflating the support that scales the boost and gates the flip. The chained `experimental_baseline_turn` builder is unchanged.
+
+  Collect the lines with the `memory` sink and `drain_trace_events()` at the end of each request, then join them and pass the result to `experimental_build_intent_graph`. The TypeScript SDK additionally offers a `callback` trace sink for hosts sharing one long-lived catalog across concurrent requests, where draining would race; Python has no such sink yet.
 - Building a graph from a log now defaults to seeding — `origins: baseline`, `provenance: seeded` — since that is what an offline build is. The common call passes nothing. Enabling live learning still defaults to `any` / `live`; changing that would alter existing behavior. Pass `origins: agent`, `provenance: live` to re-derive a graph from a period when Ratel was already serving.
 - `origins` accepts `any` / `agent` / `baseline`. `direct` is a valid search origin but not a filter — learning only from searches your own code made means learning from your plumbing.
 - Policy keywords are now `Literal` types (`OriginFilterOption`, `ProvenanceOption`) rather than `str`, so `origins="baselien"` is a type error rather than a runtime one. Runtime validation is unchanged for callers without a type checker.
