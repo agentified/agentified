@@ -156,7 +156,7 @@ Register an OpenTelemetry `ContextManager` even when no exporter is enabled so d
 and async parentage survive. Export both signals: arm dispatches are spans, while results,
 comparisons, lifecycle records, invocations, and outcomes are Logs EventRecords that require a
 log-record processor. Ratel registers neither. See
-[ADR-0016](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0016-retrieval-experiments.md),
+[ADR-0017](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0017-retrieval-experiments.md),
 the [SDK guide](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md#retrieval-experiments-experimental),
 and the [telemetry scenario](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md#retrieval-experiment-telemetry).
 
@@ -176,7 +176,7 @@ If you're not sure which one your user wants, default to `replace` — it's the 
 - [ADR-0006 — Native FFI bindings](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0006-native-ffi-bindings.md): Why the SDKs ship pre-built natives (NAPI-RS / PyO3).
 - [ADR-0011 — Selectable retrieval methods](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0011-selectable-retrieval-methods.md): BM25 (default), semantic, and hybrid ranking, chosen per catalog or per call.
 - [ADR-0012 — Configurable embedding models](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0012-configurable-embedding-models.md): Dense embeddings use a configurable in-process HuggingFace/local model, Ollama, or OpenAI-compatible endpoint.
-- [ADR-0016 — Retrieval experiments](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0016-retrieval-experiments.md): The TypeScript-only experimental surface for deterministic assignment, bounded shadow evaluation, lifecycle, comparison, and OpenTelemetry semantics.
+- [ADR-0017 — Retrieval experiments](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0017-retrieval-experiments.md): The TypeScript-only experimental surface for deterministic assignment, bounded shadow evaluation, lifecycle, comparison, and OpenTelemetry semantics.
 
 ## Examples
 

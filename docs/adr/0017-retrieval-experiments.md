@@ -1,4 +1,4 @@
-# 16. Retrieval experiments: deterministic assignment and shadow evaluation
+# 17. Retrieval experiments: deterministic assignment and shadow evaluation
 
 Date: 2026-07-30
 

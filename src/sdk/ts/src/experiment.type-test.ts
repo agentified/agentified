@@ -38,7 +38,7 @@ const assignedArm: "control" | "candidate" = selection.assignedArm;
 const effectiveArm: "control" | "candidate" = selection.effectiveArm;
 void [assignedArm, effectiveArm];
 
-// @ts-expect-error ADR-0016 defers the stable factory alias
+// @ts-expect-error ADR-0017 defers the stable factory alias
 sdk.defineExperiment;
 
 const widenedSplit = [

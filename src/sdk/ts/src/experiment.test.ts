@@ -474,7 +474,7 @@ describe("experimentalDefineExperiment", () => {
       ),
     ).rejects.toBe(transformError);
 
-    // ADR-0016 privacy contract: a serving transform failure reaches the caller.
+    // ADR-0017 privacy contract: a serving transform failure reaches the caller.
     // Falling back would serve an arm result the transform never got to redact.
     expect(candidate).toHaveBeenCalledOnce();
     expect(legacy).not.toHaveBeenCalled();

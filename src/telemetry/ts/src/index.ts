@@ -267,7 +267,7 @@ export const RATEL_EXPERIMENT_OUTCOME_LABEL = "ratel.experiment.outcome.label";
 export const RATEL_EXPERIMENT_OUTCOME_SCORE = "ratel.experiment.outcome.score";
 
 // ---------------------------------------------------------------------------
-// Experiment baggage keys (ADR-0016)
+// Experiment baggage keys (ADR-0017)
 //
 // The controlled dispatch stamp uses the same wire keys as the matching span
 // attributes. Explicit aliases keep baggage construction discoverable without
