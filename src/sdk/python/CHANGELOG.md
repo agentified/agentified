@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-07
+
+### Added
+
+- **Whole-catalog skill reload: `SkillCatalog.replace_all` / `SkillRegistry.replace_all` (ADR-0015).** For a source that fetches the full skill catalog rather than individual changes — the batch *is* the catalog, so ids missing from it are removed, including ones registered in-process. Two-phase like `register`: the corpus swap lands **synchronously** (a forgotten `await` never leaves a half-applied reload) and only the embedding pass is awaited, so a reload whose embedding pass fails still reports what the swap changed. Returns a `PendingReplace` carrying the final `added` / `removed` / `updated` / `unchanged` counts; awaiting it drives the embedding pass and resolves to a plain `ReplaceOutcome`. Always `await` the result so an embedding failure raises rather than being swallowed. On failure the new corpus is live and BM25 ranks it while semantic search reports not-built until a later pass succeeds; a reload started while a dense operation owns the registry is rejected rather than blended, and reloading an unchanged catalog costs zero embeddings. `PendingReplace` and `ReplaceOutcome` are exported from `ratel_ai`.
+- **`register_mcp_server` follows every `tools/list` page.** Ingestion previously read only the first page, silently dropping every tool past it on a paginated server. It now walks `nextCursor` to exhaustion (treating `""` as a valid cursor, per MCP — only an absent `nextCursor` ends pagination) across `mcp` client versions before and after 1.18, capped at 64 pages. `McpToolsListError` (with a stable `code` of `"RepeatedCursor"` or `"PaginationExceeded"`) is exported from `ratel_ai`, so a cursor loop or a runaway server is a typed failure rather than a hang. `McpServerHandle.tool_ids` now spans all pages in upstream list order.
+
+### Fixed
+
+- Telemetry tool-result capture records only the stable `CallToolResult` fields (`content`, `structuredContent`, `isError`). It previously dumped the whole model, so fields the `mcp` package adds or renames between versions leaked into captured content and made the recorded payload depend on the installed client version.
+
 ## [0.6.0] - 2026-07-28
 
 > **Coming from `0.6.0rc0`?** That RC was tagged off a branch that predated 0.5.2, so it
