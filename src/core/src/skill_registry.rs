@@ -8,7 +8,7 @@ use crate::embedding::EmbedderError;
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::method::SearchMethod;
-use crate::search::bm25_search;
+use crate::search::Bm25Cache;
 use crate::skill::Skill;
 use crate::skill_indexing::searchable_text;
 use crate::tool_registry::AdaptiveRankingStatus;
@@ -89,6 +89,10 @@ pub struct SkillRegistry {
     /// place, never duplicating it (RAT-378).
     skills: IndexMap<String, Skill>,
     sink: Arc<dyn TraceSink>,
+    /// Prebuilt BM25 index over `skills` — the skill-side twin of
+    /// [`crate::ToolRegistry`]'s field: built lazily by the first search,
+    /// reused until [`Self::register`] or [`Self::replace_all`] invalidates it.
+    bm25: Bm25Cache,
     /// Dense embeddings for `skills`, keyed by id and built on demand — the
     /// skill-side twin of [`crate::ToolRegistry`]'s field (see [`DenseCache`]).
     dense: DenseCache,
@@ -111,6 +115,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
         }
@@ -122,6 +127,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink,
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
         }
@@ -136,6 +142,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
         }
@@ -294,6 +301,12 @@ impl SkillRegistry {
             .map(|s| (s.id.clone(), searchable_text(s)))
     }
 
+    /// The prebuilt BM25 index for the current corpus — cached across
+    /// searches, rebuilt on the first search after a mutation.
+    fn bm25_index(&self) -> Arc<crate::search::Bm25Index> {
+        self.bm25.get_or_build(|| self.bm25_docs())
+    }
+
     /// Fuse the ranked arms into the final top-`top_k`, returning the hits and
     /// the `rrf` stage — one implementation for all three engines.
     fn fuse_arms(arms: &[WeightedArm<'_>], top_k: usize) -> (Vec<SkillHit>, SearchStage) {
@@ -325,6 +338,9 @@ impl SkillRegistry {
     /// cached embedding; the corpus never holds a duplicate.
     pub fn register(&mut self, skill: Skill) {
         let skill_id = skill.id.clone();
+        // Add or replace, the corpus changed either way: the prebuilt BM25
+        // index no longer matches it.
+        self.bm25.invalidate();
         if self.skills.insert(skill_id.clone(), skill).is_some() {
             // Replaced an existing id: drop its stale embedding.
             self.dense.invalidate(&skill_id);
@@ -395,10 +411,16 @@ impl SkillRegistry {
         }
 
         let mut outcome = ReplaceOutcome::default();
+        // Whether any id's *indexed* text changed. Only then does the prebuilt
+        // BM25 index go stale — the same diff the dense cache keys on, so a
+        // reload of an unchanged catalog (or one that only edited bodies)
+        // keeps both caches and the next search rebuilds nothing.
+        let mut indexed_text_changed = false;
 
         for id in self.skills.keys() {
             if !next.contains_key(id) {
                 self.dense.invalidate(id);
+                indexed_text_changed = true;
                 self.sink.record(TraceEvent::SkillChurn {
                     kind: ChurnKind::Remove,
                     skill_id: id.clone(),
@@ -416,10 +438,14 @@ impl SkillRegistry {
                 Some(current) => {
                     if searchable_text(current) != searchable_text(skill) {
                         self.dense.invalidate(id);
+                        indexed_text_changed = true;
                     }
                     outcome.updated += 1;
                 }
-                None => outcome.added += 1,
+                None => {
+                    indexed_text_changed = true;
+                    outcome.added += 1;
+                }
             }
             self.sink.record(TraceEvent::SkillChurn {
                 kind: ChurnKind::Add,
@@ -427,6 +453,9 @@ impl SkillRegistry {
             });
         }
 
+        if indexed_text_changed {
+            self.bm25.invalidate();
+        }
         self.skills = next;
         outcome
     }
@@ -532,7 +561,7 @@ impl SkillRegistry {
             // No graph, or nothing matched: the original path with raw BM25
             // scores, unchanged.
             // Raw BM25 scores — not fused.
-            let hits = to_skill_hits(bm25_search(self.bm25_docs(), query, top_k), false);
+            let hits = to_skill_hits(self.bm25_index().search(query, top_k), false);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -552,7 +581,7 @@ impl SkillRegistry {
 
         let depth = RETRIEVE_DEPTH.max(top_k);
         let t = Instant::now();
-        let bm25_ranked = bm25_search(self.bm25_docs(), query, depth);
+        let bm25_ranked = self.bm25_index().search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -664,13 +693,7 @@ impl SkillRegistry {
         let depth = RETRIEVE_DEPTH.max(top_k);
 
         let t = Instant::now();
-        let bm25_ranked = bm25_search(
-            self.skills
-                .values()
-                .map(|s| (s.id.clone(), searchable_text(s))),
-            query,
-            depth,
-        );
+        let bm25_ranked = self.bm25_index().search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -798,6 +821,7 @@ mod tests {
         SkillRegistry {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
         }
@@ -830,6 +854,125 @@ mod tests {
             &["backend", "api"],
         ));
         reg
+    }
+
+    #[test]
+    fn mutation_after_a_warmed_search_is_visible_in_the_next_search() {
+        // Same staleness guard as the tool-side integration test: searches
+        // must not pin ranking state across register or replace_all.
+        let mut reg = catalog();
+        for _ in 0..3 {
+            let _ = reg.search("REST API design", 5);
+        }
+
+        reg.register(skill(
+            "migrations",
+            "migrations",
+            "Write reversible database migrations",
+            &["backend"],
+        ));
+        assert_eq!(
+            reg.search("reversible database migrations", 5)[0].skill_id,
+            "migrations",
+            "a skill registered after searches must rank immediately"
+        );
+
+        // replace_all drops one skill and rewrites another; both must be
+        // visible in the next search.
+        let _ = reg.search("presentations", 5); // re-warm
+        reg.replace_all(vec![
+            skill(
+                "api-design",
+                "api-design",
+                "GraphQL schema federation",
+                &["backend"],
+            ),
+            skill(
+                "migrations",
+                "migrations",
+                "Write reversible database migrations",
+                &["backend"],
+            ),
+        ]);
+        assert!(
+            reg.search("animation-rich HTML presentations", 5)
+                .is_empty(),
+            "a skill removed by replace_all must stop matching immediately"
+        );
+        assert_eq!(
+            reg.search("GraphQL schema federation", 5)[0].skill_id,
+            "api-design",
+            "content rewritten by replace_all must match immediately"
+        );
+    }
+
+    #[test]
+    fn bm25_cache_is_warmed_by_search_and_dropped_by_every_mutator() {
+        // The cache's lifecycle is invisible at the public seam (results are
+        // byte-identical either way), so pin it here: search populates it,
+        // and both mutators — register and replace_all — drop it.
+        let mut reg = catalog();
+        let warmed = reg.bm25.get_or_build(|| reg.bm25_docs());
+        let reused = reg.bm25.get_or_build(|| reg.bm25_docs());
+        assert!(
+            Arc::ptr_eq(&warmed, &reused),
+            "searches between mutations must reuse one index"
+        );
+
+        reg.register(skill("extra", "extra", "an extra skill", &[]));
+        let after_register = reg.bm25.get_or_build(|| reg.bm25_docs());
+        assert!(
+            !Arc::ptr_eq(&warmed, &after_register),
+            "register must invalidate the cached index"
+        );
+
+        reg.replace_all(vec![skill("only", "only", "the only skill", &[])]);
+        let after_replace = reg.bm25.get_or_build(|| reg.bm25_docs());
+        assert!(
+            !Arc::ptr_eq(&after_register, &after_replace),
+            "replace_all must invalidate the cached index"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_replace_all_keeps_the_cached_bm25_index() {
+        // The periodic-source steady state: a reload that changes nothing (or
+        // only un-indexed fields like `body`) must not throw the index away —
+        // same diff the dense cache keys on.
+        let reload = || {
+            vec![
+                skill(
+                    "frontend-slides",
+                    "frontend-slides",
+                    "Build animation-rich HTML presentations from scratch",
+                    &["frontend", "presentations"],
+                ),
+                skill(
+                    "api-design",
+                    "api-design",
+                    "REST API design patterns: resource naming, status codes, pagination",
+                    &["backend", "api"],
+                ),
+            ]
+        };
+        let mut reg = catalog();
+        let warmed = reg.bm25.get_or_build(|| reg.bm25_docs());
+
+        reg.replace_all(reload());
+        let after_noop = reg.bm25.get_or_build(|| reg.bm25_docs());
+        assert!(
+            Arc::ptr_eq(&warmed, &after_noop),
+            "an unchanged reload must keep the cached index"
+        );
+
+        let mut body_edit = reload();
+        body_edit[0].body = "rewritten body — not part of searchable_text".into();
+        reg.replace_all(body_edit);
+        let after_body_edit = reg.bm25.get_or_build(|| reg.bm25_docs());
+        assert!(
+            Arc::ptr_eq(&warmed, &after_body_edit),
+            "a body-only edit is not indexed and must keep the cached index"
+        );
     }
 
     #[test]
