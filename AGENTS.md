@@ -33,7 +33,7 @@ uv pip install --python .venv maturin pytest pytest-asyncio ruff mypy
 .venv/bin/ruff check . && .venv/bin/mypy ratel_ai && .venv/bin/pytest
 ```
 
-Don't skip clippy or biome — CI (`.github/workflows/{rust,ts,python}.yml`) runs all of the above on every PR and will reject PRs that don't land green.
+Don't skip clippy or biome — CI (`.github/workflows/ci.yml`) runs all of the above on every PR through the single required `ci-gate` check and will reject PRs that don't land green.
 
 ## Workflow
 

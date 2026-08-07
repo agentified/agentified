@@ -37,8 +37,8 @@ const processor: SpanProcessor = new LangfuseSpanProcessor({
 void processor;
 
 // `registerTelemetry(new RatelOtelIntegration())` is typechecked against the
-// real `ai@7` `Telemetry` interface by the packed consumer in
-// `.github/workflows/ts.yml`. Here we only pin the zero-argument construction
+// real `ai@7` `Telemetry` interface by the packed consumer in the `ai-sdk-compat`
+// job of `.github/workflows/ci.yml`. Here we only pin the zero-argument construction
 // the snippet uses, and that `origin` accepts the bare literal the README says
 // it does (`Origin` is an `as const` map, not an enum).
 void new RatelOtelIntegration();

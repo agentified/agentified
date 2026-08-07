@@ -1,0 +1,602 @@
+name: ci
+
+# The single pre-merge workflow. Every everyday check (rust / ts / python / protocol)
+# AND the heavy release-verify matrix live here, in ONE workflow, so a single terminal
+# `ci-gate` job can `needs:` all of them — GitHub `needs:` cannot cross workflow files, so
+# a true single-context gate requires one file. `ci-gate` (bottom) is the ONLY status check
+# registered as required in the `main` ruleset (scripts/setup-branch-ruleset.sh); it always
+# runs on a ready PR and aggregates the rest.
+#
+# Draft arming (replaces the old `ready-to-merge` label): `changes`, `setup`, and `ci-gate`
+# carry a non-draft guard, so a draft PR runs NOTHING and posts NO `ci-gate`. Drafts are
+# unmergeable, so a missing check cannot deadlock a merge; marking the PR ready fires
+# `ready_for_review`, which runs everything and posts `ci-gate`.
+#
+# Skip-green: `changes` (dorny/paths-filter) drives per-leg `if:` so untouched areas skip.
+# Filters are deliberately CONSERVATIVE for this FFI monorepo: the TS and Python SDKs each
+# build the native Rust binding, so their filters include the Rust core + `Cargo.*` (an FFI
+# change re-runs them), and every filter includes `.github/workflows/ci.yml` (editing CI
+# re-runs all legs). On push to `main` and `workflow_dispatch`, every leg runs regardless of
+# the filters (full validation on every merge / on demand).
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # PRs group by number (supersede in-flight commits); pushes group by ref.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  pull-requests: read # dorny/paths-filter reads changed files via the API
+
+jobs:
+  # Emits a boolean per area. Skipped on draft PRs (so its consumers skip too). On push /
+  # workflow_dispatch the legs ignore these outputs and run unconditionally (see each leg's
+  # `if:`), so a possibly-empty diff here is harmless.
+  changes:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.f.outputs.rust }}
+      ts: ${{ steps.f.outputs.ts }}
+      python: ${{ steps.f.outputs.python }}
+      telemetry: ${{ steps.f.outputs.telemetry }}
+      protocol: ${{ steps.f.outputs.protocol }}
+    steps:
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: f
+        with:
+          filters: |
+            # cargo *--workspace* touches every crate, so any workspace member,
+            # the root manifests, or the toolchain pin re-runs it.
+            rust:
+              - 'src/core/**'
+              - 'src/telemetry/core/**'
+              - 'src/sdk/ts/native/**'
+              - 'src/sdk/python/native/**'
+              # src/core/src/usage.rs include_str!s the protocol conformance vectors and
+              # asserts the Rust parser accepts/rejects them, so `cargo test --workspace`
+              # must re-run when they change (the protocol leg only runs the JS validator).
+              - 'protocol/v1/conformance/vectors.json'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            # `pnpm -r` spans every TS package + the pnpm examples, and the SDK build
+            # compiles the native Rust binding — so TS source, workspace config, the
+            # root release-tooling scripts, AND the Rust core / ts-native binding all
+            # re-run it. (ai-sdk-compat keys off this same filter.)
+            ts:
+              - 'src/sdk/ts/**'
+              - 'src/adapters/**'
+              - 'src/telemetry/ts/**'
+              # conformance.test.ts (run by `pnpm -r test`) asserts the TS emitter against
+              # the shared cross-language pin, so a fixture edit must re-run this leg.
+              - 'src/telemetry/conformance/**'
+              - 'examples/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'biome.json'
+              - 'src/core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            # maturin builds the Python native binding from the Rust core; the SDK job
+            # also installs the telemetry sibling and exercises the pydantic-ai example.
+            python:
+              - 'src/sdk/python/**'
+              - 'src/telemetry/python/**'
+              - 'examples/pydantic-ai/**'
+              - 'src/core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            # Pure Python (ADR-0007), no Rust binding — so no FFI paths.
+            telemetry:
+              - 'src/telemetry/python/**'
+              # test_conformance.py asserts the Python emitter against the same shared pin.
+              - 'src/telemetry/conformance/**'
+              - 'examples/telemetry-python/**'
+              - '.github/workflows/ci.yml'
+            protocol:
+              - 'protocol/**'
+              - '.github/workflows/ci.yml'
+
+  # cargo fmt/clippy/build/test across the workspace.
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --check --all
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo build
+        run: cargo build --workspace
+      - name: cargo test
+        run: cargo test --workspace
+
+  ts:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/sdk/ts/native
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Typecheck
+        run: pnpm -r typecheck
+      - name: Lint
+        run: pnpm -r lint
+      - name: Test
+        run: pnpm -r test
+      # Release tooling lives at repo root (outside the pnpm workspace), so run its
+      # dependency-free node:test suite here rather than via `pnpm -r test`.
+      - name: Test release tooling
+        run: node --test scripts/*.test.mjs
+      # Example wiring (Vercel AI SDK) — folded in here to keep one TS check row.
+      # Drives the real ToolLoopAgent loop with a scripted MockLanguageModel (no API
+      # key), catching framework-integration drift the SDK-level tests can't see. The
+      # SDK is already built by `pnpm -r build` above, so run the test directly.
+      # See examples/ai-sdk/test/agent.test.ts.
+      - name: Test the AI SDK example wiring
+        run: pnpm --filter @ratel-ai/example-ai-sdk exec tsx test/agent.test.ts
+      # Example wiring (Mastra) — parity with the AI SDK row. Drives a real 1.51
+      # Agent loop with Mastra's built-in mock model (no API key).
+      # @ratel-ai/mastra is already built by `pnpm -r build` above.
+      # See examples/mastra/test/agent.test.ts.
+      - name: Test the Mastra example wiring
+        run: pnpm --filter @ratel-ai/example-mastra exec tsx test/agent.test.ts
+      # Re-run the adapter at the customer's 1.31 line and its declared floor after
+      # all 1.51 workspace consumers are done. `--no-lockfile` keeps these ephemeral
+      # CI substitutions out of the lock.
+      - name: Install customer-line Mastra
+        run: pnpm --filter @ratel-ai/mastra add --save-dev --save-exact @mastra/core@1.31.0 --no-lockfile
+      - name: Test Mastra 1.31
+        run: |
+          pnpm --filter @ratel-ai/mastra build
+          pnpm --filter @ratel-ai/mastra typecheck
+          pnpm --filter @ratel-ai/mastra test
+      - name: Install minimum supported Mastra
+        run: pnpm --filter @ratel-ai/mastra add --save-dev --save-exact @mastra/core@1.11.0 --no-lockfile
+      - name: Test minimum supported Mastra
+        run: |
+          pnpm --filter @ratel-ai/mastra build
+          pnpm --filter @ratel-ai/mastra typecheck
+          pnpm --filter @ratel-ai/mastra test
+      # Telemetry example — runs offline (console exporter), emitting a ratel.search
+      # + execute_tool trace through the OTel SDK, so it verifies the `ratel.*` vocab
+      # end-to-end. The example owns its providers: a NodeTracerProvider for the console
+      # demo, plus a LoggerProvider + OTLP exporters when RATEL_OTLP_ENDPOINT is set.
+      # @ratel-ai/telemetry is already built by `pnpm -r build` above.
+      # See examples/telemetry-ts/src/index.ts.
+      - name: Run the telemetry example
+        run: pnpm --filter @ratel-ai/example-telemetry exec tsx src/index.ts
+
+  # AI SDK compatibility matrix — @ratel-ai/vercel-ai-sdk claims `ai@^5 || ^6 || ^7`,
+  # so each supported major gets two exact rows (floor + latest verified): build,
+  # typecheck, test, then pack the adapter + SDK and typecheck a tarball consumer
+  # resolving that exact `ai`. `--no-lockfile` keeps the row substitution out of the
+  # lock (the committed dev pin stays the default v7 row); AI_SDK_VERSION keeps the
+  # package-layout test's exact-pin assertion honest per row.
+  ai-sdk-compat:
+    name: ai-sdk compat (ai@${{ matrix.ai-version }})
+    needs: changes
+    if: needs.changes.outputs.ts == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ai-version: ['5.0.0', '5.0.217', '6.0.0', '6.0.232', '7.0.0', '7.0.37']
+    env:
+      AI_SDK_VERSION: ${{ matrix.ai-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/sdk/ts/native
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Pin the row's exact AI SDK
+        run: pnpm --filter @ratel-ai/vercel-ai-sdk add --save-dev --save-exact "ai@${AI_SDK_VERSION}" --no-lockfile
+      - name: Build (adapter + workspace deps)
+        run: pnpm --filter "@ratel-ai/vercel-ai-sdk..." build
+      - name: Typecheck
+        run: pnpm --filter @ratel-ai/vercel-ai-sdk typecheck
+      - name: Test
+        run: pnpm --filter @ratel-ai/vercel-ai-sdk test
+      # `@ratel-ai/telemetry` is packed alongside them because both tarballs turn
+      # their `workspace:^` on it into a hard `^<workspace version>` — a version
+      # that only reaches npm at release time, so a registry-only install of the
+      # other two ETARGETs on every unreleased bump.
+      # The build step above already covers all three — `...` selects the
+      # adapter's whole dependency closure, in topological order.
+      - name: Pack the adapter, the SDK, and the telemetry vocabulary
+        run: |
+          mkdir -p /tmp/ratel-pack
+          pnpm --filter @ratel-ai/sdk exec pnpm pack --pack-destination /tmp/ratel-pack
+          pnpm --filter @ratel-ai/telemetry exec pnpm pack --pack-destination /tmp/ratel-pack
+          pnpm --filter @ratel-ai/vercel-ai-sdk exec pnpm pack --pack-destination /tmp/ratel-pack
+      # A consumer install sees only the tarball manifests (peers, exports, d.ts) —
+      # no workspace links — so this catches packaging drift the in-repo checks
+      # can't: peer ranges rejecting the row's `ai`, missing dist types, exports
+      # misrouting. `--omit=optional` skips the SDK's platform-binary optionals
+      # (irrelevant to a type-level check and unpublished at workspace versions).
+      # `--save-exact` writes the row into the manifest as the version it is, so
+      # every later install in this directory is measured against `7.0.0` rather
+      # than against `^7.0.0` — which any of them may satisfy with the ceiling.
+      # The one install that used to do exactly that is pinned now, so this is
+      # the standing guard, not the fix.
+      - name: Typecheck a packed consumer
+        id: packed-consumer
+        run: |
+          set -e
+          tmp=$(mktemp -d)
+          cp /tmp/ratel-pack/*.tgz "$tmp"
+          cd "$tmp"
+          npm init -y >/dev/null
+          # The digit anchor keeps this off any future `ratel-ai-telemetry-<name>-*.tgz`.
+          npm install --no-audit --no-fund --omit=optional --save-exact \
+            typescript@5 "ai@${AI_SDK_VERSION}" \
+            ./ratel-ai-sdk-*.tgz ./ratel-ai-telemetry-[0-9]*.tgz ./ratel-ai-vercel-ai-sdk-*.tgz
+          cat > consumer.mts <<'TS'
+          import { ratel } from "@ratel-ai/sdk";
+          import { aiSdk } from "@ratel-ai/vercel-ai-sdk";
+          import { generateText, jsonSchema, tool, type LanguageModel, type ToolSet } from "ai";
+
+          const view = ratel().adaptTo(aiSdk());
+          await view.tools.register({
+            probe: tool({
+              description: "probe tool",
+              inputSchema: jsonSchema<{ q: string }>({
+                type: "object",
+                properties: { q: { type: "string" } },
+                required: ["q"],
+              }),
+              execute: async ({ q }) => ({ q }),
+            }),
+          });
+          const tools: ToolSet = view.modelTools();
+          export const run = (model: LanguageModel) =>
+            generateText({ model, tools, prompt: "x", prepareStep: view.prepareStep });
+          export const appended = view.appendRecall([]);
+          TS
+          npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 consumer.mts
+          echo "otel=$(ls node_modules/@ai-sdk/otel >/dev/null 2>&1 && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+          echo "dir=$tmp" >> "$GITHUB_OUTPUT"
+      # `@ai-sdk/otel` pins its own exact `ai@7`, and a second `ai` in one program
+      # redeclares `AI_SDK_DEFAULT_PROVIDER` (TS2403) in the host's build, so a
+      # host that never asks for telemetry must not pull it in. npm never installs
+      # an optional peer, so what this probe actually proves is narrow: the
+      # DECLARATION is still optional. It fires when someone promotes `@ai-sdk/otel`
+      # to a required peer or a hard dependency — not when the root entrypoint
+      # starts importing it. That second claim is enforced by `packagesReachableFrom`
+      # in src/adapters/ts-vercel-ai-sdk/src/package-layout.test.ts.
+      - name: Assert the integration stays off the default resolution path
+        run: |
+          test "${{ steps.packed-consumer.outputs.otel }}" = "no" \
+            || { echo "@ai-sdk/otel was installed for an ai@${AI_SDK_VERSION} consumer that never imported it"; exit 1; }
+      # `RatelOtelIntegration` never imports `Telemetry` from `ai` (that would
+      # break the ai@5/6 rows), so the only place its assignability to the real
+      # `ai@7` interface is proven is a consumer resolving both for real.
+      - name: Typecheck the telemetry integration (v7 rows)
+        if: startsWith(matrix.ai-version, '7.')
+        run: |
+          set -e
+          cd "${{ steps.packed-consumer.outputs.dir }}"
+          # `@ai-sdk/otel@1.0.N` hard-depends on exactly `ai@7.0.N`, so the row's
+          # `ai` dictates the emitter release and an unpinned install brings its
+          # own. It hard-pins `@opentelemetry/api` too, so naming that here would
+          # only add an unpinned range that can fork the API singleton.
+          # The step gate is `7.`, wider than this rule: a `7.1.x` row has no
+          # established pairing, so say so instead of building `1.0.7.1.0`.
+          case "$AI_SDK_VERSION" in
+            7.0.*) otel_ver="1.0.${AI_SDK_VERSION#7.0.}" ;;
+            *) echo "no @ai-sdk/otel pairing known for ai@${AI_SDK_VERSION} — the 1.0.N <-> 7.0.N rule covers ai@7.0.x only"; exit 1 ;;
+          esac
+          npm install --no-audit --no-fund --omit=optional "@ai-sdk/otel@${otel_ver}"
+          # The dangerous case is one `ai`, silently the wrong one: a caret spec
+          # deduped up to the ceiling leaves a single copy that typechecks clean,
+          # so the floor row passes having tested the ceiling. (Two nested copies
+          # do fail the tsc below — `--skipLibCheck` skips `.d.ts` internals, not
+          # the duplicate `Telemetry` identities that reach the checked file.)
+          resolved=$(find "$PWD/node_modules" -path '*node_modules/ai/package.json' -exec node -p "require(process.argv[1]).version" {} \;)
+          test "$resolved" = "$AI_SDK_VERSION" \
+            || { echo "expected exactly one ai@${AI_SDK_VERSION}, found: $(echo "$resolved" | tr '\n' ' ')"; exit 1; }
+          cat > telemetry-consumer.mts <<'TS'
+          import { RatelOtelIntegration } from "@ratel-ai/vercel-ai-sdk/otel";
+          import { registerTelemetry, type Telemetry } from "ai";
+
+          // Every `Telemetry` member is optional, so a bare annotation is satisfied
+          // by `class Empty {}`. `Required` is what turns a dropped hook into TS2741.
+          const integration: Required<Telemetry> = new RatelOtelIntegration();
+          registerTelemetry(integration);
+          TS
+          npx tsc --strict --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 telemetry-consumer.mts
+          # `tsc` provably cannot catch a missing runtime-only import: the
+          # `ratel.*` constants never reach `otel.d.ts`, and every typecheck here
+          # runs --skipLibCheck. Actually loading the module is the only check
+          # that fails when a dependency is declared but never installed.
+          node -e "import('@ratel-ai/vercel-ai-sdk/otel').then(m => { if (typeof m.RatelOtelIntegration !== 'function') { throw new Error('subpath loaded without RatelOtelIntegration'); } new m.RatelOtelIntegration(); })"
+
+  python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/sdk/python/native
+      - uses: astral-sh/setup-uv@v5
+      - name: Create venv + install dev tools
+        run: |
+          uv venv --python 3.11 .venv
+          # opentelemetry-sdk lets the OTel emission tests run rather than skip. The base
+          # SDK carries only the OTel-free vocabulary; the SDK/exporter remains optional.
+          uv pip install --python .venv maturin pytest pytest-asyncio ruff mypy \
+            mcp opentelemetry-sdk -e ../../telemetry/python
+      - name: Build native extension
+        run: .venv/bin/maturin develop
+      - name: Lint
+        run: .venv/bin/ruff check .
+      - name: Typecheck
+        run: .venv/bin/mypy ratel_ai
+      - name: Test
+        run: .venv/bin/pytest
+      # Example wiring (pydantic-ai) — folded in here to keep one Python check row.
+      # `main.py` diagnostic mode never invokes a tool, so a model-free `TestModel`
+      # run is the only thing that exercises the BM25 top-K -> tool-call path in CI
+      # (no API key needed). `uv sync` builds the local ratel-ai wheel (maturin) and
+      # installs pydantic-ai + the dev group (pytest, pytest-asyncio).
+      - name: Install example (local ratel-ai + pydantic-ai) + test deps
+        working-directory: examples/pydantic-ai
+        run: uv sync --python 3.11
+      - name: Test the example wiring
+        working-directory: examples/pydantic-ai
+        run: uv run pytest
+
+  # Pure-Python telemetry helper (ADR-0007): no Rust extension, so no maturin —
+  # editable install + ruff/mypy/pytest. Separate job because the SDK job's build
+  # is maturin-specific to src/sdk/python.
+  telemetry:
+    needs: changes
+    if: needs.changes.outputs.telemetry == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/telemetry/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Create venv + install (editable, pure Python)
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv -e '.[dev]'
+      - name: Lint
+        run: .venv/bin/ruff check .
+      - name: Typecheck
+        run: .venv/bin/mypy ratel_ai_telemetry
+      - name: Test
+        run: .venv/bin/pytest
+      # Telemetry example — runs offline (console exporter), emitting a ratel.search
+      # + execute_tool trace through the OTel SDK, so it verifies the `ratel.*` vocab
+      # end-to-end. `uv run` builds the local ratel-ai-telemetry + installs the OTel
+      # SDK. See examples/telemetry-python/main.py.
+      - name: Run the telemetry example
+        working-directory: examples/telemetry-python
+        run: uv run --python 3.11 main.py
+
+  # Catalog-source contract's conformance vectors: recomputes every frozen ETag and
+  # re-checks the If-None-Match / scope-overlay outcomes against the committed
+  # expectations, so a drift in the wire contract or the vectors fails CI. Node
+  # stdlib only, no install.
+  protocol:
+    needs: changes
+    if: needs.changes.outputs.protocol == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify v1 conformance vectors
+        run: node protocol/v1/conformance/verify.mjs
+
+  # Release-readiness matrix. Builds the REAL distributables (wheel, npm loader + native
+  # binding, crate, sdist) from this PR, installs each into a clean environment, and runs
+  # the cross-SDK end-to-end scenario through every SDK — catching packaging / binding /
+  # cross-SDK-drift breakage before it reaches `main` instead of at release time. Runs on
+  # EVERY ready-PR commit (not gated by `changes`): reduced 2-platform on PRs, full
+  # 5-platform on push to `main` and workflow_dispatch, so each merge is fully validated.
+  setup:
+    name: setup
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.c.outputs.tier }}
+      matrix: ${{ steps.c.outputs.matrix }}
+    steps:
+      - id: c
+        run: |
+          set -e
+          # Reduced matrix (fast native runners) on PR commits; full 5-platform on push
+          # to main and workflow_dispatch.
+          tier=reduced
+          if [ "${{ github.event_name }}" != "pull_request" ]; then tier=full; fi
+
+          FULL='[{"triple":"darwin-arm64","os":"macos-14","target":"aarch64-apple-darwin","arch":"arm64"},{"triple":"darwin-x64","os":"macos-14","target":"x86_64-apple-darwin","arch":"x64"},{"triple":"linux-x64-gnu","os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","arch":"x64"},{"triple":"linux-arm64-gnu","os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","arch":"arm64"},{"triple":"win32-x64-msvc","os":"windows-latest","target":"x86_64-pc-windows-msvc","arch":"x64"}]'
+          REDUCED='[{"triple":"linux-x64-gnu","os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","arch":"x64"},{"triple":"darwin-arm64","os":"macos-14","target":"aarch64-apple-darwin","arch":"arm64"}]'
+
+          if [ "$tier" = "full" ]; then m="$FULL"; else m="$REDUCED"; fi
+          {
+            echo "tier=$tier"
+            echo "matrix=$m"
+          } >> "$GITHUB_OUTPUT"
+          echo "event=${{ github.event_name }} tier=$tier"
+
+  # One job per platform: build each real distributable and exercise it on this runner.
+  verify:
+    name: verify (${{ matrix.triple }})
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.triple }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: ${{ matrix.arch }}
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Python SDK — build wheel, install, e2e
+        run: |
+          set -e
+          python -m pip install --upgrade pip maturin
+          ( cd src/sdk/python && maturin build --release --target ${{ matrix.target }} --out dist )
+          # The darwin-x64 wheel is x86_64-only, but the macos-14 runner is arm64 —
+          # and even setup-python's "x64" interpreter runs as arm64 here (it's
+          # universal2), so pip computes arm64 tags and rejects the wheel ("not a
+          # supported wheel on this platform"). Install + run the e2e through
+          # Rosetta's x86_64 slice of the universal2 framework python so the real
+          # shipped x86_64 wheel is genuinely exercised. Every other leg installs
+          # natively with the runner's own python (Windows included).
+          PY=python
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            PY="arch -x86_64 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+          fi
+          $PY -c "import platform; print('e2e interpreter machine:', platform.machine())"
+          # ratel-ai hard-depends on the ratel-ai-telemetry vocabulary, which lives in
+          # this repo and releases on its own tag (telemetry-py-v*). Between an in-repo
+          # version bump and that release the floor isn't on PyPI yet, so resolving it
+          # from the index fails every leg. Install the monorepo sibling first, mirroring
+          # the Node leg below (which pre-builds its @ratel-ai/telemetry workspace dep)
+          # and the local-source pin examples/pydantic-ai already carries for the same
+          # unreleased floor. Resolution against the real index stays covered by
+          # verify-install.yml, which installs the published wheel from PyPI.
+          $PY -m pip install ./src/telemetry/python
+          $PY -m pip install src/sdk/python/dist/*.whl
+          $PY e2e/python/run_e2e.py
+
+      - name: Node SDK — build native, pack loader+subpackage, install, e2e
+        run: |
+          set -e
+          triple="${{ matrix.triple }}"
+          pnpm --filter @ratel-ai/sdk exec napi build --release --platform --target ${{ matrix.target }} --manifest-path native/Cargo.toml --output-dir native --js index.cjs --dts index.d.cts
+          # The SDK loader imports @ratel-ai/telemetry, so build that workspace dep's
+          # dist/ before tsc — same as the release workflow. Without it build:ts can't
+          # resolve it.
+          pnpm --filter @ratel-ai/telemetry run build
+          pnpm --filter @ratel-ai/sdk run build:ts
+          cp "src/sdk/ts/native/ratel-sdk.$triple.node" "src/sdk/ts/npm/$triple/"
+          rm -rf "$RUNNER_TEMP/tgz" && mkdir -p "$RUNNER_TEMP/tgz/loader" "$RUNNER_TEMP/tgz/sub"
+          pnpm --filter @ratel-ai/sdk pack --pack-destination "$RUNNER_TEMP/tgz/loader"
+          npm pack "./src/sdk/ts/npm/$triple" --pack-destination "$RUNNER_TEMP/tgz/sub"
+          work="$(mktemp -d)"; cd "$work"; npm init -y >/dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/tgz/loader/*.tgz "$RUNNER_TEMP"/tgz/sub/*.tgz
+          cp "$GITHUB_WORKSPACE/e2e/ts/run_e2e.mjs" ./run_e2e.mjs
+          RATEL_E2E_DIR="$GITHUB_WORKSPACE/e2e" node run_e2e.mjs
+
+      # Platform-independent packaging integrity — folded into the gate's linux leg so
+      # it's one fewer check row; runs once (linux-x64 is always in both matrices).
+      - name: Packaging integrity (sdist + twine, crate dry-run, optionalDeps inject)
+        if: matrix.triple == 'linux-x64-gnu'
+        run: |
+          set -e
+          # maturin is already installed by the Python SDK step above.
+          python -m pip install --upgrade twine 'packaging>=24.2'
+          ( cd src/sdk/python && maturin sdist --out dist )
+          twine check src/sdk/python/dist/*
+          cargo publish -p ratel-ai-core --dry-run
+          # Smoke the optionalDeps inject + assert loader/subpackage versions match.
+          # NOTE: this rewrites src/sdk/ts/package.json's optionalDependencies in place
+          # — harmless here, since it runs after the packs above and the checkout is
+          # throwaway.
+          node scripts/inject-sdk-optional-deps.mjs
+
+  # THE single required status check for the `main` ruleset (scripts/setup-branch-ruleset.sh).
+  # `if: always()` (plus the non-draft guard) makes it run regardless of upstream results —
+  # including skips — so the ruleset always gets a definitive Success/Failure instead of
+  # waiting on per-leg contexts a skipped matrix job never emits. Skipped and successful
+  # upstream jobs both pass; only a real failure or cancellation fails the gate.
+  #
+  # Do NOT register the per-leg checks (rust, ts, `verify (…)`, `ai-sdk compat (…)`) as
+  # required directly: a skipped matrix job collapses to one check under the bare job name
+  # and never emits its per-leg contexts, leaving them "Expected" forever and blocking merge.
+  # When you add a new pre-merge job, ADD IT TO `needs` HERE — otherwise its failure won't
+  # block the merge.
+  ci-gate:
+    name: ci-gate
+    needs: [changes, rust, ts, ai-sdk-compat, python, telemetry, protocol, setup, verify]
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize upstream results
+        run: |
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} ts=${{ needs.ts.result }} ai-sdk-compat=${{ needs.ai-sdk-compat.result }} python=${{ needs.python.result }} telemetry=${{ needs.telemetry.result }} protocol=${{ needs.protocol.result }} setup=${{ needs.setup.result }} verify=${{ needs.verify.result }}"
+      - name: Fail if any required job failed or was cancelled
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::a required CI job failed or was cancelled"
+          exit 1
