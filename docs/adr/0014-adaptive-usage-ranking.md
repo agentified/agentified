@@ -221,7 +221,7 @@ LLM-extracted intents populate the same `members` field.
   when the ranker was wrong. The tool author's vocabulary stops being the only lever
   (ADR-0004).
 - **Ranking becomes order-dependent.** The same events in a different order produce a
-  different graph. This is a real reversal of the determinism posture `bm25_search` and
+  different graph. This is a real reversal of the determinism posture `Bm25Index::search` and
   `sort_and_truncate` hold elsewhere, accepted as the cost of learning without a build
   step; replaying the JSONL trace log is the escape hatch when a reproducible artifact is
   needed (CI, benchmarks, bug reports).

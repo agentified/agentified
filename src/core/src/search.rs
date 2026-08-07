@@ -204,19 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn index_is_reusable_across_queries() {
-        let index = Bm25Index::build(tie_corpus());
-        let first = index.search("notification", 5);
-        let again = index.search("notification", 5);
-        assert_eq!(first, again);
-        // A different query on the same index still matches a fresh build.
-        assert_eq!(
-            index.search("file", 5),
-            fresh_search(tie_corpus(), "file", 5)
-        );
-    }
-
-    #[test]
     fn cache_builds_once_and_reuses_the_index() {
         let cache = Bm25Cache::new();
         let builds = std::cell::Cell::new(0);

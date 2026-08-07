@@ -919,27 +919,41 @@ mod tests {
         reg
     }
 
+    /// A builder that must never run — proof the search path already
+    /// populated the cache, i.e. the registry actually consults `Bm25Cache`
+    /// instead of rebuilding per call (the regression this cache exists to
+    /// prevent).
+    fn no_build() -> Vec<(String, String)> {
+        unreachable!("cache should already be populated by the search path")
+    }
+
     #[test]
     fn bm25_cache_is_warmed_by_search_and_dropped_by_register() {
-        // Lifecycle pin (see the skill-side twin): search populates the cache,
-        // register — the sole corpus mutator — drops it. Results being
-        // byte-identical either way is pinned at the public seam in
-        // tests/tool_search.rs.
+        // Lifecycle pin (see the skill-side twin): a public search populates
+        // the cache, register — the sole corpus mutator — drops it. Results
+        // are byte-identical either way (pinned in tests/tool_search.rs), so
+        // a per-call rebuild would pass every test there; this is the one
+        // that fails if the search→cache wiring regresses.
         let mut reg = ToolRegistry::new();
         reg.register(tool("read_file", "read a file"));
-        let warmed = reg.bm25.get_or_build(|| reg.bm25_docs());
-        let reused = reg.bm25.get_or_build(|| reg.bm25_docs());
+
+        let _ = reg.search("read", 5);
+        let warmed = reg.bm25.get_or_build(no_build);
+        let _ = reg.search("file", 5);
+        let reused = reg.bm25.get_or_build(no_build);
         assert!(
             Arc::ptr_eq(&warmed, &reused),
             "searches between mutations must reuse one index"
         );
 
         reg.register(tool("delete_file", "delete a file"));
-        let after_register = reg.bm25.get_or_build(|| reg.bm25_docs());
-        assert!(
-            !Arc::ptr_eq(&warmed, &after_register),
-            "register must invalidate the cached index"
-        );
+        let builds = std::cell::Cell::new(0);
+        let rebuilt = reg.bm25.get_or_build(|| {
+            builds.set(builds.get() + 1);
+            reg.bm25_docs()
+        });
+        assert_eq!(builds.get(), 1, "register must drop the cached index");
+        assert!(!Arc::ptr_eq(&warmed, &rebuilt));
     }
 
     #[test]

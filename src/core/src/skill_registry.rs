@@ -906,32 +906,48 @@ mod tests {
         );
     }
 
+    /// A builder that must never run — proof the search path already
+    /// populated the cache (the tool-side twin explains why the public seam
+    /// can't pin this).
+    fn no_build() -> Vec<(String, String)> {
+        unreachable!("cache should already be populated by the search path")
+    }
+
+    /// Rebuild count when the builder IS expected to run — asserts the cache
+    /// was dropped by the preceding mutation.
+    fn assert_rebuilds(reg: &SkillRegistry) -> Arc<crate::search::Bm25Index> {
+        let builds = std::cell::Cell::new(0);
+        let index = reg.bm25.get_or_build(|| {
+            builds.set(builds.get() + 1);
+            reg.bm25_docs()
+        });
+        assert_eq!(builds.get(), 1, "mutation must drop the cached index");
+        index
+    }
+
     #[test]
     fn bm25_cache_is_warmed_by_search_and_dropped_by_every_mutator() {
-        // The cache's lifecycle is invisible at the public seam (results are
-        // byte-identical either way), so pin it here: search populates it,
-        // and both mutators — register and replace_all — drop it.
+        // Lifecycle pin: a public search populates the cache, and both
+        // mutators — register and replace_all — drop it. Results are
+        // byte-identical either way, so only this test fails if the
+        // search→cache wiring regresses to build-per-call.
         let mut reg = catalog();
-        let warmed = reg.bm25.get_or_build(|| reg.bm25_docs());
-        let reused = reg.bm25.get_or_build(|| reg.bm25_docs());
+        let _ = reg.search("REST API design", 5);
+        let warmed = reg.bm25.get_or_build(no_build);
+        let _ = reg.search("presentations", 5);
+        let reused = reg.bm25.get_or_build(no_build);
         assert!(
             Arc::ptr_eq(&warmed, &reused),
             "searches between mutations must reuse one index"
         );
 
         reg.register(skill("extra", "extra", "an extra skill", &[]));
-        let after_register = reg.bm25.get_or_build(|| reg.bm25_docs());
-        assert!(
-            !Arc::ptr_eq(&warmed, &after_register),
-            "register must invalidate the cached index"
-        );
+        let after_register = assert_rebuilds(&reg);
+        assert!(!Arc::ptr_eq(&warmed, &after_register));
 
         reg.replace_all(vec![skill("only", "only", "the only skill", &[])]);
-        let after_replace = reg.bm25.get_or_build(|| reg.bm25_docs());
-        assert!(
-            !Arc::ptr_eq(&after_register, &after_replace),
-            "replace_all must invalidate the cached index"
-        );
+        let after_replace = assert_rebuilds(&reg);
+        assert!(!Arc::ptr_eq(&after_register, &after_replace));
     }
 
     #[test]
@@ -956,10 +972,11 @@ mod tests {
             ]
         };
         let mut reg = catalog();
-        let warmed = reg.bm25.get_or_build(|| reg.bm25_docs());
+        let _ = reg.search("REST API design", 5);
+        let warmed = reg.bm25.get_or_build(no_build);
 
         reg.replace_all(reload());
-        let after_noop = reg.bm25.get_or_build(|| reg.bm25_docs());
+        let after_noop = reg.bm25.get_or_build(no_build);
         assert!(
             Arc::ptr_eq(&warmed, &after_noop),
             "an unchanged reload must keep the cached index"
@@ -968,7 +985,7 @@ mod tests {
         let mut body_edit = reload();
         body_edit[0].body = "rewritten body — not part of searchable_text".into();
         reg.replace_all(body_edit);
-        let after_body_edit = reg.bm25.get_or_build(|| reg.bm25_docs());
+        let after_body_edit = reg.bm25.get_or_build(no_build);
         assert!(
             Arc::ptr_eq(&warmed, &after_body_edit),
             "a body-only edit is not indexed and must keep the cached index"
