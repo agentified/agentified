@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "ratel-sdk-ts-native"
-version = "0.6.1-rc.1"
+version = "0.6.1-rc.2"
 dependencies = [
  "napi",
  "napi-build",

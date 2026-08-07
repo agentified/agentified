@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.6.1-rc.2] - 2026-08-07
+
+Re-cut of `0.6.1-rc.1` from the reviewed tree. The public API is unchanged: `index.d.cts` and every exported type are byte-identical, so this is a drop-in upgrade.
+
+### Changed
+
+- Corrected the account of session ids carried in the shipped JSDoc. Recording a turn whole emits its search and its invoke adjacently, and replay tracks one pending query per session in log order, so a shared session id pairs correctly. A per-turn id is what protects you once lines from several producers are merged without preserving each turn's adjacency, not something the pairing depends on in the first place.
+- Internal: every path that installs a trace sink now shares one learner-wrapping helper, so a new install site cannot forget that adaptive ranking learns by decorating the sink.
+
 ## [0.6.1-rc.1] - 2026-08-06
 
 ### Added
