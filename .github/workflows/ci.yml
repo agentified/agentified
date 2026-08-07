@@ -7,17 +7,20 @@ name: ci
 # registered as required in the `main` ruleset (scripts/setup-branch-ruleset.sh); it always
 # runs on a ready PR and aggregates the rest.
 #
-# Draft arming (replaces the old `ready-to-merge` label): `changes`, `setup`, and `ci-gate`
-# carry a non-draft guard, so a draft PR runs NOTHING and posts NO `ci-gate`. Drafts are
-# unmergeable, so a missing check cannot deadlock a merge; marking the PR ready fires
-# `ready_for_review`, which runs everything and posts `ci-gate`.
+# Draft arming (replaces the old `ready-to-merge` label): `changes` and `ci-gate` carry a
+# non-draft guard, and every other job `needs:` `changes` (so a skipped `changes` cascades),
+# so a draft PR runs NOTHING and posts NO `ci-gate`. Drafts are unmergeable, so a missing
+# check cannot deadlock a merge; marking the PR ready fires `ready_for_review`, which runs
+# the pipeline and posts `ci-gate`.
 #
 # Skip-green: `changes` (dorny/paths-filter) drives per-leg `if:` so untouched areas skip.
 # Filters are deliberately CONSERVATIVE for this FFI monorepo: the TS and Python SDKs each
 # build the native Rust binding, so their filters include the Rust core + `Cargo.*` (an FFI
 # change re-runs them), and every filter includes `.github/workflows/ci.yml` (editing CI
-# re-runs all legs). On push to `main` and `workflow_dispatch`, every leg runs regardless of
-# the filters (full validation on every merge / on demand).
+# re-runs all legs). The heavy `setup`/`verify` release matrix has its own `release` filter
+# and only runs when a change alters what actually ships (or its e2e). On push to `main` and
+# `workflow_dispatch`, every leg and the verify matrix run regardless of the filters (full
+# validation on every merge / on demand).
 
 on:
   pull_request:
@@ -52,6 +55,7 @@ jobs:
       python: ${{ steps.f.outputs.python }}
       telemetry: ${{ steps.f.outputs.telemetry }}
       protocol: ${{ steps.f.outputs.protocol }}
+      release: ${{ steps.f.outputs.release }}
     steps:
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: f
@@ -114,6 +118,28 @@ jobs:
               - '.github/workflows/ci.yml'
             protocol:
               - 'protocol/**'
+              - '.github/workflows/ci.yml'
+            # Gates the heavy `verify` matrix: only the paths whose change alters what
+            # actually ships (the crate, the wheel, the npm loader + native binding, the
+            # packed telemetry siblings) or the e2e / packaging tooling that validates
+            # them. Docs, examples, adapters, the protocol dir, and CI-only edits do NOT
+            # ship into these artifacts and are covered by the everyday legs, so they skip
+            # verify. Lockfiles + root manifests are in because they decide what gets
+            # compiled/packed. (On push/dispatch verify runs regardless — see `setup`.)
+            release:
+              - 'src/core/**'
+              - 'src/sdk/ts/**'
+              - 'src/sdk/python/**'
+              - 'src/telemetry/ts/**'
+              - 'src/telemetry/python/**'
+              - 'e2e/**'
+              - 'scripts/inject-sdk-optional-deps.mjs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
               - '.github/workflows/ci.yml'
 
   # cargo fmt/clippy/build/test across the workspace.
@@ -447,12 +473,15 @@ jobs:
   # Release-readiness matrix. Builds the REAL distributables (wheel, npm loader + native
   # binding, crate, sdist) from this PR, installs each into a clean environment, and runs
   # the cross-SDK end-to-end scenario through every SDK — catching packaging / binding /
-  # cross-SDK-drift breakage before it reaches `main` instead of at release time. Runs on
-  # EVERY ready-PR commit (not gated by `changes`): reduced 2-platform on PRs, full
-  # 5-platform on push to `main` and workflow_dispatch, so each merge is fully validated.
+  # cross-SDK-drift breakage before it reaches `main` instead of at release time. Gated on
+  # the `release` filter (`setup`/`verify` skip when nothing that ships — or its e2e — is
+  # touched, so a docs- or adapter-only PR pays nothing here); reduced 2-platform on PRs,
+  # full 5-platform on push to `main` and workflow_dispatch, so each merge is fully
+  # validated. A skipped `setup`/`verify` passes the gate (ci-gate treats skip as green).
   setup:
     name: setup
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: changes
+    if: needs.changes.outputs.release == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       tier: ${{ steps.c.outputs.tier }}

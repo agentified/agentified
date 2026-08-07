@@ -116,7 +116,11 @@ install + cross-SDK E2E into `ci-gate` catches packaging breaks (missing `files`
   platform-independent packaging checks (sdist + `twine check`, `cargo publish --dry-run`, npm
   `optionalDependencies` injection) run once, folded into the linux leg. The Python and TS
   runners assert the same `e2e/scenario.json`, so a behavior divergence fails exactly one. The
-  verify matrix runs on **every ready-PR commit** (not gated by `changes`).
+  verify matrix is gated on its own **`release`** filter: it runs only when a change alters
+  what actually ships (the crate, wheel, npm loader + native binding, the packed telemetry
+  siblings) or the `e2e/` + packaging tooling that validates them. A docs-, example-, or
+  adapter-only PR skips it (and a skipped verify passes the gate). Push to `main` and
+  `workflow_dispatch` run it regardless.
 - **Matrix (cost control):** ready-PR commits run a **reduced** matrix (`linux-x64` +
   `darwin-arm64` — the fast native runners). The **full 5-platform** matrix (adding Windows,
   `linux-arm64` cross-compile, `darwin-x64` Rosetta) runs on **every push to `main`**, so each
