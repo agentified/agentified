@@ -27,7 +27,7 @@ pnpm -r lint
 pnpm -r test
 ```
 
-CI (`.github/workflows/{rust,ts}.yml`) runs all of the above on every PR. PRs are expected to land green.
+CI (`.github/workflows/ci.yml`) runs all of the above on every PR through the single required `ci-gate` check. PRs are expected to land green.
 
 ## Branching
 

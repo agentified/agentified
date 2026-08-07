@@ -81,47 +81,65 @@ specifier, peer and runtime alike, to a concrete range); they need no prebuilt a
 
 ## Pre-merge gate (catch breakage before it lands)
 
-`release.yml` only builds the workflow-wired units' real distributables at tag time, and
-`verify-install.yml` only smoke-tests them *after* publishing. To catch packaging breaks
-(missing `files`, `optionalDependencies` injection, sdist/twine metadata, native-binding
-load, cross-SDK drift) **before** they reach `main`, `pr-gate.yml` shifts that validation
-onto the PR.
+All pre-merge checks live in **one** workflow, `.github/workflows/ci.yml`, so a single
+terminal **`ci-gate`** job can `needs:` every leg (GitHub `needs:` can't cross workflow
+files). `ci-gate` is the **only required status check** on `main` — it aggregates the
+everyday legs (`rust`, `ts`, `ai-sdk-compat`, `python`, `telemetry`, `protocol`) **and** the
+heavy release-verify matrix, so one green check means the whole pipeline is green. See
+[ADR-0016](docs/adr/0016-single-ci-gate.md).
 
-- **Opt-in to save CI.** The heavy jobs only run when a PR carries the **`ready-to-merge`**
-  label (and re-run on every new commit while it stays on). Unlabeled PRs spend zero
-  build minutes — the jobs are skipped.
-- **Mandatory for everyone but rstagi.** The terminal `pr-gate` check is required on `main`.
-  It **fails** any PR without the `ready-to-merge` label (so unlabeled PRs can't merge), and
-  on a labeled PR it goes green only when the whole pipeline is green. So every contributor
-  must arm + pass the gate to merge.
-- **rstagi is a superadmin bypass.** rstagi can merge any PR at any time — red or green, with
-  or without the label — via the branch ruleset's bypass. This is the deliberate escape hatch
-  (no label, no bot). The bypass is scoped to him (admin role by default, or a one-member team
-  for exact scoping via the branch ruleset). Everyone else is hard-blocked
-  until `pr-gate` is green.
-- **What it runs:** one **`verify` job per platform** that builds the real distributables
-  (wheel, npm loader + native binding) and **installs each into a clean
+Why the verify matrix is here too: `release.yml` only builds the real distributables at tag
+time and `verify-install.yml` only smoke-tests them *after* publishing. Folding that build +
+install + cross-SDK E2E into `ci-gate` catches packaging breaks (missing `files`,
+`optionalDependencies` injection, sdist/twine metadata, native-binding load, cross-SDK drift)
+**before** they reach `main`.
+
+- **Ready arms it (no label).** Draft PRs run **nothing** and post **no** `ci-gate` — the
+  `changes`, `setup`, and `ci-gate` jobs carry a non-draft guard. Marking the PR **ready for
+  review** fires `ready_for_review`, which runs every leg and posts `ci-gate`. Drafts are
+  unmergeable, so a missing check can't deadlock a merge; there's no `ready-to-merge` label
+  anymore.
+- **Mandatory for everyone; overridable only by core maintainers.** `ci-gate` is required on
+  `main`, so it goes green only when the whole pipeline is green. The single ruleset bypass is
+  the **`core-maintainers`** org team (self-maintaining — add/remove people on the team, not in
+  the ruleset). A core maintainer can merge a red or in-flight PR via that bypass; everyone else
+  is hard-blocked until `ci-gate` is green.
+- **Skip-green per area.** A `changes` job (dorny/paths-filter) skips untouched legs, and
+  `ci-gate` treats a *skipped* upstream job as passing (only `failure`/`cancelled` fail it).
+  Filters are conservative for this FFI monorepo: the TS and Python SDKs build the native Rust
+  binding, so a Rust-core or `Cargo.*` change re-runs them. On **push to `main`** and
+  **`workflow_dispatch`** every leg runs regardless of the filters (full validation on merge /
+  on demand).
+- **What the verify matrix runs:** one **`verify` job per platform** that builds the real
+  distributables (wheel, npm loader + native binding) and **installs each into a clean
   environment and runs the cross-SDK E2E** (`e2e/` — Python wheel, TS loader+native). The
-  platform-independent packaging checks (sdist + `twine check`, `cargo publish
-  --dry-run`, npm `optionalDependencies` injection) run once, folded into the linux leg.
-  The Python and TS runners assert the same `e2e/scenario.json`, so a behavior divergence
-  fails exactly one. (Kept to few check rows: `setup` + one row per platform + `pr-gate`;
-  platforms run in parallel.)
-- **Matrix (cost control):** armed-PR commits run a **reduced** matrix (`linux-x64` +
+  platform-independent packaging checks (sdist + `twine check`, `cargo publish --dry-run`, npm
+  `optionalDependencies` injection) run once, folded into the linux leg. The Python and TS
+  runners assert the same `e2e/scenario.json`, so a behavior divergence fails exactly one. The
+  verify matrix is gated on its own **`release`** filter: it runs only when a change alters
+  what actually ships (the crate, wheel, npm loader + native binding, the packed telemetry
+  siblings) or the `e2e/` + packaging tooling that validates them. A docs-, example-, or
+  adapter-only PR skips it (and a skipped verify passes the gate). Push to `main` and
+  `workflow_dispatch` run it regardless.
+- **Matrix (cost control):** ready-PR commits run a **reduced** matrix (`linux-x64` +
   `darwin-arm64` — the fast native runners). The **full 5-platform** matrix (adding Windows,
   `linux-arm64` cross-compile, `darwin-x64` Rosetta) runs on **every push to `main`**, so each
   merge is fully validated. A platform-specific break that slipped through the reduced PR matrix
   surfaces right after merge, not on every PR commit. (`workflow_dispatch` runs the full matrix
   on demand.)
 
-Developer flow: open a PR → fast `rust/ts/python` checks run as usual → when ready to land,
-add the `ready-to-merge` label → the gate runs on every commit → merge once `pr-gate` is
-green. If the gate is red and the merge truly can't wait, **rstagi** can merge it directly
-(his ruleset bypass); nobody else can.
+Developer flow: open a PR (keep it a **draft** while iterating → CI stays quiet) → mark it
+**ready for review** → `ci-gate` runs on every commit → merge once `ci-gate` is green. If the
+gate is red and the merge truly can't wait, a **`core-maintainers`** member can merge it
+directly (the ruleset bypass); nobody else can.
 
-Enable the required `pr-gate` check + create the `ready-to-merge` label once via repo settings
-(a branch ruleset requiring `pr-gate` on `main`, plus the label); scope the bypass to exactly
-rstagi with a one-member team. Run the E2E locally per `e2e/README.md`.
+**Adding a pre-merge job:** add it to `.github/workflows/ci.yml` and to `ci-gate`'s `needs:`
+list — otherwise its failure won't block the merge (a per-leg check registered directly can't
+be required, because a skipped matrix job never emits its per-leg contexts).
+
+Provision the ruleset once with `scripts/setup-branch-ruleset.sh` (idempotent; needs the
+`core-maintainers` team to exist first, and `gh` with repo-admin). `--print` shows the JSON
+payload without applying. Run the E2E locally per `e2e/README.md`.
 
 ## Cutting a release
 

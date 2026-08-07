@@ -2,8 +2,8 @@
 
 These runners exercise the **real, installed distributables** (the wheel, the npm
 tarball + native binary) through each SDK's **public API** — not the
-dev-mode source build. They are driven by the `pr-gate` workflow
-(`.github/workflows/pr-gate.yml`) after artifacts are built, and can be run locally.
+dev-mode source build. They are driven by the `ci` workflow's `verify` matrix
+(`.github/workflows/ci.yml`) after artifacts are built, and can be run locally.
 
 ## What it covers
 
@@ -35,7 +35,7 @@ python -m venv /tmp/ratel-e2e-py && /tmp/ratel-e2e-py/bin/pip install -U pip mat
 /tmp/ratel-e2e-py/bin/python ../../../e2e/python/run_e2e.py
 ```
 
-**TS** — this mirrors the `pr-gate.yml` "Node SDK" step exactly, and you must follow it:
+**TS** — this mirrors the `ci.yml` `verify` job's "Node SDK" step exactly, and you must follow it:
 the loader package alone is **not** runnable (its `optionalDependencies` are injected
 only at publish time and it ships no `.node`, so installing it alone fails with
 `Cannot find native binding`). You build the host's native binary, copy it into the
