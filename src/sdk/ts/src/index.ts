@@ -52,7 +52,9 @@ export type {
   InputValidator,
   SearchMethod,
   SearchOrigin,
+  StandardJsonSchema,
   ToolCatalogOptions,
+  ToolSchema,
   TraceSinkConfig,
 } from "./catalog.js";
 export { ToolCatalog } from "./catalog.js";

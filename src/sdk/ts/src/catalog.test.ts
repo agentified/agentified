@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { EmbedderError, type ExecutableTool, ToolCatalog } from "./index.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 
@@ -58,6 +59,29 @@ describe("ToolCatalog", () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].toolId).toBe("read_file");
     expect(hits[0].score).toBeGreaterThan(0);
+  });
+
+  it("accepts a Standard Schema validator (Zod) as inputSchema/outputSchema", async () => {
+    const catalog = new ToolCatalog();
+    await catalog.register({
+      id: "read_file",
+      name: "read_file",
+      description: "Read a file from local disk and return its textual contents.",
+      inputSchema: z.object({ path: z.string().describe("absolute path to the file") }),
+      outputSchema: z.object({ contents: z.string() }),
+      execute: async ({ path }: { path: string }) => ({ contents: `contents of ${path}` }),
+    });
+
+    const hits = catalog.search("read file", 5);
+    expect(hits[0]?.toolId).toBe("read_file");
+
+    // Stored/indexed metadata is plain JSON Schema, not a leaked Zod internal.
+    const stored = catalog.get("read_file");
+    expect(stored?.inputSchema).toMatchObject({
+      type: "object",
+      properties: { path: { type: "string", description: "absolute path to the file" } },
+    });
+    expect(stored?.outputSchema).toMatchObject({ type: "object" });
   });
 
   it("registers an iterable of tools as one batch", async () => {

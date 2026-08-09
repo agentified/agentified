@@ -1,4 +1,5 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
+import type { JSONSchema7 } from "json-schema";
 import type { SearchHit, Tool } from "../native/index.cjs";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import { type IntentGraph, ToolRegistry } from "./registry.js";
@@ -47,13 +48,47 @@ export type InputValidator = (
   input: unknown,
 ) => InputValidationResult | PromiseLike<InputValidationResult>;
 
+/** The slice of the Standard Schema JSON Schema extension
+ * (https://standardschema.dev/json-schema) a validator (Zod, Effect Schema, ...)
+ * exposes so its shape can be read without a hard dependency on any one library. */
+export interface StandardJsonSchema {
+  /** The Standard Schema namespace every compliant validator exposes. */
+  "~standard": {
+    /** The JSON Schema conversion extension. */
+    jsonSchema: {
+      /** Converts the validator to plain JSON Schema for the requested dialect. */
+      input(options: { target: string }): Record<string, unknown>;
+    };
+  };
+}
+
+/** A tool's input/output schema: either a plain JSON Schema object (the catalog's
+ * native spelling) or a Standard Schema-compliant validator. */
+export type ToolSchema = JSONSchema7 | StandardJsonSchema;
+
+/** Normalizes a {@link ToolSchema} to plain JSON Schema. A Standard Schema
+ * validator is read via `~standard.jsonSchema.input` (draft-07); anything else
+ * is assumed to already be JSON Schema and passes through unchanged, so this is
+ * additive — existing bare-JSON-Schema callers are unaffected. */
+function toJsonSchema(schema: ToolSchema): JSONSchema7 {
+  const input = (schema as StandardJsonSchema)?.["~standard"]?.jsonSchema?.input;
+  if (typeof input !== "function") return schema as JSONSchema7;
+  const { $schema: _dialect, ...json } = input({ target: "draft-07" });
+  return json as JSONSchema7;
+}
+
 /**
  * A tool the catalog can both retrieve *and* run: the searchable metadata of a
  * `Tool` (id, name, description, schemas) plus its {@link Executor}. The unit
  * {@link ToolCatalog.register} accepts and {@link ToolCatalog.getExecutable}
- * returns.
+ * returns. `inputSchema`/`outputSchema` accept a {@link ToolSchema} — plain JSON
+ * Schema or a Standard Schema validator (Zod, Effect Schema, ...).
  */
-export interface ExecutableTool extends Tool {
+export interface ExecutableTool extends Omit<Tool, "inputSchema" | "outputSchema"> {
+  /** JSON Schema of the arguments, or a Standard Schema validator. See {@link ToolSchema}. */
+  inputSchema: ToolSchema;
+  /** JSON Schema of the result, or a Standard Schema validator. See {@link ToolSchema}. */
+  outputSchema: ToolSchema;
   /** Shared parser used before execution and by model-facing host bridges. */
   validateInput?: InputValidator;
   /** Runs the tool. Called by {@link ToolCatalog.invoke} with args and optional context. */
@@ -282,19 +317,24 @@ export class ToolCatalog {
         throw new Error(`tool ${tool.id} has no execute handler`);
       }
     }
-    this.registry.registerItems(
-      batch.map(({ execute: _execute, validateInput: _validateInput, ...metadata }) => metadata),
+    const normalized = batch.map(
+      ({ execute: _execute, validateInput: _validateInput, ...metadata }): Tool => ({
+        ...metadata,
+        inputSchema: toJsonSchema(metadata.inputSchema),
+        outputSchema: toJsonSchema(metadata.outputSchema),
+      }),
     );
-    for (const tool of batch) {
-      const { execute, validateInput, ...metadata } = tool;
+    this.registry.registerItems(normalized);
+    batch.forEach((tool, i) => {
+      const { execute, validateInput } = tool;
       this.executors.set(tool.id, execute);
       if (validateInput) {
         this.inputValidators.set(tool.id, validateInput);
       } else {
         this.inputValidators.delete(tool.id);
       }
-      this.tools.set(tool.id, metadata);
-    }
+      this.tools.set(tool.id, normalized[i]);
+    });
     await this.registry.buildDense();
   }
 
