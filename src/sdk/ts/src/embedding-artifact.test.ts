@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveEmbeddingArtifact } from "./embedding-artifact.js";
 import {
   ArtifactWarmError,
   experimentalBuildEmbeddingArtifact,
@@ -418,5 +419,37 @@ describe("catalog experimentalEmbeddingArtifact", () => {
         execute: undefined as never,
       }),
     ).rejects.toThrow(/no execute handler/);
+  });
+});
+
+describe("resolveEmbeddingArtifact", () => {
+  it("rejects neither path nor bytes", async () => {
+    await expect(resolveEmbeddingArtifact({} as never)).rejects.toThrow(
+      /exactly one of 'path' or 'bytes'/,
+    );
+  });
+
+  it("rejects both path and bytes", async () => {
+    await expect(
+      resolveEmbeddingArtifact({ path: "/tmp/a.rat1", bytes: new Uint8Array([1]) } as never),
+    ).rejects.toThrow(/exactly one of 'path' or 'bytes'/);
+  });
+
+  it("rejects unknown keys", async () => {
+    await expect(
+      resolveEmbeddingArtifact({ path: "/tmp/a.rat1", extra: 1 } as never),
+    ).rejects.toThrow(/unknown keys: extra/);
+  });
+
+  it("rejects invalid onMiss", async () => {
+    await expect(
+      resolveEmbeddingArtifact({ bytes: new Uint8Array([1]), onMiss: "retry" } as never),
+    ).rejects.toThrow(/unknown on-artifact-miss policy/);
+  });
+
+  it("defaults onMiss to error for bytes", async () => {
+    const resolved = await resolveEmbeddingArtifact({ bytes: new Uint8Array([1, 2, 3]) });
+    expect(resolved.onMiss).toBe("error");
+    expect(Buffer.compare(resolved.bytes, Buffer.from([1, 2, 3]))).toBe(0);
   });
 });

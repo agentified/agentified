@@ -70,12 +70,57 @@ export async function experimentalBuildEmbeddingArtifact(
   }
 }
 
+function validateEmbeddingArtifact(config: unknown): {
+  path?: string;
+  bytes?: Uint8Array;
+  onMiss: "error" | "embed";
+} {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new TypeError("experimentalEmbeddingArtifact must be an object");
+  }
+  const record = config as Record<string, unknown>;
+  const unknown = Object.keys(record).filter(
+    (key) => key !== "path" && key !== "bytes" && key !== "onMiss",
+  );
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `experimentalEmbeddingArtifact has unknown keys: ${unknown.sort().join(", ")}`,
+    );
+  }
+  const hasPath = Object.hasOwn(record, "path");
+  const hasBytes = Object.hasOwn(record, "bytes");
+  if (hasPath === hasBytes) {
+    throw new TypeError("experimentalEmbeddingArtifact requires exactly one of 'path' or 'bytes'");
+  }
+  const onMissRaw = Object.hasOwn(record, "onMiss") ? record.onMiss : "error";
+  if (onMissRaw !== "error" && onMissRaw !== "embed") {
+    throw new Error(
+      `unknown on-artifact-miss policy ${JSON.stringify(onMissRaw)} (expected "error" or "embed")`,
+    );
+  }
+  if (hasPath) {
+    if (typeof record.path !== "string") {
+      throw new TypeError("experimentalEmbeddingArtifact path must be a string");
+    }
+    return { path: record.path, onMiss: onMissRaw };
+  }
+  const raw = record.bytes;
+  if (!(raw instanceof Uint8Array)) {
+    throw new TypeError("experimentalEmbeddingArtifact bytes must be a Uint8Array or Buffer");
+  }
+  return { bytes: raw, onMiss: onMissRaw };
+}
+
 export async function resolveEmbeddingArtifact(
   config: ExperimentalEmbeddingArtifact,
 ): Promise<{ bytes: Buffer; onMiss: "error" | "embed" }> {
-  const onMiss = config.onMiss ?? "error";
-  if (typeof config.path === "string") {
-    return { bytes: await readFile(config.path), onMiss };
+  const validated = validateEmbeddingArtifact(config);
+  if (validated.path !== undefined) {
+    return { bytes: await readFile(validated.path), onMiss: validated.onMiss };
   }
-  return { bytes: Buffer.from(config.bytes), onMiss };
+  const bytes = validated.bytes;
+  if (bytes === undefined) {
+    throw new TypeError("experimentalEmbeddingArtifact requires exactly one of 'path' or 'bytes'");
+  }
+  return { bytes: Buffer.from(bytes), onMiss: validated.onMiss };
 }
