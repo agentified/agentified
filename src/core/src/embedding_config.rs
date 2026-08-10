@@ -13,7 +13,14 @@
 //! the board. Resolution/validation **lives here** (in the core) so both SDKs
 //! share one implementation instead of two that could drift. See ADR-0012.
 
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
+
+use sha2::{Digest, Sha256};
 
 use crate::embedding::EmbedderError;
 
@@ -89,12 +96,159 @@ pub(crate) fn huggingface_fingerprint(repo: &str, revision: &str) -> String {
     fingerprint("hf", &[("repo", repo), ("revision", revision)])
 }
 
-pub(crate) fn local_fingerprint(path: &str) -> String {
-    fingerprint("local", &[("path", path)])
+/// Path is not identity: a build→runtime remount (Docker) must still match.
+/// Digest comes from [`local_model_content_id`].
+pub(crate) fn local_fingerprint(content_id: &str) -> String {
+    fingerprint("local", &[("content", content_id)])
 }
 
 pub(crate) fn endpoint_fingerprint(url: &str, model: &str) -> String {
     fingerprint("endpoint", &[("url", url), ("model", model)])
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+struct ContentIdMemo {
+    stamps: Vec<FileStamp>,
+    content_id: String,
+}
+
+/// Content digest of the files Candle loads from a local model directory.
+///
+/// Memoized against `(len, mtime)` so warm `embedder_cache_key` lookups do not
+/// re-read weight bytes. Includes `1_Pooling/config.json` when present so a
+/// pooling-config change invalidates the process cache without a pooling override.
+pub(crate) fn local_model_content_id(dir: &Path) -> Result<String, EmbedderError> {
+    let name = dir.display().to_string();
+    let files = resolve_local_identity_files(dir)?;
+    let stamps: Vec<FileStamp> = files
+        .iter()
+        .map(|p| stamp_file(p, &name))
+        .collect::<Result<_, _>>()?;
+
+    let memo_key = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .display()
+        .to_string();
+
+    {
+        let cache = content_id_memo();
+        let guard = cache.lock().expect("local content-id memo poisoned");
+        if let Some(entry) = guard.get(&memo_key)
+            && entry.stamps == stamps
+        {
+            return Ok(entry.content_id.clone());
+        }
+    }
+
+    let content_id = hash_local_identity_files(&files, &name)?;
+    let mut guard = content_id_memo()
+        .lock()
+        .expect("local content-id memo poisoned");
+    guard.insert(
+        memo_key,
+        ContentIdMemo {
+            stamps,
+            content_id: content_id.clone(),
+        },
+    );
+    Ok(content_id)
+}
+
+fn content_id_memo() -> &'static Mutex<HashMap<String, ContentIdMemo>> {
+    static CELL: OnceLock<Mutex<HashMap<String, ContentIdMemo>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Files Candle opens for a local model, in hash order. Shared with load so the
+/// identity set cannot drift from what is actually read.
+pub(crate) fn resolve_local_identity_files(dir: &Path) -> Result<Vec<PathBuf>, EmbedderError> {
+    let name = dir.display().to_string();
+    let config = dir.join("config.json");
+    let tokenizer = dir.join("tokenizer.json");
+    let weights = [dir.join("model.safetensors"), dir.join("pytorch_model.bin")]
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| EmbedderError::Load {
+            model: name.clone(),
+            source: format!("missing model.safetensors / pytorch_model.bin in {name}"),
+        })?;
+    for (p, f) in [(&config, "config.json"), (&tokenizer, "tokenizer.json")] {
+        if !p.exists() {
+            return Err(EmbedderError::Load {
+                model: name.clone(),
+                source: format!(
+                    "missing {f} in {name} — a fast tokenizer.json is required; run \
+                     tokenizer.save_pretrained() upstream, or serve the model via an endpoint"
+                ),
+            });
+        }
+    }
+    let mut files = vec![config, tokenizer, weights];
+    let pooling = dir.join("1_Pooling/config.json");
+    if pooling.exists() {
+        files.push(pooling);
+    }
+    Ok(files)
+}
+
+fn stamp_file(path: &Path, model: &str) -> Result<FileStamp, EmbedderError> {
+    let meta = std::fs::metadata(path).map_err(|e| EmbedderError::Load {
+        model: model.to_string(),
+        source: format!("stat {}: {e}", path.display()),
+    })?;
+    Ok(FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+fn hash_local_identity_files(files: &[PathBuf], model: &str) -> Result<String, EmbedderError> {
+    let mut hasher = Sha256::new();
+    for path in files {
+        // Length-prefix each file so concatenation cannot collide across a
+        // boundary (e.g. "ab"+"c" vs "a"+"bc").
+        let mut file = File::open(path).map_err(|e| EmbedderError::Load {
+            model: model.to_string(),
+            source: format!("open {}: {e}", path.display()),
+        })?;
+        let len = file
+            .metadata()
+            .map_err(|e| EmbedderError::Load {
+                model: model.to_string(),
+                source: format!("stat {}: {e}", path.display()),
+            })?
+            .len();
+        hasher.update(len.to_le_bytes());
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| EmbedderError::Load {
+                model: model.to_string(),
+                source: format!("read {}: {e}", path.display()),
+            })?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+    }
+    Ok(hex_lower(hasher.finalize()))
+}
+
+fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
 }
 
 /// The embedding model backing a catalog's semantic/hybrid engines.
@@ -395,33 +549,35 @@ impl EmbeddingModel {
     /// on the same model load it once. HF `revision` may still be `main` here;
     /// the resolved-with-SHA form is [`crate::embedding::Embedder::fingerprint`],
     /// stamped on the dense cache after load.
-    pub(crate) fn configured_fingerprint(&self) -> String {
+    pub(crate) fn configured_fingerprint(&self) -> Result<String, EmbedderError> {
         let base = match self {
             EmbeddingModel::Default => huggingface_fingerprint(DEFAULT_REPO, DEFAULT_REVISION),
             EmbeddingModel::HuggingFace { repo, revision, .. } => {
                 huggingface_fingerprint(repo, revision.as_deref().unwrap_or("main"))
             }
-            EmbeddingModel::Local { path, .. } => local_fingerprint(&path.display().to_string()),
+            EmbeddingModel::Local { path, .. } => {
+                local_fingerprint(&local_model_content_id(path)?)
+            }
             EmbeddingModel::Endpoint { url, model, .. } => endpoint_fingerprint(url, model),
         };
         // Pooling + prefixes change the vectors, so they are part of the identity.
-        format!(
+        Ok(format!(
             "{base}{}",
             fingerprint_suffix(
                 self.pooling_override(),
                 self.query_prefix(),
                 self.doc_prefix()
             )
-        )
+        ))
     }
 
     /// Process-cache identity for the client/embedder instance. Credentials do
     /// not change the vector space, so [`Self::configured_fingerprint`] excludes
     /// them; the cached endpoint client does capture the *name* of the env var it
     /// reads, however, so that non-secret name must distinguish client instances.
-    pub(crate) fn embedder_cache_key(&self) -> String {
-        let vector_identity = self.configured_fingerprint();
-        match self {
+    pub(crate) fn embedder_cache_key(&self) -> Result<String, EmbedderError> {
+        let vector_identity = self.configured_fingerprint()?;
+        Ok(match self {
             EmbeddingModel::Endpoint { api_key_env, .. } => match api_key_env {
                 Some(name) => {
                     let mut key = vector_identity;
@@ -431,7 +587,7 @@ impl EmbeddingModel {
                 None => format!("{vector_identity}|api_key_env=none"),
             },
             _ => vector_identity,
-        }
+        })
     }
 }
 
@@ -823,7 +979,7 @@ mod tests {
     fn fingerprints_are_distinct_per_source() {
         // The default carries its pinned CLS pooling + bge query prefix.
         assert_eq!(
-            EmbeddingModel::Default.configured_fingerprint(),
+            EmbeddingModel::Default.configured_fingerprint().unwrap(),
             format!(
                 "hf|repo={}:{}|revision={}:{}|pool=3:cls|q={}:{}",
                 DEFAULT_REPO.len(),
@@ -843,7 +999,8 @@ mod tests {
                 pooling: None,
                 download: false,
             }
-            .configured_fingerprint(),
+            .configured_fingerprint()
+            .unwrap(),
             "hf|repo=1:r|revision=4:main"
         );
         assert_eq!(
@@ -854,9 +1011,84 @@ mod tests {
                 query_prefix: None,
                 doc_prefix: None,
             }
-            .configured_fingerprint(),
+            .configured_fingerprint()
+            .unwrap(),
             "endpoint|url=1:u|model=1:m"
         );
+    }
+
+    #[test]
+    fn huggingface_and_endpoint_fingerprints_are_unchanged() {
+        assert_eq!(
+            huggingface_fingerprint("org/m", "abc"),
+            "hf|repo=5:org/m|revision=3:abc"
+        );
+        assert_eq!(
+            endpoint_fingerprint("http://x/v1/embeddings", "nomic"),
+            "endpoint|url=22:http://x/v1/embeddings|model=5:nomic"
+        );
+    }
+
+    fn write_local_model(dir: &Path, config: &[u8], tokenizer: &[u8], weights: &[u8]) {
+        std::fs::write(dir.join("config.json"), config).unwrap();
+        std::fs::write(dir.join("tokenizer.json"), tokenizer).unwrap();
+        std::fs::write(dir.join("model.safetensors"), weights).unwrap();
+    }
+
+    #[test]
+    fn same_local_model_content_at_different_paths_shares_fingerprint() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        write_local_model(a.path(), b"cfg", b"tok", b"w");
+        write_local_model(b.path(), b"cfg", b"tok", b"w");
+
+        let id_a = local_model_content_id(a.path()).unwrap();
+        let id_b = local_model_content_id(b.path()).unwrap();
+        assert_eq!(id_a, id_b, "content identity must ignore the mount path");
+        assert_eq!(
+            local_fingerprint(&id_a),
+            local_fingerprint(&id_b),
+            "formatted fingerprints must match when content matches"
+        );
+        assert!(
+            local_fingerprint(&id_a).starts_with("local|content="),
+            "local identity is content-keyed, not path-keyed; got {}",
+            local_fingerprint(&id_a)
+        );
+
+        let model_a = EmbeddingModel::Local {
+            path: a.path().to_path_buf(),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        let model_b = EmbeddingModel::Local {
+            path: b.path().to_path_buf(),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        assert_eq!(
+            model_a.configured_fingerprint().unwrap(),
+            model_b.configured_fingerprint().unwrap()
+        );
+    }
+
+    #[test]
+    fn changing_local_model_file_bytes_changes_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
+        let before = local_model_content_id(dir.path()).unwrap();
+
+        // Different length so a coarse mtime filesystem still busts the memo
+        // via `FileStamp.len` (same-size overwrites are covered by mtime).
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-v2-longer").unwrap();
+        let after = local_model_content_id(dir.path()).unwrap();
+        assert_ne!(
+            before, after,
+            "a byte change in the weights must mint a new content id"
+        );
+        assert_ne!(local_fingerprint(&before), local_fingerprint(&after));
     }
 
     #[test]
@@ -871,9 +1103,15 @@ mod tests {
         let a = endpoint("KEY_A");
         let b = endpoint("KEY_B");
 
-        assert_eq!(a.configured_fingerprint(), b.configured_fingerprint());
-        assert_ne!(a.embedder_cache_key(), b.embedder_cache_key());
-        assert!(a.embedder_cache_key().contains("KEY_A"));
+        assert_eq!(
+            a.configured_fingerprint().unwrap(),
+            b.configured_fingerprint().unwrap()
+        );
+        assert_ne!(
+            a.embedder_cache_key().unwrap(),
+            b.embedder_cache_key().unwrap()
+        );
+        assert!(a.embedder_cache_key().unwrap().contains("KEY_A"));
     }
 
     #[test]
@@ -889,12 +1127,20 @@ mod tests {
         };
 
         assert_ne!(
-            endpoint("https://example.test#a", "b", "", None).configured_fingerprint(),
-            endpoint("https://example.test", "a#b", "", None).configured_fingerprint()
+            endpoint("https://example.test#a", "b", "", None)
+                .configured_fingerprint()
+                .unwrap(),
+            endpoint("https://example.test", "a#b", "", None)
+                .configured_fingerprint()
+                .unwrap()
         );
         assert_ne!(
-            endpoint("u", "m", "x|d=y", None).configured_fingerprint(),
-            endpoint("u", "m", "x", Some("y")).configured_fingerprint()
+            endpoint("u", "m", "x|d=y", None)
+                .configured_fingerprint()
+                .unwrap(),
+            endpoint("u", "m", "x", Some("y"))
+                .configured_fingerprint()
+                .unwrap()
         );
     }
 
@@ -909,8 +1155,8 @@ mod tests {
         };
 
         assert_ne!(
-            endpoint(None).embedder_cache_key(),
-            endpoint(Some("<none>".into())).embedder_cache_key()
+            endpoint(None).embedder_cache_key().unwrap(),
+            endpoint(Some("<none>".into())).embedder_cache_key().unwrap()
         );
     }
 
@@ -958,7 +1204,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(m.doc_prefix(), "passage: ");
-        assert!(m.configured_fingerprint().contains("|d=9:passage: "));
+        assert!(
+            m.configured_fingerprint()
+                .unwrap()
+                .contains("|d=9:passage: ")
+        );
         // Pooling is part of identity: same repo, different pooling → different key.
         let cls = EmbeddingModel::resolve(EmbeddingSpec {
             huggingface: Some("org/m".into()),
@@ -972,6 +1222,9 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_ne!(cls.configured_fingerprint(), mean.configured_fingerprint());
+        assert_ne!(
+            cls.configured_fingerprint().unwrap(),
+            mean.configured_fingerprint().unwrap()
+        );
     }
 }

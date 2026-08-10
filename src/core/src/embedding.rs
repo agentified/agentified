@@ -52,6 +52,7 @@ use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStr
 use crate::embedding_config::{
     DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, OLLAMA_DEFAULT_URL, Pooling,
     endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint, local_fingerprint,
+    local_model_content_id, resolve_local_identity_files,
 };
 use crate::trace::{EmbedderLoadStatus, TraceEvent, TraceSink};
 
@@ -325,7 +326,7 @@ fn embedder_for(model: &EmbeddingModel) -> Result<ResolvedEmbedder, EmbedderErro
     static CELL: OnceLock<Mutex<HashMap<String, LoadSlot<dyn Embedder>>>> = OnceLock::new();
     let cache = CELL.get_or_init(|| Mutex::new(HashMap::new()));
     let mut notices = LoadNotices::default();
-    let (emb, load_ms) = get_or_load_keyed(cache, &model.embedder_cache_key(), || {
+    let (emb, load_ms) = get_or_load_keyed(cache, &model.embedder_cache_key()?, || {
         let (emb, n) = build_embedder(model)?;
         notices = n;
         Ok(emb)
@@ -657,30 +658,13 @@ impl CandleEmbedder {
     ) -> Result<(Self, LoadNotices), EmbedderError> {
         let device = Device::Cpu;
         let name = dir.display().to_string();
-        let config_path = dir.join("config.json");
-        let tokenizer_path = dir.join("tokenizer.json");
-        // Prefer safetensors; fall back to a pickled `pytorch_model.bin`.
-        let weights_path = [dir.join("model.safetensors"), dir.join("pytorch_model.bin")]
-            .into_iter()
-            .find(|p| p.exists())
-            .ok_or_else(|| EmbedderError::Load {
-                model: name.clone(),
-                source: format!("missing model.safetensors / pytorch_model.bin in {name}"),
-            })?;
-        for (p, f) in [
-            (&config_path, "config.json"),
-            (&tokenizer_path, "tokenizer.json"),
-        ] {
-            if !p.exists() {
-                return Err(EmbedderError::Load {
-                    model: name.clone(),
-                    source: format!(
-                        "missing {f} in {name} — a fast tokenizer.json is required; run \
-                         tokenizer.save_pretrained() upstream, or serve the model via an endpoint"
-                    ),
-                });
+        let files = resolve_local_identity_files(dir)?;
+        let (config_path, tokenizer_path, weights_path) = match files.as_slice() {
+            [config, tokenizer, weights, ..] => {
+                (config.clone(), tokenizer.clone(), weights.clone())
             }
-        }
+            _ => unreachable!("resolve_local_identity_files always yields config/tokenizer/weights"),
+        };
 
         let detected =
             pooling_override.or_else(|| detect_pooling_file(&dir.join("1_Pooling/config.json")));
@@ -696,12 +680,13 @@ impl CandleEmbedder {
             weights: weights_path,
             pooling,
         };
+        let content_id = local_model_content_id(dir)?;
         let embedder = Self::build(
             device,
             &loaded,
             query_prefix,
             doc_prefix,
-            local_fingerprint(&name),
+            local_fingerprint(&content_id),
             &name,
         )?;
         Ok((embedder, notices))
