@@ -553,32 +553,53 @@ impl SkillRegistry {
 
     /// Load corpus vectors from a build-time embedding artifact, then apply [`OnArtifactMiss`].
     ///
+    /// For [`OnArtifactMiss::Embed`], reuse commit and embedding of missing ids run
+    /// under one dense operation write lock so semantic search cannot observe a
+    /// partially warmed cache. This is serialization only — if the follow-up
+    /// embed fails after reuse commit, prior committed vectors are retained
+    /// (no rollback).
+    ///
     /// # Errors
     ///
     /// [`ArtifactWarmError::Warm`] from parse / kind / model-mismatch during warm;
     /// [`ArtifactWarmError::Incomplete`] when `on_miss` is [`OnArtifactMiss::Error`]
     /// and some corpus ids were not reused; [`ArtifactWarmError::Embedder`] when
-    /// `on_miss` is [`OnArtifactMiss::Embed`] and the follow-up [`Self::build_embeddings`]
-    /// fails.
+    /// `on_miss` is [`OnArtifactMiss::Embed`] and embedding the missing ids fails.
     pub fn warm_embeddings_from_artifact(
         &self,
         bytes: &[u8],
         on_miss: OnArtifactMiss,
     ) -> Result<(), ArtifactWarmError> {
-        let outcome = self.dense.warm_from_artifact(
-            bytes,
-            ArtifactEntryKind::Skill,
-            self.skills.values(),
-            self.sink.as_ref(),
-        )?;
-        if outcome.missing.is_empty() {
-            return Ok(());
-        }
         match on_miss {
-            OnArtifactMiss::Error => Err(ArtifactWarmError::Incomplete {
-                missing: outcome.missing,
+            OnArtifactMiss::Error => {
+                let outcome = self.dense.warm_from_artifact(
+                    bytes,
+                    ArtifactEntryKind::Skill,
+                    self.skills.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ArtifactWarmError::Incomplete {
+                        missing: outcome.missing,
+                    })
+                }
+            }
+            OnArtifactMiss::Embed => self.dense.with_operation_write(|cache| {
+                let outcome = cache.warm_from_artifact_locked(
+                    bytes,
+                    ArtifactEntryKind::Skill,
+                    self.skills.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    return Ok(());
+                }
+                cache
+                    .extend_locked(self.skills.values(), self.sink.as_ref())
+                    .map_err(ArtifactWarmError::from)
             }),
-            OnArtifactMiss::Embed => self.build_embeddings().map_err(ArtifactWarmError::from),
         }
     }
 

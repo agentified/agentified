@@ -545,32 +545,53 @@ impl ToolRegistry {
 
     /// Load corpus vectors from a build-time embedding artifact, then apply [`OnArtifactMiss`].
     ///
+    /// For [`OnArtifactMiss::Embed`], reuse commit and embedding of missing ids run
+    /// under one dense operation write lock so semantic search cannot observe a
+    /// partially warmed cache. This is serialization only — if the follow-up
+    /// embed fails after reuse commit, prior committed vectors are retained
+    /// (no rollback).
+    ///
     /// # Errors
     ///
     /// [`ArtifactWarmError::Warm`] from parse / kind / model-mismatch during warm;
     /// [`ArtifactWarmError::Incomplete`] when `on_miss` is [`OnArtifactMiss::Error`]
     /// and some corpus ids were not reused; [`ArtifactWarmError::Embedder`] when
-    /// `on_miss` is [`OnArtifactMiss::Embed`] and the follow-up [`Self::build_embeddings`]
-    /// fails.
+    /// `on_miss` is [`OnArtifactMiss::Embed`] and embedding the missing ids fails.
     pub fn warm_embeddings_from_artifact(
         &self,
         bytes: &[u8],
         on_miss: OnArtifactMiss,
     ) -> Result<(), ArtifactWarmError> {
-        let outcome = self.dense.warm_from_artifact(
-            bytes,
-            ArtifactEntryKind::Tool,
-            self.tools.values(),
-            self.sink.as_ref(),
-        )?;
-        if outcome.missing.is_empty() {
-            return Ok(());
-        }
         match on_miss {
-            OnArtifactMiss::Error => Err(ArtifactWarmError::Incomplete {
-                missing: outcome.missing,
+            OnArtifactMiss::Error => {
+                let outcome = self.dense.warm_from_artifact(
+                    bytes,
+                    ArtifactEntryKind::Tool,
+                    self.tools.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ArtifactWarmError::Incomplete {
+                        missing: outcome.missing,
+                    })
+                }
+            }
+            OnArtifactMiss::Embed => self.dense.with_operation_write(|cache| {
+                let outcome = cache.warm_from_artifact_locked(
+                    bytes,
+                    ArtifactEntryKind::Tool,
+                    self.tools.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    return Ok(());
+                }
+                cache
+                    .extend_locked(self.tools.values(), self.sink.as_ref())
+                    .map_err(ArtifactWarmError::from)
             }),
-            OnArtifactMiss::Embed => self.build_embeddings().map_err(ArtifactWarmError::from),
         }
     }
 
@@ -2043,6 +2064,92 @@ mod tests {
         assert!(
             reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
                 .is_ok()
+        );
+    }
+
+    /// Blocks inside the Embed-on-miss batch so a concurrent semantic search can
+    /// try to observe the post-reuse / pre-extend window.
+    struct WarmEmbedRaceEmbedder {
+        fingerprint: String,
+        embed_entered: mpsc::Sender<()>,
+        release_embed: Barrier,
+    }
+
+    impl Embedder for WarmEmbedRaceEmbedder {
+        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(StubEmbedder::vec_for(text))
+        }
+
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(StubEmbedder::vec_for(text))
+        }
+
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            self.embed_entered.send(()).unwrap();
+            self.release_embed.wait();
+            Ok(Embedded {
+                value: texts.iter().map(|t| StubEmbedder::vec_for(t)).collect(),
+                fingerprint: self.fingerprint.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn warm_embed_holds_operation_lock_across_reuse_and_missing_embed() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = tool_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
+
+        let (embed_entered_tx, embed_entered_rx) = mpsc::channel();
+        let embedder = Arc::new(WarmEmbedRaceEmbedder {
+            fingerprint: "fp-warm".into(),
+            embed_entered: embed_entered_tx,
+            release_embed: Barrier::new(2),
+        });
+        let mut reg = with_embedder(embedder.clone());
+        reg.register(a);
+        reg.register(b);
+        let reg = Arc::new(reg);
+
+        let warm_reg = reg.clone();
+        let warm = std::thread::spawn(move || {
+            warm_reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed)
+        });
+
+        embed_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Embed follow-up must enter embed_batch while holding the write lock");
+
+        let (search_done_tx, search_done_rx) = mpsc::channel();
+        let search_reg = reg.clone();
+        let search = std::thread::spawn(move || {
+            let result =
+                search_reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic);
+            search_done_tx.send(()).unwrap();
+            result
+        });
+
+        let observed_mid_warm = search_done_rx
+            .recv_timeout(Duration::from_millis(500))
+            .is_ok();
+        assert!(
+            !observed_mid_warm,
+            "semantic search must not complete between partial warm reuse and Embed follow-up"
+        );
+
+        embedder.release_embed.wait();
+        warm.join().unwrap().unwrap();
+        let hits = search.join().unwrap().unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.tool_id.as_str()),
+            Some("read_file")
         );
     }
 

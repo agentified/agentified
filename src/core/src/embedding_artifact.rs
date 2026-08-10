@@ -315,6 +315,15 @@ pub(crate) fn load_and_validate(
             got: bytes.len(),
         });
     }
+    if bytes.len() > needed {
+        return Err(ArtifactError::CorruptPayload {
+            at: payload_len,
+            detail: format!(
+                "{} trailing bytes after artifact",
+                bytes.len() - needed
+            ),
+        });
+    }
 
     let payload = &bytes[FILE_PREFIX_LEN..needed];
     let computed = Sha256::digest(payload);
@@ -466,6 +475,35 @@ fn decode_payload(
     let dim = read_u32(payload, &mut cursor)? as usize;
     let model_fingerprint = read_utf8(payload, &mut cursor)?;
     let entry_count = read_u32(payload, &mut cursor)? as usize;
+
+    // Reject absurd dim/entry_count before Vec::with_capacity: each entry needs at
+    // least kind(1) + id_len(4) + hash(32) + dim*f32 (empty id). Checked math only —
+    // no arbitrary global size caps.
+    let remaining = payload.len().saturating_sub(cursor);
+    let vector_bytes = dim.checked_mul(4).ok_or(ArtifactError::CorruptPayload {
+        at: cursor,
+        detail: "dim*4 overflow".into(),
+    })?;
+    let min_entry = (1usize + 4 + 32)
+        .checked_add(vector_bytes)
+        .ok_or(ArtifactError::CorruptPayload {
+            at: cursor,
+            detail: "min entry size overflow".into(),
+        })?;
+    let min_total = entry_count
+        .checked_mul(min_entry)
+        .ok_or(ArtifactError::CorruptPayload {
+            at: cursor,
+            detail: "entry_count*min_entry overflow".into(),
+        })?;
+    if min_total > remaining {
+        return Err(ArtifactError::CorruptPayload {
+            at: cursor,
+            detail: format!(
+                "entries need at least {min_total} bytes but only {remaining} remain"
+            ),
+        });
+    }
 
     let mut entries = Vec::with_capacity(entry_count);
     for _ in 0..entry_count {
@@ -843,6 +881,59 @@ mod tests {
         assert!(matches!(
             load_and_validate(&file),
             Err(ArtifactError::CorruptPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn absurd_entry_count_with_valid_checksum_is_rejected_before_allocation() {
+        let mut payload = Vec::new();
+        write_u32(&mut payload, projection_version());
+        write_u32(&mut payload, 2);
+        write_utf8(&mut payload, "fp", 0).unwrap();
+        write_u32(&mut payload, u32::MAX);
+
+        let file = assemble_file(&payload).unwrap();
+        assert!(matches!(
+            load_and_validate(&file),
+            Err(ArtifactError::CorruptPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn absurd_dim_with_valid_checksum_is_rejected_before_allocation() {
+        let mut payload = Vec::new();
+        write_u32(&mut payload, projection_version());
+        write_u32(&mut payload, u32::MAX);
+        write_utf8(&mut payload, "fp", 0).unwrap();
+        write_u32(&mut payload, 1);
+        // Minimal entry prefix so decode reaches the dim capacity path conceptually;
+        // the pre-check must reject before allocating dim floats.
+        payload.push(0);
+        let id_at = payload.len();
+        write_utf8(&mut payload, "x", id_at).unwrap();
+        payload.extend_from_slice(&[0u8; 32]);
+
+        let file = assemble_file(&payload).unwrap();
+        assert!(matches!(
+            load_and_validate(&file),
+            Err(ArtifactError::CorruptPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn trailing_bytes_after_artifact_are_rejected() {
+        let items = [stub_item("a", "alpha")];
+        let bytes = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
+        let mut with_garbage = bytes.clone();
+        with_garbage.push(0xFF);
+        assert!(matches!(
+            load_and_validate(&with_garbage),
+            Err(ArtifactError::CorruptPayload { at, .. }) if at == bytes.len()
         ));
     }
 

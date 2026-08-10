@@ -224,6 +224,17 @@ impl DenseCache {
         Ok(())
     }
 
+    /// Run `f` while holding the dense operation write lock. Used by registries to
+    /// compose warm + optional extend without releasing between steps (and without
+    /// re-entering [`Self::extend`], which would deadlock on this non-reentrant lock).
+    pub(crate) fn with_operation_write<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+        let _guard = self
+            .operation_lock
+            .write()
+            .expect("dense operation lock poisoned");
+        f(self)
+    }
+
     /// Load vectors from a build-time embedding artifact for corpus ids whose
     /// projection text still matches, without running inference on those ids.
     ///
@@ -239,11 +250,20 @@ impl DenseCache {
         items: impl IntoIterator<Item = &'a T>,
         sink: &dyn TraceSink,
     ) -> Result<WarmOutcome, WarmError> {
-        let _build = self
-            .operation_lock
-            .write()
-            .expect("dense operation lock poisoned");
+        self.with_operation_write(|cache| {
+            cache.warm_from_artifact_locked(bytes, expected_kind, items, sink)
+        })
+    }
 
+    /// Like [`Self::warm_from_artifact`], but assumes the caller already holds
+    /// [`Self::operation_lock`] for write.
+    pub(crate) fn warm_from_artifact_locked<'a, T: Embeddable + 'a>(
+        &self,
+        bytes: &[u8],
+        expected_kind: ArtifactEntryKind,
+        items: impl IntoIterator<Item = &'a T>,
+        sink: &dyn TraceSink,
+    ) -> Result<WarmOutcome, WarmError> {
         let (header, entries) = load_and_validate(bytes)?;
         // Known other kinds are ignored so one mixed RAT1 can warm either registry.
         let by_id: HashMap<&str, &ArtifactEntry> = entries
@@ -355,10 +375,16 @@ impl DenseCache {
         items: impl IntoIterator<Item = &'a T>,
         sink: &dyn TraceSink,
     ) -> Result<(), EmbedderError> {
-        let _build = self
-            .operation_lock
-            .write()
-            .expect("dense operation lock poisoned");
+        self.with_operation_write(|cache| cache.extend_locked(items, sink))
+    }
+
+    /// Like [`Self::extend`], but assumes the caller already holds
+    /// [`Self::operation_lock`] for write.
+    pub(crate) fn extend_locked<'a, T: Embeddable + 'a>(
+        &self,
+        items: impl IntoIterator<Item = &'a T>,
+        sink: &dyn TraceSink,
+    ) -> Result<(), EmbedderError> {
         // Gather the not-yet-cached ids so a fully-cached corpus never loads the
         // model (empty batch → early return).
         let missing: Vec<(String, String)> = {
