@@ -77,6 +77,7 @@
 mod dense_cache;
 mod dense_search;
 mod embedding;
+mod embedding_artifact;
 mod embedding_config;
 mod fusion;
 mod indexing;
