@@ -23,16 +23,16 @@ stay byte-for-byte identical.
 
 **The embedding model is configurable per catalog, declared once at
 construction, via an `EmbeddingModel` enum resolved from a cross-SDK spec.** The
-model is used for *both* document and query embedding, so the two sides can never
+model is used for _both_ document and query embedding, so the two sides can never
 land in different vector spaces.
 
 - **Four sources.** `Default` (the pinned bge-small, unchanged); `HuggingFace {
-  repo, revision }` and `Local { path }` — BERT-family models run in-process via
+repo, revision }` and `Local { path }` — BERT-family models run in-process via
   Candle; `Endpoint { url, model, api_key_env }` — an OpenAI-compatible
   `/embeddings` HTTP call (OpenAI, **Ollama**, TEI, vLLM), the only path that
   supports non-BERT models. `revision` is optional (defaults to `main`).
 - **Explicit source, no `kind` field.** A bare string is a **local model
-  directory path**; every other source is an object whose *key* names it —
+  directory path**; every other source is an object whose _key_ names it —
   `{huggingface}` / `{local}` / `{ollama}` / `{url, model}` — symmetric across
   the board (a repo-id-looking or URL string is rejected with a pointer to the
   right object form, rather than guessed). Resolution and all validation live in
@@ -41,7 +41,7 @@ land in different vector spaces.
   are never mistaken for URLs (the URL rule requires `://`).
 - **Per-catalog, deduplicated by client identity.** The global one-model singleton
   becomes a process-wide cache keyed by model configuration. Endpoint client keys
-  include the `api_key_env` *name*, never its secret value, preventing credential
+  include the `api_key_env` _name_, never its secret value, preventing credential
   cross-talk. Vector identity is separate: URL, resolved response model, pooling,
   and prefixes define the vector space. A failed load is not cached (retries),
   preserving ADR-0011's non-poisoning contract.
@@ -79,7 +79,7 @@ land in different vector spaces.
   or the caller opts in with `download=true`. A missing one errors as
   `EmbedderError::NotCached` with a `huggingface-cli download …` hint — symmetric
   with Ollama's "not pulled", so a `register()` never silently pulls a multi-GB
-  model on the user's behalf. When a download *does* happen (the default, or an
+  model on the user's behalf. When a download _does_ happen (the default, or an
   opt-in), a cold fetch emits a `TraceEvent::EmbedderDownload` with the **actual
   byte size** plus a stderr notice, so it is never silent.
 - **Non-BERT in an in-process source** (`local`/`huggingface`) fails
@@ -113,4 +113,4 @@ land in different vector spaces.
   embedding artifact needs to validate the model after that remount. Digests are
   memoized against file `(len, mtime)` so warm process-cache lookups do not
   re-read weight bytes.
-- **Known limitation, addressed in [ADR-0016](0016-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0016 adds a persistent build-time artifact keyed by the fingerprint already stamped on the cache. Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
+- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0016 adds a persistent build-time artifact keyed by the fingerprint already stamped on the cache. Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
