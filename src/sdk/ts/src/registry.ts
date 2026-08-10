@@ -11,7 +11,7 @@ import {
   type Tool,
 } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { mapEmbedderError } from "./errors.js";
+import { mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 
 export { IntentGraph };
 
@@ -94,6 +94,35 @@ export class ToolRegistry {
       throw mapEmbedderError(error);
     }
     this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Build a binary embedding artifact from the registered corpus (ADR-0016).
+   * Embedding for the artifact is independent of the mutable dense cache —
+   * it does not consume or update cached vectors. Returns a Node `Buffer`
+   * suitable for `fs.writeFile`. Independent of the registry's search method
+   * (works with `"bm25"` as well as `"semantic"`/`"hybrid"`).
+   */
+  async buildEmbeddingArtifact(): Promise<Buffer> {
+    try {
+      return await this.native.buildEmbeddingArtifact();
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+  }
+
+  /**
+   * Warm the dense cache from a build-time embedding artifact (ADR-0016).
+   * `onMiss` is `"error"` (fail with {@link ArtifactWarmError} / `"Incomplete"`
+   * when some corpus ids are uncovered) or `"embed"` (embed only the missing
+   * ids). Independent of the registry's search method.
+   */
+  async warmEmbeddingsFromArtifact(bytes: Buffer, onMiss: "error" | "embed"): Promise<void> {
+    try {
+      await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
+    } catch (error) {
+      throw mapArtifactWarmError(error);
+    }
   }
 
   /**
@@ -331,6 +360,30 @@ export class SkillRegistry {
       throw mapEmbedderError(error);
     }
     this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Build a binary embedding artifact from the registered corpus — see
+   * {@link ToolRegistry.buildEmbeddingArtifact}.
+   */
+  async buildEmbeddingArtifact(): Promise<Buffer> {
+    try {
+      return await this.native.buildEmbeddingArtifact();
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+  }
+
+  /**
+   * Warm the dense cache from a build-time embedding artifact — see
+   * {@link ToolRegistry.warmEmbeddingsFromArtifact}.
+   */
+  async warmEmbeddingsFromArtifact(bytes: Buffer, onMiss: "error" | "embed"): Promise<void> {
+    try {
+      await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
+    } catch (error) {
+      throw mapArtifactWarmError(error);
+    }
   }
 
   /** Lexical BM25 search over skills — see `ToolRegistry.search`. */

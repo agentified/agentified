@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { mapEmbedderError } from "./errors.js";
-import { DimensionMismatchError, EmbedderError } from "./index.js";
+import { mapArtifactWarmError, mapEmbedderError } from "./errors.js";
+import { ArtifactWarmError, DimensionMismatchError, EmbedderError } from "./index.js";
+
+const PREFIX = "RATEL_ARTIFACT_WARM_ERROR:";
+
+function envelope(payload: unknown): Error {
+  return new Error(`${PREFIX}${JSON.stringify(payload)}`);
+}
 
 describe("mapEmbedderError", () => {
   // Each core `EmbedderError` display signature → its typed class + code.
@@ -69,5 +75,92 @@ describe("mapEmbedderError", () => {
     }
     const notError = { message: "failed to load embedding model x" };
     expect(mapEmbedderError(notError)).toBe(notError);
+  });
+});
+
+describe("mapArtifactWarmError", () => {
+  it("maps Warm from the private native envelope", () => {
+    const human = "embedding model mismatch: cache was built with A, active model is B (hint: …)";
+    const original = envelope({ code: "Warm", message: human });
+    const mapped = mapArtifactWarmError(original) as ArtifactWarmError;
+    expect(mapped).toBeInstanceOf(ArtifactWarmError);
+    expect(mapped.code).toBe("Warm");
+    expect(mapped.missing).toBeUndefined();
+    expect(mapped.message).toBe(human);
+    expect(mapped.message).not.toContain(PREFIX);
+  });
+
+  it("maps Embedder from the private native envelope", () => {
+    const human = "embedding failed: tokenizer error (hint: …)";
+    const mapped = mapArtifactWarmError(
+      envelope({ code: "Embedder", message: human }),
+    ) as ArtifactWarmError;
+    expect(mapped).toBeInstanceOf(ArtifactWarmError);
+    expect(mapped.code).toBe("Embedder");
+    expect(mapped.missing).toBeUndefined();
+    expect(mapped.message).toBe(human);
+  });
+
+  it("maps Incomplete with multiple normal ids", () => {
+    const human =
+      "embedding artifact incomplete for the current corpus: 2 id(s) missing (delete_file, write_file)";
+    const mapped = mapArtifactWarmError(
+      envelope({ code: "Incomplete", message: human, missing: ["delete_file", "write_file"] }),
+    ) as ArtifactWarmError;
+    expect(mapped).toBeInstanceOf(ArtifactWarmError);
+    expect(mapped.code).toBe("Incomplete");
+    expect(mapped.missing).toEqual(["delete_file", "write_file"]);
+    expect(mapped.message).toBe(human);
+  });
+
+  it("preserves delimiter-heavy Incomplete ids exactly", () => {
+    const missing = ["foo, bar", "name (legacy)", "x) y"];
+    const human =
+      "embedding artifact incomplete for the current corpus: 3 id(s) missing (foo, bar, name (legacy), x) y)";
+    const mapped = mapArtifactWarmError(
+      envelope({ code: "Incomplete", message: human, missing }),
+    ) as ArtifactWarmError;
+    expect(mapped.code).toBe("Incomplete");
+    expect(mapped.missing).toEqual(missing);
+  });
+
+  it("rejects Warm/Embedder envelopes that include missing", () => {
+    for (const code of ["Warm", "Embedder"] as const) {
+      const original = envelope({ code, message: "x", missing: [] });
+      expect(mapArtifactWarmError(original)).toBe(original);
+      const withNull = envelope({ code, message: "x", missing: null });
+      expect(mapArtifactWarmError(withNull)).toBe(withNull);
+    }
+  });
+
+  it("rejects Incomplete envelopes without a string[] missing", () => {
+    const noMissing = envelope({ code: "Incomplete", message: "x" });
+    expect(mapArtifactWarmError(noMissing)).toBe(noMissing);
+    const badMissing = envelope({ code: "Incomplete", message: "x", missing: [1, 2] });
+    expect(mapArtifactWarmError(badMissing)).toBe(badMissing);
+  });
+
+  it("returns the original Error for malformed JSON", () => {
+    const original = new Error(`${PREFIX}{not-json`);
+    expect(mapArtifactWarmError(original)).toBe(original);
+  });
+
+  it("returns the original Error for a wrong schema/code", () => {
+    const badCode = envelope({ code: "Nope", message: "x" });
+    expect(mapArtifactWarmError(badCode)).toBe(badCode);
+    const noMessage = envelope({ code: "Warm" });
+    expect(mapArtifactWarmError(noMessage)).toBe(noMessage);
+  });
+
+  it("passes unrelated errors through unchanged", () => {
+    const original = new Error(
+      "registry busy; await the active operation before registering more items",
+    );
+    expect(mapArtifactWarmError(original)).toBe(original);
+  });
+
+  it("passes non-Error values through unchanged", () => {
+    const notError = { message: `${PREFIX}{"code":"Warm","message":"x"}` };
+    expect(mapArtifactWarmError(notError)).toBe(notError);
   });
 });

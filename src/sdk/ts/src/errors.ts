@@ -9,6 +9,10 @@
  * `instanceof` / `code` instead of matching message text. Non-embedding errors
  * (registry-busy, lock-poison, the sync "use searchAsync" guard, and
  * construction-time config errors) are passed through unchanged.
+ *
+ * {@link ArtifactWarmError} / {@link mapArtifactWarmError} cover failures from
+ * `warmEmbeddingsFromArtifact` (ADR-0016), decoded from a private native→TS
+ * envelope (not part of the public API).
  */
 
 /**
@@ -49,6 +53,39 @@ export class DimensionMismatchError extends EmbedderError {
   constructor(message: string) {
     super(message, "DimensionMismatch");
     this.name = "DimensionMismatchError";
+  }
+}
+
+/**
+ * Failure warming a dense cache from a build-time embedding artifact
+ * (`warmEmbeddingsFromArtifact`). Prefer {@link ArtifactWarmError.code} over
+ * parsing {@link Error.message}; for `"Incomplete"`, use
+ * {@link ArtifactWarmError.missing}.
+ */
+export class ArtifactWarmError extends Error {
+  /**
+   * Stable discriminant — `"Warm"` (parse / kind / model mismatch during warm),
+   * `"Incomplete"` (corpus ids not covered, `onMiss: "error"`), or `"Embedder"`
+   * (follow-up embed failed under `onMiss: "embed"`).
+   */
+  readonly code: "Warm" | "Incomplete" | "Embedder";
+
+  /**
+   * Corpus ids not reused from the artifact. Set only when
+   * {@link ArtifactWarmError.code} is `"Incomplete"`.
+   */
+  readonly missing?: string[];
+
+  /**
+   * @param message - The underlying failure description (the core error text).
+   * @param code - The stable {@link ArtifactWarmError.code} discriminant.
+   * @param missing - Missing corpus ids when `code` is `"Incomplete"`.
+   */
+  constructor(message: string, code: "Warm" | "Incomplete" | "Embedder", missing?: string[]) {
+    super(message);
+    this.name = "ArtifactWarmError";
+    this.code = code;
+    if (missing !== undefined) this.missing = missing;
   }
 }
 
@@ -94,4 +131,46 @@ export function mapEmbedderError(error: unknown): unknown {
   return code === "DimensionMismatch"
     ? new DimensionMismatchError(message)
     : new EmbedderError(message, code);
+}
+
+/** Private NAPI→TS transport prefix — must match native `ARTIFACT_WARM_ERROR_PREFIX`. */
+const ARTIFACT_WARM_ERROR_PREFIX = "RATEL_ARTIFACT_WARM_ERROR:";
+
+type ArtifactWarmCode = "Warm" | "Incomplete" | "Embedder";
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/**
+ * Decode the private native artifact-warm envelope into a typed
+ * {@link ArtifactWarmError}. Malformed envelopes and non-warm errors are
+ * returned unchanged.
+ *
+ * @param error - The error thrown by the native binding.
+ * @returns The typed warm error, or `error` unchanged when it is not one.
+ */
+export function mapArtifactWarmError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  if (!error.message.startsWith(ARTIFACT_WARM_ERROR_PREFIX)) return error;
+  const raw = error.message.slice(ARTIFACT_WARM_ERROR_PREFIX.length);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return error;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return error;
+  const record = parsed as Record<string, unknown>;
+  const code = record.code;
+  if (code !== "Warm" && code !== "Incomplete" && code !== "Embedder") return error;
+  if (typeof record.message !== "string") return error;
+
+  if (code === "Incomplete") {
+    if (!isStringArray(record.missing)) return error;
+    return new ArtifactWarmError(record.message, "Incomplete", record.missing);
+  }
+  // Warm / Embedder: `missing` must be absent.
+  if ("missing" in record) return error;
+  return new ArtifactWarmError(record.message, code as ArtifactWarmCode);
 }
