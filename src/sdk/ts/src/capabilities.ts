@@ -322,13 +322,23 @@ export function searchCapabilitiesTool(
         topKTools?: number;
         topKSkills?: number;
       };
-      return runCapabilitiesSearch(toolCatalog, query, {
-        topKTools,
-        topKSkills,
-        skillCatalog,
-        origin: "agent",
-        upstreamServers: upstreams,
-      });
+      const { facts: _experimentalFacts, ...result } = await runCapabilitiesSearch(
+        toolCatalog,
+        query,
+        {
+          topKTools,
+          topKSkills,
+          skillCatalog,
+          origin: "agent",
+          upstreamServers: upstreams,
+        },
+      );
+      // The model-facing tool is deliberately unchanged by the experimental
+      // facts work: no `factCatalog` is ever wired in here, so the bucket would
+      // always be `[]` — and it is absent from this tool's `outputSchema`. Drop
+      // it rather than ship a key the schema doesn't declare. Facts reach the
+      // model through the host-driven `recall()` path instead.
+      return result;
     },
   };
 }

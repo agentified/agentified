@@ -258,6 +258,60 @@ describe("ratel().ground — the freshness gate", () => {
   });
 });
 
+describe("experimental quarantine on the stable path", () => {
+  it("does not warn when a host only uses tools/skills (facts are lazy)", async () => {
+    resetExperimentalWarningForTest();
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = ratel();
+    await r.tools.register({
+      id: "t1",
+      name: "t1",
+      description: "read a file from disk",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      execute: () => ({}),
+    });
+    await r.skills.register({ id: "s1", name: "s1", description: "a playbook" });
+    await r.recall("read a file");
+    r.modelTools();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("constructs the fact catalog (and warns) only on first facts use", async () => {
+    resetExperimentalWarningForTest();
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = ratel();
+    expect(spy).not.toHaveBeenCalled();
+    void r.facts; // first touch builds it
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("returns the same lazily-built catalog on every access", () => {
+    resetExperimentalWarningForTest();
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = ratel();
+    expect(r.facts).toBe(r.facts);
+    spy.mockRestore();
+  });
+
+  it("model-facing search_capabilities returns no facts key (schema parity)", async () => {
+    const r = ratel();
+    await r.tools.register({
+      id: "t1",
+      name: "t1",
+      description: "read a file from disk",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      execute: () => ({}),
+    });
+    const search = r.modelTools().search_capabilities;
+    const result = (await search.execute({ query: "read a file" })) as Record<string, unknown>;
+    expect(Object.keys(result).sort()).toEqual(["skills", "tools"]);
+  });
+});
+
 describe("ratel().recall — zero impact when no facts are registered", () => {
   it("skips the fact search entirely on an empty catalog (no fact_search span/event)", async () => {
     const r = ratel({ trace: { kind: "memory", sessionId: "t" } });

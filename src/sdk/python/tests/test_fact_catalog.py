@@ -134,7 +134,9 @@ async def test_register_accepts_the_pin_enum() -> None:
 def test_factcatalog_emits_experimental_warning_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RATEL_EXPERIMENTAL_SILENCE", raising=False)
     # The warning is once-per-process; reset the latch so this test sees it.
-    ratel_ai.fact_catalog._warned = False
+    # Via monkeypatch so the latch is restored on teardown — a bare assignment
+    # would leak `False` into later tests and re-fire the warning.
+    monkeypatch.setattr(ratel_ai.fact_catalog, "_warned", False)
     with pytest.warns(ExperimentalWarning, match="experimental"):
         FactCatalog()
     # Latched now: a second construction in the same process stays quiet.
@@ -146,7 +148,9 @@ def test_factcatalog_emits_experimental_warning_once(monkeypatch: pytest.MonkeyP
 
 def test_experimental_silence_env_suppresses_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RATEL_EXPERIMENTAL_SILENCE", "1")
-    ratel_ai.fact_catalog._warned = False
+    # The silenced path returns before latching `_warned`, so a bare assignment
+    # would leave it `False` for the rest of the process; monkeypatch restores it.
+    monkeypatch.setattr(ratel_ai.fact_catalog, "_warned", False)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         FactCatalog()

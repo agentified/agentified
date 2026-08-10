@@ -302,21 +302,21 @@ export interface Ratel {
    * ⚠️ Experimental (facts, ADR-0014). Decide which facts to (re-)inject given
    * the current transcript — the grounding freshness gate. Considers the
    * always-on tier (`experimental.FactCatalog.pinned`) plus the retrieval-gated
-   * facts `query` ranks in, then injects only those not already fresh in
-   * `transcript`: absent (`never`/`evicted`), changed (`mutated`), or past the
-   * freshness window (`stale`). Records a `fact_inject` / `fact_inject_skip`
-   * event per fact.
+   * facts `query` ranks in, then injects only those whose body is not already
+   * present in `transcript`: never injected (`never`), gone from the window
+   * (`evicted`), or changed since injection (`mutated`). Records a
+   * `fact_inject` / `fact_inject_skip` event per fact.
    *
-   * Stateless across conversations — the transcript *is* the ledger — but
-   * session-aware within one core instance: it remembers which ids it injected
-   * so it can tell `evicted` from `never`. Returns structured
-   * `experimental.GroundingItem`s (body + reason); the caller renders each `body`
-   * verbatim into the framework's message shape — its presence in the transcript
-   * is what dedupes the next turn.
+   * Stateless across conversations — the transcript *is* the record — but
+   * session-aware within one core instance: it remembers the last body injected
+   * per id, so an absent body reads as `evicted`/`mutated` rather than `never`.
+   * Returns structured `experimental.GroundingItem`s (body + reason); the caller
+   * renders each `body` verbatim into the framework's message shape — its
+   * presence in the transcript is what dedupes the next turn.
    *
    * @param query - The current turn's text, for the retrieval-gated tier.
    * @param transcript - Per-message text of the current history, oldest first.
-   * @param opts - Per-call top-K and freshness-window overrides.
+   * @param opts - Per-call top-K override.
    * @returns The facts to inject (always-on first) and the ids left fresh.
    */
   ground(
@@ -394,14 +394,24 @@ export function ratel(config: RatelConfig = {}): Ratel {
     embedding: config.embedding,
     trace: config.trace,
   });
-  // The fact catalog owns the grounding freshness state (its injected-id set),
-  // so `r.ground` is a thin delegate to `facts.ground`.
-  const facts = new FactCatalog({
-    method: config.method,
-    embedding: config.embedding,
-    trace: config.trace,
-    factsTopK: config.factsTopK,
-  });
+  // The fact catalog owns the grounding freshness state (its injected-body map),
+  // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:
+  // facts are experimental, and building one eagerly would fire the
+  // experimental-API warning at every `ratel()` call — including for the vast
+  // majority of hosts that never touch facts. First access to `r.facts` (or to
+  // `ground`/`groundSnapshot`, which go through it) creates the single shared
+  // instance; `recall` uses `factsIfLoaded()` so it never forces creation.
+  let factsCatalog: FactCatalog | undefined;
+  const facts = (): FactCatalog => {
+    factsCatalog ??= new FactCatalog({
+      method: config.method,
+      embedding: config.embedding,
+      trace: config.trace,
+      factsTopK: config.factsTopK,
+    });
+    return factsCatalog;
+  };
+  const factsIfLoaded = (): FactCatalog | undefined => factsCatalog;
   // Framework-shaped passthrough values stay in their originating views, but
   // their ids must participate in the core-wide adapted-path first-wins guard.
   const claimedAdaptedToolIds = new Set<string>();
@@ -462,7 +472,9 @@ export function ratel(config: RatelConfig = {}): Ratel {
       topKTools: config.recallTopK, // capped/validated inside runCapabilitiesSearch
       topKFacts: config.factsTopK,
       skillCatalog: skills,
-      factCatalog: facts,
+      // Only when facts were actually used — recall never forces the catalog
+      // into existence (and so never trips the experimental warning).
+      factCatalog: factsIfLoaded(),
       origin: "direct",
     });
     return result.tools.groups.length === 0 &&
@@ -479,9 +491,9 @@ export function ratel(config: RatelConfig = {}): Ratel {
     query: string,
     transcript: readonly string[],
     opts?: GroundOptions,
-  ): Promise<GroundingResult> => facts.ground(query, transcript, opts);
+  ): Promise<GroundingResult> => facts().ground(query, transcript, opts);
   const groundSnapshot = (query: string, opts?: GroundOptions): Promise<GroundingSnapshotItem[]> =>
-    facts.groundSnapshot(query, opts);
+    facts().groundSnapshot(query, opts);
 
   function adaptTo<A extends RatelAdapter>(adapter: A): AdaptedRatel<A> {
     assertAdapter(adapter);
@@ -537,7 +549,11 @@ export function ratel(config: RatelConfig = {}): Ratel {
     const base: AdaptedBase<unknown, unknown> = {
       tools: adaptedTools,
       skills,
-      facts,
+      // Getter, not a value: touching `.facts` is what constructs the (shared)
+      // catalog, so a view that never uses facts never builds one.
+      get facts() {
+        return facts();
+      },
       ground,
       groundSnapshot,
       modelTools() {
@@ -559,7 +575,18 @@ export function ratel(config: RatelConfig = {}): Ratel {
     return { ...base, ...ext } as AdaptedRatel<A>;
   }
 
-  return { tools, skills, facts, modelTools, recall, ground, groundSnapshot, adaptTo };
+  return {
+    tools,
+    skills,
+    get facts() {
+      return facts();
+    },
+    modelTools,
+    recall,
+    ground,
+    groundSnapshot,
+    adaptTo,
+  };
 }
 
 /** Reject a reserved capability-tool id (the funnel's vocabulary can't be shadowed). */

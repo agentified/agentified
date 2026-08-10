@@ -157,7 +157,14 @@ experimental`; `ratel_ai.experimental` in Python), never the root export, so any
 explicit at the import site. Constructing a `FactCatalog` logs a one-time warning (silence:
 `RATEL_EXPERIMENTAL_SILENCE`). The `ratel()` touchpoints that can't move off the stable object
 (`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`, the recall `facts` bucket)
-are tagged "⚠️ Experimental" in their docs. The freshness gate lives on `FactCatalog.ground` (it
+are tagged "⚠️ Experimental" in their docs, and **`r.facts` is lazy**: the catalog is constructed
+on first access, so a host that never touches facts never builds one and never sees the
+experimental warning. `recall()` likewise consults the catalog only if it already exists. Two
+further boundaries keep the experiment off the stable path: the fact search is skipped on an empty
+catalog (no extra work, no extra `ratel.search` span), and the **model-facing `search_capabilities`
+tool is untouched in both SDKs** — its result carries no `facts` key, so the model's tool contract
+is byte-identical to before. Facts are host-driven by design: the host decides what is true and
+injects it, rather than the model discovering it through a tool. The freshness gate lives on `FactCatalog.ground` (it
 owns the fact state); `r.ground`/`r.groundSnapshot` are thin delegates. Adapter ergonomics — an
 `appendGrounding` and facts riding `prepareStep` — are deliberately deferred to graduation, so
 experimental API never enters the released adapter packages. Graduation is non-breaking: add the
