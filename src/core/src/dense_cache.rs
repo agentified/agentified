@@ -21,8 +21,68 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::dense_search::dense_search;
 use crate::embedding::{Embedder, EmbedderError, embedder_with_telemetry};
+use crate::embedding_artifact::{
+    ArtifactEntry, ArtifactEntryKind, ArtifactError, build_empty_artifact, hash_projection_text,
+    load_and_validate,
+};
 use crate::embedding_config::EmbeddingModel;
 use crate::trace::{TraceEvent, TraceSink};
+
+/// Single-input placeholder for the Endpoint identity probe.
+const ARTIFACT_WARM_PROBE_TEXT: &str = "__ratel_artifact_probe__";
+
+/// Result of [`DenseCache::warm_from_artifact`]: which corpus ids were taken from
+/// the artifact and which still need embedding (or another policy) by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WarmOutcome {
+    /// Corpus ids whose artifact vectors were committed.
+    pub reused: Vec<String>,
+    /// Corpus ids with no usable artifact entry (absent or projection_hash mismatch).
+    pub missing: Vec<String>,
+}
+
+/// Failure loading or applying an embedding artifact into the dense cache.
+#[derive(Debug, Clone)]
+pub enum WarmError {
+    /// Binary artifact failed [`crate::embedding_artifact::load_and_validate`].
+    Artifact(ArtifactError),
+    /// Embedder load, identity probe, or dimension check failed during warm.
+    Embedder(EmbedderError),
+    /// An entry's kind did not match the kind expected by the caller.
+    UnexpectedEntryKind {
+        /// Kind the caller required (tool or skill registry).
+        expected: ArtifactEntryKind,
+        /// Kind found on the offending artifact entry.
+        got: ArtifactEntryKind,
+    },
+}
+
+impl std::fmt::Display for WarmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WarmError::Artifact(e) => write!(f, "{e}"),
+            WarmError::Embedder(e) => write!(f, "{e}"),
+            WarmError::UnexpectedEntryKind { expected, got } => write!(
+                f,
+                "embedding artifact entry kind {got:?} does not match expected {expected:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WarmError {}
+
+impl From<ArtifactError> for WarmError {
+    fn from(value: ArtifactError) -> Self {
+        Self::Artifact(value)
+    }
+}
+
+impl From<EmbedderError> for WarmError {
+    fn from(value: EmbedderError) -> Self {
+        Self::Embedder(value)
+    }
+}
 
 /// An item the cache can embed and rank: its stable id and the flat searchable
 /// text fed to the embedder. Implemented by `Tool` and `Skill` in their
@@ -84,10 +144,21 @@ impl DenseCache {
 
     #[cfg(test)]
     pub(crate) fn with_embedder(embedder: Arc<dyn Embedder>) -> Self {
+        Self::with_embedder_and_model(embedder, EmbeddingModel::Default)
+    }
+
+    /// Test helper that tags the cache with an [`EmbeddingModel`] variant while
+    /// still injecting a stub embedder — needed to exercise Endpoint warm probe
+    /// logic without a real network client.
+    #[cfg(test)]
+    pub(crate) fn with_embedder_and_model(
+        embedder: Arc<dyn Embedder>,
+        model: EmbeddingModel,
+    ) -> Self {
         Self {
             state: Mutex::new(DenseCacheState::default()),
             operation_lock: RwLock::new(()),
-            model: EmbeddingModel::Default,
+            model,
             embedder_override: Some(embedder),
         }
     }
@@ -162,6 +233,132 @@ impl DenseCache {
             return Err(EmbedderError::EmbeddingsNotBuilt);
         }
         Ok(())
+    }
+
+    /// Load vectors from a build-time embedding artifact for corpus ids whose
+    /// projection text still matches, without running inference on those ids.
+    ///
+    /// Matching (id + projection hash) runs before any embedder load. If nothing
+    /// can be reused, returns immediately with all corpus ids in `missing`.
+    /// Model identity is checked only when there is at least one reuse candidate
+    /// (Local/HF via resolved `fingerprint()`; Endpoint may probe once).
+    /// Does not call [`Self::extend`] — the caller decides how to cover `missing`.
+    pub(crate) fn warm_from_artifact<'a, T: Embeddable + 'a>(
+        &self,
+        bytes: &[u8],
+        expected_kind: ArtifactEntryKind,
+        items: impl IntoIterator<Item = &'a T>,
+        sink: &dyn TraceSink,
+    ) -> Result<WarmOutcome, WarmError> {
+        let _build = self
+            .operation_lock
+            .write()
+            .expect("dense operation lock poisoned");
+
+        let (header, entries) = load_and_validate(bytes)?;
+        for entry in &entries {
+            if entry.kind != expected_kind {
+                return Err(WarmError::UnexpectedEntryKind {
+                    expected: expected_kind,
+                    got: entry.kind,
+                });
+            }
+        }
+
+        let by_id: HashMap<&str, &ArtifactEntry> =
+            entries.iter().map(|e| (e.id.as_str(), e)).collect();
+
+        let mut reused: Vec<(String, Vec<f32>)> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+        for item in items {
+            let id = item.embed_id();
+            let text = item.embed_text();
+            match by_id.get(id) {
+                Some(entry) if entry.projection_hash == hash_projection_text(&text) => {
+                    reused.push((id.to_string(), entry.vector.clone()));
+                }
+                _ => missing.push(id.to_string()),
+            }
+        }
+
+        if reused.is_empty() {
+            return Ok(WarmOutcome {
+                reused: Vec::new(),
+                missing,
+            });
+        }
+
+        let embedder = self.resolve_embedder(sink)?;
+        let mut active = embedder.fingerprint();
+        if matches!(self.model, EmbeddingModel::Endpoint { .. })
+            && active != header.model_fingerprint
+        {
+            let probed = embedder.embed_batch_with_identity(&[ARTIFACT_WARM_PROBE_TEXT.into()])?;
+            active = probed.fingerprint;
+        }
+        if active != header.model_fingerprint {
+            let built = header.model_fingerprint.clone();
+            sink.record(TraceEvent::EmbedderModelMismatch {
+                built: built.clone(),
+                active: active.clone(),
+            });
+            return Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active,
+            }));
+        }
+
+        let staged: Vec<Vec<f32>> = reused.iter().map(|(_, v)| v.clone()).collect();
+        let existing_dim = self.state.lock().expect("dense cache mutex poisoned").dim;
+        let expected_dim = validate_batch(
+            &staged,
+            reused.len(),
+            Some(existing_dim.unwrap_or(header.dim)),
+            &header.model_fingerprint,
+        )?;
+
+        let mut state = self.state.lock().expect("dense cache mutex poisoned");
+        if let Some(built) = &state.built_fingerprint
+            && built != &header.model_fingerprint
+        {
+            let built = built.clone();
+            let active = header.model_fingerprint.clone();
+            sink.record(TraceEvent::EmbedderModelMismatch {
+                built: built.clone(),
+                active: active.clone(),
+            });
+            return Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active,
+            }));
+        }
+        state.dim.get_or_insert(expected_dim);
+        state
+            .built_fingerprint
+            .get_or_insert(header.model_fingerprint.clone());
+        let reused_ids: Vec<String> = reused.iter().map(|(id, _)| id.clone()).collect();
+        state.vectors.extend(reused);
+        Ok(WarmOutcome {
+            reused: reused_ids,
+            missing,
+        })
+    }
+
+    /// Serialize corpus embeddings into a build-time artifact. Does not take
+    /// [`Self::operation_lock`] (does not touch cache state). An empty corpus
+    /// returns a valid zero-entry artifact without resolving the embedder.
+    pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
+        &self,
+        kind: ArtifactEntryKind,
+        items: impl IntoIterator<Item = &'a T>,
+        sink: &dyn TraceSink,
+    ) -> Result<Vec<u8>, ArtifactError> {
+        let corpus: Vec<&T> = items.into_iter().collect();
+        if corpus.is_empty() {
+            return build_empty_artifact();
+        }
+        let embedder = self.resolve_embedder(sink)?;
+        crate::embedding_artifact::build_artifact(kind, corpus, embedder.as_ref())
     }
 
     /// Embed any item whose id is not yet cached and insert it by id — the
@@ -727,5 +924,333 @@ mod tests {
         );
         cache.extend(&items, &NoopSink).unwrap();
         assert!(cache.require_built(items.len()).is_ok());
+    }
+
+    fn unit2(v: [f32; 2]) -> Vec<f32> {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / norm).collect()
+    }
+
+    /// Builds artifacts with a fixed identity and explicit per-item vectors.
+    struct ArtifactBuildStub {
+        fingerprint: String,
+        vectors: Vec<Vec<f32>>,
+    }
+
+    impl Embedder for ArtifactBuildStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact build uses batch")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact build uses batch")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert_eq!(texts.len(), self.vectors.len());
+            Ok(Embedded {
+                value: self.vectors.clone(),
+                fingerprint: self.fingerprint.clone(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    /// Resolves identity without inference — panics if any embed path is hit.
+    struct PanicOnEmbedStub {
+        fingerprint: String,
+    }
+
+    impl Embedder for PanicOnEmbedStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_doc must not be called during pure warm")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_query must not be called during pure warm")
+        }
+        fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+            panic!("embed_batch must not be called during pure warm")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            _texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            panic!("embed_batch_with_identity must not be called during pure warm")
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    /// Endpoint probe stub: static `fingerprint()`, probe identity via batch.
+    struct EndpointProbeStub {
+        static_fingerprint: String,
+        probe_fingerprint: String,
+        probe_calls: AtomicUsize,
+        allow_probe: bool,
+    }
+
+    impl Embedder for EndpointProbeStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_doc must not be called")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_query must not be called")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert!(
+                self.allow_probe,
+                "Endpoint probe must not run when static fingerprint already matches"
+            );
+            assert_eq!(texts.len(), 1);
+            self.probe_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Embedded {
+                value: vec![unit2([1.0, 0.0])],
+                fingerprint: self.probe_fingerprint.clone(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.static_fingerprint.clone()
+        }
+    }
+
+    /// Like [`CountingStub`] but with a fixed fingerprint for warm+extend chains.
+    struct CountingFpStub {
+        fingerprint: String,
+        docs: AtomicUsize,
+    }
+
+    impl Embedder for CountingFpStub {
+        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            self.docs.fetch_add(1, Ordering::SeqCst);
+            Ok(vec_for(text))
+        }
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(vec_for(text))
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    fn sample_endpoint_model() -> EmbeddingModel {
+        EmbeddingModel::Endpoint {
+            url: "http://example.test/v1/embeddings".into(),
+            model: "configured-model".into(),
+            api_key_env: None,
+            query_prefix: None,
+            doc_prefix: None,
+        }
+    }
+
+    fn build_tool_artifact(items: &[Doc], fingerprint: &str, vectors: Vec<Vec<f32>>) -> Vec<u8> {
+        let embedder = ArtifactBuildStub {
+            fingerprint: fingerprint.into(),
+            vectors,
+        };
+        crate::embedding_artifact::build_artifact(ArtifactEntryKind::Tool, items, &embedder)
+            .unwrap()
+    }
+
+    #[test]
+    fn warm_reuses_matching_id_and_hash_without_calling_embedder() {
+        let items = [doc("a", "read"), doc("b", "write")];
+        let bytes = build_tool_artifact(
+            &items,
+            "fp-warm",
+            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0])],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a", "b"]);
+        assert!(outcome.missing.is_empty());
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-warm"));
+        assert_eq!(cache.dim(), Some(2));
+        assert!(cache.require_built(items.len()).is_ok());
+    }
+
+    #[test]
+    fn warm_reports_missing_when_id_absent_from_artifact() {
+        let artifact_items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&artifact_items, "fp-warm", vec![unit2([1.0, 0.0])]);
+        let corpus = [doc("a", "read"), doc("b", "write")];
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a"]);
+        assert_eq!(outcome.missing, vec!["b"]);
+        assert!(cache.require_built(1).is_ok());
+        assert!(matches!(
+            cache.require_built(2),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
+    }
+
+    #[test]
+    fn warm_reports_missing_when_projection_hash_differs() {
+        let bytes = build_tool_artifact(&[doc("a", "read")], "fp-warm", vec![unit2([1.0, 0.0])]);
+        let corpus = [doc("a", "read changed")];
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
+            .unwrap();
+        assert!(outcome.reused.is_empty());
+        assert_eq!(outcome.missing, vec!["a"]);
+        assert!(cache.built_fingerprint().is_none());
+        assert!(cache.dim().is_none());
+    }
+
+    #[test]
+    fn warm_model_fingerprint_mismatch_leaves_cache_untouched() {
+        let items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&items, "fp-artifact", vec![unit2([1.0, 0.0])]);
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-active".into(),
+        }));
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
+            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active
+            })) if built == "fp-artifact" && active == "fp-active"
+        ));
+        assert!(cache.built_fingerprint().is_none());
+        assert!(cache.dim().is_none());
+        assert!(matches!(
+            cache.require_built(1),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
+    }
+
+    #[test]
+    fn warm_rejects_unexpected_entry_kind() {
+        let items = [doc("a", "read")];
+        let embedder = ArtifactBuildStub {
+            fingerprint: "fp-warm".into(),
+            vectors: vec![unit2([1.0, 0.0])],
+        };
+        let bytes =
+            crate::embedding_artifact::build_artifact(ArtifactEntryKind::Skill, &items, &embedder)
+                .unwrap();
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
+            Err(WarmError::UnexpectedEntryKind {
+                expected: ArtifactEntryKind::Tool,
+                got: ArtifactEntryKind::Skill,
+            })
+        ));
+        assert!(cache.built_fingerprint().is_none());
+    }
+
+    #[test]
+    fn warm_then_extend_embeds_only_missing_ids() {
+        let artifact_items = [doc("a", "read file")];
+        let bytes = build_tool_artifact(&artifact_items, "fp-warm", vec![unit2([1.0, 0.0])]);
+        let corpus = [doc("a", "read file"), doc("b", "write file")];
+
+        let count_stub = Arc::new(CountingFpStub {
+            fingerprint: "fp-warm".into(),
+            docs: AtomicUsize::new(0),
+        });
+        let cache = DenseCache::with_embedder(count_stub.clone());
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a"]);
+        assert_eq!(outcome.missing, vec!["b"]);
+        assert_eq!(
+            count_stub.docs.load(Ordering::SeqCst),
+            0,
+            "warm must not embed reused ids"
+        );
+
+        cache.extend(&corpus, &NoopSink).unwrap();
+        assert_eq!(
+            count_stub.docs.load(Ordering::SeqCst),
+            1,
+            "only the missing id is embedded"
+        );
+        assert!(cache.require_built(corpus.len()).is_ok());
+    }
+
+    #[test]
+    fn warm_on_endpoint_skips_probe_when_static_fingerprint_already_matches() {
+        let items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&items, "fp-static", vec![unit2([1.0, 0.0])]);
+        let stub = Arc::new(EndpointProbeStub {
+            static_fingerprint: "fp-static".into(),
+            probe_fingerprint: "fp-should-not-matter".into(),
+            probe_calls: AtomicUsize::new(0),
+            allow_probe: false,
+        });
+        let cache = DenseCache::with_embedder_and_model(stub.clone(), sample_endpoint_model());
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a"]);
+        assert_eq!(stub.probe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn warm_on_endpoint_probes_and_accepts_on_resolved_match() {
+        let items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&items, "fp-resolved", vec![unit2([1.0, 0.0])]);
+        let stub = Arc::new(EndpointProbeStub {
+            static_fingerprint: "fp-configured".into(),
+            probe_fingerprint: "fp-resolved".into(),
+            probe_calls: AtomicUsize::new(0),
+            allow_probe: true,
+        });
+        let cache = DenseCache::with_embedder_and_model(stub.clone(), sample_endpoint_model());
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a"]);
+        assert_eq!(stub.probe_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-resolved"));
+    }
+
+    #[test]
+    fn warm_on_endpoint_probes_and_rejects_on_genuine_mismatch() {
+        let items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&items, "fp-artifact", vec![unit2([1.0, 0.0])]);
+        let stub = Arc::new(EndpointProbeStub {
+            static_fingerprint: "fp-configured".into(),
+            probe_fingerprint: "fp-other".into(),
+            probe_calls: AtomicUsize::new(0),
+            allow_probe: true,
+        });
+        let cache = DenseCache::with_embedder_and_model(stub.clone(), sample_endpoint_model());
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
+            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active
+            })) if built == "fp-artifact" && active == "fp-other"
+        ));
+        assert_eq!(stub.probe_calls.load(Ordering::SeqCst), 1);
+        assert!(cache.built_fingerprint().is_none());
+        assert!(matches!(
+            cache.require_built(1),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
     }
 }

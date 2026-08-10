@@ -1,8 +1,12 @@
 //! Build-time embedding artifact: corpus vectors serialized for runtime load
-//! without re-inferring. Model identity is only `model_fingerprint` from the
-//! embed batch (pooling/prefixes live inside it via `fingerprint_suffix`).
-
-#![allow(dead_code)]
+//! without re-inferring.
+//!
+//! Registries produce bytes via [`crate::ToolRegistry::build_embedding_artifact`] /
+//! [`crate::SkillRegistry::build_embedding_artifact`] and warm them via
+//! [`crate::ToolRegistry::warm_embeddings_from_artifact`] /
+//! [`crate::SkillRegistry::warm_embeddings_from_artifact`]. Model identity is only
+//! `model_fingerprint` from the embed batch (pooling/prefixes live inside it via
+//! `fingerprint_suffix`).
 
 use sha2::{Digest, Sha256};
 
@@ -14,9 +18,12 @@ const SUPPORTED_FORMAT_VERSION: u32 = 1;
 const VERSION_PREFIX_LEN: usize = 8;
 const FILE_PREFIX_LEN: usize = 4 + 4 + 8 + 32;
 
+/// Catalog origin of an artifact entry (tool vs skill registry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ArtifactEntryKind {
+pub enum ArtifactEntryKind {
+    /// Entry built from a tool catalog item.
     Tool,
+    /// Entry built from a skill catalog item.
     Skill,
 }
 
@@ -42,15 +49,50 @@ pub(crate) struct ArtifactEntry {
     pub vector: Vec<f32>,
 }
 
+/// Failure building or loading a binary embedding artifact.
 #[derive(Debug, Clone)]
-pub(crate) enum ArtifactError {
-    TooShort { needed: usize, got: usize },
-    InvalidMagic { got: [u8; 4] },
-    UnsupportedFormatVersion { found: u32, supported: u32 },
+pub enum ArtifactError {
+    /// File shorter than the format prefix or declared payload length.
+    TooShort {
+        /// Minimum bytes required at this check.
+        needed: usize,
+        /// Bytes actually available.
+        got: usize,
+    },
+    /// Magic bytes were not `RAT1`.
+    InvalidMagic {
+        /// Four bytes read where the magic should be.
+        got: [u8; 4],
+    },
+    /// `format_version` is newer than this binary supports.
+    UnsupportedFormatVersion {
+        /// Version stamped in the file.
+        found: u32,
+        /// Highest version this binary can read.
+        supported: u32,
+    },
+    /// Payload SHA-256 did not match the checksum in the file prefix.
     ChecksumMismatch,
-    CorruptPayload { at: usize, detail: String },
-    InconsistentVectorWidth { expected: usize, got: usize },
-    VectorNotNormalized { id: String },
+    /// Payload bytes failed structural decode after a valid checksum.
+    CorruptPayload {
+        /// Byte offset into the payload where decode failed.
+        at: usize,
+        /// Human-readable reason for the failure.
+        detail: String,
+    },
+    /// Embedder returned vectors of mixed widths in one build batch.
+    InconsistentVectorWidth {
+        /// Width of the first vector in the batch.
+        expected: usize,
+        /// Width of the diverging vector.
+        got: usize,
+    },
+    /// Embedder returned a vector that is not L2-normalized.
+    VectorNotNormalized {
+        /// Catalog id of the item whose vector failed the unit-norm check.
+        id: String,
+    },
+    /// Underlying embedder failure during [`build_artifact`].
     Embedder(EmbedderError),
 }
 
@@ -139,6 +181,18 @@ pub(crate) fn projection_version() -> u32 {
     u32::from_le_bytes(h.finalize()[..4].try_into().expect("4 bytes"))
 }
 
+/// A valid RAT1 artifact with zero entries (no embedder required)
+pub(crate) fn build_empty_artifact() -> Result<Vec<u8>, ArtifactError> {
+    let header = ArtifactHeader {
+        format_version: SUPPORTED_FORMAT_VERSION,
+        projection_version: projection_version(),
+        model_fingerprint: String::new(),
+        dim: 0,
+    };
+    let payload = encode_payload(&header, &[])?;
+    assemble_file(&payload)
+}
+
 pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
     kind: ArtifactEntryKind,
     items: impl IntoIterator<Item = &'a T>,
@@ -148,6 +202,10 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
         .into_iter()
         .map(|item| (item.embed_id().to_string(), item.embed_text()))
         .collect();
+
+    if rows.is_empty() {
+        return build_empty_artifact();
+    }
 
     let texts: Vec<String> = rows.iter().map(|(_, text)| text.clone()).collect();
     let Embedded {
@@ -246,7 +304,7 @@ pub(crate) fn load_and_validate(
     decode_payload(format_version, payload)
 }
 
-fn hash_projection_text(text: &str) -> [u8; 32] {
+pub(crate) fn hash_projection_text(text: &str) -> [u8; 32] {
     Sha256::digest(text.as_bytes()).into()
 }
 
@@ -713,13 +771,13 @@ mod tests {
         assert!(blob.contains("tool_id_only"), "id is part of the wire format");
     }
 
+    // description, body and api_key are intentionally never read
+    // the test proves they never reach the artifact bytes
+    #[allow(dead_code)]
     struct SensitiveItem {
         id: String,
-        #[allow(dead_code)]
         description: String,
-        #[allow(dead_code)]
         body: String,
-        #[allow(dead_code)]
         api_key: String,
         projection: String,
     }

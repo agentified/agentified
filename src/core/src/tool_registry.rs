@@ -3,8 +3,10 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 
+use crate::artifact_warm::{ArtifactWarmError, OnArtifactMiss};
 use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
+use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::indexing::searchable_text;
@@ -539,6 +541,51 @@ impl ToolRegistry {
     /// Any [`EmbedderError`] from loading or embedding the complete corpus.
     pub fn rebuild_embeddings(&self) -> Result<(), EmbedderError> {
         self.dense.rebuild(self.tools.values(), self.sink.as_ref())
+    }
+
+    /// Load corpus vectors from a build-time embedding artifact, then apply [`OnArtifactMiss`].
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactWarmError::Warm`] from parse / kind / model-mismatch during warm;
+    /// [`ArtifactWarmError::Incomplete`] when `on_miss` is [`OnArtifactMiss::Error`]
+    /// and some corpus ids were not reused; [`ArtifactWarmError::Embedder`] when
+    /// `on_miss` is [`OnArtifactMiss::Embed`] and the follow-up [`Self::build_embeddings`]
+    /// fails.
+    pub fn warm_embeddings_from_artifact(
+        &self,
+        bytes: &[u8],
+        on_miss: OnArtifactMiss,
+    ) -> Result<(), ArtifactWarmError> {
+        let outcome = self.dense.warm_from_artifact(
+            bytes,
+            ArtifactEntryKind::Tool,
+            self.tools.values(),
+            self.sink.as_ref(),
+        )?;
+        if outcome.missing.is_empty() {
+            return Ok(());
+        }
+        match on_miss {
+            OnArtifactMiss::Error => Err(ArtifactWarmError::Incomplete {
+                missing: outcome.missing,
+            }),
+            OnArtifactMiss::Embed => self.build_embeddings().map_err(ArtifactWarmError::from),
+        }
+    }
+
+    /// Serialize the current corpus embeddings into a build-time artifact (bytes only).
+    ///
+    /// # Errors
+    ///
+    /// Any [`ArtifactError`] from resolving the embedder or building the artifact
+    /// (including [`ArtifactError::Embedder`] when inference fails).
+    pub fn build_embedding_artifact(&self) -> Result<Vec<u8>, ArtifactError> {
+        self.dense.build_artifact(
+            ArtifactEntryKind::Tool,
+            self.tools.values(),
+            self.sink.as_ref(),
+        )
     }
 
     // ---- engines -----------------------------------------------------------
@@ -1839,5 +1886,269 @@ mod tests {
             .map(|s| s.name)
             .collect();
         assert_eq!(stages, vec!["bm25", "dense", "rrf"]);
+    }
+
+    /// Fixed-identity stub used to serialize artifacts for warm tests.
+    struct ArtifactBuildStub {
+        fingerprint: String,
+        vectors: Vec<Vec<f32>>,
+    }
+
+    impl Embedder for ArtifactBuildStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact build uses batch")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact build uses batch")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert_eq!(texts.len(), self.vectors.len());
+            Ok(Embedded {
+                value: self.vectors.clone(),
+                fingerprint: self.fingerprint.clone(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    /// Counts embeds under a fixed fingerprint (warm + extend chains).
+    struct FpCountingEmbedder {
+        fingerprint: String,
+        doc_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FpCountingEmbedder {
+        fn new(fingerprint: &str) -> Self {
+            Self {
+                fingerprint: fingerprint.into(),
+                doc_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn docs(&self) -> usize {
+            self.doc_calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Embedder for FpCountingEmbedder {
+        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            self.doc_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(StubEmbedder::vec_for(text))
+        }
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(StubEmbedder::vec_for(text))
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    /// Identity matches the artifact; every embed path fails (post-warm Embed policy).
+    struct FailOnEmbedStub {
+        fingerprint: String,
+    }
+
+    impl Embedder for FailOnEmbedStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Err(EmbedderError::Inference {
+                source: "forced embed failure".into(),
+            })
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Err(EmbedderError::Inference {
+                source: "forced embed failure".into(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    fn unit3(v: [f32; 3]) -> Vec<f32> {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / n).collect()
+    }
+
+    fn tool_artifact<'a>(
+        items: impl IntoIterator<Item = &'a Tool>,
+        fingerprint: &str,
+        vectors: Vec<Vec<f32>>,
+    ) -> Vec<u8> {
+        let stub = ArtifactBuildStub {
+            fingerprint: fingerprint.into(),
+            vectors,
+        };
+        crate::embedding_artifact::build_artifact(ArtifactEntryKind::Tool, items, &stub).unwrap()
+    }
+
+    #[test]
+    fn warm_embeddings_error_ok_when_artifact_covers_corpus() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = tool_artifact(
+            [&a, &b],
+            "fp-warm",
+            vec![unit3([1.0, 0.0, 0.0]), unit3([0.0, 1.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(counter.docs(), 0);
+        assert!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_error_fails_when_ids_missing() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = tool_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error),
+            Err(ArtifactWarmError::Incomplete { missing }) if missing == ["delete_file"]
+        ));
+        assert_eq!(counter.docs(), 0);
+        assert!(matches!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_embed_completes_only_missing_ids() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = tool_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed)
+            .unwrap();
+        assert_eq!(counter.docs(), 1, "only the missing tool is embedded");
+        assert!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_embed_policy_propagates_build_embeddings_failure() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = tool_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_propagates_warm_error_without_embed() {
+        let a = tool("read_file", "read a file");
+        let bytes = tool_artifact([&a], "fp-artifact", vec![unit3([1.0, 0.0, 0.0])]);
+        let counter = Arc::new(FpCountingEmbedder::new("fp-active"));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Warm(crate::WarmError::Embedder(
+                EmbedderError::ModelMismatch { .. }
+            )))
+        ));
+        assert_eq!(counter.docs(), 0);
+    }
+
+    /// Resolves identity without inference — panics if any embed path is hit.
+    struct PanicOnEmbedStub {
+        fingerprint: String,
+    }
+
+    impl Embedder for PanicOnEmbedStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_doc must not be called")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_query must not be called")
+        }
+        fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+            panic!("embed_batch must not be called")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            _texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            panic!("embed_batch_with_identity must not be called")
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    #[test]
+    fn build_embedding_artifact_round_trips_via_warm() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let builder = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let mut reg_a = with_embedder(builder.clone());
+        reg_a.register(tool("read_file", "read a file"));
+        reg_a.register(tool("delete_file", "delete a file"));
+        let bytes = reg_a.build_embedding_artifact().unwrap();
+        assert!(builder.docs() >= 2, "build embeds the corpus once");
+
+        let warmer = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let mut reg_b = with_embedder(warmer.clone());
+        reg_b.register(a);
+        reg_b.register(b);
+        reg_b
+            .warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(warmer.docs(), 0, "warm must not re-embed covered ids");
+        assert!(
+            reg_b
+                .search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn build_embedding_artifact_propagates_embedder_failure() {
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        reg.register(tool("read_file", "read a file"));
+        assert!(matches!(
+            reg.build_embedding_artifact(),
+            Err(ArtifactError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn build_embedding_artifact_empty_corpus_is_valid() {
+        let reg = with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "unused".into(),
+        }));
+        let bytes = reg.build_embedding_artifact().unwrap();
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
     }
 }

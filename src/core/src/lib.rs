@@ -74,6 +74,7 @@
 
 #![warn(missing_docs)]
 
+mod artifact_warm;
 mod dense_cache;
 mod dense_search;
 mod embedding;
@@ -92,7 +93,10 @@ mod trace;
 mod usage;
 mod usage_learner;
 
+pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss};
+pub use dense_cache::WarmError;
 pub use embedding::EmbedderError;
+pub use embedding_artifact::{ArtifactEntryKind, ArtifactError};
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;
