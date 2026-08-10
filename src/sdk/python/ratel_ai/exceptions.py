@@ -1,14 +1,30 @@
-"""Typed embedding errors, surfaced from the native binding.
+"""Typed embedding and artifact errors, surfaced from the native binding.
 
 ``EmbedderError`` subclasses ``RuntimeError`` so existing ``except RuntimeError``
 handlers keep working; ``DimensionMismatchError`` subclasses it specifically for
 vector-width mismatches. A model-identity mismatch remains an ``EmbedderError``.
 Invalid embedding *config* (a bad source combination) is raised as a plain
 ``ValueError`` at construction.
+
+``ArtifactError`` / ``IncompatibleMergeError`` cover build/merge failures;
+``ArtifactWarmError`` covers warm failures and carries ``code`` /
+``missing`` attributes set by the native binding.
 """
 
 from __future__ import annotations
 
-from ._native import DimensionMismatchError, EmbedderError
+from ._native import (
+    ArtifactError,
+    ArtifactWarmError,
+    DimensionMismatchError,
+    EmbedderError,
+    IncompatibleMergeError,
+)
 
-__all__ = ["DimensionMismatchError", "EmbedderError"]
+__all__ = [
+    "ArtifactError",
+    "ArtifactWarmError",
+    "DimensionMismatchError",
+    "EmbedderError",
+    "IncompatibleMergeError",
+]

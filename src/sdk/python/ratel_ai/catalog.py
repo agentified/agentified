@@ -20,6 +20,11 @@ from typing import Any, Callable, Literal, TypedDict, TypeVar, Union, overload
 from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
 from ._native import SearchHit
 from ._native import ToolRegistry as _NativeToolRegistry
+from .embedding_artifact import (
+    ExperimentalEmbeddingArtifact,
+    OnArtifactMiss,
+    resolve_embedding_artifact,
+)
 from .telemetry import SEARCH_TARGET_TOOL, trace_execute_tool, trace_search, trace_search_async
 
 Executor = Callable[[dict[str, Any]], Union[Awaitable[Any], Any]]
@@ -99,7 +104,7 @@ EmbeddingSpec = Union[str, EmbeddingModelConfig]
 _DenseResult = TypeVar("_DenseResult")
 _REGISTRY_BUSY = "registry busy; await the active operation"
 _UNAWAITED_REGISTER = (
-    "a register() call was not awaited; its embeddings were never built — "
+    "a register() call was not awaited; dense preparation did not complete — "
     "`await catalog.register(...)` (or `registry.register(...)`) before a "
     "semantic/hybrid search"
 )
@@ -250,7 +255,11 @@ class ToolRegistry:
 
     @overload
     def __init__(
-        self, embedding: EmbeddingSpec | None = None, *, method: SearchMethod = "bm25"
+        self,
+        embedding: EmbeddingSpec | None = None,
+        *,
+        method: SearchMethod = "bm25",
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -261,6 +270,7 @@ class ToolRegistry:
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -273,6 +283,7 @@ class ToolRegistry:
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
         download: bool | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -283,6 +294,7 @@ class ToolRegistry:
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -292,6 +304,7 @@ class ToolRegistry:
         ollama: str,
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -303,6 +316,7 @@ class ToolRegistry:
         api_key_env: str | None = None,
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     def __init__(
@@ -310,6 +324,7 @@ class ToolRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
         local: str | None = None,
@@ -325,8 +340,10 @@ class ToolRegistry:
     ) -> None:
         """Create a metadata registry with an optional embedding model.
 
-        A "semantic"/"hybrid" `method` makes `register` embed eagerly (inside the
-        call, on a worker thread); "bm25" keeps registration model-free.
+        A "semantic"/"hybrid" `method` makes `register` prepare the dense cache
+        eagerly (embed on a worker thread); "bm25" keeps registration model-free
+        unless ``experimental_embedding_artifact`` is set (then the artifact is
+        warmed on register for any method).
         """
         kwargs = _registry_embedding_kwargs(
             embedding,
@@ -345,6 +362,7 @@ class ToolRegistry:
         )
         self._native = _NativeToolRegistry(**kwargs)
         self._eager = method in ("semantic", "hybrid")
+        self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
         self._adaptive_warned = False
         self._rebuild_on_model_change = False
@@ -387,10 +405,11 @@ class ToolRegistry:
 
         Metadata is indexed **synchronously**, the instant `register(...)` is
         called, so a forgotten `await` can never silently drop the corpus. The
-        returned awaitable drives only the embedding pass — on a
+        returned awaitable drives only dense preparation — on a
         "semantic"/"hybrid" registry it embeds in one batched, off-thread pass
-        (embedding errors surface when awaited); "bm25" has nothing to embed and
-        the awaitable is a no-op. Always `await` the result.
+        (errors surface when awaited); with ``experimental_embedding_artifact``
+        it warms that artifact first (any method); plain "bm25" without an
+        artifact is a no-op. Always `await` the result.
         """
         flat_args = (name, description, input_schema, output_schema)
         if isinstance(item, Tool):
@@ -431,6 +450,48 @@ class ToolRegistry:
             )
         return self.search_with_origin(query, top_k, origin)
 
+    async def build_embedding_artifact(self) -> bytes:
+        """Build a RAT1 artifact from the registered corpus (ADR-0017).
+
+        Off the event loop and mutation-blocking via ``_dense_pending``, but does
+        **not** take ``_dense_gate`` — semantic search may run concurrently.
+        Cancelling the await does not clear pending until the native build finishes.
+        """
+        self._queue_dense()
+        runner = self._run_artifact_build_task()
+        try:
+            task = asyncio.create_task(runner)
+        except BaseException:
+            runner.close()
+            self._finish_dense()
+            raise
+        self._dense_tasks.add(task)
+        task.add_done_callback(self._dense_task_done)
+        await asyncio.wait({task})
+        return task.result()
+
+    async def _run_artifact_build_task(self) -> bytes:
+        try:
+            return await asyncio.to_thread(self._native._build_embedding_artifact)
+        finally:
+            self._finish_dense()
+
+    async def warm_embeddings_from_artifact(
+        self, artifact: bytes, on_miss: OnArtifactMiss = "error"
+    ) -> None:
+        """Warm the dense cache from artifact bytes (serialized via ``_run_dense``)."""
+        await self._run_dense(
+            lambda: self._native._warm_embeddings_from_artifact(artifact, on_miss)
+        )
+
+    async def _ensure_dense_ready(self) -> None:
+        if self._embedding_artifact is not None:
+            artifact_bytes, on_miss = await resolve_embedding_artifact(self._embedding_artifact)
+            await self.warm_embeddings_from_artifact(artifact_bytes, on_miss)
+            return
+        if self._eager:
+            await self._build()
+
     async def _build(self) -> None:
         """Embed not-yet-embedded items on a worker thread (used by `register`)."""
         await self._run_dense(self._native._build_embeddings)
@@ -440,13 +501,13 @@ class ToolRegistry:
         await self._run_dense(self._native._rebuild_embeddings)
 
     def _build_tracked(self, has_items: bool) -> Awaitable[None]:
-        """Return the awaitable `register` hands back — it drives the embedding pass.
+        """Return the awaitable `register` hands back — it drives dense preparation.
 
         `_undriven_builds` is bumped **now** (synchronously, while `register`
         runs), not inside the coroutine, so it stays > 0 when the coroutine is
         never driven — that is how a forgotten `await` becomes detectable.
         """
-        schedule = self._eager and has_items
+        schedule = self._embedding_artifact is not None or (self._eager and has_items)
         if schedule:
             self._undriven_builds += 1
 
@@ -454,7 +515,7 @@ class ToolRegistry:
             if not schedule:
                 return
             try:
-                await self._build()
+                await self._ensure_dense_ready()
             finally:
                 self._undriven_builds -= 1
 
@@ -670,6 +731,7 @@ class ToolCatalog:
         trace: TraceSinkConfig | None = None,
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty catalog.
 
@@ -677,18 +739,23 @@ class ToolCatalog:
             trace: where trace events go; `None` keeps the default no-op sink.
             method: default retrieval method for `search` — "bm25" (the
                 historical, model-free behavior), "semantic" or "hybrid". A
-                per-call `method=` overrides it. A "semantic"/"hybrid" catalog
-                embeds inside `register`; dense results come from `search_async`.
+                per-call `method=` overrides it. Dense ranking uses
+                `search_async`. BM25 search is model-free, but an explicitly
+                configured embedding artifact is still warmed during registration.
             embedding: model for semantic/hybrid retrieval (a path string or a
                 keyed dict — see `EmbeddingSpec`). Retained and validated even
                 under "bm25" so a later async semantic override can use it.
+            experimental_embedding_artifact: build-time RAT1 to warm on register
+                (any method; default ``on_miss`` is ``"error"``).
         """
         self._executors: dict[str, Executor] = {}
         self._tools: dict[str, Tool] = {}
         self._method: SearchMethod = method
-        # A semantic/hybrid catalog embeds inside `register`; a bm25 catalog stays
-        # model-free. The model is validated at construction regardless.
-        self._registry = ToolRegistry(embedding, method=method)
+        self._registry = ToolRegistry(
+            embedding,
+            method=method,
+            experimental_embedding_artifact=experimental_embedding_artifact,
+        )
         if trace is not None:
             self._registry.set_trace_sink(trace.kind, trace.session_id, trace.path)
 
@@ -697,15 +764,16 @@ class ToolCatalog:
 
         Metadata and the executor handler are stored **synchronously**, the
         instant `register(...)` is called, so a forgotten `await` can never
-        silently drop the corpus. The returned awaitable drives only the
-        embedding pass: on a "semantic"/"hybrid" catalog it embeds the batch in
-        one pass on a worker thread (the event loop is never blocked), and
-        embedding errors (model load / endpoint / auth / dimension) surface when
-        it is awaited. A BM25 catalog never loads a model and the awaitable is a
-        no-op. **Always `await` the result** — a semantic/hybrid search after an
-        un-awaited `register` raises rather than ranking an empty corpus.
-        Re-registering an id replaces it in place; the index never holds a
-        duplicate.
+        silently drop the corpus. The returned awaitable drives dense
+        preparation: on a "semantic"/"hybrid" catalog without an artifact it
+        embeds the batch on a worker thread; with
+        ``experimental_embedding_artifact`` it warms that artifact first (any
+        method). Dense-preparation errors surface when awaited; metadata still
+        persists if that phase fails. A BM25 catalog without an artifact never
+        loads a model. **Always `await` the result** — a semantic/hybrid search
+        after an un-awaited `register` raises rather than ranking an empty
+        corpus. Re-registering an id replaces it in place; the index never holds
+        a duplicate.
 
         A model or dimension change is not recovered in place — construct a new
         catalog and re-register.
@@ -713,11 +781,13 @@ class ToolCatalog:
         Args:
             tools: a single `ExecutableTool` or an iterable of them; each
                 `execute` must be set. Pass the whole batch at once for a single
-                embedding request; separate `register` calls embed separately.
+                dense-preparation request; separate `register` calls prepare
+                separately.
 
         Raises:
             ValueError: if any `execute` is `None`, or a schema isn't JSON-serializable.
-            EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
+            EmbedderError: when embedding fails (when awaited).
+            ArtifactWarmError: when a configured artifact fails (when awaited).
             RuntimeError: if a dense operation already owns the registry.
         """
         batch = [tools] if isinstance(tools, ExecutableTool) else list(tools)

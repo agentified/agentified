@@ -42,7 +42,17 @@ from .catalog import (
 # Deprecated pre-0.2.0 surface (see compat.py) — kept so `ratel-ai==0.1.x`
 # callers keep working after upgrading to 0.2.0. Slated for removal (RAT-250).
 from .compat import SEARCH_TOOLS_ID, search_tools_tool
-from .exceptions import DimensionMismatchError, EmbedderError
+from .embedding_artifact import (
+    ExperimentalEmbeddingArtifact,
+    experimental_build_embedding_artifact,
+)
+from .exceptions import (
+    ArtifactError,
+    ArtifactWarmError,
+    DimensionMismatchError,
+    EmbedderError,
+    IncompatibleMergeError,
+)
 from .mcp import McpServerHandle, McpToolsListError, register_mcp_server
 from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
@@ -55,7 +65,11 @@ from .telemetry import configure_telemetry
 
 __all__ = [
     "AdaptiveRankingStatus",
+    "ArtifactError",
+    "ArtifactWarmError",
+    "ExperimentalEmbeddingArtifact",
     "IntentGraph",
+    "IncompatibleMergeError",
     "GET_SKILL_CONTENT_ID",
     "INVOKE_TOOL_ID",
     "SEARCH_CAPABILITIES_ID",
@@ -88,6 +102,7 @@ __all__ = [
     "TraceSinkConfig",
     "UpstreamServerInfo",
     "configure_telemetry",
+    "experimental_build_embedding_artifact",
     "format_upstream_line",
     "get_skill_content_tool",
     "invoke_tool_tool",
