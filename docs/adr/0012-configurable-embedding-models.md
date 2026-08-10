@@ -105,9 +105,17 @@ land in different vector spaces.
   than reintroduce an ONNX/C++ runtime, which would reverse ADR-0011's
   clean-wheels decision. MPNet-specific architecture/pooling corrections remain
   deferred; use an endpoint for MPNet models in the meantime.
+- **Local model identity is content-derived.** A `Local` fingerprint hashes the
+  files Candle loads (`config.json`, `tokenizer.json`, weights, and optional
+  `1_Pooling/config.json`), not the directory path. Path-keyed identity breaks
+  when the same weights are remounted at a different path (typical
+  build-time → runtime / Docker); content identity is what a future on-disk
+  embedding artifact needs to validate the model after that remount. Digests are
+  memoized against file `(len, mtime)` so warm process-cache lookups do not
+  re-read weight bytes.
 - **Known limitation, not addressed here:** the embedding cache is in-process
   only, so every process start re-embeds the corpus — cheap for a local model,
   but real latency and cost over an endpoint. A **persistent on-disk embedding
   cache** is the natural follow-up; the model-fingerprint stamped on the cache is
-  the invalidation key it will need. Also deferred: non-OpenAI endpoint request
-  shapes and in-process GGUF/ONNX.
+  the invalidation key it will need (Local: content digest above). Also deferred:
+  non-OpenAI endpoint request shapes and in-process GGUF/ONNX.

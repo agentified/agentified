@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- **Local embedding model fingerprints are content-derived.** `EmbeddingModel::Local` identity is a SHA-256 of the files Candle loads, not the directory path, so a build-time embedding artifact can still validate the model after a Docker remount. HuggingFace and endpoint fingerprints are unchanged. **Note:** an `IntentGraph` persisted under a previous path-based Local fingerprint will report `ModelMismatch` until centroids are rebuilt under the active model.
+
 ## [0.7.0] - 2026-08-07
 
 ### Added
