@@ -123,8 +123,15 @@ struct ContentIdMemo {
 /// re-read weight bytes. Includes `1_Pooling/config.json` when present so a
 /// pooling-config change invalidates the process cache without a pooling override.
 pub(crate) fn local_model_content_id(dir: &Path) -> Result<String, EmbedderError> {
-    let name = dir.display().to_string();
     let files = resolve_local_identity_files(dir)?;
+    local_model_content_id_from_files(dir, &files)
+}
+
+pub(crate) fn local_model_content_id_from_files(
+    dir: &Path,
+    files: &[PathBuf],
+) -> Result<String, EmbedderError> {
+    let name = dir.display().to_string();
     let stamps: Vec<FileStamp> = files
         .iter()
         .map(|p| stamp_file(p, &name))
@@ -146,7 +153,7 @@ pub(crate) fn local_model_content_id(dir: &Path) -> Result<String, EmbedderError
         }
     }
 
-    let content_id = hash_local_identity_files(&files, &name)?;
+    let content_id = hash_local_identity_files(files, &name)?;
     let mut guard = content_id_memo()
         .lock()
         .expect("local content-id memo poisoned");

@@ -52,7 +52,7 @@ use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStr
 use crate::embedding_config::{
     DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, OLLAMA_DEFAULT_URL, Pooling,
     endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint, local_fingerprint,
-    local_model_content_id, resolve_local_identity_files,
+    local_model_content_id_from_files, resolve_local_identity_files,
 };
 use crate::trace::{EmbedderLoadStatus, TraceEvent, TraceSink};
 
@@ -680,7 +680,7 @@ impl CandleEmbedder {
             weights: weights_path,
             pooling,
         };
-        let content_id = local_model_content_id(dir)?;
+        let content_id = local_model_content_id_from_files(dir, &files)?;
         let embedder = Self::build(
             device,
             &loaded,
