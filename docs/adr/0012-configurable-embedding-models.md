@@ -113,4 +113,4 @@ repo, revision }` and `Local { path }` — BERT-family models run in-process via
   embedding artifact needs to validate the model after that remount. Digests are
   memoized against file `(len, mtime)` so warm process-cache lookups do not
   re-read weight bytes.
-- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0016 adds a persistent build-time artifact keyed by the fingerprint already stamped on the cache. Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
+- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0017 adds a persistent build-time artifact keyed by the fingerprint already stamped on the cache. Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
