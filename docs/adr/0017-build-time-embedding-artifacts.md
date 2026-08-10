@@ -1,4 +1,4 @@
-# 16. Build-time embedding artifacts
+# 17. Build-time embedding artifacts
 
 Date: 2026-08-10
 
@@ -52,6 +52,11 @@ registries, embeds once per side, merges, and writes the file. Runtime
 `experimentalEmbeddingArtifact: { path } | { bytes }` (default
 `onMiss: "error"`) is warmed on registration **before** eager document
 embedding.
+
+**Python.** `experimental_build_embedding_artifact` mirrors that build helper
+(snake_case). Runtime `experimental_embedding_artifact` on registry/catalog
+constructors warms before eager document embedding; default `on_miss` is
+`"error"`. PyO3 maps core artifact errors directly (no NAPI JSON envelope).
 
 ## Consequences
 
