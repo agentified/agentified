@@ -96,7 +96,7 @@ mod usage_learner;
 pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};
 pub use dense_cache::WarmError;
 pub use embedding::EmbedderError;
-pub use embedding_artifact::{ArtifactEntryKind, ArtifactError};
+pub use embedding_artifact::{ArtifactEntryKind, ArtifactError, merge_embedding_artifacts};
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;

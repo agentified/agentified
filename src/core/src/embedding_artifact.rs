@@ -1,12 +1,10 @@
 //! Build-time embedding artifact: corpus vectors serialized for runtime load
 //! without re-inferring.
 //!
-//! Registries produce bytes via [`crate::ToolRegistry::build_embedding_artifact`] /
-//! [`crate::SkillRegistry::build_embedding_artifact`] and warm them via
-//! [`crate::ToolRegistry::warm_embeddings_from_artifact`] /
-//! [`crate::SkillRegistry::warm_embeddings_from_artifact`]. Model identity is only
-//! `model_fingerprint` from the embed batch (pooling/prefixes live inside it via
-//! `fingerprint_suffix`).
+//! Registries build single-kind bytes; [`merge_embedding_artifacts`] combines
+//! them into one mixed Tool+Skill RAT1. Warming ignores other known kinds.
+//! Model identity is `model_fingerprint` from the embed batch (pooling/prefixes
+//! via `fingerprint_suffix`).
 
 use sha2::{Digest, Sha256};
 
@@ -19,7 +17,7 @@ const VERSION_PREFIX_LEN: usize = 8;
 const FILE_PREFIX_LEN: usize = 4 + 4 + 8 + 32;
 
 /// Catalog origin of an artifact entry (tool vs skill registry).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArtifactEntryKind {
     /// Entry built from a tool catalog item.
     Tool,
@@ -92,6 +90,12 @@ pub enum ArtifactError {
         /// Catalog id of the item whose vector failed the unit-norm check.
         id: String,
     },
+    /// Valid artifacts that cannot be combined (header mismatch or duplicate
+    /// `(kind, id)`). Not [`Self::CorruptPayload`]: each input may decode alone.
+    IncompatibleMerge {
+        /// Why the parts cannot be combined.
+        detail: String,
+    },
     /// Underlying embedder failure during [`build_artifact`].
     Embedder(EmbedderError),
 }
@@ -119,6 +123,9 @@ impl ArtifactError {
             }
             ArtifactError::VectorNotNormalized { .. } => {
                 "the embedder must return L2-normalized vectors before building an artifact"
+            }
+            ArtifactError::IncompatibleMerge { .. } => {
+                "rebuild each part with the same model and projection, or drop the conflicting entry"
             }
             ArtifactError::Embedder(_) => {
                 "fix the embedding model or corpus before building the artifact"
@@ -158,6 +165,10 @@ impl std::fmt::Display for ArtifactError {
             ArtifactError::VectorNotNormalized { id } => write!(
                 f,
                 "embedding artifact build: vector for id {id:?} is not L2-normalized (hint: {hint})"
+            ),
+            ArtifactError::IncompatibleMerge { detail } => write!(
+                f,
+                "embedding artifact merge incompatible: {detail} (hint: {hint})"
             ),
             ArtifactError::Embedder(e) => write!(f, "embedding artifact build failed: {e}"),
         }
@@ -212,6 +223,16 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
         value: vectors,
         fingerprint: model_fingerprint,
     } = embedder.embed_batch_with_identity(&texts)?;
+
+    if vectors.len() != rows.len() {
+        return Err(ArtifactError::Embedder(EmbedderError::Inference {
+            source: format!(
+                "embedder returned {} embeddings for {} inputs",
+                vectors.len(),
+                rows.len()
+            ),
+        }));
+    }
 
     let dim = vectors.first().map(Vec::len).unwrap_or(0);
     for ((id, _), vector) in rows.iter().zip(&vectors) {
@@ -302,6 +323,75 @@ pub(crate) fn load_and_validate(
     }
 
     decode_payload(format_version, payload)
+}
+
+/// Merge valid RAT1 parts into one artifact. Empty parts are skipped; nonempty
+/// parts must share format/projection version, fingerprint, and dim. Duplicate
+/// `(kind, id)` → [`ArtifactError::IncompatibleMerge`].
+pub fn merge_embedding_artifacts(parts: &[&[u8]]) -> Result<Vec<u8>, ArtifactError> {
+    let mut base_header: Option<ArtifactHeader> = None;
+    let mut merged: Vec<ArtifactEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<(ArtifactEntryKind, String)> =
+        std::collections::HashSet::new();
+
+    for part in parts {
+        let (header, entries) = load_and_validate(part)?;
+        if entries.is_empty() {
+            continue;
+        }
+        match &base_header {
+            None => base_header = Some(header.clone()),
+            Some(base) => {
+                if header.format_version != base.format_version {
+                    return Err(ArtifactError::IncompatibleMerge {
+                        detail: format!(
+                            "format_version {} != {}",
+                            header.format_version, base.format_version
+                        ),
+                    });
+                }
+                if header.projection_version != base.projection_version {
+                    return Err(ArtifactError::IncompatibleMerge {
+                        detail: format!(
+                            "projection_version {} != {}",
+                            header.projection_version, base.projection_version
+                        ),
+                    });
+                }
+                if header.model_fingerprint != base.model_fingerprint {
+                    return Err(ArtifactError::IncompatibleMerge {
+                        detail: format!(
+                            "model_fingerprint {:?} != {:?}",
+                            header.model_fingerprint, base.model_fingerprint
+                        ),
+                    });
+                }
+                if header.dim != base.dim {
+                    return Err(ArtifactError::IncompatibleMerge {
+                        detail: format!("dim {} != {}", header.dim, base.dim),
+                    });
+                }
+            }
+        }
+        for entry in entries {
+            let key = (entry.kind, entry.id.clone());
+            if !seen.insert(key) {
+                return Err(ArtifactError::IncompatibleMerge {
+                    detail: format!(
+                        "duplicate entry kind={:?} id={:?}",
+                        entry.kind, entry.id
+                    ),
+                });
+            }
+            merged.push(entry);
+        }
+    }
+
+    let Some(header) = base_header else {
+        return build_empty_artifact();
+    };
+    let payload = encode_payload(&header, &merged)?;
+    assemble_file(&payload)
 }
 
 pub(crate) fn hash_projection_text(text: &str) -> [u8; 32] {
@@ -559,6 +649,8 @@ mod tests {
     struct StubEmbedder {
         fingerprint: String,
         vectors: Vec<Vec<f32>>,
+        /// When true, return `vectors` as-is even if len ≠ texts.len().
+        passthrough_batch: bool,
     }
 
     impl Embedder for StubEmbedder {
@@ -580,7 +672,7 @@ mod tests {
                     fingerprint: self.fingerprint.clone(),
                 });
             }
-            let value = if self.vectors.len() == texts.len() {
+            let value = if self.passthrough_batch || self.vectors.len() == texts.len() {
                 self.vectors.clone()
             } else {
                 let template = &self.vectors[0];
@@ -609,6 +701,11 @@ mod tests {
         v.iter().map(|x| x / norm).collect()
     }
 
+    fn unit3(v: [f32; 3]) -> Vec<f32> {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / norm).collect()
+    }
+
     fn sample_embedder_for(items: &[StubItem]) -> Arc<StubEmbedder> {
         Arc::new(StubEmbedder {
             fingerprint: "hf|repo=1:r|revision=4:main|pool=3:cls".into(),
@@ -623,7 +720,24 @@ mod tests {
                     }
                 })
                 .collect(),
+            passthrough_batch: false,
         })
+    }
+
+    fn hand_artifact(
+        projection_version: u32,
+        dim: usize,
+        fingerprint: &str,
+        entries: &[ArtifactEntry],
+    ) -> Vec<u8> {
+        let header = ArtifactHeader {
+            format_version: SUPPORTED_FORMAT_VERSION,
+            projection_version,
+            model_fingerprint: fingerprint.into(),
+            dim,
+        };
+        let payload = encode_payload(&header, entries).unwrap();
+        assemble_file(&payload).unwrap()
     }
 
     #[test]
@@ -750,6 +864,7 @@ mod tests {
         let embedder = Arc::new(StubEmbedder {
             fingerprint: "test|model=1:m".into(),
             vectors: vec![unit([1.0, 0.0])],
+            passthrough_batch: false,
         });
 
         let bytes =
@@ -800,6 +915,7 @@ mod tests {
         let embedder = Arc::new(StubEmbedder {
             fingerprint: "test|model=1:m".into(),
             vectors: vec![unit([1.0, 0.0]), vec![0.0, 1.0, 0.0]],
+            passthrough_batch: false,
         });
         assert!(matches!(
             build_artifact(ArtifactEntryKind::Tool, &items, embedder.as_ref()),
@@ -816,6 +932,7 @@ mod tests {
         let embedder = Arc::new(StubEmbedder {
             fingerprint: "test|model=1:m".into(),
             vectors: vec![vec![2.0, 0.0]],
+            passthrough_batch: false,
         });
         assert!(matches!(
             build_artifact(ArtifactEntryKind::Tool, &items, embedder.as_ref()),
@@ -843,5 +960,222 @@ mod tests {
                 entry.id
             );
         }
+    }
+
+    #[test]
+    fn merge_tool_and_skill_artifacts_round_trips() {
+        let tools = [stub_item("t", "tool text")];
+        let skills = [stub_item("s", "skill text")];
+        let embedder = sample_embedder_for(&[stub_item("t", "tool text"), stub_item("s", "skill text")]);
+        let tool_bytes =
+            build_artifact(ArtifactEntryKind::Tool, &tools, embedder.as_ref()).unwrap();
+        let skill_bytes =
+            build_artifact(ArtifactEntryKind::Skill, &skills, embedder.as_ref()).unwrap();
+        let merged = merge_embedding_artifacts(&[&tool_bytes, &skill_bytes]).unwrap();
+        let (header, entries) = load_and_validate(&merged).unwrap();
+        assert_eq!(header.format_version, SUPPORTED_FORMAT_VERSION);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, ArtifactEntryKind::Tool);
+        assert_eq!(entries[0].id, "t");
+        assert_eq!(entries[1].kind, ArtifactEntryKind::Skill);
+        assert_eq!(entries[1].id, "s");
+    }
+
+    #[test]
+    fn merge_empty_parts_yields_empty_artifact() {
+        let empty = build_empty_artifact().unwrap();
+        let merged = merge_embedding_artifacts(&[&empty, &empty]).unwrap();
+        let (header, entries) = load_and_validate(&merged).unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(header.dim, 0);
+        assert!(header.model_fingerprint.is_empty());
+    }
+
+    #[test]
+    fn merge_empty_with_nonempty_is_identity() {
+        let items = [stub_item("a", "alpha")];
+        let nonempty =
+            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
+                .unwrap();
+        let empty = build_empty_artifact().unwrap();
+        let merged = merge_embedding_artifacts(&[&empty, &nonempty]).unwrap();
+        let (_, entries) = load_and_validate(&merged).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "a");
+    }
+
+    #[test]
+    fn merge_rejects_model_fingerprint_mismatch() {
+        let items = [stub_item("a", "alpha")];
+        let a = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            Arc::new(StubEmbedder {
+                fingerprint: "fp-a".into(),
+                vectors: vec![unit([1.0, 0.0])],
+                passthrough_batch: false,
+            })
+            .as_ref(),
+        )
+        .unwrap();
+        let b = build_artifact(
+            ArtifactEntryKind::Skill,
+            &items,
+            Arc::new(StubEmbedder {
+                fingerprint: "fp-b".into(),
+                vectors: vec![unit([0.0, 1.0])],
+                passthrough_batch: false,
+            })
+            .as_ref(),
+        )
+        .unwrap();
+        assert!(matches!(
+            merge_embedding_artifacts(&[&a, &b]),
+            Err(ArtifactError::IncompatibleMerge { .. })
+        ));
+    }
+
+    #[test]
+    fn merge_rejects_duplicate_kind_id() {
+        let items = [stub_item("dup", "alpha")];
+        let a =
+            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
+                .unwrap();
+        let b =
+            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
+                .unwrap();
+        assert!(matches!(
+            merge_embedding_artifacts(&[&a, &b]),
+            Err(ArtifactError::IncompatibleMerge { detail }) if detail.contains("duplicate")
+        ));
+    }
+
+    #[test]
+    fn merge_allows_same_id_across_kinds() {
+        let items = [stub_item("search", "text")];
+        let tool =
+            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
+                .unwrap();
+        let skill =
+            build_artifact(ArtifactEntryKind::Skill, &items, sample_embedder_for(&items).as_ref())
+                .unwrap();
+        let merged = merge_embedding_artifacts(&[&tool, &skill]).unwrap();
+        let (_, entries) = load_and_validate(&merged).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, ArtifactEntryKind::Tool);
+        assert_eq!(entries[1].kind, ArtifactEntryKind::Skill);
+        assert_eq!(entries[0].id, "search");
+        assert_eq!(entries[1].id, "search");
+    }
+
+    #[test]
+    fn merge_malformed_input_is_corrupt_not_incompatible() {
+        assert!(matches!(
+            merge_embedding_artifacts(&[b"not-a-rat1-file"]),
+            Err(ArtifactError::InvalidMagic { .. } | ArtifactError::TooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn build_rejects_fewer_vectors_than_inputs() {
+        let items = [stub_item("a", "alpha"), stub_item("b", "beta")];
+        let err = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            Arc::new(StubEmbedder {
+                fingerprint: "fp".into(),
+                vectors: vec![unit([1.0, 0.0])],
+                passthrough_batch: true,
+            })
+            .as_ref(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ArtifactError::Embedder(EmbedderError::Inference { source })
+                if source.contains("1 embeddings for 2 inputs")
+        ));
+    }
+
+    #[test]
+    fn build_rejects_more_vectors_than_inputs() {
+        let items = [stub_item("a", "alpha")];
+        let err = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            Arc::new(StubEmbedder {
+                fingerprint: "fp".into(),
+                vectors: vec![unit([1.0, 0.0]), unit([0.0, 1.0])],
+                passthrough_batch: true,
+            })
+            .as_ref(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ArtifactError::Embedder(EmbedderError::Inference { source })
+                if source.contains("2 embeddings for 1 inputs")
+        ));
+    }
+
+    #[test]
+    fn merge_rejects_dim_mismatch_as_incompatible() {
+        let a = hand_artifact(
+            1,
+            2,
+            "fp",
+            &[ArtifactEntry {
+                kind: ArtifactEntryKind::Tool,
+                id: "a".into(),
+                projection_hash: [0; 32],
+                vector: unit([1.0, 0.0]),
+            }],
+        );
+        let b = hand_artifact(
+            1,
+            3,
+            "fp",
+            &[ArtifactEntry {
+                kind: ArtifactEntryKind::Skill,
+                id: "b".into(),
+                projection_hash: [1; 32],
+                vector: unit3([1.0, 0.0, 0.0]),
+            }],
+        );
+        assert!(matches!(
+            merge_embedding_artifacts(&[&a, &b]),
+            Err(ArtifactError::IncompatibleMerge { detail }) if detail.contains("dim")
+        ));
+    }
+
+    #[test]
+    fn merge_rejects_projection_version_mismatch_as_incompatible() {
+        let a = hand_artifact(
+            1,
+            2,
+            "fp",
+            &[ArtifactEntry {
+                kind: ArtifactEntryKind::Tool,
+                id: "a".into(),
+                projection_hash: [0; 32],
+                vector: unit([1.0, 0.0]),
+            }],
+        );
+        let b = hand_artifact(
+            2,
+            2,
+            "fp",
+            &[ArtifactEntry {
+                kind: ArtifactEntryKind::Skill,
+                id: "b".into(),
+                projection_hash: [1; 32],
+                vector: unit([0.0, 1.0]),
+            }],
+        );
+        assert!(matches!(
+            merge_embedding_artifacts(&[&a, &b]),
+            Err(ArtifactError::IncompatibleMerge { detail })
+                if detail.contains("projection_version")
+        ));
     }
 }

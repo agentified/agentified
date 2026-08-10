@@ -67,7 +67,7 @@ impl FromStr for OnArtifactMiss {
 /// [`crate::SkillRegistry::warm_embeddings_from_artifact`].
 #[derive(Debug, Clone)]
 pub enum ArtifactWarmError {
-    /// Parse / kind / model-mismatch from [`crate::dense_cache::DenseCache::warm_from_artifact`].
+    /// Parse / model-mismatch from [`crate::dense_cache::DenseCache::warm_from_artifact`].
     Warm(WarmError),
     /// Policy Error: corpus ids not covered by the artifact.
     Incomplete {

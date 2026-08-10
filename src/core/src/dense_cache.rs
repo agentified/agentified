@@ -48,13 +48,6 @@ pub enum WarmError {
     Artifact(ArtifactError),
     /// Embedder load, identity probe, or dimension check failed during warm.
     Embedder(EmbedderError),
-    /// An entry's kind did not match the kind expected by the caller.
-    UnexpectedEntryKind {
-        /// Kind the caller required (tool or skill registry).
-        expected: ArtifactEntryKind,
-        /// Kind found on the offending artifact entry.
-        got: ArtifactEntryKind,
-    },
 }
 
 impl std::fmt::Display for WarmError {
@@ -62,10 +55,6 @@ impl std::fmt::Display for WarmError {
         match self {
             WarmError::Artifact(e) => write!(f, "{e}"),
             WarmError::Embedder(e) => write!(f, "{e}"),
-            WarmError::UnexpectedEntryKind { expected, got } => write!(
-                f,
-                "embedding artifact entry kind {got:?} does not match expected {expected:?}"
-            ),
         }
     }
 }
@@ -256,17 +245,12 @@ impl DenseCache {
             .expect("dense operation lock poisoned");
 
         let (header, entries) = load_and_validate(bytes)?;
-        for entry in &entries {
-            if entry.kind != expected_kind {
-                return Err(WarmError::UnexpectedEntryKind {
-                    expected: expected_kind,
-                    got: entry.kind,
-                });
-            }
-        }
-
-        let by_id: HashMap<&str, &ArtifactEntry> =
-            entries.iter().map(|e| (e.id.as_str(), e)).collect();
+        // Known other kinds are ignored so one mixed RAT1 can warm either registry.
+        let by_id: HashMap<&str, &ArtifactEntry> = entries
+            .iter()
+            .filter(|e| e.kind == expected_kind)
+            .map(|e| (e.id.as_str(), e))
+            .collect();
 
         let mut reused: Vec<(String, Vec<f32>)> = Vec::new();
         let mut missing: Vec<String> = Vec::new();
@@ -1138,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_rejects_unexpected_entry_kind() {
+    fn warm_ignores_other_known_entry_kind() {
         let items = [doc("a", "read")];
         let embedder = ArtifactBuildStub {
             fingerprint: "fp-warm".into(),
@@ -1150,14 +1134,80 @@ mod tests {
         let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
             fingerprint: "fp-warm".into(),
         }));
-        assert!(matches!(
-            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
-            Err(WarmError::UnexpectedEntryKind {
-                expected: ArtifactEntryKind::Tool,
-                got: ArtifactEntryKind::Skill,
-            })
-        ));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .unwrap();
+        assert!(outcome.reused.is_empty());
+        assert_eq!(outcome.missing, vec!["a"]);
         assert!(cache.built_fingerprint().is_none());
+        assert!(cache.dim().is_none());
+    }
+
+    #[test]
+    fn warm_mixed_artifact_reuses_matching_kind_only() {
+        let tool = doc("search", "tool search text");
+        let skill = doc("search", "skill search text");
+        let tool_bytes =
+            build_tool_artifact(std::slice::from_ref(&tool), "fp-warm", vec![unit2([1.0, 0.0])]);
+        let skill_embedder = ArtifactBuildStub {
+            fingerprint: "fp-warm".into(),
+            vectors: vec![unit2([0.0, 1.0])],
+        };
+        let skill_bytes = crate::embedding_artifact::build_artifact(
+            ArtifactEntryKind::Skill,
+            std::slice::from_ref(&skill),
+            &skill_embedder,
+        )
+        .unwrap();
+        let bytes =
+            crate::embedding_artifact::merge_embedding_artifacts(&[&tool_bytes, &skill_bytes])
+                .unwrap();
+
+        let tool_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let tool_outcome = tool_cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &[tool], &NoopSink)
+            .unwrap();
+        assert_eq!(tool_outcome.reused, vec!["search"]);
+        assert!(tool_outcome.missing.is_empty());
+        assert_eq!(
+            tool_cache.state.lock().unwrap().vectors.get("search"),
+            Some(&unit2([1.0, 0.0]))
+        );
+
+        let skill_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let skill_outcome = skill_cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Skill, &[skill], &NoopSink)
+            .unwrap();
+        assert_eq!(skill_outcome.reused, vec!["search"]);
+        assert!(skill_outcome.missing.is_empty());
+        assert_eq!(
+            skill_cache.state.lock().unwrap().vectors.get("search"),
+            Some(&unit2([0.0, 1.0]))
+        );
+    }
+
+    #[test]
+    fn warm_subset_corpus_from_superset_artifact() {
+        let artifact_items = [doc("a", "alpha"), doc("b", "bravo"), doc("c", "charlie")];
+        let bytes = build_tool_artifact(
+            &artifact_items,
+            "fp-warm",
+            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0]), unit2([0.6, 0.8])],
+        );
+        let corpus = [doc("a", "alpha"), doc("c", "charlie")];
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "fp-warm".into(),
+        }));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a", "c"]);
+        assert!(outcome.missing.is_empty());
+        assert!(cache.require_built(2).is_ok());
     }
 
     #[test]
