@@ -933,7 +933,8 @@ mod tests {
         with_garbage.push(0xFF);
         assert!(matches!(
             load_and_validate(&with_garbage),
-            Err(ArtifactError::CorruptPayload { at, .. }) if at == bytes.len()
+            Err(ArtifactError::CorruptPayload { at, .. })
+                if at == bytes.len() - FILE_PREFIX_LEN
         ));
     }
 
