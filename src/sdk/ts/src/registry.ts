@@ -97,7 +97,7 @@ export class ToolRegistry {
   }
 
   /**
-   * Build a binary embedding artifact from the registered corpus (ADR-0016).
+   * Build a binary embedding artifact from the registered corpus (ADR-0017).
    * Embedding for the artifact is independent of the mutable dense cache —
    * it does not consume or update cached vectors. Returns a Node `Buffer`
    * suitable for `fs.writeFile`. Independent of the registry's search method
@@ -112,7 +112,7 @@ export class ToolRegistry {
   }
 
   /**
-   * Warm the dense cache from a build-time embedding artifact (ADR-0016).
+   * Warm the dense cache from a build-time embedding artifact (ADR-0017).
    * `onMiss` is `"error"` (fail with {@link ArtifactWarmError} / `"Incomplete"`
    * when some corpus ids are uncovered) or `"embed"` (embed only the missing
    * ids). Independent of the registry's search method.
@@ -205,7 +205,10 @@ export class ToolRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
@@ -456,7 +459,10 @@ export class SkillRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;

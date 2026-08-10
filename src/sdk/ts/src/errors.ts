@@ -11,7 +11,7 @@
  * construction-time config errors) are passed through unchanged.
  *
  * {@link ArtifactWarmError} / {@link mapArtifactWarmError} cover failures from
- * `warmEmbeddingsFromArtifact` (ADR-0016), decoded from a private native→TS
+ * `warmEmbeddingsFromArtifact` (ADR-0017), decoded from a private native→TS
  * envelope (not part of the public API).
  */
 
@@ -64,7 +64,7 @@ export class DimensionMismatchError extends EmbedderError {
  */
 export class ArtifactWarmError extends Error {
   /**
-   * Stable discriminant — `"Warm"` (parse / kind / model mismatch during warm),
+   * Stable discriminant — `"Warm"` (parse / model mismatch during warm),
    * `"Incomplete"` (corpus ids not covered, `onMiss: "error"`), or `"Embedder"`
    * (follow-up embed failed under `onMiss: "embed"`).
    */
@@ -93,7 +93,7 @@ export class ArtifactWarmError extends Error {
  * corpus mutation. Both mutations embed on await, so both can leave this state. */
 const AWAIT_MUTATION_HINT =
   " — if you called register(...) or replaceAll(...) without awaiting it, the " +
-  "embedding pass was skipped; await the call (`await catalog.register(...)` / " +
+  "dense preparation did not complete; await the call (`await catalog.register(...)` / " +
   "`await catalog.replaceAll(...)`) before a semantic/hybrid search";
 
 /**

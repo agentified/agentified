@@ -65,6 +65,11 @@ export type {
   SearchToolsToolOptions,
 } from "./compat.js";
 export { SEARCH_TOOLS_ID, searchToolsTool } from "./compat.js";
+export type {
+  ExperimentalBuildEmbeddingArtifactOptions,
+  ExperimentalEmbeddingArtifact,
+} from "./embedding-artifact.js";
+export { experimentalBuildEmbeddingArtifact } from "./embedding-artifact.js";
 export { ArtifactWarmError, DimensionMismatchError, EmbedderError } from "./errors.js";
 export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
 export { McpToolsListError, registerMcpServer } from "./mcp.js";

@@ -1,6 +1,10 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { SearchHit, Tool } from "../native/index.cjs";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
+import {
+  type ExperimentalEmbeddingArtifact,
+  resolveEmbeddingArtifact,
+} from "./embedding-artifact.js";
 import { type IntentGraph, ToolRegistry } from "./registry.js";
 import {
   argsSizeBytes,
@@ -109,8 +113,9 @@ export type SearchOrigin = "direct" | "agent";
  * - `"hybrid"` — BM25 and semantic rankings fused with Reciprocal Rank Fusion
  *   (ADR-0011).
  *
- * `"semantic"`/`"hybrid"` embed inline during {@link ToolCatalog.register};
- * ranking against that cache needs `searchAsync()`.
+ * `"semantic"`/`"hybrid"` need a prepared dense cache: registration builds it
+ * (or warms a configured embedding artifact). Dense ranking uses
+ * `searchAsync()`.
  */
 export type SearchMethod = "bm25" | "semantic" | "hybrid";
 
@@ -198,6 +203,8 @@ export interface ToolCatalogOptions {
    * embedding. Retained and validated even when the default method is `"bm25"`,
    * allowing a later asynchronous semantic override. */
   embedding?: EmbeddingSpec;
+  /** Build-time RAT1 to warm on register (any method; default `onMiss: "error"`). */
+  experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
 }
 
 /**
@@ -238,6 +245,7 @@ export class ToolCatalog {
   private readonly inputValidators = new Map<string, InputValidator>();
   private readonly tools = new Map<string, Tool>();
   private readonly method: SearchMethod;
+  private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
   /**
    * Create an empty catalog.
@@ -248,6 +256,7 @@ export class ToolCatalog {
   constructor(options: ToolCatalogOptions = {}) {
     this.method = options.method ?? "bm25";
     this.registry = new ToolRegistry(options.embedding, this.method);
+    this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {
       this.registry.setTraceSink(options.trace);
     }
@@ -257,23 +266,21 @@ export class ToolCatalog {
    * Add one tool or a batch to the catalog — the single entry point for
    * both. Replaces an id in place when already registered (metadata,
    * executor, and index entry; the corpus never holds a duplicate). On a
-   * `"semantic"`/`"hybrid"` catalog, embeds the batch in one pass on a libuv
-   * worker after metadata is indexed, so the event loop is never blocked;
-   * embedding errors (model load / endpoint / auth / dimension) surface
-   * **here**, at registration — metadata still persists even if the
-   * embedding pass that follows fails. A `"bm25"` catalog never loads a
-   * model and resolves as soon as metadata is indexed.
+   * `"semantic"`/`"hybrid"` catalog without an artifact, embeds the batch after
+   * metadata is indexed. With {@link ToolCatalogOptions.experimentalEmbeddingArtifact},
+   * warms that artifact first (any method). Dense-preparation errors surface
+   * **here**; metadata still persists if that phase fails. A `"bm25"` catalog
+   * without an artifact never loads a model.
    *
    * A model or dimension change is not recovered in place — construct a new
    * catalog and re-register.
    *
    * @param tools - A single tool or a readonly array of tools; each
    *   `execute` must be set. Pass the whole batch at once for a single
-   *   embedding request — separate `register` calls embed separately.
-   * @throws {@link EmbedderError} on a `"semantic"`/`"hybrid"` catalog when
-   *   embedding fails (model load / endpoint / auth / dimension) — a
-   *   {@link DimensionMismatchError} for a vector-width change. A missing
-   *   `execute` handler throws a plain `Error`.
+   *   dense-preparation request — separate `register` calls prepare separately.
+   * @throws {@link EmbedderError} when embedding fails;
+   *   {@link ArtifactWarmError} when a configured artifact fails;
+   *   plain `Error` if `execute` is missing.
    */
   async register(tools: ExecutableTool | readonly ExecutableTool[]): Promise<void> {
     const batch = Array.isArray(tools) ? tools : [tools];
@@ -294,6 +301,15 @@ export class ToolCatalog {
         this.inputValidators.delete(tool.id);
       }
       this.tools.set(tool.id, metadata);
+    }
+    await this.ensureDenseReady();
+  }
+
+  private async ensureDenseReady(): Promise<void> {
+    if (this.embeddingArtifact) {
+      const { bytes, onMiss } = await resolveEmbeddingArtifact(this.embeddingArtifact);
+      await this.registry.warmEmbeddingsFromArtifact(bytes, onMiss);
+      return;
     }
     await this.registry.buildDense();
   }
