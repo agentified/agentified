@@ -93,7 +93,7 @@ mod trace;
 mod usage;
 mod usage_learner;
 
-pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss};
+pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};
 pub use dense_cache::WarmError;
 pub use embedding::EmbedderError;
 pub use embedding_artifact::{ArtifactEntryKind, ArtifactError};
