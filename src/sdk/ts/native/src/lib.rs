@@ -55,6 +55,16 @@ fn map_artifact_build_error(error: ArtifactError) -> napi::Error {
         other => napi::Error::from_reason(other.to_string()),
     }
 }
+
+/// Merge valid RAT1 parts into one mixed artifact (see core
+/// `merge_embedding_artifacts`).
+#[napi]
+pub fn merge_embedding_artifacts(parts: Vec<Buffer>) -> napi::Result<Buffer> {
+    let refs: Vec<&[u8]> = parts.iter().map(|part| part.as_ref()).collect();
+    core::merge_embedding_artifacts(&refs)
+        .map(Buffer::from)
+        .map_err(map_artifact_build_error)
+}
 #[derive(Clone, Copy)]
 enum EmbeddingOperation {
     Build,
@@ -881,7 +891,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Build a binary embedding artifact from the registered corpus (ADR-0016).
+    /// Build a binary embedding artifact from the registered corpus (ADR-0017).
     /// Runs on a libuv worker. Takes a dense-operation permit so corpus
     /// mutations are rejected while the build is pending, but does **not** take
     /// the dense gate — semantic search may run concurrently (artifact build is
