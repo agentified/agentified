@@ -14,7 +14,7 @@ use ratel_ai_core::{
     ArtifactError, EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, OnArtifactMiss,
     Origin, SearchMethod, TraceEvent, UsageLearner,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A constructed sink plus the `MemorySink` handle when the kind is `"memory"`
 /// (so the owner can drain it later).
