@@ -50,8 +50,8 @@ from .catalog import (
 # callers keep working after upgrading to 0.2.0. Slated for removal (RAT-250).
 from .compat import SEARCH_TOOLS_ID, search_tools_tool
 from .exceptions import DimensionMismatchError, EmbedderError
-from .mcp import McpServerHandle, register_mcp_server
-from .skill_catalog import Skill, SkillCatalog, SkillRegistry
+from .mcp import McpServerHandle, McpToolsListError, register_mcp_server
+from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
 
 # OpenTelemetry export of the ratel.*/gen_ai.* funnel (ADR-0007). The SDK always
@@ -77,8 +77,11 @@ __all__ = [
     "HuggingFaceEmbeddingConfig",
     "LocalEmbeddingConfig",
     "McpServerHandle",
+    "McpToolsListError",
     "OnUnauthorized",
     "OllamaEmbeddingConfig",
+    "PendingReplace",
+    "ReplaceOutcome",
     "SearchHit",
     "SearchMethod",
     "SearchOrigin",

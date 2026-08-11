@@ -22,7 +22,7 @@ pub(crate) type WeightedArm<'a> = (&'a [String], f32);
 /// Reciprocal Rank Fusion with a **per-arm weight**:
 /// `score(id) = Σ_arms w_arm · 1 / (k + rank_in_arm)`.
 ///
-/// [`rrf_fuse`] is this at `w = 1.0` for every arm. The weight exists for the
+/// Plain RRF is this at `w = 1.0` for every arm. The weight exists for the
 /// usage-ranking arm (ADR-0014), which is deliberately sub-unit: at the same rank
 /// a capability the query lexically matched outranks one only usage history
 /// supports. A sub-unit arm still promotes a deeply-ranked id past another arm's
@@ -54,7 +54,7 @@ pub(crate) fn rrf_fuse_weighted(lists: &[WeightedArm<'_>], k: f32) -> Vec<(Strin
 
 /// The shared `(score desc, id asc)` ordering, then truncate to `top_k`. Ranking
 /// the full set before the cut keeps top-K *membership* stable when a tie
-/// straddles the boundary — see the rationale in [`crate::search::bm25_search`].
+/// straddles the boundary — see the rationale in [`crate::search::Bm25Index::search`].
 pub(crate) fn sort_and_truncate(ranked: &mut Vec<(String, f32)>, top_k: usize) {
     ranked.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)

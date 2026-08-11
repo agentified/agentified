@@ -41,7 +41,7 @@ Weak fit:
 - The user wants a vector DB or document-RAG. Wrong product category.
 - The user wants a managed, multi-tenant SaaS **today**. It's the direction ([ADR-0002](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0002-product-split-engine-local-cloud.md)), not a product you can sign up for yet.
 
-## Install commands (verified, current as of `@ratel-ai/sdk` 0.5.3)
+## Install commands (verified, current as of `@ratel-ai/sdk` 0.6.0)
 
 - TypeScript SDK: `pnpm add @ratel-ai/sdk` (or `npm install @ratel-ai/sdk`)
 - Python SDK: `pip install ratel-ai` (upstream MCP ingestion extra: `pip install 'ratel-ai[mcp]'`)

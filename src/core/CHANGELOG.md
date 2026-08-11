@@ -6,7 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.6.0-rc.0] - 2026-07-27
+## [0.7.0] - 2026-08-07
+
+### Added
+
+- **Whole-corpus skill reload (ADR-0015).** `SkillRegistry::replace_all` makes the batch the *entire* skill corpus and diffs it against the live one, so an id removed upstream stops being searchable — until now the registry was append-only (`register` replaced an id in place, nothing removed one). The dense cache is touched only where it must be: removed ids' vectors are dropped, changed indexed text is invalidated, everything else is kept, so reloading an unchanged catalog costs zero embeddings. Returns the new public `ReplaceOutcome` (added / removed / updated / unchanged counts). It is the only source of `ChurnKind::Remove` for skills; `TraceEvent::SkillChurn` fires for real changes only.
+- `Skill` derives `PartialEq` / `Eq`.
+
+### Changed
+
+- **The BM25 index is cached across searches and rebuilt only on catalog mutation.** Every search used to rebuild the whole BM25 engine (two full-corpus tokenization passes) and re-derive `searchable_text` for every item — roughly 100× the cost of the query itself (61 ms vs 0.6 ms at 1k tools). The first search after a mutation now builds the index through the same full-corpus path and later searches reuse it; `ToolRegistry::register`, `SkillRegistry::register`, and `SkillRegistry::replace_all` invalidate it (`replace_all` keeps it when no indexed text changed), and the hybrid arms share the same cached index instead of deriving `searchable_text` a second time. Scores are byte-for-byte unchanged (ADR-0011) — this is purely a latency win, no API change.
+
+## [0.6.0] - 2026-07-28
 
 ### Added
 

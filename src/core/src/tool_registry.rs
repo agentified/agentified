@@ -9,7 +9,7 @@ use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
-use crate::search::bm25_search;
+use crate::search::Bm25Cache;
 use crate::tool::Tool;
 use crate::trace::{
     ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEvent, TraceSink,
@@ -125,6 +125,12 @@ pub struct ToolRegistry {
     /// stays one-entry-per-id — no `avgdl` drift, no leak (RAT-378).
     tools: IndexMap<String, Tool>,
     sink: Arc<dyn TraceSink>,
+    /// Prebuilt BM25 index over `tools`, built lazily by the first search and
+    /// reused until [`Self::register`] invalidates it — a rebuild costs a full
+    /// corpus tokenization (~100x one query), so it happens once per corpus
+    /// state instead of once per search. Scores are byte-identical to a fresh
+    /// build (ADR-0011).
+    bm25: Bm25Cache,
     /// Dense embeddings for `tools`, keyed by id and built on demand. `register`
     /// invalidates a replaced id; the missing ids are embedded by
     /// [`Self::build_embeddings`] — a search never embeds the corpus (it requires
@@ -151,6 +157,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
         }
@@ -161,6 +168,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink,
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
         }
@@ -175,6 +183,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
         }
@@ -393,6 +402,9 @@ impl ToolRegistry {
     /// ```
     pub fn register(&mut self, tool: Tool) {
         let tool_id = tool.id.clone();
+        // Add or replace, the corpus changed either way: the prebuilt BM25
+        // index no longer matches it.
+        self.bm25.invalidate();
         if self.tools.insert(tool_id.clone(), tool).is_some() {
             // Replaced an existing id: drop its stale embedding.
             self.dense.invalidate(&tool_id);
@@ -538,6 +550,12 @@ impl ToolRegistry {
             .map(|t| (t.id.clone(), searchable_text(t)))
     }
 
+    /// The prebuilt BM25 index for the current corpus — cached across
+    /// searches, rebuilt on the first search after a [`Self::register`].
+    fn bm25_index(&self) -> Arc<crate::search::Bm25Index> {
+        self.bm25.get_or_build(|| self.bm25_docs())
+    }
+
     /// Fuse the ranked arms into the final top-`top_k`, returning the hits and
     /// the `rrf` stage. Shared by all three engines so the fusion, truncation,
     /// and `(score desc, id asc)` ordering have exactly one implementation.
@@ -576,7 +594,7 @@ impl ToolRegistry {
             // No graph, or nothing matched: the original path, unchanged, with
             // raw BM25 scores. ADR-0011's byte-for-byte promise lives here.
             // Raw BM25 scores — not fused.
-            let hits = to_search_hits(bm25_search(self.bm25_docs(), query, top_k), false);
+            let hits = to_search_hits(self.bm25_index().search(query, top_k), false);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -599,7 +617,7 @@ impl ToolRegistry {
         // scores — the opt-in cost documented on `set_intent_graph`.
         let depth = RETRIEVE_DEPTH.max(top_k);
         let t = Instant::now();
-        let bm25_ranked = bm25_search(self.bm25_docs(), query, depth);
+        let bm25_ranked = self.bm25_index().search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -717,13 +735,7 @@ impl ToolRegistry {
 
         // 1. BM25 (lexical).
         let t = Instant::now();
-        let bm25_ranked = bm25_search(
-            self.tools
-                .values()
-                .map(|t| (t.id.clone(), searchable_text(t))),
-            query,
-            depth,
-        );
+        let bm25_ranked = self.bm25_index().search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -884,6 +896,7 @@ mod tests {
         ToolRegistry {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
         }
@@ -904,6 +917,43 @@ mod tests {
         reg.register(tool("read_file", "read a file"));
         reg.register(tool("delete_file", "delete a file"));
         reg
+    }
+
+    /// A builder that must never run — proof the search path already
+    /// populated the cache, i.e. the registry actually consults `Bm25Cache`
+    /// instead of rebuilding per call (the regression this cache exists to
+    /// prevent).
+    fn no_build() -> Vec<(String, String)> {
+        unreachable!("cache should already be populated by the search path")
+    }
+
+    #[test]
+    fn bm25_cache_is_warmed_by_search_and_dropped_by_register() {
+        // Lifecycle pin (see the skill-side twin): a public search populates
+        // the cache, register — the sole corpus mutator — drops it. Results
+        // are byte-identical either way (pinned in tests/tool_search.rs), so
+        // a per-call rebuild would pass every test there; this is the one
+        // that fails if the search→cache wiring regresses.
+        let mut reg = ToolRegistry::new();
+        reg.register(tool("read_file", "read a file"));
+
+        let _ = reg.search("read", 5);
+        let warmed = reg.bm25.get_or_build(no_build);
+        let _ = reg.search("file", 5);
+        let reused = reg.bm25.get_or_build(no_build);
+        assert!(
+            Arc::ptr_eq(&warmed, &reused),
+            "searches between mutations must reuse one index"
+        );
+
+        reg.register(tool("delete_file", "delete a file"));
+        let builds = std::cell::Cell::new(0);
+        let rebuilt = reg.bm25.get_or_build(|| {
+            builds.set(builds.get() + 1);
+            reg.bm25_docs()
+        });
+        assert_eq!(builds.get(), 1, "register must drop the cached index");
+        assert!(!Arc::ptr_eq(&warmed, &rebuilt));
     }
 
     #[test]

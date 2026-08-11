@@ -158,6 +158,178 @@ describe("SkillCatalog", () => {
   });
 });
 
+const migrations: Skill = {
+  id: "migrations",
+  name: "migrations",
+  description: "Write reversible database migrations.",
+  tags: ["backend", "data"],
+  body: "# Migrations\n\nAlways ship a down step.",
+};
+
+describe("SkillCatalog.replaceAll", () => {
+  it("drops ids absent from the batch and reports what changed", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.register([slides, apiDesign]);
+
+    const outcome = await catalog.replaceAll([apiDesign, migrations]);
+
+    expect(outcome).toEqual({ added: 1, removed: 1, updated: 0, unchanged: 1 });
+    expect(catalog.size()).toBe(2);
+    expect(catalog.has("frontend-slides")).toBe(false);
+    expect(catalog.get("frontend-slides")).toBeUndefined();
+    expect(catalog.search("animation-rich HTML presentations", 5)).toEqual([]);
+    expect(catalog.search("reversible database migrations", 5)[0]?.skillId).toBe("migrations");
+  });
+
+  it("makes a dropped skill unloadable", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.register([slides, apiDesign]);
+    await catalog.replaceAll([apiDesign]);
+
+    // The capability-tool boundary turns this into a structured error for the agent.
+    expect(() => catalog.invoke("frontend-slides")).toThrow(/unknown skillId: frontend-slides/);
+  });
+
+  it("clears the catalog when given an empty batch", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.register([slides, apiDesign]);
+
+    const outcome = await catalog.replaceAll([]);
+
+    expect(outcome).toEqual({ added: 0, removed: 2, updated: 0, unchanged: 0 });
+    expect(catalog.size()).toBe(0);
+    expect(catalog.search("anything", 5)).toEqual([]);
+  });
+
+  it("serves the reloaded body and description for an id it kept", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.register(slides);
+
+    const outcome = await catalog.replaceAll([
+      { ...slides, description: "Build static HTML decks.", body: "# Slides\n\nRewritten." },
+    ]);
+
+    expect(outcome).toEqual({ added: 0, removed: 0, updated: 1, unchanged: 0 });
+    expect(catalog.get("frontend-slides")?.description).toBe("Build static HTML decks.");
+    expect(catalog.invoke("frontend-slides")).toContain("Rewritten");
+    expect(catalog.search("static HTML decks", 5)[0]?.skillId).toBe("frontend-slides");
+  });
+
+  it("keeps the last of duplicate ids in one batch", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.replaceAll([slides, { ...slides, description: "Second wins." }]);
+
+    expect(catalog.size()).toBe(1);
+    expect(catalog.get("frontend-slides")?.description).toBe("Second wins.");
+  });
+
+  it("embeds nothing when the reloaded catalog is byte-identical", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+      await catalog.register([slides, apiDesign]);
+      const afterRegister = server.requests.length;
+      expect(afterRegister).toBeGreaterThan(0);
+
+      const outcome = await catalog.replaceAll([slides, apiDesign]);
+
+      expect(outcome).toEqual({ added: 0, removed: 0, updated: 0, unchanged: 2 });
+      expect(server.requests.length).toBe(afterRegister);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("embeds a reload's new skills and keeps them rankable", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+      await catalog.register([slides, apiDesign]);
+
+      await catalog.replaceAll([apiDesign, migrations]);
+
+      const hits = await catalog.searchAsync("database", 5);
+      expect(hits.map((hit) => hit.skillId).sort()).toEqual(["api-design", "migrations"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects while a dense operation owns the registry", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+      await catalog.register(slides);
+
+      const search = catalog.searchAsync("slides", 5);
+      // A reload racing an in-flight dense operation is refused outright rather
+      // than applied half-way. The swap is the synchronous half of the call, so
+      // the refusal throws at the call site instead of rejecting the promise.
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
+      await search;
+      expect(catalog.has("frontend-slides")).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("refuses a second reload while the first is still embedding", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+
+      // The first reload's swap has committed and its embedding pass now owns
+      // the registry (the dense permit is taken synchronously, before the call
+      // returns).
+      const first = catalog.replaceAll([slides]);
+
+      // So the second is refused outright — not queued behind the first, not
+      // merged into it.
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
+
+      await first;
+
+      // The corpus is exactly the first batch, never a blend of the two.
+      expect(catalog.has("frontend-slides")).toBe(true);
+      expect(catalog.has("api-design")).toBe(false);
+      expect(catalog.size()).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("reports the committed counts even when the embedding pass fails", async () => {
+    const catalog = new SkillCatalog({
+      method: "semantic",
+      embedding: { local: "/definitely/missing/ratel-embedding-model" },
+    });
+
+    const reload = catalog.replaceAll([slides, apiDesign]);
+
+    // The swap commits before the embedding pass is driven, so the counts are
+    // final at call time. A reload that fails to embed still reports what it
+    // changed — the corpus is live and BM25 ranks it, which is exactly the
+    // state ADR-0015 tells a periodic source to expect and report on.
+    expect(reload.added).toBe(2);
+    expect(reload.removed).toBe(0);
+
+    await expect(reload).rejects.toThrow(/failed to load embedding model/);
+    expect(catalog.has("frontend-slides")).toBe(true);
+  });
+});
+
 describe("SkillCatalog removed methods", () => {
   it("registerMany / buildEmbeddings / rebuildEmbeddings are gone at runtime", () => {
     // Folded into the variadic, self-embedding `register` (RAT-379/async-register).

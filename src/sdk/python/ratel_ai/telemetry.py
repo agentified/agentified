@@ -138,11 +138,13 @@ def _normalize_content(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _normalize_content(
-                model_dump(mode="json", by_alias=True, exclude_none=True)
-            )
+            dumped = model_dump(mode="json", by_alias=True, exclude_none=True)
         except TypeError:
-            return _normalize_content(model_dump())
+            dumped = model_dump()
+        if type(value).__name__ == "CallToolResult" and isinstance(dumped, dict):
+            stable = ("content", "structuredContent", "isError")
+            return _normalize_content({key: dumped[key] for key in stable if key in dumped})
+        return _normalize_content(dumped)
     if isinstance(value, Enum):
         return _normalize_content(value.value)
     if isinstance(value, Mapping):

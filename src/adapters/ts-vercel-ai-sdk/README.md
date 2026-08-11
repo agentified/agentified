@@ -9,7 +9,7 @@ Ratel keeps the model's tool list small and stable: instead of advertising every
 Install the compatible GA pair:
 
 ```bash
-pnpm add @ratel-ai/sdk@^0.5.3 @ratel-ai/vercel-ai-sdk@^0.2.0 ai@^7
+pnpm add @ratel-ai/sdk@^0.6.0 @ratel-ai/vercel-ai-sdk@^0.3.0 ai@^7
 ```
 
 ## Usage
@@ -210,7 +210,7 @@ Peer range: **`ai@^5.0.0 || ^6.0.0 || ^7.0.0`** — one shared code path, no per
 Approval (`needsApproval`) is available on AI SDK 6+, while per-tool `contextSchema` is AI
 SDK 7-only. When present, both stay on the native passthrough path.
 
-Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.37` (the `ai-sdk compat` matrix in `.github/workflows/ts.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Every row also asserts that consumer resolved **no** `@ai-sdk/otel`; the v7 rows additionally install it and typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface. Releases between floor and latest are covered by the range, not row-verified.
+Each supported major is verified in CI at two exact releases — its floor and its latest verified release — as `ai@5.0.0`, `5.0.217`, `6.0.0`, `6.0.232`, `7.0.0`, `7.0.37` (the `ai-sdk-compat` matrix in `.github/workflows/ci.yml`): every row builds, typechecks, tests, packs, and typechecks a packed-tarball consumer against that exact `ai`. Every row also asserts that consumer resolved **no** `@ai-sdk/otel`; the v7 rows additionally install it and typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface. Releases between floor and latest are covered by the range, not row-verified.
 
 - **`ai@4` is excluded.** The v5 release reshaped the tool and message surface the adapter speaks (`inputSchema`/`ModelMessage`-era shapes); `ai@4` predates it and would need a different adapter, not a wider range.
 - **Breaking-change policy:** narrowing the supported-majors peer range (dropping a major) is a breaking change of this adapter and ships as a major (post-1.0) with a changelog callout — never a patch or minor. Widening the range to a new `ai` major is additive.

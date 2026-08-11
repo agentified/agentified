@@ -52,11 +52,12 @@ export class DimensionMismatchError extends EmbedderError {
   }
 }
 
-/** Appended to a "not built" error — the signature of a forgotten `await register(...)`. */
-const AWAIT_REGISTER_HINT =
-  " — if you called register(...) without awaiting it, the embedding pass was " +
-  "skipped; `await catalog.register(...)` (or `registry.register(...)`) before a " +
-  "semantic/hybrid search";
+/** Appended to a "not built" error — the signature of a forgotten `await` on a
+ * corpus mutation. Both mutations embed on await, so both can leave this state. */
+const AWAIT_MUTATION_HINT =
+  " — if you called register(...) or replaceAll(...) without awaiting it, the " +
+  "embedding pass was skipped; await the call (`await catalog.register(...)` / " +
+  "`await catalog.replaceAll(...)`) before a semantic/hybrid search";
 
 /**
  * Classify a native error message by matching the core `EmbedderError` display
@@ -89,7 +90,7 @@ export function mapEmbedderError(error: unknown): unknown {
   const code = embedderCode(error.message);
   if (code === undefined) return error;
   const message =
-    code === "EmbeddingsNotBuilt" ? error.message + AWAIT_REGISTER_HINT : error.message;
+    code === "EmbeddingsNotBuilt" ? error.message + AWAIT_MUTATION_HINT : error.message;
   return code === "DimensionMismatch"
     ? new DimensionMismatchError(message)
     : new EmbedderError(message, code);

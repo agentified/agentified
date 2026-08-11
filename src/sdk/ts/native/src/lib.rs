@@ -1259,6 +1259,21 @@ pub struct SkillHit {
     pub fused: bool,
 }
 
+/// What a `SkillRegistry.replaceAll` changed, counted by id. `updated` covers
+/// any field edit (including a body-only rewrite); `unchanged` ids are identical
+/// to what was registered and keep their cached embedding.
+#[napi(object)]
+pub struct ReplaceOutcome {
+    /// Ids in the new corpus that were not in the old one.
+    pub added: u32,
+    /// Ids in the old corpus that are absent from the new one.
+    pub removed: u32,
+    /// Ids present in both whose content differs in any field.
+    pub updated: u32,
+    /// Ids present in both with identical content.
+    pub unchanged: u32,
+}
+
 /// Node binding over the `ratel-ai-core` skill registry — the skill twin of
 /// `ToolRegistry`, ranking registered skills against a natural-language query.
 /// Skill bodies are stored but never indexed; fetch them a layer up (the SDK's
@@ -1331,6 +1346,36 @@ impl SkillRegistry {
             });
         }
         Ok(())
+    }
+
+    /// Replace the whole corpus under one registry write lock: ids absent from
+    /// `skills` are removed, the rest are added or updated. Embeds nothing —
+    /// call `buildEmbeddings()` after on a semantic/hybrid registry, which then
+    /// embeds only what this replace invalidated. Rejects while a dense
+    /// operation owns the registry, exactly as `registerMany` does.
+    #[napi]
+    pub fn replace_all(&self, skills: Vec<Skill>) -> napi::Result<ReplaceOutcome> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let outcome = registry.replace_all(
+            skills
+                .into_iter()
+                .map(|skill| core::Skill {
+                    id: skill.id,
+                    name: skill.name,
+                    description: skill.description,
+                    tags: skill.tags.unwrap_or_default(),
+                    tools: skill.tools.unwrap_or_default(),
+                    metadata: skill.metadata.unwrap_or_default(),
+                    body: skill.body.unwrap_or_default(),
+                })
+                .collect(),
+        );
+        Ok(ReplaceOutcome {
+            added: outcome.added as u32,
+            removed: outcome.removed as u32,
+            updated: outcome.updated as u32,
+            unchanged: outcome.unchanged as u32,
+        })
     }
 
     /// Lexical BM25 search over skills — see `ToolRegistry.search` for the

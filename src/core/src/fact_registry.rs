@@ -10,7 +10,7 @@ use crate::fact::{Fact, PinMode};
 use crate::fact_indexing::searchable_text;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, rrf_fuse_weighted, sort_and_truncate};
 use crate::method::SearchMethod;
-use crate::search::bm25_search;
+use crate::search::Bm25Cache;
 use crate::trace::{ChurnKind, FactHitTrace, NoopSink, Origin, SearchStage, TraceEvent, TraceSink};
 
 /// One ranked match from a [`FactRegistry`] search, best-first in the returned
@@ -44,6 +44,9 @@ pub struct FactRegistry {
     /// [`Self::pinned`] injects always-on facts in.
     facts: IndexMap<String, Fact>,
     sink: Arc<dyn TraceSink>,
+    /// Prebuilt BM25 index over `facts`, cached across searches and invalidated
+    /// on any mutation of the indexed text (mirrors the skill/tool registries).
+    bm25: Bm25Cache,
     /// Dense embeddings for `facts`, keyed by id and built on demand.
     dense: DenseCache,
 }
@@ -61,6 +64,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
     }
@@ -70,6 +74,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink,
+            bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
     }
@@ -80,6 +85,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
         }
     }
@@ -105,6 +111,8 @@ impl FactRegistry {
             // Replaced an existing id: drop its stale embedding.
             self.dense.invalidate(&fact_id);
         }
+        // The corpus changed: the cached BM25 index is stale.
+        self.bm25.invalidate();
         self.sink.record(TraceEvent::FactChurn {
             kind: ChurnKind::Add,
             fact_id,
@@ -210,20 +218,29 @@ impl FactRegistry {
         self.dense.rebuild(self.facts.values(), self.sink.as_ref())
     }
 
+    /// The corpus as `(id, searchable_text)` pairs for BM25.
+    fn bm25_docs(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.facts
+            .values()
+            .map(|f| (f.id.clone(), searchable_text(f)))
+    }
+
+    /// The prebuilt BM25 index for the current corpus — cached across searches,
+    /// rebuilt on the first search after a mutation.
+    fn bm25_index(&self) -> Arc<crate::search::Bm25Index> {
+        self.bm25.get_or_build(|| self.bm25_docs())
+    }
+
     // ---- engines -----------------------------------------------------------
 
     fn bm25_search_traced(&self, query: &str, top_k: usize, origin: Origin) -> Vec<FactHit> {
         let started = Instant::now();
-        let hits: Vec<FactHit> = bm25_search(
-            self.facts
-                .values()
-                .map(|f| (f.id.clone(), searchable_text(f))),
-            query,
-            top_k,
-        )
-        .into_iter()
-        .map(|(fact_id, score)| FactHit { fact_id, score })
-        .collect();
+        let hits: Vec<FactHit> = self
+            .bm25_index()
+            .search(query, top_k)
+            .into_iter()
+            .map(|(fact_id, score)| FactHit { fact_id, score })
+            .collect();
         let took_ms = started.elapsed().as_millis() as u64;
         let top_score = hits.first().map(|h| h.score as f64);
         self.record_search(
@@ -297,13 +314,7 @@ impl FactRegistry {
         let depth = RETRIEVE_DEPTH.max(top_k);
 
         let t = Instant::now();
-        let bm25_ranked = bm25_search(
-            self.facts
-                .values()
-                .map(|f| (f.id.clone(), searchable_text(f))),
-            query,
-            depth,
-        );
+        let bm25_ranked = self.bm25_index().search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -409,6 +420,7 @@ mod tests {
         FactRegistry {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
         }
     }

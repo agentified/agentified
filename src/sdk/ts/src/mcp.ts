@@ -1,8 +1,106 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ExecutableTool, ToolCatalog } from "./catalog.js";
 import { traceUpstreamRegister } from "./telemetry.js";
+
+const MCP_LIST_MAX_PAGES = 64;
+
+/** Stable discriminant for {@link McpToolsListError} from paginated MCP `tools/list`. */
+export type McpToolsListErrorCode = "RepeatedCursor" | "PaginationExceeded";
+
+/**
+ * Paginated MCP `tools/list` failed — repeated cursor or page cap exceeded.
+ * Thrown by {@link registerMcpServer} when listing upstream tools; mirrors Python's
+ * `McpToolsListError`.
+ */
+export class McpToolsListError extends Error {
+  /** Prefer {@link McpToolsListErrorCode} (or `instanceof`) over parsing {@link Error.message}. */
+  readonly code: McpToolsListErrorCode;
+
+  /**
+   * @param message - Human-readable failure description.
+   * @param code - Stable {@link McpToolsListErrorCode} discriminant.
+   */
+  constructor(message: string, code: McpToolsListErrorCode) {
+    super(message);
+    this.name = "McpToolsListError";
+    this.code = code;
+  }
+}
+
+async function listAllMcpTools(client: Client): Promise<Tool[]> {
+  const tools: Tool[] = [];
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < MCP_LIST_MAX_PAGES; page++) {
+    const result = await client.listTools(cursor === undefined ? undefined : { cursor });
+    tools.push(...result.tools);
+    // MCP: only absent nextCursor ends pagination ("" is a valid cursor).
+    if (result.nextCursor === undefined) {
+      return tools;
+    }
+    if (seenCursors.has(result.nextCursor)) {
+      throw new McpToolsListError(
+        "MCP tools/list returned a repeated nextCursor",
+        "RepeatedCursor",
+      );
+    }
+    seenCursors.add(result.nextCursor);
+    cursor = result.nextCursor;
+  }
+  throw new McpToolsListError(
+    `MCP tools/list exceeded ${MCP_LIST_MAX_PAGES} pages`,
+    "PaginationExceeded",
+  );
+}
+
+function buildRegisteredMcpTools(
+  catalog: ToolCatalog,
+  client: Client,
+  serverName: string,
+  tools: Tool[],
+): { toolIds: string[]; registered: ExecutableTool[] } {
+  const toolIds: string[] = [];
+  const registered: ExecutableTool[] = [];
+  for (const tool of tools) {
+    const id = `${serverName}__${tool.name}`;
+    registered.push({
+      id,
+      name: tool.name,
+      description: tool.description ?? "",
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema ?? { type: "object" },
+      execute: async (args) => {
+        const startedAt = Date.now();
+        try {
+          const result = await client.callTool({
+            name: tool.name,
+            arguments: args as Record<string, unknown>,
+          });
+          catalog.recordEvent({
+            type: "upstream_invoke",
+            server: serverName,
+            tool_id: id,
+            took_ms: Date.now() - startedAt,
+          });
+          return result;
+        } catch (err) {
+          catalog.recordEvent({
+            type: "upstream_error",
+            server: serverName,
+            tool_id: id,
+            error: (err as Error).message ?? String(err),
+          });
+          throw err;
+        }
+      },
+    });
+    toolIds.push(id);
+  }
+  return { toolIds, registered };
+}
 
 /** Options for {@link registerMcpServer}. */
 export interface RegisterMcpServerOptions {
@@ -22,7 +120,10 @@ export interface RegisterMcpServerOptions {
 
 /** What {@link registerMcpServer} returns: the ingested ids plus lifecycle control. */
 export interface McpServerHandle {
-  /** Namespaced ids (`<name>__<toolName>`) of every tool registered, in server order. */
+  /**
+   * Namespaced ids in upstream list order (all pages). Duplicate names may
+   * appear more than once; {@link ToolCatalog.register} keeps the last row.
+   */
   toolIds: string[];
   /**
    * The usage instructions the server declared during the MCP initialize
@@ -39,7 +140,7 @@ export interface McpServerHandle {
 
 /**
  * Ingest an MCP server into a {@link ToolCatalog}: connect over the given
- * transport, list its tools once (no live refresh), and register each as an
+ * transport, list every paginated `tools/list` page (no live refresh), and register each as an
  * {@link ToolCatalog.register | executable tool} whose executor proxies
  * `callTool` on the live client. A missing tool description registers as `""`;
  * a missing output schema as `{ type: "object" }`.
@@ -82,64 +183,33 @@ export async function registerMcpServer(
   // span; per-tool invocations later get their own `execute_tool` spans (ADR-0007).
   return traceUpstreamRegister(name, transportLabel, async (reportToolCount) => {
     const client = new Client({ name: "@ratel-ai/sdk", version: "0.0.0" });
-    await client.connect(transport);
+    try {
+      await client.connect(transport);
 
-    const serverInstructions = client.getInstructions();
+      const serverInstructions = client.getInstructions();
 
-    const { tools } = await client.listTools();
-    reportToolCount(tools.length);
-    catalog.recordEvent({
-      type: "upstream_register",
-      server: name,
-      transport: transportLabel,
-      tool_count: tools.length,
-    });
-    const toolIds: string[] = [];
-    const registered: ExecutableTool[] = [];
-    for (const tool of tools) {
-      const id = `${name}__${tool.name}`;
-      registered.push({
-        id,
-        name: tool.name,
-        description: tool.description ?? "",
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema ?? { type: "object" },
-        execute: async (args) => {
-          const startedAt = Date.now();
-          try {
-            const result = await client.callTool({
-              name: tool.name,
-              arguments: args as Record<string, unknown>,
-            });
-            catalog.recordEvent({
-              type: "upstream_invoke",
-              server: name,
-              tool_id: id,
-              took_ms: Date.now() - startedAt,
-            });
-            return result;
-          } catch (err) {
-            catalog.recordEvent({
-              type: "upstream_error",
-              server: name,
-              tool_id: id,
-              error: (err as Error).message ?? String(err),
-            });
-            throw err;
-          }
-        },
+      const tools = await listAllMcpTools(client);
+      reportToolCount(tools.length);
+      catalog.recordEvent({
+        type: "upstream_register",
+        server: name,
+        transport: transportLabel,
+        tool_count: tools.length,
       });
-      toolIds.push(id);
-    }
-    await catalog.register(registered);
+      const { toolIds, registered } = buildRegisteredMcpTools(catalog, client, name, tools);
+      await catalog.register(registered);
 
-    return {
-      toolIds,
-      serverInstructions,
-      close: async () => {
-        await client.close();
-      },
-    };
+      return {
+        toolIds,
+        serverInstructions,
+        close: async () => {
+          await client.close();
+        },
+      };
+    } catch (err) {
+      await client.close().catch(() => {});
+      throw err;
+    }
   });
 }
 

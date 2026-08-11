@@ -6,13 +6,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.6.0-rc.0] - 2026-07-27
+## [0.7.0] - 2026-08-07
+
+### Added
+
+- **Whole-catalog skill reload: `SkillCatalog.replace_all` / `SkillRegistry.replace_all` (ADR-0015).** For a source that fetches the full skill catalog rather than individual changes — the batch *is* the catalog, so ids missing from it are removed, including ones registered in-process. Two-phase like `register`: the corpus swap lands **synchronously** (a forgotten `await` never leaves a half-applied reload) and only the embedding pass is awaited, so a reload whose embedding pass fails still reports what the swap changed. Returns a `PendingReplace` carrying the final `added` / `removed` / `updated` / `unchanged` counts; awaiting it drives the embedding pass and resolves to a plain `ReplaceOutcome`. Always `await` the result so an embedding failure raises rather than being swallowed. On failure the new corpus is live and BM25 ranks it while semantic search reports not-built until a later pass succeeds; a reload started while a dense operation owns the registry is rejected rather than blended, and reloading an unchanged catalog costs zero embeddings. `PendingReplace` and `ReplaceOutcome` are exported from `ratel_ai`.
+- **`register_mcp_server` follows every `tools/list` page.** Ingestion previously read only the first page, silently dropping every tool past it on a paginated server. It now walks `nextCursor` to exhaustion (treating `""` as a valid cursor, per MCP — only an absent `nextCursor` ends pagination) across `mcp` client versions before and after 1.18, capped at 64 pages. `McpToolsListError` (with a stable `code` of `"RepeatedCursor"` or `"PaginationExceeded"`) is exported from `ratel_ai`, so a cursor loop or a runaway server is a typed failure rather than a hang. `McpServerHandle.tool_ids` now spans all pages in upstream list order.
+
+### Fixed
+
+- Telemetry tool-result capture records only the stable `CallToolResult` fields (`content`, `structuredContent`, `isError`). It previously dumped the whole model, so fields the `mcp` package adds or renames between versions leaked into captured content and made the recorded payload depend on the installed client version.
+
+## [0.6.0] - 2026-07-28
+
+> **Coming from `0.6.0rc0`?** That RC was tagged off a branch that predated 0.5.2, so it
+> shipped neither the `EventRecord` content-capture fixes nor the base `ratel-ai-telemetry`
+> runtime dependency. Read the 0.5.2 entry below as part of this upgrade. Upgrades from
+> 0.5.2 are unaffected: for them this release is purely additive.
 
 ### Added
 
 - **Experimental adaptive usage ranking (ADR-0014).** `IntentGraph` plus `experimental_enable_adaptive_ranking`, `experimental_rebuild_intent_graph`, `experimental_disable_adaptive_ranking`, and `experimental_adaptive_ranking_status` on `ToolCatalog` / `SkillCatalog`. The catalog learns from each search-then-invoke and boosts future rankings; persist and reload via `IntentGraph.to_json` / `from_json`, and track writes via `graph.rev`. Shipped behind an `experimental_` prefix — the API may change until it graduates.
 - `rank` and `fused` on search hits: order on `rank`, and branch on `fused` to know whether the usage arm changed the ranking.
 - Opt-in recovery after an embedding-model change: `experimental_enable_adaptive_ranking(graph, rebuild_on_model_change=True)` re-embeds a paused graph on the next dense search. Default off; explicit `experimental_rebuild_intent_graph()` otherwise. `experimental_adaptive_ranking_status` returns an `AdaptiveRankingStatus` that carries the paused/active state and the mismatched-model detail.
+
 ## [0.5.2] - 2026-07-26
 
 ### Changed

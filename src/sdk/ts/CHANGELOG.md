@@ -6,13 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.6.0-rc.0] - 2026-07-27
+## [0.7.0] - 2026-08-07
+
+> **On npm's `rc` channel?** The `0.6.1-rc.*` and `0.7.0-rc.0` prereleases on npm were cut
+> off experimental branches that never landed, so they are **not** ancestors of this
+> release. `0.7.0` does not contain their seed-first intent-graph APIs
+> (`experimentalBuildIntentGraph`, `experimentalBaselineTurn`, the `"callback"` trace sink)
+> or `experimentalExposePassthrough`; moving from `rc` to `latest` drops them. Upgrades
+> from `0.6.0` are unaffected — for them this release is purely additive.
+
+### Added
+
+- **Whole-catalog skill reload: `SkillCatalog.replaceAll` (ADR-0015).** For a source that fetches the full skill catalog rather than individual changes — the batch *is* the catalog, so ids missing from it are removed, including ones registered in-process (a host mixing local and remote skills composes the batch itself). It mutates in place, so the one `SkillCatalog` behind `r.skills`, every adapted view, and every capability tool from `modelTools()` all see the reload. Two-phase like `register`: the corpus swap commits synchronously and the embedding pass is the awaitable, so a reload whose embedding pass fails still reports what the swap changed — `replaceAll` returns a `PendingReplace` carrying the `ReplaceOutcome` counts (added / removed / updated / unchanged) and awaitable separately. On embedding failure the new corpus is live and BM25 ranks it while semantic search reports `EmbeddingsNotBuilt` until a later pass succeeds; a reload started while a dense operation owns the registry is rejected rather than blended. Reloading an unchanged catalog costs zero embeddings, and `advertiseSkills` already pins the `search_capabilities` description, so a reload can't bust the prompt cache. `PendingReplace` and `ReplaceOutcome` are exported.
+- **`registerMcpServer` follows every `tools/list` page.** Ingestion previously read only the first page, silently dropping every tool past it on a paginated server. It now walks `nextCursor` to exhaustion (treating `""` as a valid cursor, per MCP — only an absent `nextCursor` ends pagination) across both `mcp` 1.x and 2.x clients, capped at 64 pages. `McpToolsListError` (with a stable `code` of `"RepeatedCursor"` or `"PaginationExceeded"`) and the `McpToolsListErrorCode` type are exported, so a cursor loop or a runaway server is a typed failure rather than a hang. `McpServerHandle.toolIds` now spans all pages in upstream list order.
+
+### Fixed
+
+- `registerMcpServer` closes the MCP client when connecting, listing, or catalog registration throws. It previously leaked the live connection on any failure after `connect`.
+
+## [0.6.0] - 2026-07-28
+
+> **Coming from `0.6.0-rc.0`?** That RC was tagged off a branch that predated 0.5.3, so it
+> still shipped `configureTelemetry()` and pinned `@ratel-ai/telemetry@^0.1.2`. Read the
+> 0.5.3 entry below as part of this upgrade — its breaking changes land for you here.
+> Upgrades from 0.5.3 are unaffected: for them this release is purely additive.
 
 ### Added
 
 - **Experimental adaptive usage ranking (ADR-0014).** `IntentGraph` plus `experimentalEnableAdaptiveRanking`, `experimentalRebuildIntentGraph`, `experimentalDisableAdaptiveRanking`, and `experimentalAdaptiveRankingStatus` on `ToolCatalog` / `SkillCatalog` (and the underlying registries). The catalog learns from each search-then-invoke and boosts future rankings; persist and reload the learning via `IntentGraph.toJson` / `fromJson`, and track writes via `graph.rev`. Shipped behind an `experimental` prefix — the API may change until it graduates.
 - `rank` and `fused` on search hits: order on `rank`, and branch on `fused` to know whether the usage arm changed the ranking.
 - Opt-in recovery after an embedding-model change: `experimentalEnableAdaptiveRanking(graph, { rebuildOnModelChange: true })` re-embeds a paused graph on the next dense search. Default off; explicit `experimentalRebuildIntentGraph()` otherwise. `experimentalAdaptiveRankingStatus` reports the paused/active state and the mismatched model detail.
+
 ## [0.5.3] - 2026-07-26
 
 > **Read this before upgrading from 0.5.2.** Despite the patch version, this release

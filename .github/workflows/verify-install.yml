@@ -211,8 +211,8 @@ jobs:
             adapter_spec="$REQUESTED_TAG"
           fi
           # Pull the SDK from the channel that MATCHES the adapter: GA mastra peers
-          # on a GA SDK (^0.5.2), which the `rc` SDK dist-tag (an older 0.5.x-rc)
-          # would not satisfy → ERESOLVE. An rc adapter pairs with the rc SDK.
+          # on a GA SDK (^0.6.0), which the `rc` SDK dist-tag would not satisfy →
+          # ERESOLVE. An rc adapter pairs with the rc SDK.
           if [[ "$adapter_spec" == "rc" || "$adapter_spec" == *-rc.* ]]; then
             sdk_spec="rc"
           else

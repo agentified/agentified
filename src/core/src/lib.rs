@@ -103,7 +103,7 @@ pub use fact::{Fact, ParsePinModeError, PinMode};
 pub use fact_registry::{FactHit, FactRegistry};
 pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;
-pub use skill_registry::{SkillHit, SkillRegistry};
+pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};
 pub use tool::Tool;
 pub use tool_registry::{AdaptiveRankingStatus, SearchHit, ToolRegistry};
 pub use trace::{

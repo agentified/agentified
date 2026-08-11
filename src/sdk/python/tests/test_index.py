@@ -26,6 +26,7 @@ def test_public_exports_present() -> None:
         "UpstreamServerInfo",
         "register_mcp_server",
         "McpServerHandle",
+        "McpToolsListError",
         # skills surface
         "SkillRegistry",
         "SkillHit",

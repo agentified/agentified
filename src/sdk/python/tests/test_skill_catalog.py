@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from ratel_ai import Skill, SkillCatalog, SkillRegistry
+from ratel_ai import EmbedderError, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 
 
 async def _catalog(*skills: Skill) -> SkillCatalog:
@@ -202,3 +202,144 @@ async def test_nonempty_skill_async_search_and_busy_registration(
 
     hits = await catalog.search_async("authentication", 5)
     assert hits[0].skill_id == "auth"
+
+
+async def test_replace_all_drops_ids_absent_from_the_batch() -> None:
+    catalog = await _catalog(
+        Skill(id="slides", name="slides", description="Build animation-rich presentations."),
+        Skill(id="api-design", name="api-design", description="REST API design patterns."),
+    )
+
+    outcome = await catalog.replace_all(
+        [
+            Skill(id="api-design", name="api-design", description="REST API design patterns."),
+            Skill(
+                id="migrations",
+                name="migrations",
+                description="Reversible database migrations.",
+            ),
+        ]
+    )
+
+    assert outcome == ReplaceOutcome(added=1, removed=1, updated=0, unchanged=1)
+    assert catalog.size() == 2
+    assert not catalog.has("slides")
+    assert catalog.get("slides") is None
+    assert catalog.search("animation-rich presentations", 5) == []
+    assert catalog.search("reversible database migrations", 5)[0].skill_id == "migrations"
+
+
+async def test_replace_all_makes_a_dropped_skill_unloadable() -> None:
+    catalog = await _catalog(Skill(id="slides", name="slides", description="Build decks."))
+
+    await catalog.replace_all([])
+
+    assert catalog.size() == 0
+    # The capability-tool boundary turns this into a structured error for the agent.
+    with pytest.raises(ValueError, match=r"unknown skillId: slides"):
+        catalog.invoke("slides")
+
+
+async def test_replace_all_serves_the_reloaded_content_for_a_kept_id() -> None:
+    catalog = await _catalog(
+        Skill(id="slides", name="slides", description="Build decks.", body="# old")
+    )
+
+    outcome = await catalog.replace_all(
+        [Skill(id="slides", name="slides", description="Build static HTML decks.", body="# new")]
+    )
+
+    assert outcome == ReplaceOutcome(added=0, removed=0, updated=1, unchanged=0)
+    assert catalog.get("slides").description == "Build static HTML decks."
+    assert catalog.invoke("slides") == "# new"
+    assert catalog.search("static HTML decks", 5)[0].skill_id == "slides"
+
+
+async def test_replace_all_keeps_the_last_of_duplicate_ids() -> None:
+    catalog = SkillCatalog()
+
+    await catalog.replace_all(
+        [
+            Skill(id="slides", name="slides", description="First."),
+            Skill(id="slides", name="slides", description="Second wins."),
+        ]
+    )
+
+    assert catalog.size() == 1
+    assert catalog.get("slides").description == "Second wins."
+
+
+async def test_replace_all_rejects_non_skill_items_before_touching_the_corpus() -> None:
+    catalog = await _catalog(Skill(id="slides", name="slides", description="Build decks."))
+
+    with pytest.raises(TypeError, match=r"replace_all requires Skill items"):
+        await catalog.replace_all(["not-a-skill"])  # type: ignore[list-item]
+
+    assert catalog.has("slides"), "a rejected batch must leave the corpus untouched"
+
+
+async def test_replace_all_on_semantic_embeds_the_new_skills(
+    controlled_embedding_endpoint: tuple[str, threading.Event, threading.Event],
+) -> None:
+    endpoint, _request_started, send_response = controlled_embedding_endpoint
+    send_response.set()
+    catalog = SkillCatalog(method="semantic", embedding={"url": endpoint, "model": "test-model"})
+    await catalog.register(Skill(id="auth", name="auth", description="Set up authentication"))
+
+    await catalog.replace_all(
+        [Skill(id="deploy", name="deploy", description="Deploy an app to production")]
+    )
+
+    hits = await catalog.search_async("deploy", 5, method="semantic")
+    assert [hit.skill_id for hit in hits] == ["deploy"]
+
+
+async def test_replace_all_refuses_a_second_reload_while_the_first_embeds(
+    controlled_embedding_endpoint: tuple[str, threading.Event, threading.Event],
+) -> None:
+    # The TS twin can fire both reloads in one tick, because napi takes the
+    # dense permit synchronously. Here `_dense_pending` only rises once the
+    # embedding request is actually in flight, so the endpoint holds the first
+    # reload open to create the overlap.
+    endpoint, request_started, send_response = controlled_embedding_endpoint
+    catalog = SkillCatalog(method="semantic", embedding={"url": endpoint, "model": "test-model"})
+
+    first = asyncio.ensure_future(
+        catalog.replace_all([Skill(id="slides", name="slides", description="Build decks.")])
+    )
+    await asyncio.to_thread(request_started.wait)
+    try:
+        # Refused outright — not queued behind the first, not merged into it.
+        with pytest.raises(RuntimeError, match=r"^registry busy; await the active operation$"):
+            catalog.replace_all(
+                [Skill(id="api-design", name="api-design", description="REST API patterns.")]
+            )
+    finally:
+        send_response.set()
+    await first
+
+    # The corpus is exactly the first batch, never a blend of the two.
+    assert catalog.has("slides")
+    assert not catalog.has("api-design")
+    assert catalog.size() == 1
+
+
+async def test_replace_all_reports_counts_when_the_embedding_pass_fails() -> None:
+    catalog = SkillCatalog(method="semantic", embedding={"local": "/missing/ratel-model"})
+
+    reload = catalog.replace_all(
+        [
+            Skill(id="slides", name="slides", description="Build decks."),
+            Skill(id="api-design", name="api-design", description="REST API design patterns."),
+        ]
+    )
+
+    # The swap commits before the embedding pass is driven, so the counts are
+    # final at call time. A reload that fails to embed still reports what it
+    # changed — the corpus is live and BM25 ranks it, which is exactly the
+    # state ADR-0015 tells a periodic source to expect and report on.
+    assert (reload.added, reload.removed) == (2, 0)
+
+    with pytest.raises(EmbedderError):
+        await reload
+    assert catalog.has("slides")

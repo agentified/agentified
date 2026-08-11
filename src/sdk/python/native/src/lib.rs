@@ -745,6 +745,36 @@ impl SkillRegistry {
         }
     }
 
+    /// Replace the whole corpus: ids absent from `skills` are removed, the rest
+    /// are added or updated. Embeds nothing — the caller builds after, which then
+    /// embeds only what this replace invalidated. Returns the
+    /// `(added, removed, updated, unchanged)` counts; the Python facade wraps
+    /// them in its `ReplaceOutcome` dataclass, as it does for `Skill`.
+    fn _replace_all(&mut self, skills: Vec<SkillBatchItem>) -> (u32, u32, u32, u32) {
+        let outcome = self.inner.replace_all(
+            skills
+                .into_iter()
+                .map(
+                    |(id, name, description, tags, tools, metadata, body)| core::Skill {
+                        id,
+                        name,
+                        description,
+                        tags,
+                        tools,
+                        metadata,
+                        body,
+                    },
+                )
+                .collect(),
+        );
+        (
+            outcome.added as u32,
+            outcome.removed as u32,
+            outcome.updated as u32,
+            outcome.unchanged as u32,
+        )
+    }
+
     /// Lexical BM25 search over the skill corpus — see [`ToolRegistry::search`].
     fn search(&self, query: String, top_k: u32) -> Vec<SkillHit> {
         self.inner

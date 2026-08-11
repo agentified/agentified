@@ -14,7 +14,14 @@
 // The catalog's JSON-Schema spelling, re-exported so framework adapters type
 // their CatalogRegistration schemas without a cast.
 export type { JSONSchema7 } from "json-schema";
-export type { AdaptiveRankingStatus, SearchHit, Skill, SkillHit, Tool } from "../native/index.cjs";
+export type {
+  AdaptiveRankingStatus,
+  ReplaceOutcome,
+  SearchHit,
+  Skill,
+  SkillHit,
+  Tool,
+} from "../native/index.cjs";
 export type {
   CapabilitiesSearchOptions,
   CapabilitySkillHit,
@@ -60,11 +67,11 @@ export type {
 export { SEARCH_TOOLS_ID, searchToolsTool } from "./compat.js";
 export { DimensionMismatchError, EmbedderError } from "./errors.js";
 // ⚠️ Experimental: the facts / grounding API (ADR-0014) — constant grounding
-// content plus the transcript-derived re-injection freshness gate. Namespaced
-// so dependence on this unstable surface is explicit: `experimental.FactCatalog`.
+// content plus the content-presence re-injection gate. Namespaced so dependence
+// on this unstable surface is explicit: `experimental.FactCatalog`.
 export * as experimental from "./experimental.js";
-export type { McpServerHandle, RegisterMcpServerOptions } from "./mcp.js";
-export { registerMcpServer } from "./mcp.js";
+export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
+export { McpToolsListError, registerMcpServer } from "./mcp.js";
 // The framework-adapter SPI and factory (ADR-0013): `ratel(config).adaptTo(adapter)`.
 export type {
   AdaptedBase,
@@ -80,7 +87,7 @@ export type {
 export { ratel } from "./ratel.js";
 /** Adaptive usage ranking: the shared read model of what users invoke (ADR-0014). */
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
-export type { SkillCatalogOptions } from "./skill-catalog.js";
+export type { PendingReplace, SkillCatalogOptions } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 // OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel

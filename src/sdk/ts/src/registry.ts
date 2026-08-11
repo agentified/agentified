@@ -7,6 +7,7 @@ import {
   FactRegistry as NativeFactRegistry,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
+  type ReplaceOutcome,
   type SearchHit,
   type Skill,
   type SkillHit,
@@ -304,6 +305,20 @@ export class SkillRegistry {
   registerItems(item: Skill | readonly Skill[]): void {
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
+  }
+
+  /**
+   * Swap the whole corpus for `items` without embedding — the metadata half of
+   * {@link SkillCatalog.replaceAll}, the sibling of
+   * {@link SkillRegistry.registerItems}. Ids absent from `items` are removed
+   * along with their cached embeddings; ids whose indexed text changed are
+   * invalidated for re-embedding, and unchanged ids keep the vector they have,
+   * so the following {@link SkillRegistry.buildDense} only embeds real changes.
+   *
+   * @internal
+   */
+  replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
+    return this.native.replaceAll([...items]);
   }
 
   /**

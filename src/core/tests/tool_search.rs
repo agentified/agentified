@@ -136,6 +136,92 @@ fn re_register_keeps_corpus_size_stable() {
 }
 
 #[test]
+fn mutation_after_a_warmed_search_is_visible_in_the_next_search() {
+    // Searches before a register must not leave any stale ranking state
+    // behind: whatever the engine reuses across searches, a mutation is
+    // visible in the very next call.
+    let tool = |id: &str, desc: &str| Tool {
+        id: id.into(),
+        name: id.into(),
+        description: desc.into(),
+        input_schema: empty_schema(),
+        output_schema: empty_schema(),
+    };
+
+    let mut registry = ToolRegistry::new();
+    registry.register(tool("read", "read a file from disk"));
+    registry.register(tool("write", "write bytes to a socket"));
+    // Warm: several searches before the mutation.
+    for _ in 0..3 {
+        let _ = registry.search("read a file", 5);
+    }
+
+    registry.register(tool("archive", "compress a directory into an archive"));
+    assert_eq!(
+        registry.search("compress an archive", 5)[0].tool_id,
+        "archive",
+        "a tool registered after searches must rank immediately"
+    );
+
+    registry.register(tool("read", "stream sensor telemetry"));
+    // Query on the OLD description only ("read" would still match the name).
+    assert!(
+        registry.search("file disk", 5).is_empty(),
+        "replaced content must stop matching immediately"
+    );
+    assert_eq!(
+        registry.search("stream sensor telemetry", 5)[0].tool_id,
+        "read"
+    );
+}
+
+#[test]
+fn warmed_registry_hits_are_byte_identical_to_a_fresh_registry() {
+    // ADR-0011 pins BM25 behavior byte-for-byte: a registry that has already
+    // searched and mutated must score exactly like a fresh one holding the
+    // same final corpus — ids, order, AND f32 scores.
+    let tool = |id: &str, desc: &str| Tool {
+        id: id.into(),
+        name: id.into(),
+        description: desc.into(),
+        input_schema: empty_schema(),
+        output_schema: empty_schema(),
+    };
+    let corpus = [
+        ("read", "read a file from disk"),
+        ("write", "write bytes to a socket"),
+        ("archive", "compress a directory into an archive"),
+    ];
+
+    let mut warmed = ToolRegistry::new();
+    warmed.register(tool("read", "an obsolete description"));
+    warmed.register(tool("write", corpus[1].1));
+    let _ = warmed.search("file", 5); // warm before the corpus settles
+    warmed.register(tool(corpus[0].0, corpus[0].1)); // replace in place
+    warmed.register(tool(corpus[2].0, corpus[2].1));
+    let _ = warmed.search("socket", 5); // warm again on the final corpus
+
+    let mut fresh = ToolRegistry::new();
+    for (id, desc) in corpus {
+        fresh.register(tool(id, desc));
+    }
+
+    for query in ["read a file", "compress the directory", "write bytes"] {
+        let warmed_hits: Vec<(String, f32)> = warmed
+            .search(query, 5)
+            .into_iter()
+            .map(|h| (h.tool_id, h.score))
+            .collect();
+        let fresh_hits: Vec<(String, f32)> = fresh
+            .search(query, 5)
+            .into_iter()
+            .map(|h| (h.tool_id, h.score))
+            .collect();
+        assert_eq!(warmed_hits, fresh_hits, "query={query}");
+    }
+}
+
+#[test]
 fn search_ranks_stronger_match_above_weaker() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
