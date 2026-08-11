@@ -1399,4 +1399,29 @@ mod tests {
         assert!(cache.built_fingerprint().is_none());
         assert!(cache.dim().is_none());
     }
+
+    #[test]
+    fn warm_rejects_nonempty_zero_dim_before_cache_mutation() {
+        let items = [doc("a", "read")];
+        let bytes = crate::embedding_artifact::test_hand_artifact(
+            crate::embedding_artifact::projection_version(),
+            0,
+            "fp-zero-dim",
+            &[ArtifactEntry {
+                kind: ArtifactEntryKind::Tool,
+                id: "a".into(),
+                projection_hash: hash_projection_text("read"),
+                vector: vec![],
+            }],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
+            fingerprint: "unused".into(),
+        }));
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
+            Err(WarmError::Artifact(ArtifactError::NonEmptyZeroDim))
+        ));
+        assert!(cache.built_fingerprint().is_none());
+        assert!(cache.dim().is_none());
+    }
 }

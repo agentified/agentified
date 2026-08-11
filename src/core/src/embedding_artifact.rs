@@ -91,6 +91,19 @@ pub enum ArtifactError {
         /// Catalog id of the item whose vector failed the unit-norm check.
         id: String,
     },
+    /// Non-empty artifact declared `dim == 0` (invalid embedding space).
+    NonEmptyZeroDim,
+    /// A vector failed semantic checks (non-finite or not unit-normalized).
+    /// Raised for embedder output during [`build_artifact`] and for vectors
+    /// decoded from checksum-valid RAT1. Distinct from
+    /// [`Self::VectorNotNormalized`], which is the build-time failure for
+    /// finite non-unit embedder vectors.
+    InvalidVector {
+        /// Catalog id of the failing entry.
+        id: String,
+        /// Short deterministic reason (`non-finite component`, `not unit-normalized`).
+        detail: String,
+    },
     /// Valid artifacts that cannot be combined (header mismatch or duplicate
     /// `(kind, id)`). Not [`Self::CorruptPayload`]: each input may decode alone.
     IncompatibleMerge {
@@ -124,6 +137,12 @@ impl ArtifactError {
             }
             ArtifactError::VectorNotNormalized { .. } => {
                 "the embedder must return L2-normalized vectors before building an artifact"
+            }
+            ArtifactError::NonEmptyZeroDim => {
+                "a non-empty embedding artifact must declare a positive vector dimension"
+            }
+            ArtifactError::InvalidVector { .. } => {
+                "vectors must be finite and unit-normalized; fix the embedder output or rebuild the artifact"
             }
             ArtifactError::IncompatibleMerge { .. } => {
                 "rebuild each part with the same model and projection, or drop the conflicting entry"
@@ -166,6 +185,14 @@ impl std::fmt::Display for ArtifactError {
             ArtifactError::VectorNotNormalized { id } => write!(
                 f,
                 "embedding artifact build: vector for id {id:?} is not L2-normalized (hint: {hint})"
+            ),
+            ArtifactError::NonEmptyZeroDim => write!(
+                f,
+                "embedding artifact has entries but dim is 0 (hint: {hint})"
+            ),
+            ArtifactError::InvalidVector { id, detail } => write!(
+                f,
+                "embedding artifact vector for id {id:?} is invalid: {detail} (hint: {hint})"
             ),
             ArtifactError::IncompatibleMerge { detail } => write!(
                 f,
@@ -236,6 +263,7 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
     }
 
     let dim = vectors.first().map(Vec::len).unwrap_or(0);
+    require_positive_dim_when_nonempty(rows.len(), dim)?;
     for ((id, _), vector) in rows.iter().zip(&vectors) {
         if vector.len() != dim {
             return Err(ArtifactError::InconsistentVectorWidth {
@@ -243,8 +271,17 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
                 got: vector.len(),
             });
         }
-        if dim != 0 && !is_unit_normalized(vector) {
-            return Err(ArtifactError::VectorNotNormalized { id: id.clone() });
+        match classify_vector_semantics(vector) {
+            Ok(()) => {}
+            Err(VectorSemanticIssue::NonFinite) => {
+                return Err(ArtifactError::InvalidVector {
+                    id: id.clone(),
+                    detail: "non-finite component".into(),
+                });
+            }
+            Err(VectorSemanticIssue::NotUnitNormalized) => {
+                return Err(ArtifactError::VectorNotNormalized { id: id.clone() });
+            }
         }
     }
 
@@ -402,9 +439,39 @@ pub(crate) fn hash_projection_text(text: &str) -> [u8; 32] {
     Sha256::digest(text.as_bytes()).into()
 }
 
+/// Shared squared-L2 unit tolerance used by build and decode.
+const UNIT_NORM_SQ_TOLERANCE: f32 = 1e-4;
+
+fn unit_norm_sq_ok(norm_sq: f32) -> bool {
+    (norm_sq - 1.0).abs() <= UNIT_NORM_SQ_TOLERANCE
+}
+
 fn is_unit_normalized(vector: &[f32]) -> bool {
     let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
-    (norm_sq - 1.0).abs() <= 1e-4
+    unit_norm_sq_ok(norm_sq)
+}
+
+fn require_positive_dim_when_nonempty(entry_count: usize, dim: usize) -> Result<(), ArtifactError> {
+    if entry_count > 0 && dim == 0 {
+        return Err(ArtifactError::NonEmptyZeroDim);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorSemanticIssue {
+    NonFinite,
+    NotUnitNormalized,
+}
+
+fn classify_vector_semantics(vector: &[f32]) -> Result<(), VectorSemanticIssue> {
+    if vector.iter().any(|x| !x.is_finite()) {
+        return Err(VectorSemanticIssue::NonFinite);
+    }
+    if !is_unit_normalized(vector) {
+        return Err(VectorSemanticIssue::NotUnitNormalized);
+    }
+    Ok(())
 }
 
 fn assemble_file(payload: &[u8]) -> Result<Vec<u8>, ArtifactError> {
@@ -415,6 +482,26 @@ fn assemble_file(payload: &[u8]) -> Result<Vec<u8>, ArtifactError> {
     out.extend_from_slice(&Sha256::digest(payload));
     out.extend_from_slice(payload);
     Ok(out)
+}
+
+/// Test-only: assemble a checksum-valid RAT1 from arbitrary entries (may be
+/// semantically invalid). Bypasses build-time semantic checks so load/warm/merge
+/// regressions can target the decode boundary.
+#[cfg(test)]
+pub(crate) fn test_hand_artifact(
+    projection_version: u32,
+    dim: usize,
+    fingerprint: &str,
+    entries: &[ArtifactEntry],
+) -> Vec<u8> {
+    let header = ArtifactHeader {
+        format_version: SUPPORTED_FORMAT_VERSION,
+        projection_version,
+        model_fingerprint: fingerprint.into(),
+        dim,
+    };
+    let payload = encode_payload(&header, entries).expect("test hand artifact encode");
+    assemble_file(&payload).expect("test hand artifact assemble")
 }
 
 fn encode_payload(
@@ -508,14 +595,31 @@ fn decode_payload(
         });
     }
 
+    require_positive_dim_when_nonempty(entry_count, dim)?;
+
     let mut entries = Vec::with_capacity(entry_count);
     for _ in 0..entry_count {
         let kind = read_kind(payload, &mut cursor)?;
         let id = read_utf8(payload, &mut cursor)?;
         let projection_hash = read_fixed::<32>(payload, &mut cursor)?;
         let mut vector = Vec::with_capacity(dim);
+        let mut norm_sq = 0.0f32;
         for _ in 0..dim {
-            vector.push(read_f32(payload, &mut cursor)?);
+            let value = read_f32(payload, &mut cursor)?;
+            if !value.is_finite() {
+                return Err(ArtifactError::InvalidVector {
+                    id,
+                    detail: "non-finite component".into(),
+                });
+            }
+            norm_sq += value * value;
+            vector.push(value);
+        }
+        if !unit_norm_sq_ok(norm_sq) {
+            return Err(ArtifactError::InvalidVector {
+                id,
+                detail: "not unit-normalized".into(),
+            });
         }
         entries.push(ArtifactEntry {
             kind,
@@ -847,14 +951,7 @@ mod tests {
         fingerprint: &str,
         entries: &[ArtifactEntry],
     ) -> Vec<u8> {
-        let header = ArtifactHeader {
-            format_version: SUPPORTED_FORMAT_VERSION,
-            projection_version,
-            model_fingerprint: fingerprint.into(),
-            dim,
-        };
-        let payload = encode_payload(&header, entries).unwrap();
-        assemble_file(&payload).unwrap()
+        test_hand_artifact(projection_version, dim, fingerprint, entries)
     }
 
     #[test]
@@ -1155,6 +1252,21 @@ mod tests {
     }
 
     #[test]
+    fn build_rejects_non_finite_vector_with_invalid_vector() {
+        let items = [stub_item("nan_item", "alpha")];
+        let embedder = Arc::new(StubEmbedder {
+            fingerprint: "test|model=1:m".into(),
+            vectors: vec![vec![f32::NAN, 0.0]],
+            passthrough_batch: false,
+        });
+        assert!(matches!(
+            build_artifact(ArtifactEntryKind::Tool, &items, embedder.as_ref()),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "nan_item" && detail == "non-finite component"
+        ));
+    }
+
+    #[test]
     fn built_vectors_are_l2_normalized() {
         let items = [stub_item("a", "alpha"), stub_item("b", "beta")];
         let bytes = build_artifact(
@@ -1171,6 +1283,181 @@ mod tests {
                 entry.id
             );
         }
+    }
+
+    fn hand_entry(id: &str, vector: Vec<f32>) -> ArtifactEntry {
+        ArtifactEntry {
+            kind: ArtifactEntryKind::Tool,
+            id: id.into(),
+            projection_hash: [0u8; 32],
+            vector,
+        }
+    }
+
+    #[test]
+    fn load_rejects_nonempty_zero_dim_with_valid_checksum() {
+        let bytes = hand_artifact(
+            projection_version(),
+            0,
+            "fp-zero-dim",
+            &[hand_entry("a", vec![])],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes),
+            Err(ArtifactError::NonEmptyZeroDim)
+        ));
+    }
+
+    #[test]
+    fn build_rejects_nonempty_zero_dim_vectors() {
+        let items = [stub_item("empty_vec", "alpha")];
+        let embedder = Arc::new(StubEmbedder {
+            fingerprint: "test|model=1:m".into(),
+            vectors: vec![vec![]],
+            passthrough_batch: false,
+        });
+        assert!(matches!(
+            build_artifact(ArtifactEntryKind::Tool, &items, embedder.as_ref()),
+            Err(ArtifactError::NonEmptyZeroDim)
+        ));
+    }
+
+    #[test]
+    fn canonical_empty_artifact_still_loads() {
+        let bytes = build_empty_artifact().unwrap();
+        let (header, entries) = load_and_validate(&bytes).unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(header.dim, 0);
+    }
+
+    #[test]
+    fn empty_artifact_with_nonzero_dim_still_loads() {
+        let bytes = hand_artifact(projection_version(), 8, "fp-empty-nonzero-dim", &[]);
+        let (header, entries) = load_and_validate(&bytes).unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(header.dim, 8);
+    }
+
+    #[test]
+    fn load_rejects_nan_vector_with_valid_checksum() {
+        let bytes = hand_artifact(
+            projection_version(),
+            2,
+            "fp-nan",
+            &[hand_entry("bad", vec![f32::NAN, 0.0])],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "bad" && detail == "non-finite component"
+        ));
+    }
+
+    #[test]
+    fn load_rejects_pos_infinity_vector_with_valid_checksum() {
+        let bytes = hand_artifact(
+            projection_version(),
+            2,
+            "fp-pinf",
+            &[hand_entry("bad", vec![f32::INFINITY, 0.0])],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "bad" && detail == "non-finite component"
+        ));
+    }
+
+    #[test]
+    fn load_rejects_neg_infinity_vector_with_valid_checksum() {
+        let bytes = hand_artifact(
+            projection_version(),
+            2,
+            "fp-ninf",
+            &[hand_entry("bad", vec![f32::NEG_INFINITY, 0.0])],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "bad" && detail == "non-finite component"
+        ));
+    }
+
+    #[test]
+    fn load_rejects_non_unit_vector_with_valid_checksum() {
+        let bytes = hand_artifact(
+            projection_version(),
+            2,
+            "fp-nonunit",
+            &[hand_entry("bad", vec![3.0, 0.0])],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "bad" && detail == "not unit-normalized"
+        ));
+    }
+
+    #[test]
+    fn load_accepts_unit_normalized_vector() {
+        let bytes = hand_artifact(
+            projection_version(),
+            2,
+            "fp-unit",
+            &[hand_entry("ok", unit([1.0, 0.0]))],
+        );
+        let (header, entries) = load_and_validate(&bytes).unwrap();
+        assert_eq!(header.dim, 2);
+        assert_eq!(entries.len(), 1);
+        assert!(is_unit_normalized(&entries[0].vector));
+    }
+
+    #[test]
+    fn unit_norm_tolerance_matches_is_unit_normalized() {
+        let tol = super::UNIT_NORM_SQ_TOLERANCE;
+        // Shared squared-norm predicate with values comfortably inside / outside
+        // the band (avoid 1.0 ± tol, which f32 addition may push past the bound).
+        assert!(super::unit_norm_sq_ok(1.0));
+        assert!(super::unit_norm_sq_ok(1.0 + tol * 0.5));
+        assert!(!super::unit_norm_sq_ok(1.0 + tol * 2.0));
+
+        let inside = vec![(1.0 + tol * 0.5).sqrt(), 0.0];
+        assert!(is_unit_normalized(&inside));
+        let bytes_ok = hand_artifact(
+            projection_version(),
+            2,
+            "fp-tol-in",
+            &[hand_entry("ok", inside)],
+        );
+        assert!(load_and_validate(&bytes_ok).is_ok());
+
+        let outside = vec![(1.0 + tol * 2.0).sqrt(), 0.0];
+        assert!(!is_unit_normalized(&outside));
+        let bytes_bad = hand_artifact(
+            projection_version(),
+            2,
+            "fp-tol-out",
+            &[hand_entry("bad", outside)],
+        );
+        assert!(matches!(
+            load_and_validate(&bytes_bad),
+            Err(ArtifactError::InvalidVector { detail, .. }) if detail == "not unit-normalized"
+        ));
+    }
+
+    #[test]
+    fn merge_rejects_checksum_valid_invalid_vector() {
+        let bad = hand_artifact(
+            projection_version(),
+            2,
+            "fp-merge-nan",
+            &[hand_entry("bad", vec![f32::NAN, 0.0])],
+        );
+        assert!(matches!(
+            merge_embedding_artifacts(&[&bad]),
+            Err(ArtifactError::InvalidVector { id, detail })
+                if id == "bad" && detail == "non-finite component"
+        ));
     }
 
     #[test]
