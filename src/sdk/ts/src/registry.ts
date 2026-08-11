@@ -1,7 +1,9 @@
 import {
   type AdaptiveRankingStatus,
+  type FactHit,
   IntentGraph,
   type EmbeddingConfig as NativeEmbeddingConfig,
+  FactRegistry as NativeFactRegistry,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
   type ReplaceOutcome,
@@ -12,6 +14,7 @@ import {
 } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { mapEmbedderError } from "./errors.js";
+import { assertValidFact, type Fact } from "./grounding.js";
 
 export { IntentGraph };
 
@@ -476,6 +479,119 @@ export class SkillRegistry {
   experimentalDisableAdaptiveRanking(): void {
     this.#rebuildOnModelChange = false;
     this.native.disableAdaptiveRanking();
+  }
+
+  /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */
+  drainTraceEvents(): unknown[] {
+    return this.native.drainTraceEvents();
+  }
+}
+
+/**
+ * Typed facade over the native fact registry — the fact twin of
+ * {@link SkillRegistry}. {@link FactCatalog} is the higher-level surface;
+ * reach for this directly only when bare metadata is enough.
+ */
+export class FactRegistry {
+  private readonly native: NativeFactRegistry;
+  private readonly eager: boolean;
+
+  /**
+   * Create a registry with an optional embedding model and retrieval method.
+   *
+   * @param embedding - Embedding model for semantic/hybrid retrieval — see
+   *   {@link ToolRegistry.constructor}.
+   * @param method - `"bm25"` (default, model-free) or `"semantic"`/`"hybrid"`,
+   *   which makes {@link FactRegistry.register} embed the batch inline.
+   */
+  constructor(embedding?: EmbeddingSpec, method: SearchMethod = "bm25") {
+    this.native = new NativeFactRegistry(toNativeEmbedding(embedding));
+    this.eager = method === "semantic" || method === "hybrid";
+  }
+
+  /**
+   * Register one fact or a batch, replacing any existing id in place — see
+   * {@link ToolRegistry.register} for the embed-inside contract. A malformed
+   * `id` or an unknown `pin` throws before anything is indexed — the returned
+   * promise rejects, since the method is `async`.
+   *
+   * @param item - A single {@link Fact} or a readonly array of them.
+   */
+  async register(item: Fact | readonly Fact[]): Promise<void> {
+    this.registerItems(item);
+    await this.buildDense();
+  }
+
+  /**
+   * Index metadata only, without embedding — see
+   * {@link ToolRegistry.registerItems}. Validates the whole batch first
+   * ({@link assertValidFact}), so a bad fact anywhere in it leaves the registry
+   * untouched rather than half-populated.
+   *
+   * @internal
+   */
+  registerItems(item: Fact | readonly Fact[]): void {
+    const items = Array.isArray(item) ? item : [item];
+    for (const fact of items) assertValidFact(fact);
+    this.native.registerMany([...items]);
+  }
+
+  /**
+   * Embed any not-yet-embedded items — see {@link ToolRegistry.buildDense}.
+   *
+   * @internal
+   */
+  async buildDense(): Promise<void> {
+    if (!this.eager) return;
+    try {
+      await this.native.buildEmbeddings();
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+  }
+
+  /** Lexical BM25 search over facts — see `ToolRegistry.search`. */
+  search(query: string, topK: number): FactHit[] {
+    return this.native.search(query, topK);
+  }
+
+  /** BM25 search with an explicit trace origin. */
+  searchWithOrigin(query: string, topK: number, origin: SearchOrigin): FactHit[] {
+    return this.native.searchWithOrigin(query, topK, origin);
+  }
+
+  /** Synchronous search restricted to BM25 — see `ToolRegistry.searchWithMethod`. */
+  searchWithMethod(
+    query: string,
+    topK: number,
+    origin: SearchOrigin,
+    method: SearchMethod,
+  ): FactHit[] {
+    return this.native.searchWithMethod(query, topK, origin, method);
+  }
+
+  /** Search on a libuv worker — see `ToolRegistry.searchWithMethodAsync`. */
+  async searchWithMethodAsync(
+    query: string,
+    topK: number,
+    origin: SearchOrigin,
+    method: SearchMethod,
+  ): Promise<FactHit[]> {
+    try {
+      return await this.native.searchWithMethodAsync(query, topK, origin, method);
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+  }
+
+  /** Record a custom event on the local trace stream (ADR-0007). */
+  recordEvent(event: object): void {
+    this.native.recordEvent(event);
+  }
+
+  /** Replace the trace sink; subsequent events go to the new destination. */
+  setTraceSink(config: TraceSinkConfig): void {
+    this.native.setTraceSink(config);
   }
 
   /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */

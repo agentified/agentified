@@ -17,7 +17,7 @@
 
 `@ratel-ai/sdk` retrieves the tools and skills relevant to each agent turn instead of sending the full catalog to the model. It bundles Ratel's Rust engine in-process: BM25 by default, with local semantic and hybrid retrieval available when needed. No API key, vector database, or service is required. Installing a published package on a supported prebuilt target also requires no Rust toolchain.
 
-Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` for ranked playbooks loaded on demand. Expose `searchCapabilitiesTool`, `invokeToolTool`, and `getSkillContentTool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog.
+Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` for ranked playbooks loaded on demand. Expose `searchCapabilitiesTool`, `invokeToolTool`, and `getSkillContentTool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog. **Experimental — facts:** the `experimental` namespace adds `experimental.FactCatalog` for constant grounding content (a shop's address, a brand's voice). See [Facts](#facts-experimental) below. This API may change without a major-version bump.
 
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
@@ -133,6 +133,66 @@ framework's tool and message types, so app code needs no casts. A framework tool
 the un-adapted core throws an error pointing at the adapter package to install. See ADR-0013.
 
 Continue with the [TypeScript guide](https://docs.ratel.sh/docs/sdks/typescript), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-typescript), or the [Vercel AI SDK example](https://github.com/ratel-ai/ratel/tree/main/examples/ai-sdk).
+
+## Facts (experimental)
+
+Tools and skills are **pulled** — a query ranks them and only the winners reach the model. Facts are the opposite: constant content the agent should always work from (a shop's address, hours, a brand's voice), **pushed** into the context and deduplicated so it is injected once rather than every turn.
+
+Facts live behind the `experimental` namespace and may change without a major-version bump. Registering one is like a skill, plus a `pin` tier:
+
+```ts
+import { ratel, experimental } from "@ratel-ai/sdk";
+
+const r = ratel();
+await r.facts.register([
+  {
+    id: "shop-address",
+    name: "shop address & hours",
+    description: "where the shop is and when it's open",
+    body: "Fade & Blade — 12 Baker Street, London. Open Mon–Sat 9am–7pm.",
+    pin: experimental.Pin.Always,     // every turn, regardless of the query
+  },
+  {
+    id: "cancellation",
+    name: "cancellation policy",
+    description: "cancelling or rescheduling a booking, and refunds",
+    body: "Cancel at least 24h ahead for a full refund; same-day is a 50% fee.",
+    pin: experimental.Pin.Retrieved,  // only when the turn's query ranks it in (default)
+  },
+]);
+```
+
+Then pick **one** of two injection modes per turn — the same persist-vs-per-call split as `appendRecall` vs `prepareStep` for recall.
+
+**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save. It takes **per-message text**, so flatten your history first — the AI SDK's `ModelMessage.content` is `string | Array<Part>`, and handing it an array of parts makes the presence check element equality, which never matches (every fact would then re-inject every turn):
+
+```ts
+const textOf = (m: ModelMessage): string =>
+  typeof m.content === "string"
+    ? m.content
+    : m.content.map((p) => ("text" in p ? p.text : "")).join("\n");
+
+const { inject } = await r.ground(userText, messages.map(textOf));
+for (const f of inject) {
+  messages.push({ role: "system", content: f.body }); // verbatim — presence is the dedupe
+}
+```
+
+Turn 1 injects the address; turn 2 sees it in the transcript and injects nothing. It re-injects only when the body is gone (compaction) or was edited — `f.reason` is `never` / `evicted` / `mutated`.
+
+**`groundSnapshot()` — per call, nothing stored.** Returns the full applicable set every time; put it in the request you're about to send and discard it:
+
+```ts
+const facts = await r.groundSnapshot(userText);
+const result = await generateText({
+  model,
+  messages: [...facts.map((f) => ({ role: "system", content: f.body })), ...messages],
+});
+```
+
+Use `ground()` for a long-lived agent whose messages you persist (pays once, stays in the cached prefix); `groundSnapshot()` for one-shot or stateless calls, or to keep injected content out of your stored history.
+
+Facts are **host-driven, on their own path**: `ground()`/`groundSnapshot()` are the only ways facts reach the context. `modelTools()`, the model-facing `search_capabilities` tool, and `recall()` are all unchanged and never return facts — the model doesn't discover facts by calling a tool, and there is no second place to look. You decide what is true and inject it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
 ## Adapter conformance testkit
 

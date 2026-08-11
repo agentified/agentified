@@ -227,6 +227,43 @@ describe("SkillRegistry removed methods", () => {
  * optional-peer machinery behind them are gone. Emission and the content-capture
  * gate stay: they are the SDK's actual telemetry surface.
  */
+/**
+ * The facts + grounding surface is experimental: quarantined out of the stable
+ * root export into the opt-in `experimental` namespace, so any dependence on it
+ * is explicit at the import site. Twin of Python's `test_index.py` checks.
+ */
+describe("experimental facts quarantine (public surface)", () => {
+  const surface = sdk as unknown as Record<string, unknown>;
+  const EXPERIMENTAL_SURFACE = [
+    "FactCatalog",
+    "FactRegistry",
+    "Pin",
+    "planInjection",
+    "FACT_ID_PATTERN",
+  ] as const;
+
+  it("keeps the facts surface off the stable root export", () => {
+    for (const name of EXPERIMENTAL_SURFACE) {
+      expect(surface[name], `${name} must not be a root export`).toBeUndefined();
+    }
+  });
+
+  it("exposes the whole facts surface under `experimental`", () => {
+    for (const name of EXPERIMENTAL_SURFACE) {
+      expect(sdk.experimental[name], `experimental.${name}`).toBeDefined();
+    }
+  });
+
+  it("keeps the experimental grounding touchpoints on the stable ratel() object", () => {
+    // `r.facts` / `r.ground` / `r.groundSnapshot` can't move off the object, so
+    // they stay — documented "⚠️ Experimental" and lazily constructed.
+    const r = sdk.ratel();
+    expect(typeof r.ground).toBe("function");
+    expect(typeof r.groundSnapshot).toBe("function");
+    expect("facts" in r).toBe(true);
+  });
+});
+
 describe("removed telemetry bootstrap", () => {
   const surface = sdk as unknown as Record<string, unknown>;
 
