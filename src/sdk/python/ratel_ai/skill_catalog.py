@@ -635,7 +635,9 @@ class SkillCatalog:
                 `ToolCatalog.__init__`; retained and validated under "bm25" too.
             experimental_embedding_artifact: build-time RAT1 to warm on
                 register/replace_all (any method; default ``on_miss`` is
-                ``"error"``).
+                ``"error"``). Each call re-resolves and re-warms over the whole
+                current corpus — intended for one batch at startup; incremental
+                register/replace_all calls repeat I/O and id+hash matching.
         """
         self._skills: dict[str, Skill] = {}
         self._method: SearchMethod = method

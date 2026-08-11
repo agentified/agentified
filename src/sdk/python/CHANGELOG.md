@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental build-time embedding artifacts (ADR-0017).** `experimental_build_embedding_artifact` builds a mixed Tool+Skill RAT1 file (hosts own persistence. Core stays I/O-free on bytes). Catalogs and registries accept `experimental_embedding_artifact` (`path` or `bytes`; default `on_miss="error"`) and warm it on `register` / `replace_all` for any search method. Before eager document embedding on semantic/hybrid. `build_embedding_artifact` and `warm_embeddings_from_artifact` are available on the registries; merge of compatible parts raises `IncompatibleMergeError` when fingerprints/dims disagree. Failures are typed `ArtifactWarmError` / `ArtifactError`. Shipped behind an `experimental_` prefix. The API may change until it graduates.
+
 ## [0.7.0] - 2026-08-07
 
 ### Added

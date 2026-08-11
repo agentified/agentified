@@ -746,7 +746,10 @@ class ToolCatalog:
                 keyed dict — see `EmbeddingSpec`). Retained and validated even
                 under "bm25" so a later async semantic override can use it.
             experimental_embedding_artifact: build-time RAT1 to warm on register
-                (any method; default ``on_miss`` is ``"error"``).
+                (any method; default ``on_miss`` is ``"error"``). Each
+                ``register`` re-resolves and re-warms over the whole current
+                corpus — intended for one batch at startup; incremental
+                register calls repeat I/O and id+hash matching.
         """
         self._executors: dict[str, Executor] = {}
         self._tools: dict[str, Tool] = {}
