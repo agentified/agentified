@@ -205,10 +205,7 @@ export class ToolRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: {
-      warnOnModelMismatch?: boolean;
-      rebuildOnModelChange?: boolean;
-    } = {},
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
@@ -459,10 +456,7 @@ export class SkillRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: {
-      warnOnModelMismatch?: boolean;
-      rebuildOnModelChange?: boolean;
-    } = {},
+    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;

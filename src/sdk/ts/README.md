@@ -51,6 +51,8 @@ try {
 
 Only new and re-worded skills are embedded — reloading an unchanged catalog costs no embedding calls — and a reload that races an in-flight operation — dense work, but also an ordinary BM25 `searchAsync` holding the read lock — throws rather than applying half of itself.
 
+Build-time embedding artifacts ([ADR 0017](../../../docs/adr/0017-build-time-embedding-artifacts.md)) skip re-embedding an unchanged corpus on cold start: `experimentalBuildEmbeddingArtifact` writes a mixed Tool+Skill RAT1 file, and catalogs accept `experimentalEmbeddingArtifact: { path } | { bytes }` (default `onMiss: "error"`) to warm the dense cache on `register` / `replaceAll` for any search method. Artifact warm failures are typed `ArtifactWarmError`.
+
 Embedding failures from `register()`/`searchAsync()` are typed `EmbedderError`s (with a stable `.code` such as `"Load"`, `"NotCached"`, or `"DimensionMismatch"`); a dimension mismatch is a `DimensionMismatchError` subclass — the parity of Python's `EmbedderError`/`DimensionMismatchError`. Invalid embedding config still throws at construction.
 
 ```ts
@@ -177,4 +179,4 @@ Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATIO
 
 ## Package layout
 
-`src/` is the TypeScript surface, `native/` contains the NAPI binding, `npm/` holds platform packages, and tests live beside their source. From the repository root, run `pnpm --filter @ratel-ai/sdk... build` and `pnpm --filter @ratel-ai/sdk test`.
+`src/` is the TypeScript surface (including `embedding-artifact.ts` for build/warm helpers), `native/` contains the NAPI binding, `npm/` holds platform packages, and tests live beside their source. From the repository root, run `pnpm --filter @ratel-ai/sdk... build` and `pnpm --filter @ratel-ai/sdk test`.

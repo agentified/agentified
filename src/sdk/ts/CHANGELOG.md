@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental build-time embedding artifacts (ADR-0017).** `experimentalBuildEmbeddingArtifact` builds a mixed Tool+Skill RAT1 file (hosts own persistence. Core stays I/O-free on bytes). Catalogs accept `experimentalEmbeddingArtifact: { path } | { bytes }` (default `onMiss: "error"`) and warm it on `register` / `replaceAll` for any search method. Before eager document embedding on semantic/hybrid. `ToolRegistry` / `SkillRegistry` expose `buildEmbeddingArtifact` and `warmEmbeddingsFromArtifact`. `mergeEmbeddingArtifacts` combines compatible single-kind parts. Failures are typed `ArtifactWarmError` (stable `.code`, e.g. `"Incomplete"` with `.missing`). Shipped behind an `experimental` prefix (the API may change until it graduates).
+
 ## [0.7.0] - 2026-08-07
 
 > **On npm's `rc` channel?** The `0.6.1-rc.*` and `0.7.0-rc.0` prereleases on npm were cut

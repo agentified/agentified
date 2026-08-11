@@ -46,7 +46,12 @@ export interface SkillCatalogOptions {
   /** Embedding model for semantic/hybrid retrieval — see
    * {@link ToolCatalogOptions.embedding}. Retained for asynchronous overrides. */
   embedding?: EmbeddingSpec;
-  /** Build-time embedding artifact to warm on register/replaceAll (any method; default `onMiss: "error"`). */
+  /**
+   * Build-time embedding artifact to warm on register/replaceAll (any method;
+   * default `onMiss: "error"`). Each call re-resolves and re-warms over the
+   * whole current corpus — intended for one batch at startup; incremental
+   * register/replaceAll calls repeat I/O and id+hash matching.
+   */
   experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
 }
 

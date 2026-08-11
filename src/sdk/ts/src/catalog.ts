@@ -203,7 +203,12 @@ export interface ToolCatalogOptions {
    * embedding. Retained and validated even when the default method is `"bm25"`,
    * allowing a later asynchronous semantic override. */
   embedding?: EmbeddingSpec;
-  /** Build-time RAT1 to warm on register (any method; default `onMiss: "error"`). */
+  /**
+   * Build-time RAT1 to warm on register (any method; default `onMiss: "error"`).
+   * Each `register` re-resolves and re-warms over the whole current corpus —
+   * intended for one batch at startup; incremental register calls repeat I/O
+   * and id+hash matching.
+   */
   experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
 }
 
