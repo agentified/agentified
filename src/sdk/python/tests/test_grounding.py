@@ -1,5 +1,7 @@
 """Tests for the grounding freshness planner — mirrors `src/sdk/ts/src/grounding.test.ts`."""
 
+import pytest
+
 from ratel_ai.experimental import FactCandidate, InjectionDecision, plan_injection
 
 
@@ -53,6 +55,62 @@ def test_classifies_absent_plus_previously_injected_different_body_as_mutated() 
         previously_injected={"a": ADDRESS},
     )
     assert decision == InjectionDecision("a", True, "mutated")
+
+
+def test_reinjects_a_retracted_body_as_mutated_even_though_it_reads_present() -> None:
+    # The retraction direction: shrinking a body leaves the new text a substring
+    # of the stale text still in the window, so a plain presence check would call
+    # it ``fresh`` and the withdrawn clause would stay asserted to the model
+    # forever. The stale body's presence is what arms this.
+    old_body = "Cancel 24h ahead for a full refund; same-day is a 50% fee."
+    new_body = "Cancel 24h ahead for a full refund;"
+    (decision,) = plan_injection(
+        [cand("cx", new_body)],
+        [old_body],
+        previously_injected={"cx": old_body},
+    )
+    assert decision == InjectionDecision("cx", True, "mutated")
+    assert "50% fee" in old_body  # the retracted clause is what's at stake
+
+
+def test_retraction_converges_once_the_new_body_is_injected() -> None:
+    old_body = "Cancel 24h ahead for a full refund; same-day is a 50% fee."
+    new_body = "Cancel 24h ahead for a full refund;"
+    # Turn N+1: the stale body is still in history, but so is the correction, and
+    # the session state now records the new body — so no re-injection loop.
+    (decision,) = plan_injection(
+        [cand("cx", new_body)],
+        [old_body, new_body],
+        previously_injected={"cx": new_body},
+    )
+    assert decision == InjectionDecision("cx", False, "fresh")
+
+
+def test_does_not_reinject_when_stale_body_is_gone_and_new_one_is_present() -> None:
+    # Compaction dropped the old text and the new body is already rendered:
+    # nothing is misstated, so the retraction rule must stay quiet.
+    (decision,) = plan_injection(
+        [cand("a", "New location: 40 Oxford Street.")],
+        ["New location: 40 Oxford Street."],
+        previously_injected={"a": ADDRESS},
+    )
+    assert decision == InjectionDecision("a", False, "fresh")
+
+
+def test_never_injects_an_empty_body_even_when_the_stale_one_is_present() -> None:
+    # A fact edited down to "" has nothing to render; the retraction rule must
+    # not resurrect it as an empty injection.
+    (decision,) = plan_injection([cand("a", "")], [ADDRESS], previously_injected={"a": ADDRESS})
+    assert decision == InjectionDecision("a", False, "fresh")
+
+
+def test_rejects_a_bare_str_transcript() -> None:
+    # `str` is itself a `Sequence[str]`, so this satisfies the annotation and
+    # mypy — then iterates characters, and every fact reads as absent forever.
+    # TypeScript's `readonly string[]` rejects it at compile time; Python needs
+    # the runtime guard.
+    with pytest.raises(TypeError, match="sequence of message strings"):
+        plan_injection([cand("a", "AAA")], "a transcript containing AAA verbatim")  # type: ignore[arg-type]
 
 
 def test_edited_body_that_is_already_present_is_simply_fresh() -> None:

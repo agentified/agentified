@@ -164,10 +164,15 @@ await r.facts.register([
 
 Then pick **one** of two injection modes per turn — the same persist-vs-per-call split as `appendRecall` vs `prepareStep` for recall.
 
-**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save:
+**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save. It takes **per-message text**, so flatten your history first — the AI SDK's `ModelMessage.content` is `string | Array<Part>`, and handing it an array of parts makes the presence check element equality, which never matches (every fact would then re-inject every turn):
 
 ```ts
-const { inject } = await r.ground(userText, messages.map((m) => m.content));
+const textOf = (m: ModelMessage): string =>
+  typeof m.content === "string"
+    ? m.content
+    : m.content.map((p) => ("text" in p ? p.text : "")).join("\n");
+
+const { inject } = await r.ground(userText, messages.map(textOf));
 for (const f of inject) {
   messages.push({ role: "system", content: f.body }); // verbatim — presence is the dedupe
 }
@@ -187,7 +192,7 @@ const result = await generateText({
 
 Use `ground()` for a long-lived agent whose messages you persist (pays once, stays in the cached prefix); `groundSnapshot()` for one-shot or stateless calls, or to keep injected content out of your stored history.
 
-Facts are **host-driven, on their own path**: `ground()`/`groundSnapshot()` are the only ways facts reach the context. `modelTools()`, the model-facing `search_capabilities` tool, and `recall()` are all unchanged and never return facts — the model doesn't discover facts by calling a tool, and there is no second place to look. You decide what is true and inject it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0014](../../../docs/adr/0014-facts-and-injection-freshness.md).
+Facts are **host-driven, on their own path**: `ground()`/`groundSnapshot()` are the only ways facts reach the context. `modelTools()`, the model-facing `search_capabilities` tool, and `recall()` are all unchanged and never return facts — the model doesn't discover facts by calling a tool, and there is no second place to look. You decide what is true and inject it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
 ## Adapter conformance testkit
 

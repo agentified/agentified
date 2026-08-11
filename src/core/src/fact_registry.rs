@@ -456,6 +456,73 @@ mod tests {
         reg
     }
 
+    /// A builder that must never run — proof the search path already populated
+    /// the cache (the skill-side twin explains why the public seam can't pin this).
+    fn no_build() -> Vec<(String, String)> {
+        unreachable!("cache should already be populated by the search path")
+    }
+
+    #[test]
+    fn bm25_cache_is_warmed_by_search_and_dropped_by_register() {
+        // Lifecycle pin: a public search populates the cache, and `register` —
+        // the registry's only mutator — drops it. Results are byte-identical
+        // either way, so only this test fails if `register` stops invalidating;
+        // a stale index means `ground()` ranks against the old corpus and an
+        // edited fact never surfaces in the retrieved tier. Twin of
+        // `SkillRegistry::bm25_cache_is_warmed_by_search_and_dropped_by_every_mutator`.
+        let mut reg = catalog();
+        let _ = reg.search("how do I cancel", 5);
+        let warmed = reg.bm25.get_or_build(no_build);
+        let _ = reg.search("where is the shop", 5);
+        let reused = reg.bm25.get_or_build(no_build);
+        assert!(
+            Arc::ptr_eq(&warmed, &reused),
+            "searches between mutations must reuse one index"
+        );
+
+        reg.register(fact(
+            "extra",
+            "extra-fact",
+            "an extra fact",
+            &[],
+            PinMode::Retrieved,
+        ));
+        let builds = std::cell::Cell::new(0);
+        let after_register = reg.bm25.get_or_build(|| {
+            builds.set(builds.get() + 1);
+            reg.bm25_docs()
+        });
+        assert_eq!(builds.get(), 1, "register must drop the cached index");
+        assert!(!Arc::ptr_eq(&warmed, &after_register));
+    }
+
+    #[test]
+    fn a_replaced_fact_is_searchable_under_its_new_text() {
+        // The behavioral consequence of the invalidation above, through the
+        // public seam only: re-registering an id must re-index it, so the new
+        // description ranks and the old one no longer does.
+        let mut reg = catalog();
+        assert_eq!(
+            reg.search("cancel or reschedule a booking", 5)
+                .first()
+                .map(|h| h.fact_id.as_str()),
+            Some("cancellation")
+        );
+        reg.register(fact(
+            "cancellation",
+            "cancellation-policy",
+            "Gift cards, vouchers and store credit",
+            &["payment"],
+            PinMode::Retrieved,
+        ));
+        let hits = reg.search("gift cards and vouchers", 5);
+        assert_eq!(
+            hits.first().map(|h| h.fact_id.as_str()),
+            Some("cancellation"),
+            "a replaced fact must be searchable under its new text"
+        );
+    }
+
     #[test]
     fn search_ranks_the_relevant_fact_first() {
         let reg = catalog();

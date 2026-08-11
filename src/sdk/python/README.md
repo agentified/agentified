@@ -118,10 +118,16 @@ await facts.register([
 
 Then pick **one** of two injection modes per turn.
 
-**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save:
+**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save. It takes a **list of per-message strings** — flatten multi-part content yourself, and note that a bare `str` is rejected (it is itself a `Sequence[str]`, so it would be iterated character by character):
 
 ```python
-result = await facts.ground(user_text, [m["content"] for m in messages])
+def text_of(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.get("text", "") for part in content)  # multi-part content
+
+result = await facts.ground(user_text, [text_of(m) for m in messages])
 for item in result.inject:
     messages.append({"role": "system", "content": item.body})  # verbatim — presence is the dedupe
 ```
@@ -137,7 +143,7 @@ payload = [{"role": "system", "content": f.body} for f in snapshot] + messages
 
 Use `ground()` for a long-lived agent whose messages you persist; `ground_snapshot()` for one-shot or stateless calls, or to keep injected content out of your stored history.
 
-Facts are **host-driven**: the model-facing `search_capabilities` tool is unchanged and never returns facts — you decide what is true and inject it, rather than letting the model discover it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0014](../../../docs/adr/0014-facts-and-injection-freshness.md).
+Facts are **host-driven**: the model-facing `search_capabilities` tool is unchanged and never returns facts — you decide what is true and inject it, rather than letting the model discover it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
 Telemetry export is optional. With the `otlp` extra installed, `configure_telemetry()` reads `RATEL_OTLP_ENDPOINT` (falling back to the superseded `RATEL_URL`, which warns) and `RATEL_API_KEY`, wires trace and Logs exporters, and returns a shutdown handle. It exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default — `export_all_spans=True` widens spans only. Message/tool content stays off by default; opt in with `capture_content`/`include_span_and_events` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Hosts that already own OpenTelemetry providers add both `ratel_span_processor` and `ratel_log_record_processor` instead.
 

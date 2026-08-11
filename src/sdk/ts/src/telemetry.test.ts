@@ -14,6 +14,7 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FactCatalog } from "./experimental.js";
 import {
   ContentCapture,
   clearContentCapture,
@@ -395,6 +396,25 @@ describe("ratel.search span", () => {
     // SPAN_ONLY: query on the span, no results event.
     expect(eventNamed(span, SEARCH_RESULTS)).toBeUndefined();
     expect(logEventsNamed(SEARCH_RESULTS)).toHaveLength(0);
+  });
+
+  it("records target=fact for the fact catalog", async () => {
+    // The `ratel.search.target` vocabulary has three values; without this the
+    // fact catalog could drop `traceSearch` entirely and stay green.
+    const facts = new FactCatalog();
+    await facts.register({
+      id: "shop-address",
+      name: "shop-address",
+      description: "where the barbershop is",
+      body: "12 Baker Street",
+      pin: "always",
+    });
+    facts.search("where is the shop", 4, "agent");
+
+    const [span] = spansNamed("ratel.search");
+    expect(attrs(span)["ratel.search.target"]).toBe("fact");
+    expect(attrs(span)["ratel.search.top_k"]).toBe(4);
+    expect(attrs(span)["ratel.origin"]).toBe("agent");
   });
 
   it("under EVENT_ONLY carries the query on a ratel.search.results event, not the span", async () => {

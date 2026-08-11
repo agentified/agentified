@@ -27,6 +27,7 @@ from typing import Any, Literal, TypeVar, cast, overload
 
 from ._native import FactHit
 from ._native import FactRegistry as _NativeFactRegistry
+from .capabilities import _clamp_top_k
 from .catalog import (
     _REGISTRY_BUSY,
     _UNAWAITED_REGISTER,
@@ -44,6 +45,7 @@ from .grounding import (
     GroundingSnapshotItem,
     InjectionReason,
     PinTier,
+    assert_message_sequence,
     plan_injection,
 )
 from .telemetry import SEARCH_TARGET_FACT, trace_search, trace_search_async
@@ -99,10 +101,12 @@ class Pin(str, Enum):
 
 
 def _clamp_facts_top_k(value: int | None) -> int:
-    """Clamp a facts top-K to [1, 50], falling back to the default for junk."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return _DEFAULT_FACTS_TOP_K
-    return min(value, _MAX_TOP_K)
+    """Clamp a facts top-K to [1, 50], falling back to the default for junk.
+
+    Delegates to the shared `capabilities._clamp_top_k` so the cap can't drift
+    between the pull path and the push path (the TS twin imports `clampTopK`).
+    """
+    return _clamp_top_k(value, _DEFAULT_FACTS_TOP_K)
 
 
 @dataclass
@@ -419,6 +423,11 @@ class FactRegistry:
 
     def _register_items(self, facts: Iterable[Fact]) -> None:
         facts = list(facts)
+        # Validate the whole batch before indexing any of it — enforced HERE, not
+        # only in `FactCatalog.register`, because `experimental.FactRegistry` is
+        # public and its ids ride the same trace events and structured payloads.
+        for fact in facts:
+            _assert_valid_fact(fact)
         with self._dense_state:
             self._raise_if_busy()
             self._native._register_many(
@@ -471,6 +480,14 @@ class FactCatalog:
         # as `evicted` (same body, gone from the window) or `mutated` (body has
         # since changed) instead of `never`. The transcript itself carries the
         # rest.
+        #
+        # Scoped to the CATALOG, not to a conversation. On a shared catalog
+        # serving many conversations the injection *decisions* stay correct —
+        # presence is computed from the per-call `transcript` — but the `reason`
+        # labels are drawn from whichever conversation touched the fact last, so
+        # a second tenant's first-ever injection can be labelled ``evicted``
+        # rather than ``never``. That degrades ``fact_inject`` telemetry only;
+        # see the ADR's known limits. A per-conversation catalog avoids it.
         self._injected_bodies: dict[str, str] = {}
         self._registry = FactRegistry(embedding, method=method)
         if trace is not None:
@@ -505,8 +522,9 @@ class FactCatalog:
             RuntimeError: if a dense operation already owns the registry.
         """
         batch = [facts] if isinstance(facts, Fact) else list(facts)
-        for fact in batch:
-            _assert_valid_fact(fact)
+        # Validation lives in `_register_items` (the registry is public too),
+        # which checks the whole batch before indexing any of it — so the local
+        # map below can only ever see facts the registry accepted.
         self._registry._register_items(batch)
         for fact in batch:
             self._facts[fact.id] = fact
@@ -589,13 +607,20 @@ class FactCatalog:
 
         Args:
             query: the current turn's text, for the retrieval-gated tier.
-            transcript: per-message text of the current history, oldest first.
+            transcript: per-message text of the current history, oldest first. A
+                bare ``str`` is rejected — see `assert_message_sequence`.
             top_k: max retrieval-gated facts to consider (defaults to the
                 catalog's `facts_top_k`, then 3).
 
         Returns:
             The facts to inject (always-on first) and the ids left fresh.
+
+        Raises:
+            TypeError: if `transcript` is a bare ``str``.
         """
+        # Checked before the search so a caller's mistake fails fast, rather than
+        # after an embedding round-trip.
+        assert_message_sequence(transcript)
         candidates = await self._candidate_facts(query, top_k)
         decisions = plan_injection(
             [FactCandidate(fact.id, fact.body) for fact in candidates],
@@ -676,13 +701,19 @@ class FactCatalog:
         k = _clamp_facts_top_k(top_k if top_k is not None else self._facts_top_k)
         pinned = self.pinned()
         pinned_ids = {fact.id for fact in pinned}
-        hits = await self.search_async(query, k, "direct")
+        # `k` budgets the RETRIEVED tier, not both tiers together. Pinned facts
+        # are ranked too (they stay discoverable), so they can occupy top-k slots
+        # that are then filtered back out — searching `k + len(pinned)` and
+        # truncating after the filter keeps `k` retrieved facts reachable even
+        # when the always-on tier outranks them. Searching plain `k` instead
+        # starves the retrieved tier to zero for any host with >= k pinned facts.
+        hits = await self.search_async(query, k + len(pinned_ids), "direct")
         retrieved = [
             fact
             for hit in hits
             if (fact := self._facts.get(hit.fact_id)) is not None and fact.id not in pinned_ids
         ]
-        return pinned + retrieved
+        return pinned + retrieved[:k]
 
     def has(self, fact_id: str) -> bool:
         """Return whether a fact with this id is registered."""

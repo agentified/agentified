@@ -1,6 +1,5 @@
 import {
   type AdaptiveRankingStatus,
-  type Fact,
   type FactHit,
   IntentGraph,
   type EmbeddingConfig as NativeEmbeddingConfig,
@@ -15,6 +14,7 @@ import {
 } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { mapEmbedderError } from "./errors.js";
+import { assertValidFact, type Fact } from "./grounding.js";
 
 export { IntentGraph };
 
@@ -511,8 +511,9 @@ export class FactRegistry {
 
   /**
    * Register one fact or a batch, replacing any existing id in place — see
-   * {@link ToolRegistry.register} for the embed-inside contract. An unknown
-   * `pin` value throws here, synchronously, before the batch is indexed.
+   * {@link ToolRegistry.register} for the embed-inside contract. A malformed
+   * `id` or an unknown `pin` throws before anything is indexed — the returned
+   * promise rejects, since the method is `async`.
    *
    * @param item - A single {@link Fact} or a readonly array of them.
    */
@@ -523,12 +524,15 @@ export class FactRegistry {
 
   /**
    * Index metadata only, without embedding — see
-   * {@link ToolRegistry.registerItems}.
+   * {@link ToolRegistry.registerItems}. Validates the whole batch first
+   * ({@link assertValidFact}), so a bad fact anywhere in it leaves the registry
+   * untouched rather than half-populated.
    *
    * @internal
    */
   registerItems(item: Fact | readonly Fact[]): void {
     const items = Array.isArray(item) ? item : [item];
+    for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
   }
 

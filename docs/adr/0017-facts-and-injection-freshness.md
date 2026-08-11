@@ -1,4 +1,4 @@
-# 14. Facts: constant grounding content with a content-presence re-injection gate
+# 17. Facts: constant grounding content with a content-presence re-injection gate
 
 Date: 2026-07-27
 
@@ -7,9 +7,11 @@ Date: 2026-07-27
 Accepted
 
 Builds on first-class skills (ADR-0005), the selectable retrieval engines (ADR-0004,
-ADR-0011), the two telemetry streams (ADR-0007), and the framework-adapter SPI (ADR-0013):
-facts reuse the skill registry pattern wholesale and surface through the same `recall`/adapter
-seam.
+ADR-0011), and the two telemetry streams (ADR-0007): facts reuse the skill registry pattern
+wholesale — same engines, same replace-in-place semantics, its own telemetry type. They do
+**not** reuse the `recall`/adapter seam: facts reach the model on their own host-driven path
+(`ground` / `groundSnapshot`), leaving `recall` and the framework-adapter SPI (ADR-0013)
+untouched.
 
 ## Context
 
@@ -62,6 +64,12 @@ telemetry stand on its own," facts emit their own `fact_search` / `fact_churn` /
 - **Retrieved** (the default) facts are ranked like skills and surfaced only when a query pulls
   them in — through `ground`/`groundSnapshot`, never through a second surface.
 
+`topK` budgets the **retrieved tier only**; the pinned tier is uncapped by construction. Because
+pinned facts stay query-rankable they compete for ranked slots, so the grounding pass searches
+`topK + |pinned|` and truncates to `topK` *after* discarding the pinned hits. Searching a plain
+`topK` instead silently starves the retrieved tier — with the motivating example's three
+always-on facts and the default `topK` of 3, it reaches zero.
+
 **Facts have exactly one path into the context.** An earlier revision also returned a third
 `facts` bucket from `recall()`, so the same fact could arrive by two routes: `recall` (which does
 not consult the injection state) and `ground` (which does). That was both a conceptual blur —
@@ -80,11 +88,22 @@ Injection is a pure decision over three cases, computed by `planInjection`:
 |---|---|---|
 | `never` | not in the window, never injected this session | body absent + id unseen |
 | `evicted` | injected earlier, now gone (trimmed/compacted) | body absent + same body previously injected |
-| `mutated` | body edited since injection | current body absent + differs from the one last injected |
+| `mutated` | body edited since injection | current body absent, **or** the stale body it replaced is still in the window |
 
 The presence signal is **the fact's own body text**: a fact is "fresh" (skipped) when its body
 appears verbatim — a literal substring check, no regex, no parsing — **within a single transcript
-message**. The scan is per message, not over a joined transcript, because injections render the
+message**.
+
+Presence alone is not sufficient for an *edited* body, which is why `mutated` has a second
+detection arm. A **retraction** shrinks the body ("…full refund; same-day is a 50% fee." →
+"…full refund."), which leaves the new text a *substring of the stale text still in the
+transcript* — so a pure presence check reads `fresh` and the withdrawn clause stays asserted to
+the model forever. The rule is therefore: a known-mutated fact whose **stale** body is still
+present re-injects, regardless of the new body's presence. This direction matters as much as
+the growing one — "the shop moves", "the policy changes" is this ADR's own framing of why facts
+get edited. The correction cannot *remove* the stale copy from an append-only transcript; it
+puts the current version last, which is the only lever `ground` has. Once the new body is
+injected the session state records it, so the next turn reads `fresh` and there is no loop. The scan is per message, not over a joined transcript, because injections render the
 whole body into one message; joining would false-positive when two unrelated messages happen to
 end/start with the halves of a multi-line body. There is no marker, no tag, no extra token: the
 injected content is its own record. Content presence is who-put-it-there agnostic: if the
@@ -108,6 +127,10 @@ render `body` **verbatim** in the appended message — decorate around it, never
   Rejected: the window has no principled value, and re-injecting on an append-only transcript
   duplicates the buried copy rather than moving it. Recency is `groundSnapshot`'s job — it places
   facts near the end of every call by construction.
+- **Presence alone for edited bodies** (the original rule: absent *and* differs ⇒ `mutated`).
+  Rejected once the retraction case was demonstrated: it is faithful to "is this information in
+  the window?" but answers the wrong question when the *stale* information is also in the window.
+  Adding the stale-body arm costs one comparison and no tokens.
 
 ### Two injection modes: `ground` vs `groundSnapshot`
 
@@ -140,13 +163,22 @@ Both modes assemble candidates identically (one shared code path), so they can n
   injection-deduplication that could later apply to any pushed content.
 - **Known limits, accepted.** (1) The gate depends on hosts rendering `body` verbatim — a host
   that rewrites the injected text (translation, aggressive reformatting) defeats detection and the
-  fact re-injects each turn (safe, just wasteful). (2) Across process restarts the injected-body
-  map is empty, so an absent body reads as `never` rather than `evicted`/`mutated` — the action
-  (inject) is identical either way; only the telemetry reason coarsens. (3) A summarizing
-  compaction that *rewords* (rather than preserves) a fact's text causes a redundant re-inject;
-  one that preserves it verbatim is correctly detected as still present.
-  (4) Fact ids are constrained to `[A-Za-z0-9._:-]+`; they ride in trace events and structured
-  injection payloads — validated at the catalog boundary.
+  fact re-injects each turn (safe, just wasteful). The same applies to a host that hands `ground`
+  something other than per-message **text**: the AI SDK's `ModelMessage.content` is
+  `string | Array<Part>`, and a part array makes the substring check element equality, which never
+  matches. Hosts extract text first; the SDK READMEs lead with that. (2) Across process restarts
+  the injected-body map is empty, so an absent body reads as `never` rather than
+  `evicted`/`mutated` — the action (inject) is identical either way; only the telemetry reason
+  coarsens. (3) A summarizing compaction that *rewords* (rather than preserves) a fact's text
+  causes a redundant re-inject; one that preserves it verbatim is correctly detected as still
+  present. (4) Fact ids are constrained to `[A-Za-z0-9._:-]+`; they ride in trace events and
+  structured injection payloads, so this is enforced at **both** entry points — `FactCatalog` and
+  the lower-level `FactRegistry`, which is public under `experimental` too. (5) The injected-body
+  map is scoped to the **catalog**, not to a conversation. On a shared `ratel()` serving many
+  conversations the injection *decisions* stay correct — presence is computed from the per-call
+  `transcript` — but the `reason` labels come from whichever conversation touched the fact last, so
+  a second tenant's first-ever injection can read `evicted` rather than `never`. That degrades
+  `fact_inject` telemetry only; a per-conversation `FactCatalog` avoids it.
 - **Deciding the tier is the author's job.** The `pin` flag — an enum (`Pin.Always` /
   `Pin.ALWAYS`, wire strings still accepted) — is the whole UX; new facts default to `retrieved`
   and are promoted to `always` deliberately. A size cap on the always-on tier is left to a
@@ -160,15 +192,19 @@ only through an `experimental` namespace (`experimental.FactCatalog` in TS via `
 experimental`; `ratel_ai.experimental` in Python), never the root export, so any dependence on it is
 explicit at the import site. Constructing a `FactCatalog` logs a one-time warning (silence:
 `RATEL_EXPERIMENTAL_SILENCE`). The `ratel()` touchpoints that can't move off the stable object
-(`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`) are tagged "⚠️ Experimental" in their docs, and **`r.facts` is lazy**: the catalog is constructed
-on first access, so a host that never touches facts never builds one and never sees the
-experimental warning. `recall()` likewise consults the catalog only if it already exists. Two
-further boundaries keep the experiment off the stable path: the fact search is skipped on an empty
-catalog (no extra work, no extra `ratel.search` span), and the **model-facing `search_capabilities`
-tool is untouched in both SDKs** — its result carries no `facts` key, so the model's tool contract
-is byte-identical to before. Facts are host-driven by design: the host decides what is true and
-injects it, rather than the model discovering it through a tool. The freshness gate lives on `FactCatalog.ground` (it
-owns the fact state); `r.ground`/`r.groundSnapshot` are thin delegates. Adapter ergonomics — an
+(`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`) are tagged "⚠️ Experimental"
+in their docs, and **`r.facts` is lazy**: the catalog is constructed on first access, so a host
+that never touches facts never builds one and never sees the experimental warning. The accessor is
+also **non-enumerable**, which is load-bearing rather than cosmetic: object spread, `Object.assign`,
+`JSON.stringify`, and any logger walking own enumerable keys all perform `[[Get]]`, and `adaptTo`
+returns `{ ...base, ...ext }` — so an enumerable getter built the catalog, and fired its warning,
+for *every adapted host* while looking lazy in the source. `recall()` never consults the catalog
+at all, under any condition. The other boundary keeping the experiment off the stable path is that
+the **model-facing `search_capabilities` tool is untouched in both SDKs** — its result carries no
+`facts` key, so the model's tool contract is byte-identical to before. Facts are host-driven by
+design: the host decides what is true and injects it, rather than the model discovering it through
+a tool. The freshness gate lives on `FactCatalog.ground` (it owns the fact state);
+`r.ground`/`r.groundSnapshot` are thin delegates. Adapter ergonomics — an
 `appendGrounding` and facts riding `prepareStep` — are deliberately deferred to graduation, so
 experimental API never enters the released adapter packages. Graduation is non-breaking: add the
 stable root export, keep the `experimental.*` alias as a deprecated shim, and measure adoption in

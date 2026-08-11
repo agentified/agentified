@@ -47,6 +47,57 @@ describe("planInjection (content-presence gate)", () => {
     expect(d).toEqual({ id: "a", inject: true, reason: "mutated" });
   });
 
+  it("re-injects a RETRACTED body as `mutated` even though it reads as present", () => {
+    // The retraction direction: shrinking a body leaves the new text a
+    // substring of the stale text still in the window, so a plain presence
+    // check would call it `fresh` and the withdrawn clause would stay asserted
+    // to the model forever. The stale body's presence is what arms this.
+    const oldBody = "Cancel 24h ahead for a full refund; same-day is a 50% fee.";
+    const newBody = "Cancel 24h ahead for a full refund;";
+    const [d] = planInjection({
+      candidates: [cand("cx", newBody)],
+      transcript: [oldBody],
+      previouslyInjected: new Map([["cx", oldBody]]),
+    });
+    expect(d).toEqual({ id: "cx", inject: true, reason: "mutated" });
+    expect(oldBody.includes("50% fee"), "the retracted clause is what's at stake").toBe(true);
+  });
+
+  it("converges: once the new body is injected, the next turn is fresh again", () => {
+    const oldBody = "Cancel 24h ahead for a full refund; same-day is a 50% fee.";
+    const newBody = "Cancel 24h ahead for a full refund;";
+    // Turn N+1: the stale body is still in history, but so is the correction,
+    // and the session state now records the new body — so no re-injection loop.
+    const [d] = planInjection({
+      candidates: [cand("cx", newBody)],
+      transcript: [oldBody, newBody],
+      previouslyInjected: new Map([["cx", newBody]]),
+    });
+    expect(d).toEqual({ id: "cx", inject: false, reason: "fresh" });
+  });
+
+  it("does not re-inject when the stale body is gone and the new one is present", () => {
+    // Compaction dropped the old text and the new body is already rendered:
+    // nothing is misstated, so the retraction rule must stay quiet.
+    const [d] = planInjection({
+      candidates: [cand("a", "New location: 40 Oxford Street.")],
+      transcript: ["New location: 40 Oxford Street."],
+      previouslyInjected: new Map([["a", address]]),
+    });
+    expect(d).toEqual({ id: "a", inject: false, reason: "fresh" });
+  });
+
+  it("never injects an empty body, even when the stale one is still present", () => {
+    // A fact edited down to "" has nothing to render; the retraction rule must
+    // not resurrect it as an empty injection.
+    const [d] = planInjection({
+      candidates: [cand("a", "")],
+      transcript: [address],
+      previouslyInjected: new Map([["a", address]]),
+    });
+    expect(d).toEqual({ id: "a", inject: false, reason: "fresh" });
+  });
+
   it("an edited body that is somehow already present is simply fresh", () => {
     const newBody = "New location: 40 Oxford Street.";
     const [d] = planInjection({

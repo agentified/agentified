@@ -29,6 +29,7 @@ from typing import Literal
 __all__ = [
     "FACT_ID_PATTERN",
     "FactCandidate",
+    "assert_message_sequence",
     "GroundingItem",
     "GroundingResult",
     "GroundingSnapshotItem",
@@ -45,8 +46,9 @@ InjectionReason = Literal["never", "evicted", "mutated"]
 - ``never`` — not present in the transcript and never injected this session.
 - ``evicted`` — injected earlier but its body is gone now (trimmed / compacted
   out of the window).
-- ``mutated`` — the registered body changed since it was injected (the current
-  body is absent and differs from the one last injected).
+- ``mutated`` — the registered body changed since it was injected: either the
+  current body is absent, or the *stale* body it replaced is still in the window
+  (a retraction, where the new body is a substring of the old).
 """
 
 InjectionDecisionReason = Literal["never", "evicted", "mutated", "fresh"]
@@ -55,6 +57,30 @@ still in context."""
 
 PinTier = Literal["always", "retrieved"]
 """The two tiers a fact's `pin` splits into — always-on vs retrieval-gated."""
+
+
+def assert_message_sequence(transcript: Sequence[str]) -> None:
+    """Reject a bare ``str`` passed where a sequence of messages is expected.
+
+    ``str`` is itself a ``Sequence[str]``, so a caller who passes one satisfies
+    the annotation, mypy stays green, and the gate then iterates *characters* —
+    no single "message" contains a multi-character body, so every fact reads as
+    absent and re-injects every turn. TypeScript's ``readonly string[]`` rejects
+    this at compile time; Python needs the runtime guard.
+
+    Args:
+        transcript: the value to check.
+
+    Raises:
+        TypeError: if `transcript` is a ``str``.
+    """
+    if isinstance(transcript, str):
+        raise TypeError(
+            "ratel: transcript must be a sequence of message strings, not a single str "
+            "(a str is itself a Sequence[str], so it would be iterated character by "
+            "character and silently defeat the freshness gate) — pass [transcript] "
+            "for a one-message history"
+        )
 
 
 @dataclass(frozen=True)
@@ -97,10 +123,21 @@ def plan_injection(
     an empty body is trivially present (there is nothing to inject) and is
     skipped as ``fresh``.
 
+    Presence alone is not sufficient for an **edited** body, though. A retraction
+    shrinks the body, which leaves the new text a substring of the stale text
+    still sitting in the transcript — so a plain presence check reads ``fresh``
+    and the retracted claim stays asserted to the model forever. A known-mutated
+    fact whose *stale* body is still in the window therefore re-injects as
+    ``mutated``, regardless of presence. (The stale copy can't be removed from an
+    append-only transcript; injecting the correction at least puts the current
+    version last.)
+
     Args:
         candidates: the facts to consider this turn (pinned always-on facts plus
             retrieved hits).
-        transcript: per-message text of the current history, oldest first.
+        transcript: per-message text of the current history, oldest first. A bare
+            ``str`` is rejected: it is itself a ``Sequence[str]``, so it would
+            iterate characters and silently defeat the gate.
         previously_injected: the bodies this session already injected, keyed by
             fact id — the caller's bookkeeping (e.g. `FactCatalog`'s). Refines
             the absent case: absent + previously-injected-same-body ⇒
@@ -110,19 +147,37 @@ def plan_injection(
 
     Returns:
         One `InjectionDecision` per candidate, in the same order.
+
+    Raises:
+        TypeError: if `transcript` is a bare ``str`` rather than a sequence of
+            messages.
     """
+    assert_message_sequence(transcript)
+
     # Per-message scan: a body counts as present only when contained within a
     # single message — matching how injections render (one message carries the
     # whole body). Scanning a joined haystack instead would false-positive when
     # two unrelated messages happen to end/start with the two halves of a
     # multi-line body.
+    def present(text: str) -> bool:
+        return any(text in message for message in transcript)
+
     decisions: list[InjectionDecision] = []
     for candidate in candidates:
-        if candidate.body == "" or any(candidate.body in message for message in transcript):
+        # Nothing to inject: trivially fresh, and checked first so a body edited
+        # down to "" can never be injected by the retraction rule below.
+        if candidate.body == "":
             decisions.append(InjectionDecision(candidate.id, False, "fresh"))
             continue
         last = previously_injected.get(candidate.id) if previously_injected is not None else None
-        if last is None:
+        # Retraction: the body changed and the version it replaced is still in
+        # the window. Presence of the new body proves nothing here — shrinking a
+        # body leaves it a substring of the stale text.
+        if last is not None and last != candidate.body and present(last):
+            decisions.append(InjectionDecision(candidate.id, True, "mutated"))
+        elif present(candidate.body):
+            decisions.append(InjectionDecision(candidate.id, False, "fresh"))
+        elif last is None:
             decisions.append(InjectionDecision(candidate.id, True, "never"))
         elif last == candidate.body:
             decisions.append(InjectionDecision(candidate.id, True, "evicted"))

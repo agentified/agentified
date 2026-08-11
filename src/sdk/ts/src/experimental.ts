@@ -1,7 +1,7 @@
 /**
  * ⚠️ **Experimental.** The facts / grounding API — constant grounding content
  * an agent always needs (a shop's address, a brand's voice) plus the
- * transcript-derived re-injection freshness gate (ADR-0014).
+ * transcript-derived re-injection freshness gate (ADR-0017).
  *
  * This surface is behind the `experimental` namespace on purpose: it is new and
  * may change or be removed without a major-version bump. Reach it as
@@ -13,10 +13,11 @@
  * @module
  */
 
-export type { Fact, FactHit } from "../native/index.cjs";
+export type { FactHit } from "../native/index.cjs";
 export type { FactCatalogOptions } from "./fact-catalog.js";
 export { FactCatalog } from "./fact-catalog.js";
 export type {
+  Fact,
   FactCandidate,
   GroundingItem,
   GroundingResult,

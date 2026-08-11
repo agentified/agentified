@@ -14,7 +14,13 @@ import pytest
 
 import ratel_ai.fact_catalog
 from ratel_ai.catalog import TraceSinkConfig
-from ratel_ai.experimental import ExperimentalWarning, Fact, FactCatalog, Pin
+from ratel_ai.experimental import (
+    ExperimentalWarning,
+    Fact,
+    FactCatalog,
+    FactRegistry,
+    Pin,
+)
 
 address = Fact(
     id="shop-address",
@@ -269,3 +275,143 @@ async def test_ground_snapshot_emits_fact_snapshot_trace_events() -> None:
     snaps = [e["fact_id"] for e in catalog.drain_trace_events() if e["type"] == "fact_snapshot"]
     assert "shop-address" in snaps
     assert "cancellation" in snaps
+
+
+# --- topK budgets the retrieved tier only ---------------------------------
+
+# Every fact shares the term "shop", so both tiers are ranked by QUERY below and
+# genuinely compete for slots; the pinned three match it more strongly and take
+# the top three.
+_PINNED_TRIO = [
+    Fact(id="p1", name="shop address", description="the shop address", body="ADDR", pin="always"),
+    Fact(id="p2", name="shop hours", description="the shop hours", body="HOURS", pin="always"),
+    Fact(id="p3", name="shop voice", description="the shop voice", body="VOICE", pin="always"),
+]
+_RETRIEVED_TRIO = [
+    Fact(id="r1", name="shop cancellation", description="shop booking cancellation", body="CANCEL"),
+    Fact(id="r2", name="shop pricing", description="shop prices", body="PRICE"),
+    Fact(id="r3", name="shop barbers", description="shop barbers", body="BARBER"),
+]
+_QUERY = "shop address shop hours shop voice"
+
+
+async def _stocked() -> FactCatalog:
+    catalog = FactCatalog()
+    await catalog.register([*_PINNED_TRIO, *_RETRIEVED_TRIO])
+    return catalog
+
+
+async def test_pinned_facts_do_not_consume_the_retrieved_budget() -> None:
+    catalog = await _stocked()
+    # The query favours the PINNED tier, so with a plain-`k` search all three top
+    # slots go to pinned facts that are then filtered back out, leaving the
+    # retrieved tier permanently empty. Pin the top-3 assumption first, so this
+    # test fails loudly rather than silently passing if the ranking shifts.
+    ranked = [hit.fact_id for hit in await catalog.search_async(_QUERY, 3)]
+    assert ranked == ["p1", "p2", "p3"], "fixture assumption: pinned take the top 3 slots"
+
+    items = await catalog.ground_snapshot(_QUERY, top_k=3)
+    assert len([i for i in items if i.pin == "retrieved"]) == 3
+    assert len([i for i in items if i.pin == "always"]) == 3
+
+
+async def test_returns_at_most_top_k_retrieved_facts() -> None:
+    catalog = await _stocked()
+    items = await catalog.ground_snapshot(_QUERY, top_k=1)
+    assert len([i for i in items if i.pin == "retrieved"]) == 1
+    assert len([i for i in items if i.pin == "always"]) == 3  # pinned are never capped
+
+
+async def test_honours_the_catalog_level_facts_top_k_default() -> None:
+    catalog = FactCatalog(facts_top_k=2)
+    await catalog.register(_RETRIEVED_TRIO)
+    assert len(await catalog.ground_snapshot("shop cancellation pricing barbers")) == 2
+
+
+async def test_a_pinned_fact_that_also_ranks_appears_once_as_pinned() -> None:
+    catalog = await _stocked()
+    hits = [i for i in await catalog.ground_snapshot("shop address", top_k=5) if i.id == "p1"]
+    assert len(hits) == 1
+    assert hits[0].pin == "always"
+
+
+# --- FactRegistry (the lower-level public surface) -------------------------
+
+
+@pytest.mark.parametrize("bad_id", ["has space", "id\nwith\nnewlines", "", "emoji🙂"])
+async def test_registry_rejects_an_invalid_id(bad_id: str) -> None:
+    # The registry is exported from `experimental` too, so it can't be a hole in
+    # the id contract the catalog enforces — the ids ride the same trace events
+    # and structured injection payloads either way.
+    with pytest.raises(ValueError, match="fact id"):
+        await FactRegistry().register([Fact(id=bad_id, name="n", description="d", body="b")])
+
+
+async def test_registry_rejects_an_unknown_pin_value() -> None:
+    with pytest.raises(ValueError, match="pin"):
+        await FactRegistry().register(
+            [Fact(id="ok", name="n", description="d", body="b", pin="sometimes")]
+        )
+
+
+async def test_registry_leaves_the_corpus_untouched_when_any_fact_is_invalid() -> None:
+    registry = FactRegistry()
+    with pytest.raises(ValueError, match="fact id"):
+        await registry.register(
+            [
+                Fact(id="good", name="good", description="a valid fact", body="b"),
+                Fact(id="bad id", name="bad", description="an invalid fact", body="b"),
+            ]
+        )
+    assert registry.search("valid fact", 5) == []
+
+
+async def test_registry_accepts_a_well_formed_id() -> None:
+    registry = FactRegistry()
+    await registry.register(
+        [Fact(id="shop.address:v1-2_3", name="n", description="where the shop is", body="b")]
+    )
+    assert registry.search("where the shop is", 5)[0].fact_id == "shop.address:v1-2_3"
+
+
+# --- ground: reason fidelity, multi-turn state, transcript typing ----------
+
+
+async def test_ground_carries_the_decisions_reason_not_a_constant() -> None:
+    # Hardcoding ``reason: "never"`` in the catalog used to pass every test here;
+    # the whole point of the gate is that the reason distinguishes the cases.
+    catalog = FactCatalog(trace=TraceSinkConfig(kind="memory", session_id="t"))
+    await catalog.register(address)
+    await catalog.ground("hi", [])
+    injects = [e for e in catalog.drain_trace_events() if e["type"] == "fact_inject"]
+    assert injects[0]["reason"] == "never"
+
+    await catalog.ground("hi", ["a summary that dropped everything"])
+    injects = [e for e in catalog.drain_trace_events() if e["type"] == "fact_inject"]
+    assert injects[0]["reason"] == "evicted"
+
+
+async def test_ground_refreshes_its_injected_body_memory_across_three_turns() -> None:
+    # Two-turn tests can't see this: after a ``mutated`` re-inject the session
+    # state must hold the NEW body, or turn 3 re-reports ``mutated`` forever.
+    catalog = FactCatalog()
+    await catalog.register(address)
+    turn1 = await catalog.ground("hi", [])
+    assert next(i for i in turn1.inject if i.id == "shop-address").reason == "never"
+
+    await catalog.register(replace(address, body="New location: 40 Oxford Street."))
+    turn2 = await catalog.ground("hi", [i.body for i in turn1.inject])
+    assert next(i for i in turn2.inject if i.id == "shop-address").reason == "mutated"
+
+    turn3 = await catalog.ground(
+        "hi", [i.body for i in turn1.inject] + [i.body for i in turn2.inject]
+    )
+    assert [i.id for i in turn3.inject] == []
+    assert "shop-address" in turn3.skipped
+
+
+async def test_ground_rejects_a_bare_str_transcript() -> None:
+    catalog = FactCatalog()
+    await catalog.register(address)
+    with pytest.raises(TypeError, match="sequence of message strings"):
+        await catalog.ground("hi", address.body)  # type: ignore[arg-type]

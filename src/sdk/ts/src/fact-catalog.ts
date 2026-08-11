@@ -1,10 +1,11 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { Fact, FactHit } from "../native/index.cjs";
+import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
   FACT_ID_PATTERN,
+  type Fact,
   type GroundingItem,
   type GroundingResult,
   type GroundingSnapshotItem,
@@ -58,6 +59,14 @@ export class FactCatalog {
   // injected per fact id via `ground`. Lets an absent body be classified as
   // `evicted` (same body, gone from the window) or `mutated` (body has since
   // changed) instead of `never`. The transcript itself carries the rest.
+  //
+  // Scoped to the CATALOG, not to a conversation. On a shared `ratel()` serving
+  // many conversations the injection *decisions* stay correct — presence is
+  // computed from the per-call `transcript` — but the `reason` labels are drawn
+  // from whichever conversation touched the fact last, so a second tenant's
+  // first-ever injection can be labelled `evicted` rather than `never`. That
+  // degrades `fact_inject` telemetry only; see the ADR's known limits. A
+  // per-conversation `FactCatalog` avoids it entirely.
   private readonly injectedBodies = new Map<string, string>();
 
   /**
@@ -92,9 +101,9 @@ export class FactCatalog {
    */
   async register(facts: Fact | readonly Fact[]): Promise<void> {
     const batch = Array.isArray(facts) ? facts : [facts];
-    for (const fact of batch) {
-      assertValidFact(fact);
-    }
+    // Validation lives in `registerItems` (the registry is public too), which
+    // checks the whole batch before indexing any of it — so the local map below
+    // can only ever see facts the registry accepted.
     this.registry.registerItems(batch);
     for (const fact of batch) {
       this.facts.set(fact.id, fact);
@@ -245,10 +254,17 @@ export class FactCatalog {
     const k = clampTopK(topK ?? this.factsTopK, DEFAULT_FACTS_TOP_K);
     const pinned = this.pinned();
     const pinnedIds = new Set(pinned.map((f) => f.id));
-    const retrievedHits = await this.searchAsync(query, k, "direct");
+    // `k` budgets the RETRIEVED tier, not both tiers together. Pinned facts are
+    // ranked too (they stay discoverable), so they can occupy top-k slots that
+    // are then filtered back out — searching `k + pinned.length` and truncating
+    // after the filter keeps `k` retrieved facts reachable even when the
+    // always-on tier outranks them. Searching plain `k` instead starves the
+    // retrieved tier to zero for any host with >= k always-on facts.
+    const retrievedHits = await this.searchAsync(query, k + pinnedIds.size, "direct");
     const retrieved = retrievedHits
       .map((h) => this.facts.get(h.factId))
-      .filter((f): f is Fact => f !== undefined && !pinnedIds.has(f.id));
+      .filter((f): f is Fact => f !== undefined && !pinnedIds.has(f.id))
+      .slice(0, k);
     return [...pinned, ...retrieved];
   }
 
@@ -302,20 +318,5 @@ export class FactCatalog {
    */
   drainTraceEvents(): unknown[] {
     return this.registry.drainTraceEvents();
-  }
-}
-
-/** Reject a fact whose id or pin can't be trusted at the catalog boundary. */
-function assertValidFact(fact: Fact): void {
-  if (typeof fact.id !== "string" || !FACT_ID_PATTERN.test(fact.id)) {
-    throw new Error(
-      `ratel: fact id ${JSON.stringify(fact.id)} must match ${FACT_ID_PATTERN} ` +
-        "(letters, digits, and . _ : - only; ids ride in trace events and structured payloads)",
-    );
-  }
-  if (fact.pin !== undefined && fact.pin !== Pin.Always && fact.pin !== Pin.Retrieved) {
-    throw new Error(
-      `ratel: fact ${fact.id} has invalid pin ${JSON.stringify(fact.pin)} (expected "always" or "retrieved")`,
-    );
   }
 }

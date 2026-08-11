@@ -20,6 +20,8 @@
  * module never touches a message shape.
  */
 
+import type { Fact as NativeFact } from "../native/index.cjs";
+
 /**
  * Why a fact was chosen for (re-)injection. Mirrors the core
  * `FactInjectReason` trace enum.
@@ -27,8 +29,9 @@
  * - `never` — not present in the transcript and never injected this session.
  * - `evicted` — injected earlier but its body is gone now (trimmed / compacted
  *   out of the window).
- * - `mutated` — the registered body changed since it was injected (the current
- *   body is absent and differs from the one last injected).
+ * - `mutated` — the registered body changed since it was injected: either the
+ *   current body is absent, or the *stale* body it replaced is still in the
+ *   window (a retraction, where the new body is a substring of the old).
  */
 export type InjectionReason = "never" | "evicted" | "mutated";
 
@@ -96,6 +99,14 @@ export interface InjectionDecision {
  * an empty body is trivially present (there is nothing to inject) and is
  * skipped as `fresh`.
  *
+ * Presence alone is not sufficient for an **edited** body, though. A retraction
+ * shrinks the body, which leaves the new text a substring of the stale text
+ * still sitting in the transcript — so a plain presence check reads `fresh` and
+ * the retracted claim stays asserted to the model forever. A known-mutated fact
+ * whose *stale* body is still in the window therefore re-injects as `mutated`,
+ * regardless of presence. (The stale copy can't be removed from an append-only
+ * transcript; injecting the correction at least puts the current version last.)
+ *
  * @param input - Candidates, the transcript, and the session's injected-body memory.
  * @returns One {@link InjectionDecision} per candidate, in the same order.
  */
@@ -106,12 +117,24 @@ export function planInjection(input: PlanInjectionInput): InjectionDecision[] {
   // two unrelated messages happen to end/start with the two halves of a
   // multi-line body.
   const previous = input.previouslyInjected;
+  const present = (text: string): boolean => input.transcript.some((m) => m.includes(text));
 
   return input.candidates.map((candidate): InjectionDecision => {
-    if (candidate.body === "" || input.transcript.some((m) => m.includes(candidate.body))) {
+    // Nothing to inject: trivially fresh, and checked first so a body edited
+    // down to "" can never be injected by the retraction rule below.
+    if (candidate.body === "") {
       return { id: candidate.id, inject: false, reason: "fresh" };
     }
     const lastInjected = previous?.get(candidate.id);
+    // Retraction: the body changed and the version it replaced is still in the
+    // window. Presence of the new body proves nothing here — shrinking a body
+    // leaves it a substring of the stale text.
+    if (lastInjected !== undefined && lastInjected !== candidate.body && present(lastInjected)) {
+      return { id: candidate.id, inject: true, reason: "mutated" };
+    }
+    if (present(candidate.body)) {
+      return { id: candidate.id, inject: false, reason: "fresh" };
+    }
     if (lastInjected === undefined) {
       return { id: candidate.id, inject: true, reason: "never" };
     }
@@ -171,3 +194,44 @@ export interface GroundOptions {
  * conservative: letters, digits, and `. _ : -` only.
  */
 export const FACT_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+
+/**
+ * A registerable fact — the native shape with `pin` narrowed to {@link Pin}.
+ *
+ * napi generates `pin?: string` from the Rust `Option<String>`, which would let
+ * `pin: "sometimes"` typecheck and then throw at registration. Re-declaring the
+ * field here is what makes {@link Pin} buy compile-time safety at the call site
+ * rather than only naming the strings; every other field is the native one.
+ */
+export interface Fact extends Omit<NativeFact, "pin"> {
+  /**
+   * Which tier the fact belongs to — {@link Pin.Always} (injected every
+   * applicable turn) or {@link Pin.Retrieved} (the default: surfaced only when
+   * a query ranks it in). The plain wire strings are assignable.
+   */
+  pin?: Pin;
+}
+
+/**
+ * Reject a fact whose id or pin can't be trusted. Enforced at **both** entry
+ * points — {@link FactCatalog.register} and the lower-level `FactRegistry` —
+ * since ids ride in trace events and structured injection payloads either way,
+ * and `experimental.FactRegistry` is public.
+ *
+ * @param fact - The candidate to validate.
+ * @throws If `id` doesn't match {@link FACT_ID_PATTERN}, or `pin` is neither
+ *   `"always"` nor `"retrieved"`.
+ */
+export function assertValidFact(fact: Fact): void {
+  if (typeof fact.id !== "string" || !FACT_ID_PATTERN.test(fact.id)) {
+    throw new Error(
+      `ratel: fact id ${JSON.stringify(fact.id)} must match ${FACT_ID_PATTERN} ` +
+        "(letters, digits, and . _ : - only; ids ride in trace events and structured payloads)",
+    );
+  }
+  if (fact.pin !== undefined && fact.pin !== Pin.Always && fact.pin !== Pin.Retrieved) {
+    throw new Error(
+      `ratel: fact ${fact.id} has invalid pin ${JSON.stringify(fact.pin)} (expected "always" or "retrieved")`,
+    );
+  }
+}
