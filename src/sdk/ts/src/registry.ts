@@ -103,7 +103,7 @@ export class ToolRegistry {
    * suitable for `fs.writeFile`. Independent of the registry's search method
    * (works with `"bm25"` as well as `"semantic"`/`"hybrid"`).
    */
-  async buildEmbeddingArtifact(): Promise<Buffer> {
+  async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
     try {
       return await this.native.buildEmbeddingArtifact();
     } catch (error) {
@@ -117,7 +117,10 @@ export class ToolRegistry {
    * when some corpus ids are uncovered) or `"embed"` (embed only the missing
    * ids). Independent of the registry's search method.
    */
-  async warmEmbeddingsFromArtifact(bytes: Buffer, onMiss: "error" | "embed"): Promise<void> {
+  async experimentalWarmEmbeddingsFromArtifact(
+    bytes: Buffer,
+    onMiss: "error" | "embed",
+  ): Promise<void> {
     try {
       await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
     } catch (error) {
@@ -364,9 +367,9 @@ export class SkillRegistry {
 
   /**
    * Build a binary embedding artifact from the registered corpus — see
-   * {@link ToolRegistry.buildEmbeddingArtifact}.
+   * {@link ToolRegistry.experimentalBuildEmbeddingArtifact}.
    */
-  async buildEmbeddingArtifact(): Promise<Buffer> {
+  async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
     try {
       return await this.native.buildEmbeddingArtifact();
     } catch (error) {
@@ -376,9 +379,12 @@ export class SkillRegistry {
 
   /**
    * Warm the dense cache from a build-time embedding artifact — see
-   * {@link ToolRegistry.warmEmbeddingsFromArtifact}.
+   * {@link ToolRegistry.experimentalWarmEmbeddingsFromArtifact}.
    */
-  async warmEmbeddingsFromArtifact(bytes: Buffer, onMiss: "error" | "embed"): Promise<void> {
+  async experimentalWarmEmbeddingsFromArtifact(
+    bytes: Buffer,
+    onMiss: "error" | "embed",
+  ): Promise<void> {
     try {
       await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
     } catch (error) {

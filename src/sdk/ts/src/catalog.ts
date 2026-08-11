@@ -313,7 +313,7 @@ export class ToolCatalog {
   private async ensureDenseReady(): Promise<void> {
     if (this.embeddingArtifact) {
       const { bytes, onMiss } = await resolveEmbeddingArtifact(this.embeddingArtifact);
-      await this.registry.warmEmbeddingsFromArtifact(bytes, onMiss);
+      await this.registry.experimentalWarmEmbeddingsFromArtifact(bytes, onMiss);
       return;
     }
     await this.registry.buildDense();

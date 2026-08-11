@@ -55,13 +55,13 @@ export async function experimentalBuildEmbeddingArtifact(
     if (tools.length > 0) {
       toolRegistry.registerItems(tools);
     }
-    const toolBytes = await toolRegistry.buildEmbeddingArtifact();
+    const toolBytes = await toolRegistry.experimentalBuildEmbeddingArtifact();
 
     const skillRegistry = new SkillRegistry(embedding, "bm25");
     if (skills.length > 0) {
       skillRegistry.registerItems(skills);
     }
-    const skillBytes = await skillRegistry.buildEmbeddingArtifact();
+    const skillBytes = await skillRegistry.experimentalBuildEmbeddingArtifact();
 
     const merged = mergeEmbeddingArtifacts([toolBytes, skillBytes]);
     await writeFile(options.output, merged);

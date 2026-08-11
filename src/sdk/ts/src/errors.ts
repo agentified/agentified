@@ -11,8 +11,8 @@
  * construction-time config errors) are passed through unchanged.
  *
  * {@link ArtifactWarmError} / {@link mapArtifactWarmError} cover failures from
- * `warmEmbeddingsFromArtifact` (ADR-0017), decoded from a private native→TS
- * envelope (not part of the public API).
+ * `experimentalWarmEmbeddingsFromArtifact` (ADR-0017), decoded from a private
+ * native→TS envelope (not part of the public API).
  */
 
 /**
@@ -58,7 +58,7 @@ export class DimensionMismatchError extends EmbedderError {
 
 /**
  * Failure warming a dense cache from a build-time embedding artifact
- * (`warmEmbeddingsFromArtifact`). Prefer {@link ArtifactWarmError.code} over
+ * (`experimentalWarmEmbeddingsFromArtifact`). Prefer {@link ArtifactWarmError.code} over
  * parsing {@link Error.message}; for `"Incomplete"`, use
  * {@link ArtifactWarmError.missing}.
  */

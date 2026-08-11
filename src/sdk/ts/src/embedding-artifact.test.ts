@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveEmbeddingArtifact } from "./embedding-artifact.js";
+import * as sdk from "./index.js";
 import {
   ArtifactWarmError,
   experimentalBuildEmbeddingArtifact,
@@ -82,6 +83,10 @@ describe("experimentalBuildEmbeddingArtifact", () => {
     return dir;
   }
 
+  it("does not export mergeEmbeddingArtifacts from the package entry", () => {
+    expect(sdk).not.toHaveProperty("mergeEmbeddingArtifacts");
+  });
+
   it("builds one mixed artifact that warms both registry kinds", async () => {
     const server = await startDelayedEmbeddingServer();
     try {
@@ -99,13 +104,13 @@ describe("experimentalBuildEmbeddingArtifact", () => {
 
       const tools = new ToolRegistry(embedding, "bm25");
       tools.registerItems([readFileTool, writeFileTool]);
-      await tools.warmEmbeddingsFromArtifact(bytes, "error");
+      await tools.experimentalWarmEmbeddingsFromArtifact(bytes, "error");
       const toolHits = await tools.searchWithMethodAsync("read a file", 5, "direct", "semantic");
       expect(toolHits[0]?.toolId).toBe("read_file");
 
       const skills = new SkillRegistry(embedding, "bm25");
       skills.registerItems([slides, apiDesign]);
-      await skills.warmEmbeddingsFromArtifact(bytes, "error");
+      await skills.experimentalWarmEmbeddingsFromArtifact(bytes, "error");
       const skillHits = await skills.searchWithMethodAsync(
         "html presentations",
         5,
@@ -173,7 +178,9 @@ describe("experimentalBuildEmbeddingArtifact", () => {
     expect(bytes.byteLength).toBeGreaterThan(0);
 
     const tools = new ToolRegistry(undefined, "bm25");
-    await expect(tools.warmEmbeddingsFromArtifact(bytes, "error")).resolves.toBeUndefined();
+    await expect(
+      tools.experimentalWarmEmbeddingsFromArtifact(bytes, "error"),
+    ).resolves.toBeUndefined();
   });
 
   it("overwrites an existing output file with fs.writeFile semantics", async () => {
