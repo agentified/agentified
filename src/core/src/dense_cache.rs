@@ -241,7 +241,8 @@ impl DenseCache {
     /// Matching (id + projection hash) runs before any embedder load. If nothing
     /// can be reused, returns immediately with all corpus ids in `missing`.
     /// Model identity is checked only when there is at least one reuse candidate
-    /// (Local/HF via resolved `fingerprint()`; Endpoint may probe once).
+    /// (Local/HF via [`Embedder::artifact_identity`]; Endpoint may probe once).
+    /// `built_fingerprint` continues to store the **runtime** identity.
     /// Does not call [`Self::extend`] — the caller decides how to cover `missing`.
     pub(crate) fn warm_from_artifact<'a, T: Embeddable + 'a>(
         &self,
@@ -293,22 +294,24 @@ impl DenseCache {
         }
 
         let embedder = self.resolve_embedder(sink)?;
-        let mut active = embedder.fingerprint();
+        let mut active_artifact = embedder.artifact_identity()?;
+        let mut runtime_identity = embedder.fingerprint();
         if matches!(self.model, EmbeddingModel::Endpoint { .. })
-            && active != header.model_fingerprint
+            && active_artifact != header.model_fingerprint
         {
             let probed = embedder.embed_batch_with_identity(&[ARTIFACT_WARM_PROBE_TEXT.into()])?;
-            active = probed.fingerprint;
+            active_artifact = probed.fingerprint.clone();
+            runtime_identity = probed.fingerprint;
         }
-        if active != header.model_fingerprint {
+        if active_artifact != header.model_fingerprint {
             let built = header.model_fingerprint.clone();
             sink.record(TraceEvent::EmbedderModelMismatch {
                 built: built.clone(),
-                active: active.clone(),
+                active: active_artifact.clone(),
             });
             return Err(WarmError::Embedder(EmbedderError::ModelMismatch {
                 built,
-                active,
+                active: active_artifact,
             }));
         }
 
@@ -323,10 +326,10 @@ impl DenseCache {
 
         let mut state = self.state.lock().expect("dense cache mutex poisoned");
         if let Some(built) = &state.built_fingerprint
-            && built != &header.model_fingerprint
+            && built != &runtime_identity
         {
             let built = built.clone();
-            let active = header.model_fingerprint.clone();
+            let active = runtime_identity.clone();
             sink.record(TraceEvent::EmbedderModelMismatch {
                 built: built.clone(),
                 active: active.clone(),
@@ -337,9 +340,7 @@ impl DenseCache {
             }));
         }
         state.dim.get_or_insert(expected_dim);
-        state
-            .built_fingerprint
-            .get_or_insert(header.model_fingerprint.clone());
+        state.built_fingerprint.get_or_insert(runtime_identity);
         let reused_ids: Vec<String> = reused.iter().map(|(id, _)| id.clone()).collect();
         state.vectors.extend(reused);
         Ok(WarmOutcome {
@@ -995,6 +996,30 @@ mod tests {
         }
     }
 
+    /// Warm stub with distinct runtime vs artifact identities (Local AD-1 shape).
+    struct SplitIdentityStub {
+        runtime: String,
+        artifact: String,
+    }
+
+    impl Embedder for SplitIdentityStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_doc must not be called during pure warm")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            panic!("embed_query must not be called during pure warm")
+        }
+        fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+            panic!("embed_batch must not be called during pure warm")
+        }
+        fn fingerprint(&self) -> String {
+            self.runtime.clone()
+        }
+        fn artifact_identity(&self) -> Result<String, EmbedderError> {
+            Ok(self.artifact.clone())
+        }
+    }
+
     /// Endpoint probe stub: static `fingerprint()`, probe identity via batch.
     struct EndpointProbeStub {
         static_fingerprint: String,
@@ -1331,5 +1356,47 @@ mod tests {
             cache.require_built(1),
             Err(EmbedderError::EmbeddingsNotBuilt)
         ));
+    }
+
+    #[test]
+    fn warm_compares_artifact_identity_stamps_runtime() {
+        let items = [doc("a", "read"), doc("b", "write")];
+        let bytes = build_tool_artifact(
+            &items,
+            "content-x",
+            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0])],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(SplitIdentityStub {
+            runtime: "runtime-path-b".into(),
+            artifact: "content-x".into(),
+        }));
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["a", "b"]);
+        assert_eq!(
+            cache.built_fingerprint().as_deref(),
+            Some("runtime-path-b"),
+            "warm must stamp runtime identity, not the RAT1 artifact identity"
+        );
+    }
+
+    #[test]
+    fn warm_rejects_artifact_identity_mismatch() {
+        let items = [doc("a", "read")];
+        let bytes = build_tool_artifact(&items, "content-a", vec![unit2([1.0, 0.0])]);
+        let cache = DenseCache::with_embedder(Arc::new(SplitIdentityStub {
+            runtime: "runtime-path".into(),
+            artifact: "content-b".into(),
+        }));
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
+            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active
+            })) if built == "content-a" && active == "content-b"
+        ));
+        assert!(cache.built_fingerprint().is_none());
+        assert!(cache.dim().is_none());
     }
 }

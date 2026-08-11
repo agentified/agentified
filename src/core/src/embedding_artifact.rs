@@ -3,8 +3,9 @@
 //!
 //! Registries build single-kind bytes; [`merge_embedding_artifacts`] combines
 //! them into one mixed Tool+Skill RAT1. Warming ignores other known kinds.
-//! Model identity is `model_fingerprint` from the embed batch (pooling/prefixes
-//! via `fingerprint_suffix`).
+//! Model identity in the header is the artifact-scoped identity from
+//! [`Embedder::embed_batch_with_artifact_identity`] (Endpoint keeps batch-resolved
+//! response identity; Local uses a portable content digest).
 
 use sha2::{Digest, Sha256};
 
@@ -222,7 +223,7 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
     let Embedded {
         value: vectors,
         fingerprint: model_fingerprint,
-    } = embedder.embed_batch_with_identity(&texts)?;
+    } = embedder.embed_batch_with_artifact_identity(&texts)?;
 
     if vectors.len() != rows.len() {
         return Err(ArtifactError::Embedder(EmbedderError::Inference {
@@ -732,6 +733,79 @@ mod tests {
         }
     }
 
+    /// Endpoint-like stub: static `fingerprint()` differs from the batch-resolved
+    /// identity returned by `embed_batch_with_identity`.
+    struct BatchResolvedStub {
+        static_fingerprint: String,
+        batch_fingerprint: String,
+        vectors: Vec<Vec<f32>>,
+    }
+
+    impl Embedder for BatchResolvedStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact tests use batch path")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact tests use batch path")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert_eq!(texts.len(), self.vectors.len());
+            Ok(Embedded {
+                value: self.vectors.clone(),
+                fingerprint: self.batch_fingerprint.clone(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.static_fingerprint.clone()
+        }
+    }
+
+    /// Local-like stub: runtime / `embed_batch_with_identity` differ from
+    /// `embed_batch_with_artifact_identity` — proves build uses the artifact path.
+    struct ArtifactAwareBatchStub {
+        runtime: String,
+        artifact: String,
+        vectors: Vec<Vec<f32>>,
+    }
+
+    impl Embedder for ArtifactAwareBatchStub {
+        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact tests use batch path")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
+            unreachable!("artifact tests use batch path")
+        }
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert_eq!(texts.len(), self.vectors.len());
+            Ok(Embedded {
+                value: self.vectors.clone(),
+                fingerprint: self.runtime.clone(),
+            })
+        }
+        fn embed_batch_with_artifact_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            assert_eq!(texts.len(), self.vectors.len());
+            Ok(Embedded {
+                value: self.vectors.clone(),
+                fingerprint: self.artifact.clone(),
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.runtime.clone()
+        }
+        fn artifact_identity(&self) -> Result<String, EmbedderError> {
+            Ok(self.artifact.clone())
+        }
+    }
+
     fn stub_item(id: &str, text: &str) -> StubItem {
         StubItem {
             id: id.into(),
@@ -812,6 +886,43 @@ mod tests {
             hash_projection_text("read file from disk")
         );
         assert_eq!(entries[1].id, "write_file");
+    }
+
+    #[test]
+    fn build_uses_batch_identity_for_endpoint_semantics() {
+        let items = [stub_item("a", "alpha")];
+        let embedder = BatchResolvedStub {
+            static_fingerprint: "endpoint|url=1:u|model=9:configured".into(),
+            batch_fingerprint: "endpoint|url=1:u|model=8:resolved".into(),
+            vectors: vec![unit([1.0, 0.0])],
+        };
+        let bytes = build_artifact(ArtifactEntryKind::Tool, &items, &embedder).unwrap();
+        let (header, _) = load_and_validate(&bytes).unwrap();
+        assert_eq!(
+            header.model_fingerprint, "endpoint|url=1:u|model=8:resolved",
+            "RAT1 header must use the batch-resolved identity, not static fingerprint()"
+        );
+    }
+
+    #[test]
+    fn build_artifact_uses_artifact_aware_batch_identity() {
+        let items = [stub_item("a", "alpha")];
+        let embedder = ArtifactAwareBatchStub {
+            runtime: "local|path=11:/models/foo|pool=4:mean".into(),
+            artifact: "local|content=64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|pool=4:mean"
+                .into(),
+            vectors: vec![unit([1.0, 0.0])],
+        };
+        let bytes = build_artifact(ArtifactEntryKind::Tool, &items, &embedder).unwrap();
+        let (header, _) = load_and_validate(&bytes).unwrap();
+        assert_eq!(
+            header.model_fingerprint, embedder.artifact,
+            "build_artifact must call embed_batch_with_artifact_identity, not only embed_batch_with_identity"
+        );
+        assert_ne!(
+            header.model_fingerprint, embedder.runtime,
+            "header must not fall back to the runtime identity"
+        );
     }
 
     #[test]
