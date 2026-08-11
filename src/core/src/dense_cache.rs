@@ -637,7 +637,7 @@ mod tests {
 
     use super::*;
     use crate::embedding::Embedded;
-    use crate::trace::NoopSink;
+    use crate::trace::{MemorySink, NoopSink, TraceEvent};
 
     struct Doc {
         id: String,
@@ -1423,5 +1423,128 @@ mod tests {
         ));
         assert!(cache.built_fingerprint().is_none());
         assert!(cache.dim().is_none());
+    }
+
+    #[test]
+    fn warm_into_prebuilt_rejects_dimension_mismatch() {
+        let cache = DenseCache::with_embedder(Arc::new(WidthStub {
+            doc_dim: 3,
+            query_dim: 3,
+        }));
+        let prebuilt = doc("a", "x");
+        cache.extend([&prebuilt], &NoopSink).unwrap();
+        assert_eq!(cache.dim(), Some(3));
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("unknown"));
+        let a_before = cache
+            .state
+            .lock()
+            .unwrap()
+            .vectors
+            .get("a")
+            .cloned()
+            .expect("prebuilt id a");
+
+        let warm_items = [doc("b", "y")];
+        let bytes = build_tool_artifact(&warm_items, "unknown", vec![unit2([1.0, 0.0])]);
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &NoopSink),
+            Err(WarmError::Embedder(EmbedderError::DimensionMismatch {
+                expected: 3,
+                got: 2,
+                ..
+            }))
+        ));
+        assert_eq!(cache.dim(), Some(3));
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("unknown"));
+        let state = cache.state.lock().unwrap();
+        assert_eq!(state.vectors.get("a"), Some(&a_before));
+        assert!(!state.vectors.contains_key("b"));
+        assert_eq!(state.vectors.len(), 1);
+    }
+
+    #[test]
+    fn warm_into_prebuilt_rejects_runtime_fingerprint_mismatch() {
+        let stub = Arc::new(EndpointProbeStub {
+            static_fingerprint: "fp-static-Y".into(),
+            probe_fingerprint: "fp-probed-X".into(),
+            probe_calls: AtomicUsize::new(0),
+            allow_probe: true,
+        });
+        let cache = DenseCache::with_embedder_and_model(stub.clone(), sample_endpoint_model());
+        let prebuilt = doc("a", "read");
+        cache.extend([&prebuilt], &NoopSink).unwrap();
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-probed-X"));
+        assert_eq!(cache.dim(), Some(2));
+        let a_before = cache
+            .state
+            .lock()
+            .unwrap()
+            .vectors
+            .get("a")
+            .cloned()
+            .expect("prebuilt id a");
+        let probes_before = stub.probe_calls.load(Ordering::SeqCst);
+        assert_eq!(probes_before, 1);
+
+        let warm_items = [doc("b", "write")];
+        let bytes = build_tool_artifact(&warm_items, "fp-static-Y", vec![unit2([0.0, 1.0])]);
+        let sink = MemorySink::new("warm-second-guard");
+        assert!(matches!(
+            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &sink),
+            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+                built,
+                active
+            })) if built == "fp-probed-X" && active == "fp-static-Y"
+        ));
+        assert_eq!(stub.probe_calls.load(Ordering::SeqCst), probes_before);
+        let mismatch: Vec<_> = sink
+            .drain()
+            .into_iter()
+            .filter_map(|e| match e.event {
+                TraceEvent::EmbedderModelMismatch { built, active } => Some((built, active)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            mismatch,
+            vec![("fp-probed-X".into(), "fp-static-Y".into())],
+            "second guard must emit exactly one EmbedderModelMismatch"
+        );
+        assert_eq!(cache.dim(), Some(2));
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-probed-X"));
+        let state = cache.state.lock().unwrap();
+        assert_eq!(state.vectors.get("a"), Some(&a_before));
+        assert!(!state.vectors.contains_key("b"));
+        assert_eq!(state.vectors.len(), 1);
+    }
+
+    #[test]
+    fn warm_into_prebuilt_adds_compatible_id() {
+        let stub = Arc::new(CountingFpStub {
+            fingerprint: "fp-add".into(),
+            docs: AtomicUsize::new(0),
+        });
+        let cache = DenseCache::with_embedder(stub.clone());
+        let prebuilt = doc("a", "read");
+        cache.extend([&prebuilt], &NoopSink).unwrap();
+        assert_eq!(stub.docs.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.dim(), Some(2));
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-add"));
+
+        let warm_items = [doc("b", "write")];
+        let bytes = build_tool_artifact(&warm_items, "fp-add", vec![unit2([0.0, 1.0])]);
+        let docs_before_warm = stub.docs.load(Ordering::SeqCst);
+        let outcome = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &NoopSink)
+            .unwrap();
+        assert_eq!(outcome.reused, vec!["b"]);
+        assert!(outcome.missing.is_empty());
+        assert_eq!(stub.docs.load(Ordering::SeqCst), docs_before_warm);
+        assert_eq!(cache.dim(), Some(2));
+        assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-add"));
+        let state = cache.state.lock().unwrap();
+        assert!(state.vectors.contains_key("a"));
+        assert!(state.vectors.contains_key("b"));
+        assert_eq!(state.vectors.len(), 2);
     }
 }

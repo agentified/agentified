@@ -2220,7 +2220,11 @@ mod tests {
         reg_a.register(tool("read_file", "read a file"));
         reg_a.register(tool("delete_file", "delete a file"));
         let bytes = reg_a.build_embedding_artifact().unwrap();
-        assert!(builder.docs() >= 2, "build embeds the corpus once");
+        assert_eq!(
+            builder.docs(),
+            2,
+            "build embeds each corpus document exactly once"
+        );
 
         let warmer = Arc::new(FpCountingEmbedder::new("fp-warm"));
         let mut reg_b = with_embedder(warmer.clone());

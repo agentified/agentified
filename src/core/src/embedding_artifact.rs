@@ -229,7 +229,7 @@ pub(crate) fn build_empty_artifact() -> Result<Vec<u8>, ArtifactError> {
         dim: 0,
     };
     let payload = encode_payload(&header, &[])?;
-    assemble_file(&payload)
+    Ok(assemble_file(&payload))
 }
 
 pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
@@ -304,7 +304,7 @@ pub(crate) fn build_artifact<'a, T: Embeddable + 'a>(
     };
 
     let payload = encode_payload(&header, &entries)?;
-    assemble_file(&payload)
+    Ok(assemble_file(&payload))
 }
 
 pub(crate) fn load_and_validate(
@@ -432,7 +432,7 @@ pub fn merge_embedding_artifacts(parts: &[&[u8]]) -> Result<Vec<u8>, ArtifactErr
         return build_empty_artifact();
     };
     let payload = encode_payload(&header, &merged)?;
-    assemble_file(&payload)
+    Ok(assemble_file(&payload))
 }
 
 pub(crate) fn hash_projection_text(text: &str) -> [u8; 32] {
@@ -474,14 +474,14 @@ fn classify_vector_semantics(vector: &[f32]) -> Result<(), VectorSemanticIssue> 
     Ok(())
 }
 
-fn assemble_file(payload: &[u8]) -> Result<Vec<u8>, ArtifactError> {
+fn assemble_file(payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(FILE_PREFIX_LEN + payload.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&SUPPORTED_FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     out.extend_from_slice(&Sha256::digest(payload));
     out.extend_from_slice(payload);
-    Ok(out)
+    out
 }
 
 /// Test-only: assemble a checksum-valid RAT1 from arbitrary entries (may be
@@ -501,7 +501,7 @@ pub(crate) fn test_hand_artifact(
         dim,
     };
     let payload = encode_payload(&header, entries).expect("test hand artifact encode");
-    assemble_file(&payload).expect("test hand artifact assemble")
+    assemble_file(&payload)
 }
 
 fn encode_payload(
@@ -535,7 +535,7 @@ fn encode_payload(
     );
 
     for entry in entries {
-        write_kind(&mut out, entry.kind)?;
+        write_kind(&mut out, entry.kind);
         let id_at = out.len();
         write_utf8(&mut out, &entry.id, id_at)?;
         out.extend_from_slice(&entry.projection_hash);
@@ -647,12 +647,11 @@ fn decode_payload(
     ))
 }
 
-fn write_kind(out: &mut Vec<u8>, kind: ArtifactEntryKind) -> Result<(), ArtifactError> {
+fn write_kind(out: &mut Vec<u8>, kind: ArtifactEntryKind) {
     out.push(match kind {
         ArtifactEntryKind::Tool => 0,
         ArtifactEntryKind::Skill => 1,
     });
-    Ok(())
 }
 
 fn read_kind(payload: &[u8], cursor: &mut usize) -> Result<ArtifactEntryKind, ArtifactError> {
@@ -1096,7 +1095,7 @@ mod tests {
         payload.extend_from_slice(&[0u8; 32]);
         payload.extend_from_slice(&1.0f32.to_le_bytes());
 
-        let file = assemble_file(&payload).unwrap();
+        let file = assemble_file(&payload);
         assert!(matches!(
             load_and_validate(&file),
             Err(ArtifactError::CorruptPayload { .. })
@@ -1111,7 +1110,7 @@ mod tests {
         write_utf8(&mut payload, "fp", 0).unwrap();
         write_u32(&mut payload, u32::MAX);
 
-        let file = assemble_file(&payload).unwrap();
+        let file = assemble_file(&payload);
         assert!(matches!(
             load_and_validate(&file),
             Err(ArtifactError::CorruptPayload { .. })
@@ -1132,7 +1131,7 @@ mod tests {
         write_utf8(&mut payload, "x", id_at).unwrap();
         payload.extend_from_slice(&[0u8; 32]);
 
-        let file = assemble_file(&payload).unwrap();
+        let file = assemble_file(&payload);
         assert!(matches!(
             load_and_validate(&file),
             Err(ArtifactError::CorruptPayload { .. })
