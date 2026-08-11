@@ -60,13 +60,17 @@ telemetry stand on its own," facts emit their own `fact_search` / `fact_churn` /
 - **Pinned (`always`)** facts are the push tier: injected every applicable turn, bypassing
   ranking. Kept small — they are paid for on every injection.
 - **Retrieved** (the default) facts are ranked like skills and surfaced only when a query pulls
-  them in. They ride the **host-driven** `recall()` path as a third bucket in
-  `runCapabilitiesSearch`, alongside `tools` and `skills`, with the `body` inline (facts are
-  small — no second `get_*_content` round-trip). Two boundaries hold: the search is skipped
-  entirely when the fact catalog is empty, so a host that registered no facts sees zero new
-  behavior (no extra search, no extra `ratel.search` span); and the **model-facing
-  `search_capabilities` tool is unchanged in both SDKs** — facts never enter that stable tool's
-  schema while they are experimental.
+  them in — through `ground`/`groundSnapshot`, never through a second surface.
+
+**Facts have exactly one path into the context.** An earlier revision also returned a third
+`facts` bucket from `recall()`, so the same fact could arrive by two routes: `recall` (which does
+not consult the injection state) and `ground` (which does). That was both a conceptual blur —
+`recall` is *discovery*, facts are *grounding* — and a real double-injection hazard for a host
+calling both. Two independent reviewers expected a different shape here, which is the API talking.
+So the bucket was removed: `recall()` returns `tools` and `skills` exactly as before this ADR, the
+model-facing `search_capabilities` tool is untouched in both SDKs, and every fact reaches the model
+through `ground`/`groundSnapshot`. The stable `SearchCapabilitiesResult` shape is therefore
+completely unchanged by facts, and the two SDKs are byte-identical on this point.
 
 ### The re-injection freshness gate: content presence
 
@@ -156,8 +160,7 @@ only through an `experimental` namespace (`experimental.FactCatalog` in TS via `
 experimental`; `ratel_ai.experimental` in Python), never the root export, so any dependence on it is
 explicit at the import site. Constructing a `FactCatalog` logs a one-time warning (silence:
 `RATEL_EXPERIMENTAL_SILENCE`). The `ratel()` touchpoints that can't move off the stable object
-(`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`, the recall `facts` bucket)
-are tagged "⚠️ Experimental" in their docs, and **`r.facts` is lazy**: the catalog is constructed
+(`r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK`) are tagged "⚠️ Experimental" in their docs, and **`r.facts` is lazy**: the catalog is constructed
 on first access, so a host that never touches facts never builds one and never sees the
 experimental warning. `recall()` likewise consults the catalog only if it already exists. Two
 further boundaries keep the experiment off the stable path: the fact search is skipped on an empty

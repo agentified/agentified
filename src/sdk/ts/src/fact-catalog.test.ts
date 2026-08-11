@@ -312,18 +312,28 @@ describe("experimental quarantine on the stable path", () => {
   });
 });
 
-describe("ratel().recall — zero impact when no facts are registered", () => {
-  it("skips the fact search entirely on an empty catalog (no fact_search span/event)", async () => {
-    const r = ratel({ trace: { kind: "memory", sessionId: "t" } });
+describe("recall never touches facts (facts are a separate, host-driven path)", () => {
+  it("returns only tools and skills — no facts key — even with facts registered", async () => {
+    const r = ratel();
+    await r.facts.register([address, cancellation]);
     await r.tools.register({
       id: "t1",
       name: "t1",
-      description: "read a file from disk",
+      description: "cancel a subscription",
       inputSchema: { type: "object" },
       outputSchema: { type: "object" },
       execute: () => ({}),
     });
-    await r.recall("read a file");
+    const result = await r.recall("how do I cancel and get a refund");
+    expect(result).not.toBeNull();
+    expect(Object.keys(result as object).sort()).toEqual(["skills", "tools"]);
+  });
+
+  it("never searches the fact catalog (no fact_search event)", async () => {
+    const r = ratel({ trace: { kind: "memory", sessionId: "t" } });
+    await r.facts.register(cancellation);
+    r.facts.drainTraceEvents(); // clear registration churn
+    await r.recall("how do I cancel and get a refund");
     const events = r.facts.drainTraceEvents() as Array<{ type: string }>;
     expect(events.filter((e) => e.type === "fact_search")).toEqual([]);
   });
@@ -347,23 +357,5 @@ describe("ratel().recall — zero impact when no facts are registered", () => {
       first.inject.map((i) => i.body),
     );
     expect(second.skipped).toContain("shop-address");
-  });
-});
-
-describe("ratel().recall — facts bucket", () => {
-  it("surfaces relevant facts in the recall result with the body inline", async () => {
-    const r = ratel();
-    await r.facts.register(cancellation);
-    const result = await r.recall("how do I cancel and get a refund");
-    expect(result).not.toBeNull();
-    expect(result?.facts.map((f) => f.factId)).toContain("cancellation");
-    const hit = result?.facts.find((f) => f.factId === "cancellation");
-    expect(hit?.body).toContain("full refund");
-  });
-
-  it("returns an empty facts bucket when no fact catalog content matches", async () => {
-    const r = ratel();
-    const result = await r.recall("totally unrelated query about rockets");
-    expect(result).toBeNull();
   });
 });

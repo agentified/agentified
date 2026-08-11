@@ -14,7 +14,6 @@
  */
 
 export type { Fact, FactHit } from "../native/index.cjs";
-export type { CapabilityFactHit } from "./capabilities.js";
 export type { FactCatalogOptions } from "./fact-catalog.js";
 export { FactCatalog } from "./fact-catalog.js";
 export type {

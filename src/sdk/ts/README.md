@@ -187,7 +187,7 @@ const result = await generateText({
 
 Use `ground()` for a long-lived agent whose messages you persist (pays once, stays in the cached prefix); `groundSnapshot()` for one-shot or stateless calls, or to keep injected content out of your stored history.
 
-Facts are **host-driven**: `modelTools()` is unchanged, and the model-facing `search_capabilities` tool never returns facts. The model doesn't discover facts by calling a tool — you decide what is true and inject it. Retrieval-gated facts do ride the host-driven `recall(query)` result as a third `facts` bucket (body inline) when a fact catalog is in use. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0014](../../../docs/adr/0014-facts-and-injection-freshness.md).
+Facts are **host-driven, on their own path**: `ground()`/`groundSnapshot()` are the only ways facts reach the context. `modelTools()`, the model-facing `search_capabilities` tool, and `recall()` are all unchanged and never return facts — the model doesn't discover facts by calling a tool, and there is no second place to look. You decide what is true and inject it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0014](../../../docs/adr/0014-facts-and-injection-freshness.md).
 
 ## Adapter conformance testkit
 

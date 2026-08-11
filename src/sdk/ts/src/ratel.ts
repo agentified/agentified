@@ -39,7 +39,7 @@ export interface RatelConfig {
    * non-integer values fall back to the default 5. */
   recallTopK?: number;
   /** ⚠️ Experimental (facts, ADR-0014). Max retrieval-gated facts each
-   * `recall`/`ground` considers: capped at 50; invalid values fall back to 3. */
+   * `ground`/`groundSnapshot` considers: capped at 50; invalid values fall back to 3. */
   factsTopK?: number;
   /** Local trace-stream destination for all catalogs (default: discard). */
   trace?: TraceSinkConfig;
@@ -231,7 +231,7 @@ export interface AdaptedBase<TTool, TMessage> {
    * Rank `query` and return the synthetic `search_capabilities` message pair in
    * the framework's shape (origin `"direct"`), or `[]` when nothing matched
    * (spending no call id). Pure: it builds fresh messages and never mutates a
-   * host array. The result carries a `facts` bucket too when facts are registered.
+   * host array.
    */
   recall(query: string): Promise<TMessage[]>;
   /**
@@ -400,7 +400,7 @@ export function ratel(config: RatelConfig = {}): Ratel {
   // experimental-API warning at every `ratel()` call — including for the vast
   // majority of hosts that never touch facts. First access to `r.facts` (or to
   // `ground`/`groundSnapshot`, which go through it) creates the single shared
-  // instance; `recall` uses `factsIfLoaded()` so it never forces creation.
+  // instance; nothing on the stable path (`recall`, `modelTools`) touches it.
   let factsCatalog: FactCatalog | undefined;
   const facts = (): FactCatalog => {
     factsCatalog ??= new FactCatalog({
@@ -411,7 +411,6 @@ export function ratel(config: RatelConfig = {}): Ratel {
     });
     return factsCatalog;
   };
-  const factsIfLoaded = (): FactCatalog | undefined => factsCatalog;
   // Framework-shaped passthrough values stay in their originating views, but
   // their ids must participate in the core-wide adapted-path first-wins guard.
   const claimedAdaptedToolIds = new Set<string>();
@@ -470,18 +469,10 @@ export function ratel(config: RatelConfig = {}): Ratel {
   async function recall(query: string): Promise<SearchCapabilitiesResult | null> {
     const result = await runCapabilitiesSearch(catalog, query, {
       topKTools: config.recallTopK, // capped/validated inside runCapabilitiesSearch
-      topKFacts: config.factsTopK,
       skillCatalog: skills,
-      // Only when facts were actually used — recall never forces the catalog
-      // into existence (and so never trips the experimental warning).
-      factCatalog: factsIfLoaded(),
       origin: "direct",
     });
-    return result.tools.groups.length === 0 &&
-      result.skills.length === 0 &&
-      result.facts.length === 0
-      ? null
-      : result;
+    return result.tools.groups.length === 0 && result.skills.length === 0 ? null : result;
   }
 
   // Grounding lives on the fact catalog (it owns the fact state); the core just
