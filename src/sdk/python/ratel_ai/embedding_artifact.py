@@ -113,12 +113,12 @@ async def experimental_build_embedding_artifact(
     tool_registry = ToolRegistry(embedding, method="bm25")
     if tool_items:
         await tool_registry.register(tool_items)
-    tool_bytes = await tool_registry.build_embedding_artifact()
+    tool_bytes = await tool_registry.experimental_build_embedding_artifact()
 
     skill_registry = SkillRegistry(embedding, method="bm25")
     if skill_items:
         await skill_registry.register(skill_items)
-    skill_bytes = await skill_registry.build_embedding_artifact()
+    skill_bytes = await skill_registry.experimental_build_embedding_artifact()
 
     merged = merge_embedding_artifacts([tool_bytes, skill_bytes])
     await asyncio.to_thread(Path(output).write_bytes, merged)

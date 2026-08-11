@@ -321,7 +321,7 @@ class SkillRegistry:
             )
         return self.search_with_origin(query, top_k, origin)
 
-    async def build_embedding_artifact(self) -> bytes:
+    async def experimental_build_embedding_artifact(self) -> bytes:
         """Build a RAT1 artifact from the registered corpus (ADR-0017).
 
         Off the event loop and mutation-blocking via ``_dense_pending``, but does
@@ -347,7 +347,7 @@ class SkillRegistry:
         finally:
             self._finish_dense()
 
-    async def warm_embeddings_from_artifact(
+    async def experimental_warm_embeddings_from_artifact(
         self, artifact: bytes, on_miss: OnArtifactMiss = "error"
     ) -> None:
         """Warm the dense cache from artifact bytes (serialized via ``_run_dense``)."""
@@ -358,7 +358,7 @@ class SkillRegistry:
     async def _ensure_dense_ready(self) -> None:
         if self._embedding_artifact is not None:
             artifact_bytes, on_miss = await resolve_embedding_artifact(self._embedding_artifact)
-            await self.warm_embeddings_from_artifact(artifact_bytes, on_miss)
+            await self.experimental_warm_embeddings_from_artifact(artifact_bytes, on_miss)
             return
         if self._eager:
             await self._build()

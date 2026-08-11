@@ -227,13 +227,13 @@ async def test_build_mixed_artifact_warms_both_kinds(
 
     tools = ToolRegistry(embedding, method="bm25")
     await tools.register([READ_FILE, WRITE_FILE])
-    await tools.warm_embeddings_from_artifact(bytes_, "error")
+    await tools.experimental_warm_embeddings_from_artifact(bytes_, "error")
     tool_hits = await tools.search_async("read a file", 5, method="semantic")
     assert tool_hits[0].tool_id == "read_file"
 
     skills = SkillRegistry(embedding, method="bm25")
     await skills.register([SLIDES, API_DESIGN])
-    await skills.warm_embeddings_from_artifact(bytes_, "error")
+    await skills.experimental_warm_embeddings_from_artifact(bytes_, "error")
     skill_hits = await skills.search_async("html presentations", 5, method="semantic")
     assert skill_hits[0].skill_id == "frontend-slides"
 
@@ -272,7 +272,7 @@ async def test_tool_only_and_skill_only_and_both_empty(
     empty = empty_out.read_bytes()
     assert empty[:4] == b"RAT1"
     tools = ToolRegistry(method="bm25")
-    await tools.warm_embeddings_from_artifact(empty, "error")
+    await tools.experimental_warm_embeddings_from_artifact(empty, "error")
 
 
 async def test_overwrite_and_missing_parent(
@@ -295,19 +295,19 @@ async def test_same_textual_id_across_kinds_and_merge(
     embedding = _emb(url)
     tools = ToolRegistry(embedding, method="bm25")
     await tools.register(SEARCH_TOOL)
-    tool_bytes = await tools.build_embedding_artifact()
+    tool_bytes = await tools.experimental_build_embedding_artifact()
     skills = SkillRegistry(embedding, method="bm25")
     await skills.register(SEARCH_SKILL)
-    skill_bytes = await skills.build_embedding_artifact()
+    skill_bytes = await skills.experimental_build_embedding_artifact()
     merged = merge_embedding_artifacts([tool_bytes, skill_bytes])
     assert isinstance(merged, (bytes, bytearray))
 
     tools2 = ToolRegistry(embedding, method="bm25")
     await tools2.register(SEARCH_TOOL)
-    await tools2.warm_embeddings_from_artifact(merged, "error")
+    await tools2.experimental_warm_embeddings_from_artifact(merged, "error")
     skills2 = SkillRegistry(embedding, method="bm25")
     await skills2.register(SEARCH_SKILL)
-    await skills2.warm_embeddings_from_artifact(merged, "error")
+    await skills2.experimental_warm_embeddings_from_artifact(merged, "error")
 
 
 async def test_incomplete_preserves_missing_ids(
@@ -444,7 +444,7 @@ async def test_build_concurrent_with_semantic_search(
 ) -> None:
     """Build must overlap search: search reaches the endpoint while build is held.
 
-    Fails if ``build_embedding_artifact`` ever takes ``_dense_gate``.
+    Fails if ``experimental_build_embedding_artifact`` ever takes ``_dense_gate``.
     """
     url, state = counting_embedding_endpoint
     embedding = _emb(url)
@@ -453,7 +453,7 @@ async def test_build_concurrent_with_semantic_search(
     await reg.register([READ_FILE, WRITE_FILE])
 
     state.arm_batch_hold(2)
-    build_task = asyncio.create_task(reg.build_embedding_artifact())
+    build_task = asyncio.create_task(reg.experimental_build_embedding_artifact())
     await _wait_hold(state)
     held_at = len(state.requests)
 
@@ -477,7 +477,7 @@ async def test_mutation_rejected_while_build_pending(
     await reg.register(READ_FILE)
 
     state.arm_batch_hold(1)
-    build_task = asyncio.create_task(reg.build_embedding_artifact())
+    build_task = asyncio.create_task(reg.experimental_build_embedding_artifact())
     await _wait_hold(state)
     with pytest.raises(RuntimeError, match="registry busy"):
         await reg.register(WRITE_FILE)
@@ -495,7 +495,7 @@ async def test_cancel_await_keeps_mutation_blocked_until_build_finishes(
     await reg.register(READ_FILE)
 
     state.arm_batch_hold(1)
-    build_task = asyncio.create_task(reg.build_embedding_artifact())
+    build_task = asyncio.create_task(reg.experimental_build_embedding_artifact())
     await _wait_hold(state)
     build_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -556,10 +556,10 @@ async def test_incompatible_merge_not_corrupt(
     url, _state = counting_embedding_endpoint
     a = ToolRegistry({"url": url, "model": "model-a"}, method="bm25")
     await a.register(READ_FILE)
-    bytes_a = await a.build_embedding_artifact()
+    bytes_a = await a.experimental_build_embedding_artifact()
     b = ToolRegistry({"url": url, "model": "model-b"}, method="bm25")
     await b.register(WRITE_FILE)
-    bytes_b = await b.build_embedding_artifact()
+    bytes_b = await b.experimental_build_embedding_artifact()
     with pytest.raises(IncompatibleMergeError):
         merge_embedding_artifacts([bytes_a, bytes_b])
 
@@ -572,7 +572,7 @@ async def test_corrupt_artifact_is_warm_error(
     reg = ToolRegistry(embedding, method="bm25")
     await reg.register(READ_FILE)
     with pytest.raises(ArtifactWarmError) as caught:
-        await reg.warm_embeddings_from_artifact(b"not-a-rat1-file", "error")
+        await reg.experimental_warm_embeddings_from_artifact(b"not-a-rat1-file", "error")
     assert caught.value.code == "Warm"
 
 
@@ -583,5 +583,17 @@ async def test_public_exports_and_no_build_embeddings() -> None:
     assert hasattr(ratel_ai, "ArtifactWarmError")
     assert hasattr(ratel_ai, "ArtifactError")
     assert hasattr(ratel_ai, "IncompatibleMergeError")
-    assert not hasattr(ToolRegistry(), "build_embeddings")
-    assert not hasattr(SkillRegistry(), "build_embeddings")
+    assert not hasattr(ratel_ai, "merge_embedding_artifacts")
+
+    tools = ToolRegistry()
+    skills = SkillRegistry()
+    assert hasattr(tools, "experimental_build_embedding_artifact")
+    assert hasattr(tools, "experimental_warm_embeddings_from_artifact")
+    assert hasattr(skills, "experimental_build_embedding_artifact")
+    assert hasattr(skills, "experimental_warm_embeddings_from_artifact")
+    assert not hasattr(tools, "build_embedding_artifact")
+    assert not hasattr(tools, "warm_embeddings_from_artifact")
+    assert not hasattr(skills, "build_embedding_artifact")
+    assert not hasattr(skills, "warm_embeddings_from_artifact")
+    assert not hasattr(tools, "build_embeddings")
+    assert not hasattr(skills, "build_embeddings")
