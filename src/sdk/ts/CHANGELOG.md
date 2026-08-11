@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.8.0-rc.0] - 2026-08-11
+
+### Added
+
+- **⚠️ Experimental: facts and grounding (ADR-0017).** Constant content the agent should always have on hand, registered and monitored like skills, reaching the model on its own host-driven path. Register with `experimental.FactCatalog` (or `r.facts`), then pick one of two injection modes per turn: `r.ground(query, transcript)` persists into your stored history behind a re-injection freshness gate, and `r.groundSnapshot(query)` is the stateless per-call twin for one-shot calls or hosts that keep synthetic content out of their history. `Pin.Always` facts ride every applicable turn; `Pin.Retrieved` (the default) surface only when the turn's query ranks them in, budgeted by `RatelConfig.factsTopK` (default 3).
+- The freshness gate re-injects a fact only when its body is **absent** from the window (`never` / `evicted`) or has been **edited** (`mutated`) — never merely because a turn elapsed. Presence is the fact's own body text scanned per message: no markers, no tags, no extra tokens, and a stable transcript prefix that improves prompt-cache hit rates rather than churning them. `experimental.planInjection` is the pure, framework-agnostic decision function behind it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate is measurable.
+- The whole surface is quarantined behind the `experimental` namespace (`import { experimental } from "@ratel-ai/sdk"`), never the root export, and constructing a catalog logs a one-time warning (silence with `RATEL_EXPERIMENTAL_SILENCE=1`). The `ratel()` touchpoints that can't move off the stable object — `r.facts`, `r.ground`, `r.groundSnapshot`, `RatelConfig.factsTopK` — are marked experimental in their docs, and `r.facts` is built lazily and non-enumerably, so a host that never touches facts never constructs one and never sees the warning.
+
+### Changed
+
+- Nothing on the stable path. `recall()`, `modelTools()`, and the model-facing `search_capabilities` tool are byte-identical to 0.7.0 — the tool result carries no `facts` key, so the model's contract is unchanged and facts are never discovered by the model calling a tool.
+
 ## [0.7.0] - 2026-08-07
 
 > **On npm's `rc` channel?** The `0.6.1-rc.*` and `0.7.0-rc.0` prereleases on npm were cut

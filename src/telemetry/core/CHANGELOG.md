@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.2.0-rc.0] - 2026-08-11
+
+### Added
+
+- `SearchTarget::Fact` — the third `ratel.search.target` value, beside `Tool` and `Skill`, for the fact retrieval the SDKs' grounding path emits. The vocabulary spec (`CONVENTIONS.md`) and the shared conformance fixtures widened with it; `SEMCONV_VERSION` is unchanged.
+
+### Changed
+
+- **BREAKING (0.x minor):** `SearchTarget` is not `#[non_exhaustive]`, so a downstream `match` over it that has no wildcard arm must add one for `Fact`. Nothing else about the type changed.
+
 ## [0.1.1] - 2026-07-26
 
 ### Added

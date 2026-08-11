@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.8.0-rc.0] - 2026-08-11
+
+### Added
+
+- **Facts: a third capability primitive (ADR-0017).** `Fact { id, name, description, tags, metadata, body, pin }` and `FactRegistry` join `Tool` and `Skill` — constant grounding content an agent should always have on hand (a shop's address and hours, a brand's voice) rather than a playbook it pulls and runs. `PinMode::Always` marks the push tier injected every applicable turn; `PinMode::Retrieved` (the default) is ranked like a skill and surfaces only when a query pulls it in. Name, description, and tags are indexed; `body` is the injected payload and is never indexed. The registry is a parallel of `SkillRegistry`: same selectable BM25 / semantic / hybrid engines, same replace-in-place semantics, same `IndexMap` insertion order.
+- Fact telemetry on its own stream — `fact_search`, `fact_churn`, `fact_inject` (carrying a `FactInjectReason` of `Never` / `Evicted` / `Mutated`), `fact_inject_skip`, and `fact_snapshot` — so fact activity stands on its own rather than borrowing the skill events. `TraceEvent` is `#[non_exhaustive]`, so the new variants are additive for downstream matches.
+
 ## [0.7.0] - 2026-08-07
 
 ### Added

@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.2.0-rc.0] - 2026-08-11
+
+### Added
+
+- `SearchTarget.FACT` (`"fact"`) — the third `ratel.search.target` value, beside `TOOL` and `SKILL`, for the fact retrieval the SDKs' grounding path emits. Additive: the existing members, their values, and `SEMCONV_VERSION` are unchanged.
+
 ## [0.1.3] - 2026-07-26
 
 ### Added
