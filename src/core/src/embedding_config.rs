@@ -562,9 +562,7 @@ impl EmbeddingModel {
             EmbeddingModel::HuggingFace { repo, revision, .. } => {
                 huggingface_fingerprint(repo, revision.as_deref().unwrap_or("main"))
             }
-            EmbeddingModel::Local { path, .. } => {
-                local_fingerprint(&local_model_content_id(path)?)
-            }
+            EmbeddingModel::Local { path, .. } => local_fingerprint(&local_model_content_id(path)?),
             EmbeddingModel::Endpoint { url, model, .. } => endpoint_fingerprint(url, model),
         };
         // Pooling + prefixes change the vectors, so they are part of the identity.
@@ -1163,7 +1161,9 @@ mod tests {
 
         assert_ne!(
             endpoint(None).embedder_cache_key().unwrap(),
-            endpoint(Some("<none>".into())).embedder_cache_key().unwrap()
+            endpoint(Some("<none>".into()))
+                .embedder_cache_key()
+                .unwrap()
         );
     }
 

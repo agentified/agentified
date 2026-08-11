@@ -663,7 +663,9 @@ impl CandleEmbedder {
             [config, tokenizer, weights, ..] => {
                 (config.clone(), tokenizer.clone(), weights.clone())
             }
-            _ => unreachable!("resolve_local_identity_files always yields config/tokenizer/weights"),
+            _ => {
+                unreachable!("resolve_local_identity_files always yields config/tokenizer/weights")
+            }
         };
 
         let detected =

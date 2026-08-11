@@ -1173,8 +1173,11 @@ mod tests {
     fn warm_mixed_artifact_reuses_matching_kind_only() {
         let tool = doc("search", "tool search text");
         let skill = doc("search", "skill search text");
-        let tool_bytes =
-            build_tool_artifact(std::slice::from_ref(&tool), "fp-warm", vec![unit2([1.0, 0.0])]);
+        let tool_bytes = build_tool_artifact(
+            std::slice::from_ref(&tool),
+            "fp-warm",
+            vec![unit2([1.0, 0.0])],
+        );
         let skill_embedder = ArtifactBuildStub {
             fingerprint: "fp-warm".into(),
             vectors: vec![unit2([0.0, 1.0])],

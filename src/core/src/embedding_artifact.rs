@@ -9,7 +9,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::dense_cache::Embeddable;
-use crate::embedding::{Embedder, EmbedderError, Embedded};
+use crate::embedding::{Embedded, Embedder, EmbedderError};
 
 const MAGIC: &[u8; 4] = b"RAT1";
 const SUPPORTED_FORMAT_VERSION: u32 = 1;
@@ -318,10 +318,7 @@ pub(crate) fn load_and_validate(
     if bytes.len() > needed {
         return Err(ArtifactError::CorruptPayload {
             at: payload_len,
-            detail: format!(
-                "{} trailing bytes after artifact",
-                bytes.len() - needed
-            ),
+            detail: format!("{} trailing bytes after artifact", bytes.len() - needed),
         });
     }
 
@@ -386,10 +383,7 @@ pub fn merge_embedding_artifacts(parts: &[&[u8]]) -> Result<Vec<u8>, ArtifactErr
             let key = (entry.kind, entry.id.clone());
             if !seen.insert(key) {
                 return Err(ArtifactError::IncompatibleMerge {
-                    detail: format!(
-                        "duplicate entry kind={:?} id={:?}",
-                        entry.kind, entry.id
-                    ),
+                    detail: format!("duplicate entry kind={:?} id={:?}", entry.kind, entry.id),
                 });
             }
             merged.push(entry);
@@ -422,13 +416,22 @@ fn assemble_file(payload: &[u8]) -> Result<Vec<u8>, ArtifactError> {
     Ok(out)
 }
 
-fn encode_payload(header: &ArtifactHeader, entries: &[ArtifactEntry]) -> Result<Vec<u8>, ArtifactError> {
+fn encode_payload(
+    header: &ArtifactHeader,
+    entries: &[ArtifactEntry],
+) -> Result<Vec<u8>, ArtifactError> {
     let mut out = Vec::new();
     write_u32(&mut out, header.projection_version);
-    write_u32(&mut out, header.dim.try_into().map_err(|_| ArtifactError::CorruptPayload {
-        at: 0,
-        detail: "dim does not fit u32".into(),
-    })?);
+    write_u32(
+        &mut out,
+        header
+            .dim
+            .try_into()
+            .map_err(|_| ArtifactError::CorruptPayload {
+                at: 0,
+                detail: "dim does not fit u32".into(),
+            })?,
+    );
     let model_fp_at = out.len();
     write_utf8(&mut out, &header.model_fingerprint, model_fp_at)?;
     let entry_count_at = out.len();
@@ -484,12 +487,13 @@ fn decode_payload(
         at: cursor,
         detail: "dim*4 overflow".into(),
     })?;
-    let min_entry = (1usize + 4 + 32)
-        .checked_add(vector_bytes)
-        .ok_or(ArtifactError::CorruptPayload {
-            at: cursor,
-            detail: "min entry size overflow".into(),
-        })?;
+    let min_entry =
+        (1usize + 4 + 32)
+            .checked_add(vector_bytes)
+            .ok_or(ArtifactError::CorruptPayload {
+                at: cursor,
+                detail: "min entry size overflow".into(),
+            })?;
     let min_total = entry_count
         .checked_mul(min_entry)
         .ok_or(ArtifactError::CorruptPayload {
@@ -499,9 +503,7 @@ fn decode_payload(
     if min_total > remaining {
         return Err(ArtifactError::CorruptPayload {
             at: cursor,
-            detail: format!(
-                "entries need at least {min_total} bytes but only {remaining} remain"
-            ),
+            detail: format!("entries need at least {min_total} bytes but only {remaining} remain"),
         });
     }
 
@@ -645,20 +647,23 @@ fn read_fixed<const N: usize>(
 fn read_utf8(payload: &[u8], cursor: &mut usize) -> Result<String, ArtifactError> {
     let len = read_u32(payload, cursor)? as usize;
     let start = *cursor;
-    let end = start.checked_add(len).ok_or(ArtifactError::CorruptPayload {
-        at: start,
-        detail: "utf8 length overflow".into(),
-    })?;
+    let end = start
+        .checked_add(len)
+        .ok_or(ArtifactError::CorruptPayload {
+            at: start,
+            detail: "utf8 length overflow".into(),
+        })?;
     if payload.len() < end {
         return Err(ArtifactError::CorruptPayload {
             at: start,
             detail: format!("utf8 field claims {len} bytes but payload ends early"),
         });
     }
-    let s = std::str::from_utf8(&payload[start..end]).map_err(|e| ArtifactError::CorruptPayload {
-        at: start,
-        detail: format!("invalid utf8: {e}"),
-    })?;
+    let s =
+        std::str::from_utf8(&payload[start..end]).map_err(|e| ArtifactError::CorruptPayload {
+            at: start,
+            detail: format!("invalid utf8: {e}"),
+        })?;
     *cursor = end;
     Ok(s.to_string())
 }
@@ -794,12 +799,18 @@ mod tests {
 
         assert_eq!(header.format_version, SUPPORTED_FORMAT_VERSION);
         assert_eq!(header.projection_version, projection_version());
-        assert_eq!(header.model_fingerprint, "hf|repo=1:r|revision=4:main|pool=3:cls");
+        assert_eq!(
+            header.model_fingerprint,
+            "hf|repo=1:r|revision=4:main|pool=3:cls"
+        );
         assert_eq!(header.dim, 2);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, ArtifactEntryKind::Tool);
         assert_eq!(entries[0].id, "read_file");
-        assert_eq!(entries[0].projection_hash, hash_projection_text("read file from disk"));
+        assert_eq!(
+            entries[0].projection_hash,
+            hash_projection_text("read file from disk")
+        );
         assert_eq!(entries[1].id, "write_file");
     }
 
@@ -975,7 +986,10 @@ mod tests {
                 "forbidden plaintext {forbidden:?} found in artifact bytes"
             );
         }
-        assert!(blob.contains("tool_id_only"), "id is part of the wire format");
+        assert!(
+            blob.contains("tool_id_only"),
+            "id is part of the wire format"
+        );
     }
 
     // description, body and api_key are intentionally never read
@@ -1000,10 +1014,7 @@ mod tests {
 
     #[test]
     fn mixed_width_vectors_reject_with_inconsistent_width() {
-        let items = [
-            stub_item("first", "alpha"),
-            stub_item("second", "beta"),
-        ];
+        let items = [stub_item("first", "alpha"), stub_item("second", "beta")];
         let embedder = Arc::new(StubEmbedder {
             fingerprint: "test|model=1:m".into(),
             vectors: vec![unit([1.0, 0.0]), vec![0.0, 1.0, 0.0]],
@@ -1034,10 +1045,7 @@ mod tests {
 
     #[test]
     fn built_vectors_are_l2_normalized() {
-        let items = [
-            stub_item("a", "alpha"),
-            stub_item("b", "beta"),
-        ];
+        let items = [stub_item("a", "alpha"), stub_item("b", "beta")];
         let bytes = build_artifact(
             ArtifactEntryKind::Skill,
             &items,
@@ -1058,7 +1066,8 @@ mod tests {
     fn merge_tool_and_skill_artifacts_round_trips() {
         let tools = [stub_item("t", "tool text")];
         let skills = [stub_item("s", "skill text")];
-        let embedder = sample_embedder_for(&[stub_item("t", "tool text"), stub_item("s", "skill text")]);
+        let embedder =
+            sample_embedder_for(&[stub_item("t", "tool text"), stub_item("s", "skill text")]);
         let tool_bytes =
             build_artifact(ArtifactEntryKind::Tool, &tools, embedder.as_ref()).unwrap();
         let skill_bytes =
@@ -1086,9 +1095,12 @@ mod tests {
     #[test]
     fn merge_empty_with_nonempty_is_identity() {
         let items = [stub_item("a", "alpha")];
-        let nonempty =
-            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
-                .unwrap();
+        let nonempty = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
         let empty = build_empty_artifact().unwrap();
         let merged = merge_embedding_artifacts(&[&empty, &nonempty]).unwrap();
         let (_, entries) = load_and_validate(&merged).unwrap();
@@ -1130,12 +1142,18 @@ mod tests {
     #[test]
     fn merge_rejects_duplicate_kind_id() {
         let items = [stub_item("dup", "alpha")];
-        let a =
-            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
-                .unwrap();
-        let b =
-            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
-                .unwrap();
+        let a = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
+        let b = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
         assert!(matches!(
             merge_embedding_artifacts(&[&a, &b]),
             Err(ArtifactError::IncompatibleMerge { detail }) if detail.contains("duplicate")
@@ -1145,12 +1163,18 @@ mod tests {
     #[test]
     fn merge_allows_same_id_across_kinds() {
         let items = [stub_item("search", "text")];
-        let tool =
-            build_artifact(ArtifactEntryKind::Tool, &items, sample_embedder_for(&items).as_ref())
-                .unwrap();
-        let skill =
-            build_artifact(ArtifactEntryKind::Skill, &items, sample_embedder_for(&items).as_ref())
-                .unwrap();
+        let tool = build_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
+        let skill = build_artifact(
+            ArtifactEntryKind::Skill,
+            &items,
+            sample_embedder_for(&items).as_ref(),
+        )
+        .unwrap();
         let merged = merge_embedding_artifacts(&[&tool, &skill]).unwrap();
         let (_, entries) = load_and_validate(&merged).unwrap();
         assert_eq!(entries.len(), 2);
