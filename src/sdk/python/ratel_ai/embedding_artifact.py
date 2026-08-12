@@ -103,6 +103,12 @@ async def experimental_build_embedding_artifact(
     empty yields a valid empty RAT1. Always builds both registry sides (empty →
     empty RAT1) so merge always receives two parts. Parent directories must
     already exist; no atomic write.
+
+    Raises:
+        EmbedderError: Embedding/model/inference failure from either registry build.
+        ArtifactError: Non-embedder artifact construction failure from either registry build.
+        IncompatibleMergeError: Valid Tool/Skill artifact parts cannot be internally merged.
+        OSError: Filesystem failure writing ``output`` (not wrapped as artifact errors).
     """
     from .catalog import ToolRegistry
     from .skill_catalog import SkillRegistry

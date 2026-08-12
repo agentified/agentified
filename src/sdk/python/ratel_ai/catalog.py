@@ -456,6 +456,10 @@ class ToolRegistry:
         Off the event loop and mutation-blocking via ``_dense_pending``, but does
         **not** take ``_dense_gate`` — semantic search may run concurrently.
         Cancelling the await does not clear pending until the native build finishes.
+
+        Raises:
+            EmbedderError: Embedding failed during artifact build.
+            ArtifactError: Non-embedder artifact encode failure from native build.
         """
         self._queue_dense()
         runner = self._run_artifact_build_task()

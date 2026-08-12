@@ -14,6 +14,7 @@ import pytest
 from ratel_ai import (
     ArtifactWarmError,
     ExecutableTool,
+    IncompatibleMergeError,
     Skill,
     SkillCatalog,
     SkillRegistry,
@@ -22,7 +23,7 @@ from ratel_ai import (
     ToolRegistry,
     experimental_build_embedding_artifact,
 )
-from ratel_ai._native import IncompatibleMergeError, merge_embedding_artifacts
+from ratel_ai._native import merge_embedding_artifacts
 from ratel_ai.embedding_artifact import resolve_embedding_artifact
 
 
@@ -32,8 +33,14 @@ class _CountingEndpoint:
         self.requests: list[dict[str, object]] = []
         self.delay_s = 0.0
         self.hold_min_batch = 0
+        self.response_models: list[str] = []
         self._hold: threading.Event | None = None
         self._release: threading.Event | None = None
+
+    def set_response_models(self, models: Sequence[str]) -> None:
+        """Override response ``model`` per request (FIFO)."""
+        with self.lock:
+            self.response_models = list(models)
 
     def record(self, payload: dict[str, object]) -> None:
         with self.lock:
@@ -101,11 +108,17 @@ def counting_embedding_endpoint() -> Iterator[tuple[str, _CountingEndpoint]]:
                 import time
 
                 time.sleep(state.delay_s)
+            with state.lock:
+                model = (
+                    state.response_models.pop(0)
+                    if state.response_models
+                    else str(payload["model"])
+                )
             data = [
                 {"embedding": [1.0, float(index + 1)], "index": index}
                 for index, _ in enumerate(inputs)
             ]
-            body = json.dumps({"data": data, "model": payload["model"]}).encode()
+            body = json.dumps({"data": data, "model": model}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
@@ -562,6 +575,20 @@ async def test_incompatible_merge_not_corrupt(
     bytes_b = await b.experimental_build_embedding_artifact()
     with pytest.raises(IncompatibleMergeError):
         merge_embedding_artifacts([bytes_a, bytes_b])
+
+
+async def test_high_level_build_raises_incompatible_merge_on_model_drift(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    url, state = counting_embedding_endpoint
+    state.set_response_models(["model-a", "model-b"])
+    with pytest.raises(IncompatibleMergeError):
+        await experimental_build_embedding_artifact(
+            output=tmp_path / "drift.ratel-embeddings",
+            embedding=_emb(url),
+            tools=[READ_FILE],
+            skills=[SLIDES],
+        )
 
 
 async def test_corrupt_artifact_is_warm_error(
