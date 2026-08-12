@@ -44,6 +44,47 @@ ExperimentalEmbeddingArtifact = Union[
 ]
 
 
+async def experimental_build_embedding_artifact(
+    *,
+    output: str | os.PathLike[str],
+    embedding: EmbeddingSpec | None = None,
+    tools: Iterable[Tool] | None = None,
+    skills: Iterable[Skill] | None = None,
+) -> None:
+    """Build one mixed Tool+Skill RAT1 and write it to ``output``.
+
+    Registers metadata on BM25 registries so each document is embedded at most
+    once (not via catalog dense build). Empty/omitted corpora are valid; both
+    empty yields a valid empty RAT1. Always builds both registry sides (empty →
+    empty RAT1) so merge always receives two parts. Parent directories must
+    already exist; no atomic write.
+
+    Raises:
+        EmbedderError: Embedding/model/inference failure from either registry build.
+        ArtifactError: Non-embedder artifact construction failure from either registry build.
+        IncompatibleMergeError: Valid Tool/Skill artifact parts cannot be internally merged.
+        OSError: Filesystem failure writing ``output`` (not wrapped as artifact errors).
+    """
+    from .catalog import ToolRegistry
+    from .skill_catalog import SkillRegistry
+
+    tool_items = list(tools or ())
+    skill_items = list(skills or ())
+
+    tool_registry = ToolRegistry(embedding, method="bm25")
+    if tool_items:
+        await tool_registry.register(tool_items)
+    tool_bytes = await tool_registry.experimental_build_embedding_artifact()
+
+    skill_registry = SkillRegistry(embedding, method="bm25")
+    if skill_items:
+        await skill_registry.register(skill_items)
+    skill_bytes = await skill_registry.experimental_build_embedding_artifact()
+
+    merged = merge_embedding_artifacts([tool_bytes, skill_bytes])
+    await asyncio.to_thread(Path(output).write_bytes, merged)
+
+
 def _validate_embedding_artifact(
     config: ExperimentalEmbeddingArtifact,
 ) -> tuple[str | None, bytes | None, OnArtifactMiss]:
@@ -91,44 +132,3 @@ async def resolve_embedding_artifact(
         return raw, on_miss
     assert path is not None
     return await asyncio.to_thread(Path(path).read_bytes), on_miss
-
-
-async def experimental_build_embedding_artifact(
-    *,
-    output: str | os.PathLike[str],
-    embedding: EmbeddingSpec | None = None,
-    tools: Iterable[Tool] | None = None,
-    skills: Iterable[Skill] | None = None,
-) -> None:
-    """Build one mixed Tool+Skill RAT1 and write it to ``output``.
-
-    Registers metadata on BM25 registries so each document is embedded at most
-    once (not via catalog dense build). Empty/omitted corpora are valid; both
-    empty yields a valid empty RAT1. Always builds both registry sides (empty →
-    empty RAT1) so merge always receives two parts. Parent directories must
-    already exist; no atomic write.
-
-    Raises:
-        EmbedderError: Embedding/model/inference failure from either registry build.
-        ArtifactError: Non-embedder artifact construction failure from either registry build.
-        IncompatibleMergeError: Valid Tool/Skill artifact parts cannot be internally merged.
-        OSError: Filesystem failure writing ``output`` (not wrapped as artifact errors).
-    """
-    from .catalog import ToolRegistry
-    from .skill_catalog import SkillRegistry
-
-    tool_items = list(tools or ())
-    skill_items = list(skills or ())
-
-    tool_registry = ToolRegistry(embedding, method="bm25")
-    if tool_items:
-        await tool_registry.register(tool_items)
-    tool_bytes = await tool_registry.experimental_build_embedding_artifact()
-
-    skill_registry = SkillRegistry(embedding, method="bm25")
-    if skill_items:
-        await skill_registry.register(skill_items)
-    skill_bytes = await skill_registry.experimental_build_embedding_artifact()
-
-    merged = merge_embedding_artifacts([tool_bytes, skill_bytes])
-    await asyncio.to_thread(Path(output).write_bytes, merged)
