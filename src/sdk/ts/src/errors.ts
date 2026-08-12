@@ -61,19 +61,6 @@ export class DimensionMismatchError extends EmbedderError {
   }
 }
 
-/** Stable discriminant for non-embedder {@link ArtifactError} codes (exact Rust variant names). */
-type ArtifactErrorCode =
-  | "TooShort"
-  | "InvalidMagic"
-  | "UnsupportedFormatVersion"
-  | "ChecksumMismatch"
-  | "CorruptPayload"
-  | "InconsistentVectorWidth"
-  | "VectorNotNormalized"
-  | "NonEmptyZeroDim"
-  | "InvalidVector"
-  | "IncompatibleMerge";
-
 /**
  * Build-time embedding artifact encode/decode/merge failure (non-embedder
  * {@link ArtifactError} variants). Prefer {@link ArtifactError.code} over
@@ -85,13 +72,23 @@ export class ArtifactError extends Error {
    * `"IncompatibleMerge"` or `"VectorNotNormalized"`). Prefer this (or
    * `instanceof`) over parsing {@link Error.message}.
    */
-  readonly code: ArtifactErrorCode;
+  readonly code:
+    | "TooShort"
+    | "InvalidMagic"
+    | "UnsupportedFormatVersion"
+    | "ChecksumMismatch"
+    | "CorruptPayload"
+    | "InconsistentVectorWidth"
+    | "VectorNotNormalized"
+    | "NonEmptyZeroDim"
+    | "InvalidVector"
+    | "IncompatibleMerge";
 
   /**
    * @param message - The underlying failure description (the core error text).
    * @param code - The stable {@link ArtifactError.code} discriminant.
    */
-  constructor(message: string, code: ArtifactErrorCode) {
+  constructor(message: string, code: ArtifactError["code"]) {
     super(message);
     this.name = "ArtifactError";
     this.code = code;
@@ -273,7 +270,7 @@ export function mapArtifactError(error: unknown): unknown {
   if (typeof record.message !== "string") return error;
   return code === "IncompatibleMerge"
     ? new IncompatibleMergeError(record.message)
-    : new ArtifactError(record.message, code as ArtifactErrorCode);
+    : new ArtifactError(record.message, code as ArtifactError["code"]);
 }
 
 /**

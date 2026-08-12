@@ -8,10 +8,7 @@
     "notDocumented": true
   },
   "treatValidationWarningsAsErrors": true,
-  "intentionallyNotExported": [
-    "src/catalog.ts:ExclusiveEmbeddingFields",
-    "src/errors.ts:ArtifactErrorCode"
-  ],
+  "intentionallyNotExported": ["src/catalog.ts:ExclusiveEmbeddingFields"],
   "externalSymbolLinkMappings": {
     "@ratel-ai/telemetry": {
       "contentCaptureMode": "https://github.com/ratel-ai/ratel/blob/main/src/telemetry/ts/src/content-capture.ts"
