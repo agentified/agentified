@@ -10,6 +10,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - **Experimental build-time embedding artifacts (ADR-0017).** `experimental_build_embedding_artifact` builds a mixed Tool+Skill RAT1 (Tool and Skill halves merged internally; no public merge API). Hosts own artifact persistence; the core artifact APIs accept/return bytes and perform no artifact filesystem I/O. Catalogs and registries accept `experimental_embedding_artifact` (`path` or `bytes`; default `on_miss="error"`) and warm on `register` / `replace_all` for any search method before eager document embedding on semantic/hybrid. `ToolRegistry` / `SkillRegistry` expose `experimental_build_embedding_artifact` and `experimental_warm_embeddings_from_artifact`. Failures: `ArtifactWarmError` (`.code`, `.missing` for `"Incomplete"`), `ArtifactError`, and `IncompatibleMergeError` (from incompatible Tool/Skill halves during mixed build — not a public merge function); the high-level builder may also raise `EmbedderError` or `OSError`. Shipped behind an `experimental_` prefix (the API may change until it graduates).
 
+## [0.8.0] - 2026-08-11
+
+### Added
+
+- **⚠️ Experimental: facts and grounding (ADR-0017).** The Python mirror of the TS surface. Constant content the agent should always have on hand, registered and monitored like skills, reaching the model on its own host-driven path. Register with `ratel_ai.experimental.FactCatalog`, then pick one of two injection modes per turn: `ground(query, transcript)` persists into your stored history behind a re-injection freshness gate, and `ground_snapshot(query)` is the stateless per-call twin. `Pin.ALWAYS` facts ride every applicable turn; `Pin.RETRIEVED` (the default) surface only when the turn's query ranks them in, budgeted by `facts_top_k` (default 3).
+- The freshness gate re-injects a fact only when its body is **absent** from the window (`never` / `evicted`) or has been **edited** (`mutated`) — never merely because a turn elapsed. Presence is the fact's own body text scanned per message: no markers, no tags, no extra tokens. `plan_injection` is the pure decision function behind it, and every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`). `ground()` takes a sequence of per-message strings and rejects a bare `str` with a `TypeError`, since a `str` is itself a `Sequence[str]` and would otherwise be iterated character by character.
+- The whole surface lives in the opt-in `ratel_ai.experimental` namespace, never the root package, and constructing a catalog raises a one-time `ExperimentalWarning` (silence with `RATEL_EXPERIMENTAL_SILENCE=1`).
+
+### Changed
+
+- Nothing on the stable path. `search_capabilities` and the capability tools are unchanged from 0.7.0 — the tool result carries no facts, so the model's contract is unchanged.
+
 ## [0.7.0] - 2026-08-07
 
 ### Added

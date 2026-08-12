@@ -30,7 +30,7 @@ The context engineering layer for AI agents. Selects only the tools and skills r
 
 - **Cost:** Every tool schema, every skill, and a growing list of instructions in the system prompt are tokens you pay for on every call. Send them all up front and you pay for them all, every turn.
 - **Accuracy:** Models get worse as that context grows. Crowd it with tools, skills, and instructions a turn doesn't need and the model picks the wrong option and drifts off task.
-- **Ratel fixes both:** it indexes your tools and skills into a catalog the agent *progressively discloses*, searching for what each turn needs and injecting only the matching capabilities instead of loading everything up front.
+- **Ratel fixes both:** it indexes your tools and skills into a catalog the agent *progressively discloses*, searching for what each turn needs and injecting only the matching capabilities instead of loading everything up front. Constant grounding your agent always needs — a shop's address, a brand's voice — is registered as *facts* and pushed into context, re-injected only when it isn't already fresh in the transcript.
 
 Across local, open-source, and frontier model setups, Ratel cuts token usage and recovers accuracy lost to tool overload, with no vector DB required. Full results: [benchmark.ratel.sh](https://benchmark.ratel.sh)
 

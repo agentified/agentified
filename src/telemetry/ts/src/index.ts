@@ -85,7 +85,7 @@ export const GEN_AI_INFERENCE_DETAILS = "gen_ai.client.inference.operation.detai
 /** `ratel.origin` — direct library call vs agent-synthesized (shared attribute). */
 export const RATEL_ORIGIN = "ratel.origin";
 
-/** `ratel.search.target` — `tool` or `skill` (see {@link SearchTarget}). */
+/** `ratel.search.target` — `tool`, `skill`, or `fact` (see {@link SearchTarget}). */
 export const RATEL_SEARCH_TARGET = "ratel.search.target";
 
 /** `ratel.search.top_k` — requested result count. */
@@ -172,11 +172,12 @@ export type Origin = (typeof Origin)[keyof typeof Origin];
 
 /**
  * What a `ratel.search` span was searching. Carried by `ratel.search.target`;
- * folds capability-tool search and skill search into one span shape.
+ * folds capability-tool search, skill search, and fact search into one span shape.
  */
 export const SearchTarget = {
   Tool: "tool",
   Skill: "skill",
+  Fact: "fact",
 } as const;
 export type SearchTarget = (typeof SearchTarget)[keyof typeof SearchTarget];
 

@@ -17,7 +17,7 @@
 
 `ratel-ai` retrieves the tools and skills relevant to each agent turn instead of sending the full catalog to the model. It bundles Ratel's Rust engine in-process: BM25 by default, with configurable semantic and hybrid retrieval available when needed. The default and local-model paths require no API key, vector database, or service. Installing a published package on a supported prebuilt target also requires no Rust toolchain.
 
-Use `ToolCatalog` for ranked tools with sync or async handlers and `SkillCatalog` for ranked Markdown playbooks loaded on demand. Expose `search_capabilities_tool`, `invoke_tool_tool`, and `get_skill_content_tool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog with the `mcp` extra.
+Use `ToolCatalog` for ranked tools with sync or async handlers and `SkillCatalog` for ranked Markdown playbooks loaded on demand. Expose `search_capabilities_tool`, `invoke_tool_tool`, and `get_skill_content_tool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog with the `mcp` extra. **Experimental — facts:** the opt-in `ratel_ai.experimental` namespace adds `FactCatalog` for constant grounding content (a shop's address, a brand's voice). See [Facts](#facts-experimental) below. This API may change or be removed without a major version bump.
 
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` argument: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
@@ -89,6 +89,63 @@ asyncio.run(main())
 ```
 
 Continue with the [Python guide](https://docs.ratel.sh/docs/sdks/python), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-python), or the [Pydantic AI example](https://github.com/ratel-ai/ratel/tree/main/examples/pydantic-ai).
+
+## Facts (experimental)
+
+Tools and skills are **pulled** — a query ranks them and only the winners reach the model. Facts are the opposite: constant content the agent should always work from (a shop's address, hours, a brand's voice), **pushed** into the context and deduplicated so it is injected once rather than every turn.
+
+Facts live in the opt-in `ratel_ai.experimental` namespace and may change without a major version bump. Registering one is like a skill, plus a `pin` tier:
+
+```python
+from ratel_ai.experimental import Fact, FactCatalog, Pin
+
+facts = FactCatalog()
+await facts.register([
+    Fact(
+        id="shop-address",
+        name="shop address & hours",
+        description="where the shop is and when it's open",
+        body="Fade & Blade — 12 Baker Street, London. Open Mon–Sat 9am–7pm.",
+        pin=Pin.ALWAYS,       # every turn, regardless of the query
+    ),
+    Fact(
+        id="cancellation",
+        name="cancellation policy",
+        description="cancelling or rescheduling a booking, and refunds",
+        body="Cancel at least 24h ahead for a full refund; same-day is a 50% fee.",
+        pin=Pin.RETRIEVED,    # only when the turn's query ranks it in (default)
+    ),
+])
+```
+
+Then pick **one** of two injection modes per turn.
+
+**`ground()` — persist into your stored history.** Returns only the facts not already present; render each `body` verbatim and keep it in the messages you save. It takes a **list of per-message strings** — flatten multi-part content yourself, and note that a bare `str` is rejected (it is itself a `Sequence[str]`, so it would be iterated character by character):
+
+```python
+def text_of(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.get("text", "") for part in content)  # multi-part content
+
+result = await facts.ground(user_text, [text_of(m) for m in messages])
+for item in result.inject:
+    messages.append({"role": "system", "content": item.body})  # verbatim — presence is the dedupe
+```
+
+Turn 1 injects the address; turn 2 sees it in the transcript and injects nothing. It re-injects only when the body is gone (compaction) or was edited — `item.reason` is `"never"` / `"evicted"` / `"mutated"`.
+
+**`ground_snapshot()` — per call, nothing stored.** Returns the full applicable set every time; put it in the request you're about to send and discard it:
+
+```python
+snapshot = await facts.ground_snapshot(user_text)
+payload = [{"role": "system", "content": f.body} for f in snapshot] + messages
+```
+
+Use `ground()` for a long-lived agent whose messages you persist; `ground_snapshot()` for one-shot or stateless calls, or to keep injected content out of your stored history.
+
+Facts are **host-driven**: the model-facing `search_capabilities` tool is unchanged and never returns facts — you decide what is true and inject it, rather than letting the model discover it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
 Telemetry export is optional. With the `otlp` extra installed, `configure_telemetry()` reads `RATEL_OTLP_ENDPOINT` (falling back to the superseded `RATEL_URL`, which warns) and `RATEL_API_KEY`, wires trace and Logs exporters, and returns a shutdown handle. It exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default — `export_all_spans=True` widens spans only. Message/tool content stays off by default; opt in with `capture_content`/`include_span_and_events` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Hosts that already own OpenTelemetry providers add both `ratel_span_processor` and `ratel_log_record_processor` instead.
 

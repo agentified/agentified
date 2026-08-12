@@ -1,13 +1,20 @@
 """Python SDK for Ratel — context engineering for AI agents.
 
 Mirrors the public surface of the TypeScript SDK (`@ratel-ai/sdk`):
-- `ToolRegistry` / `SearchHit`, `SkillRegistry` / `SkillHit` — metadata registries
-  with synchronous BM25 and explicit async dense retrieval, one per corpus.
+- `ToolRegistry` / `SearchHit`, `SkillRegistry` / `SkillHit` — metadata
+  registries with synchronous BM25 and explicit async dense retrieval, one per
+  corpus.
 - `ToolCatalog` / `ExecutableTool` — registry plus executable handlers.
 - `SkillCatalog` / `Skill` — the on-demand skill analogue of `ToolCatalog`.
 - `search_capabilities_tool` / `invoke_tool_tool` / `get_skill_content_tool` —
   framework-neutral capability tools.
 - `register_mcp_server` — ingest an upstream MCP server's tools (extra: mcp).
+
+The facts/grounding surface (`FactCatalog` / `Fact`, the push-path grounding
+analogue: constant content injected into the context, gated by the pure
+`grounding` freshness planner) is **experimental** and lives in the opt-in
+`ratel_ai.experimental` namespace, not here — it may change without a major
+version bump.
 """
 
 from ._native import SearchHit, SkillHit

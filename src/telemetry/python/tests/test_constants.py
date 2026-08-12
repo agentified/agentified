@@ -140,6 +140,7 @@ def test_origin_maps_to_wire_strings() -> None:
 def test_search_target_maps_to_wire_strings() -> None:
     assert SearchTarget.TOOL == "tool"
     assert SearchTarget.SKILL == "skill"
+    assert SearchTarget.FACT == "fact"
 
 
 def test_auth_outcome_maps_to_wire_strings() -> None:
