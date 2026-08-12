@@ -250,6 +250,18 @@ describe("catalog experimentalEmbeddingArtifact", () => {
     return dir;
   }
 
+  function corpusInputs(requests: string[][]): Set<string> {
+    return new Set(requests.flat());
+  }
+
+  function assertCorpusNotReembedded(corpus: Set<string>, after: string[][]): void {
+    for (const batch of after) {
+      for (const text of batch) {
+        expect(corpus.has(text)).toBe(false);
+      }
+    }
+  }
+
   it("warms from path with default onMiss error and avoids document inference", async () => {
     const server = await startDelayedEmbeddingServer();
     try {
@@ -483,6 +495,151 @@ describe("catalog experimentalEmbeddingArtifact", () => {
       expect(server.requests.length).toBe(buildRequests);
       const hits = await catalog.searchAsync("html presentations", 5);
       expect(hits[0]?.skillId).toBe("frontend-slides");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("re-warms on every register with zero document inference (TS-1)", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "both-tools.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+      });
+      // Artifact holds A+B, but warm only applies entries in the current corpus.
+      // First register ({A}) must not populate B; the second register must warm B
+      // from the artifact (no document inference) — search for B proves it.
+      const corpus = corpusInputs(server.requests);
+      const afterBuild = server.requests.length;
+
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      await catalog.register({ ...readFileTool, execute: async () => ({}) });
+      assertCorpusNotReembedded(corpus, server.requests.slice(afterBuild));
+      const hitsAfterA = await catalog.searchAsync("write a file", 5);
+      expect(hitsAfterA.map((h) => h.toolId)).not.toContain("write_file");
+
+      const afterFirst = server.requests.length;
+      await catalog.register({ ...writeFileTool, execute: async () => ({}) });
+      assertCorpusNotReembedded(corpus, server.requests.slice(afterFirst));
+
+      const hits = await catalog.searchAsync("write a file", 5);
+      expect(hits.map((h) => h.toolId)).toContain("write_file");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("re-reads path-backed artifact bytes on every register (TS-2)", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "path-swap.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const artifactConfig = { path: output };
+
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: artifactConfig,
+      });
+      await catalog.register({ ...readFileTool, execute: async () => ({}) });
+      const hitsAfterA = await catalog.searchAsync("write a file", 5);
+      expect(hitsAfterA.map((h) => h.toolId)).not.toContain("write_file");
+
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+      });
+      await catalog.register({ ...writeFileTool, execute: async () => ({}) });
+
+      const hits = await catalog.searchAsync("write a file", 5);
+      expect(hits.map((h) => h.toolId)).toContain("write_file");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("incremental second register fails closed when coverage is exceeded (TS-3)", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tool-a-only.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      await catalog.register({ ...readFileTool, execute: async () => ({}) });
+
+      const error = await catalog.register({ ...writeFileTool, execute: async () => ({}) }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(ArtifactWarmError);
+      expect((error as ArtifactWarmError).code).toBe("Incomplete");
+      expect((error as ArtifactWarmError).missing).toEqual(["write_file"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("replaceAll twice re-reads path-backed artifact at the same path (TS-4)", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills-path-swap.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides],
+      });
+      const artifactConfig = { path: output };
+
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: artifactConfig,
+      });
+      const reload1 = catalog.replaceAll([slides]);
+      expect(reload1.added).toBe(1);
+      expect(reload1.removed).toBe(0);
+      await reload1;
+
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [apiDesign],
+      });
+      const reload2 = catalog.replaceAll([apiDesign]);
+      expect(reload2.added).toBe(1);
+      expect(reload2.removed).toBe(1);
+      await reload2;
+
+      const hits = await catalog.searchAsync("REST API design", 5, "direct", "semantic");
+      expect(hits[0]?.skillId).toBe("api-design");
     } finally {
       await server.close();
     }
