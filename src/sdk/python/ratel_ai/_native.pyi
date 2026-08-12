@@ -257,12 +257,10 @@ class ArtifactWarmError(RuntimeError):
     Attributes:
         code: ``"Warm"`` | ``"Incomplete"`` | ``"Embedder"``.
         missing: corpus ids when ``code == "Incomplete"``, else ``None``.
-        name: always ``"ArtifactWarmError"``.
     """
 
     code: str
     missing: list[str] | None
-    name: str
 
 def merge_embedding_artifacts(parts: list[bytes]) -> bytes:
     """Merge valid RAT1 parts into one mixed Tool+Skill artifact."""

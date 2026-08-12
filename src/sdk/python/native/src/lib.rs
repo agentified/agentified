@@ -84,34 +84,34 @@ fn artifact_warm_pyerr(code: &str, message: String, missing: Option<Vec<String>>
     Python::with_gil(|py| {
         let err = ArtifactWarmError::new_err(message);
         let value = err.value(py);
-        let _ = value.setattr("code", code);
-        let _ = value.setattr("name", "ArtifactWarmError");
+        if let Err(attr_err) = value.setattr("code", code) {
+            return attr_err;
+        }
         match missing {
             Some(ids) => {
-                let _ = value.setattr("missing", ids);
+                if let Err(attr_err) = value.setattr("missing", ids) {
+                    return attr_err;
+                }
             }
             None => {
-                let _ = value.setattr("missing", py.None());
+                if let Err(attr_err) = value.setattr("missing", py.None()) {
+                    return attr_err;
+                }
             }
-        }
+        };
         err
     })
 }
 
 fn map_artifact_warm_err(e: CoreArtifactWarmError) -> PyErr {
+    // Compute once from the core enum so the Python exception message cannot drift.
+    let message = e.to_string();
     match e {
         CoreArtifactWarmError::Incomplete { missing } => {
-            let message = format!(
-                "embedding artifact incomplete for the current corpus: {} id(s) missing ({})",
-                missing.len(),
-                missing.join(", ")
-            );
             artifact_warm_pyerr("Incomplete", message, Some(missing))
         }
-        CoreArtifactWarmError::Warm(inner) => artifact_warm_pyerr("Warm", inner.to_string(), None),
-        CoreArtifactWarmError::Embedder(inner) => {
-            artifact_warm_pyerr("Embedder", inner.to_string(), None)
-        }
+        CoreArtifactWarmError::Warm(_) => artifact_warm_pyerr("Warm", message, None),
+        CoreArtifactWarmError::Embedder(_) => artifact_warm_pyerr("Embedder", message, None),
     }
 }
 

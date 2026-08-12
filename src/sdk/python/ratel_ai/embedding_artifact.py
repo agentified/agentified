@@ -54,13 +54,17 @@ def _validate_embedding_artifact(
         raise TypeError(
             f"experimental_embedding_artifact has unknown keys: {sorted(unknown)}"
         )
-    has_path = "path" in config
-    has_bytes = "bytes" in config
+    path_raw = config.get("path")
+    bytes_raw = config.get("bytes")
+    has_path = path_raw is not None
+    has_bytes = bytes_raw is not None
     if has_path == has_bytes:
         raise TypeError(
             "experimental_embedding_artifact requires exactly one of 'path' or 'bytes'"
         )
-    on_miss_raw = config.get("on_miss", "error")
+    on_miss_raw = config.get("on_miss")
+    if on_miss_raw is None:
+        on_miss_raw = "error"
     if on_miss_raw not in ("error", "embed"):
         raise ValueError(
             f'unknown on-artifact-miss policy {on_miss_raw!r} (expected "error" or "embed")'

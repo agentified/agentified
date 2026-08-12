@@ -753,7 +753,16 @@ class ToolCatalog:
                 (any method; default ``on_miss`` is ``"error"``). Each
                 ``register`` re-resolves and re-warms over the whole current
                 corpus — intended for one batch at startup; incremental
-                register calls repeat I/O and id+hash matching.
+                register calls repeat I/O and id+hash matching. With the
+                default ``on_miss="error"``, warm fails when the catalog's
+                current corpus includes one or more ids missing from the
+                artifact. If you configure the same artifact for both this
+                ToolCatalog and a SkillCatalog, it must cover every
+                non-empty corpus that actually registers; a tool-only artifact
+                is valid when the Skill corpus stays empty. The normal remedy
+                is a mixed artifact built via
+                ``experimental_build_embedding_artifact``; the runtime remedy
+                for uncovered current-kind entries is ``on_miss="embed"``.
         """
         self._executors: dict[str, Executor] = {}
         self._tools: dict[str, Tool] = {}

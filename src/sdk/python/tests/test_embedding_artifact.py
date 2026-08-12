@@ -342,6 +342,12 @@ async def test_incomplete_preserves_missing_ids(
     err = caught.value
     assert err.code == "Incomplete"
     assert err.missing == ["write_file"]
+    assert type(err).__name__ == "ArtifactWarmError"
+    assert not hasattr(err, "name")
+    expected = (
+        "embedding artifact incomplete for the current corpus: 1 id(s) missing (write_file)"
+    )
+    assert str(err) == expected
 
 
 async def test_on_miss_embed_fills_missing(
@@ -563,6 +569,59 @@ async def test_artifact_bytes_rejects_bytearray_and_memoryview() -> None:
         await resolve_embedding_artifact({"bytes": memoryview(b"RAT1")})  # type: ignore[typeddict-item]
 
 
+async def test_resolve_embedding_artifact_presence_semantics_none(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a.rat1"
+    path.write_bytes(b"RAT1")
+    valid_bytes = b"\x01\x02\x03"
+
+    # explicit None behaves like “absent”
+    resolved, on_miss = await resolve_embedding_artifact(
+        {"path": str(path), "bytes": None}  # type: ignore[typeddict-item]
+    )
+    assert on_miss == "error"
+    assert resolved == b"RAT1"
+
+    resolved2, on_miss2 = await resolve_embedding_artifact(
+        {"bytes": valid_bytes, "path": None}  # type: ignore[typeddict-item]
+    )
+    assert on_miss2 == "error"
+    assert resolved2 == valid_bytes
+
+    _, on_miss3 = await resolve_embedding_artifact(
+        {"path": str(path), "on_miss": None}  # type: ignore[typeddict-item]
+    )
+    assert on_miss3 == "error"
+
+    with pytest.raises(TypeError, match="requires exactly one of 'path' or 'bytes'"):
+        await resolve_embedding_artifact(  # both explicit None
+            {"path": None, "bytes": None}  # type: ignore[typeddict-item]
+        )
+
+    with pytest.raises(TypeError, match="requires exactly one of 'path' or 'bytes'"):
+        await resolve_embedding_artifact(
+            {"path": str(path), "bytes": valid_bytes}  # type: ignore[typeddict-item]
+        )
+
+    with pytest.raises(ValueError, match="unknown on-artifact-miss policy"):
+        await resolve_embedding_artifact(
+            {"path": str(path), "on_miss": "nope"}  # type: ignore[typeddict-item]
+        )
+
+    with pytest.raises(TypeError, match="unknown keys"):
+        await resolve_embedding_artifact(
+            {"path": str(path), "extra": 1}  # type: ignore[typeddict-item]
+        )
+
+    # type validation only applies to defined (non-None) values
+    with pytest.raises(TypeError, match="path must be a str"):
+        await resolve_embedding_artifact({"path": 1, "bytes": None})  # type: ignore[typeddict-item]
+
+    with pytest.raises(TypeError, match="bytes must be bytes"):
+        await resolve_embedding_artifact({"bytes": 123, "path": None})  # type: ignore[typeddict-item]
+
+
 async def test_incompatible_merge_not_corrupt(
     counting_embedding_endpoint: tuple[str, _CountingEndpoint],
 ) -> None:
@@ -601,6 +660,8 @@ async def test_corrupt_artifact_is_warm_error(
     with pytest.raises(ArtifactWarmError) as caught:
         await reg.experimental_warm_embeddings_from_artifact(b"not-a-rat1-file", "error")
     assert caught.value.code == "Warm"
+    assert type(caught.value).__name__ == "ArtifactWarmError"
+    assert not hasattr(caught.value, "name")
 
 
 async def test_public_exports_and_no_build_embeddings() -> None:
