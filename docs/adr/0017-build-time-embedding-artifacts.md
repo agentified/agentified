@@ -30,8 +30,11 @@ checksum verification, the core applies canonical semantic validation before
 merge or cache mutation: a non-empty artifact requires `dim > 0`; vector widths
 must match `dim`; values must be finite; vectors must be unit-normalized using
 the same squared-L2-norm tolerance as the dense cache (not a tolerance on the
-vector length itself). Malformed checksum-valid bytes are rejected. Canonical builder output for an empty artifact: `entry_count = 0`, `dim = 0`.
-Decoding does not introduce a new rejection solely because an otherwise valid empty RAT1 has `entry_count = 0` and `dim > 0`. Builders enforce the same vector semantic invariants before serialization. Header: `projection_version`, `dim`,
+vector length itself). Malformed checksum-valid bytes are rejected. Canonical
+builder output for an empty artifact: `entry_count = 0`, `dim = 0`. Decoding
+does not newly reject an otherwise-valid empty RAT1 solely because
+`entry_count = 0` and `dim > 0`. Builders enforce the same vector semantic
+invariants before serialization. Header: `projection_version`, `dim`,
 `model_fingerprint`. Each entry: `kind` (Tool or Skill), stable `id`,
 `projection_hash` (SHA-256 of projection text — text never stored),
 L2-normalized vector. One RAT1 v1 file may mix Tool and Skill entries.
@@ -48,8 +51,15 @@ entries. Matching requires kind + id + `projection_hash == sha256(embed_text())`
 Fingerprint mismatch fails closed (zero commits). Artifact-only entries are
 ignored, so a larger artifact can warm a subset corpus. Other-kind entries do
 not satisfy missing entries for the active kind. The same textual id across Tool
-and Skill kinds is allowed. Id+hash matching runs before embedder resolve; warm
-may skip embedder resolution when no corpus entries need embedding inference.
+and Skill kinds is allowed. Id+hash matching runs before embedder resolution.
+If no entries are reusable, the matching phase returns without resolving the
+embedder. With the fail-closed `Error` miss policy this becomes `Incomplete`;
+with `Embed`, registry-level follow-up embedding still uses the configured
+embedder for missing entries. When at least one entry is reusable, warm resolves
+the configured embedder to compare model identity. For `Local`, this includes
+model initialization/loading during registration. RAT1 removes corpus/document
+inference for covered entries, not compatibility resolution or fallback
+embedding costs.
 
 **Build / merge.** Each registry builds a single-kind artifact (empty corpus →
 valid empty RAT1, no embedder). `merge_embedding_artifacts` is a public Rust
@@ -96,9 +106,12 @@ artifact errors directly (no NAPI JSON envelope). Public errors include
 ## Consequences
 
 Covered artifact entries avoid corpus/document embedding inference at cold
-start. Changed or missing projections follow the configured miss policy.
-Semantic/hybrid search still requires query embedding through the configured
-embedding backend against the warmed or built dense cache; Local/HF backends
-may therefore still require runtime model initialization/loading, and endpoint
-continues to perform its normal remote query-embedding operation. RAT1 does not
-eliminate runtime query embedding.
+start. When warm reuses at least one entry, it resolves the configured embedder
+during registration to compare model identity (for `Local`, including model
+initialization/loading). Changed or missing projections follow the configured
+miss policy. Semantic/hybrid search still requires query embedding through the
+configured embedding backend against the warmed or built dense cache; Local/HF
+backends may therefore still perform query-time model use, and endpoint
+continues to perform its normal remote query-embedding operation. RAT1 removes
+corpus/document inference; it does not eliminate runtime query embedding or the
+compatibility resolution performed by warm.

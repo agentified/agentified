@@ -118,4 +118,12 @@ land in different vector spaces.
   explicitly overridden) do not affect the digest. `(len, mtime)` memoization
   is a process-local accelerator for digest recomputation — not authoritative
   runtime or artifact identity storage.
-- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0017 adds persistent build-time RAT1 artifacts; for `Local` models the artifact header carries a separate content-derived artifact compatibility fingerprint used only for RAT1 build/warm — it is not substituted into normal runtime identity (typical build-time → runtime / Docker remounts are why that separate fingerprint exists). Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
+- **Known limitation, addressed in
+  [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is
+  in-process only — every process start re-embeds the corpus, cheap locally but
+  costly over an endpoint. ADR-0017 adds persistent build-time RAT1 artifacts;
+  for `Local` models the artifact header carries a separate content-derived
+  artifact compatibility fingerprint used only for RAT1 build/warm — it is not
+  substituted into normal runtime identity (typical build-time → runtime /
+  Docker remounts are why that separate fingerprint exists). Also deferred:
+  non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
