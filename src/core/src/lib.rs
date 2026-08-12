@@ -93,6 +93,9 @@ mod trace;
 mod usage;
 mod usage_learner;
 
+#[cfg(test)]
+mod test_support;
+
 pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};
 pub use dense_cache::WarmError;
 pub use embedding::EmbedderError;

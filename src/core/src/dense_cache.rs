@@ -637,6 +637,7 @@ mod tests {
 
     use super::*;
     use crate::embedding::Embedded;
+    use crate::test_support::{FpCountingEmbedder, PanicOnEmbedStub, build_test_artifact, unit};
     use crate::trace::{MemorySink, NoopSink, TraceEvent};
 
     struct Doc {
@@ -937,65 +938,6 @@ mod tests {
         assert!(cache.require_built(items.len()).is_ok());
     }
 
-    fn unit2(v: [f32; 2]) -> Vec<f32> {
-        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        v.iter().map(|x| x / norm).collect()
-    }
-
-    /// Builds artifacts with a fixed identity and explicit per-item vectors.
-    struct ArtifactBuildStub {
-        fingerprint: String,
-        vectors: Vec<Vec<f32>>,
-    }
-
-    impl Embedder for ArtifactBuildStub {
-        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            unreachable!("artifact build uses batch")
-        }
-        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            unreachable!("artifact build uses batch")
-        }
-        fn embed_batch_with_identity(
-            &self,
-            texts: &[String],
-        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
-            assert_eq!(texts.len(), self.vectors.len());
-            Ok(Embedded {
-                value: self.vectors.clone(),
-                fingerprint: self.fingerprint.clone(),
-            })
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
-    /// Resolves identity without inference — panics if any embed path is hit.
-    struct PanicOnEmbedStub {
-        fingerprint: String,
-    }
-
-    impl Embedder for PanicOnEmbedStub {
-        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            panic!("embed_doc must not be called during pure warm")
-        }
-        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            panic!("embed_query must not be called during pure warm")
-        }
-        fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
-            panic!("embed_batch must not be called during pure warm")
-        }
-        fn embed_batch_with_identity(
-            &self,
-            _texts: &[String],
-        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
-            panic!("embed_batch_with_identity must not be called during pure warm")
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
     /// Warm stub with distinct runtime vs artifact identities (Local AD-1 shape).
     struct SplitIdentityStub {
         runtime: String,
@@ -1046,31 +988,12 @@ mod tests {
             assert_eq!(texts.len(), 1);
             self.probe_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Embedded {
-                value: vec![unit2([1.0, 0.0])],
+                value: vec![unit([1.0, 0.0])],
                 fingerprint: self.probe_fingerprint.clone(),
             })
         }
         fn fingerprint(&self) -> String {
             self.static_fingerprint.clone()
-        }
-    }
-
-    /// Like [`CountingStub`] but with a fixed fingerprint for warm+extend chains.
-    struct CountingFpStub {
-        fingerprint: String,
-        docs: AtomicUsize,
-    }
-
-    impl Embedder for CountingFpStub {
-        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            self.docs.fetch_add(1, Ordering::SeqCst);
-            Ok(vec_for(text))
-        }
-        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Ok(vec_for(text))
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
         }
     }
 
@@ -1084,26 +1007,16 @@ mod tests {
         }
     }
 
-    fn build_tool_artifact(items: &[Doc], fingerprint: &str, vectors: Vec<Vec<f32>>) -> Vec<u8> {
-        let embedder = ArtifactBuildStub {
-            fingerprint: fingerprint.into(),
-            vectors,
-        };
-        crate::embedding_artifact::build_artifact(ArtifactEntryKind::Tool, items, &embedder)
-            .unwrap()
-    }
-
     #[test]
     fn warm_reuses_matching_id_and_hash_without_calling_embedder() {
         let items = [doc("a", "read"), doc("b", "write")];
-        let bytes = build_tool_artifact(
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
             &items,
             "fp-warm",
-            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0])],
+            vec![unit([1.0, 0.0]), unit([0.0, 1.0])],
         );
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
             .unwrap();
@@ -1117,11 +1030,14 @@ mod tests {
     #[test]
     fn warm_reports_missing_when_id_absent_from_artifact() {
         let artifact_items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&artifact_items, "fp-warm", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &artifact_items,
+            "fp-warm",
+            vec![unit([1.0, 0.0])],
+        );
         let corpus = [doc("a", "read"), doc("b", "write")];
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
             .unwrap();
@@ -1136,11 +1052,14 @@ mod tests {
 
     #[test]
     fn warm_reports_missing_when_projection_hash_differs() {
-        let bytes = build_tool_artifact(&[doc("a", "read")], "fp-warm", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &[doc("a", "read")],
+            "fp-warm",
+            vec![unit([1.0, 0.0])],
+        );
         let corpus = [doc("a", "read changed")];
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
             .unwrap();
@@ -1153,10 +1072,13 @@ mod tests {
     #[test]
     fn warm_model_fingerprint_mismatch_leaves_cache_untouched() {
         let items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&items, "fp-artifact", vec![unit2([1.0, 0.0])]);
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-active".into(),
-        }));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "fp-artifact",
+            vec![unit([1.0, 0.0])],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-active")));
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
             Err(WarmError::Embedder(EmbedderError::ModelMismatch {
@@ -1175,16 +1097,13 @@ mod tests {
     #[test]
     fn warm_ignores_other_known_entry_kind() {
         let items = [doc("a", "read")];
-        let embedder = ArtifactBuildStub {
-            fingerprint: "fp-warm".into(),
-            vectors: vec![unit2([1.0, 0.0])],
-        };
-        let bytes =
-            crate::embedding_artifact::build_artifact(ArtifactEntryKind::Skill, &items, &embedder)
-                .unwrap();
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            &items,
+            "fp-warm",
+            vec![unit([1.0, 0.0])],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
             .unwrap();
@@ -1198,28 +1117,23 @@ mod tests {
     fn warm_mixed_artifact_reuses_matching_kind_only() {
         let tool = doc("search", "tool search text");
         let skill = doc("search", "skill search text");
-        let tool_bytes = build_tool_artifact(
+        let tool_bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
             std::slice::from_ref(&tool),
             "fp-warm",
-            vec![unit2([1.0, 0.0])],
+            vec![unit([1.0, 0.0])],
         );
-        let skill_embedder = ArtifactBuildStub {
-            fingerprint: "fp-warm".into(),
-            vectors: vec![unit2([0.0, 1.0])],
-        };
-        let skill_bytes = crate::embedding_artifact::build_artifact(
+        let skill_bytes = build_test_artifact(
             ArtifactEntryKind::Skill,
             std::slice::from_ref(&skill),
-            &skill_embedder,
-        )
-        .unwrap();
+            "fp-warm",
+            vec![unit([0.0, 1.0])],
+        );
         let bytes =
             crate::embedding_artifact::merge_embedding_artifacts(&[&tool_bytes, &skill_bytes])
                 .unwrap();
 
-        let tool_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let tool_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let tool_outcome = tool_cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &[tool], &NoopSink)
             .unwrap();
@@ -1227,12 +1141,10 @@ mod tests {
         assert!(tool_outcome.missing.is_empty());
         assert_eq!(
             tool_cache.state.lock().unwrap().vectors.get("search"),
-            Some(&unit2([1.0, 0.0]))
+            Some(&unit([1.0, 0.0]))
         );
 
-        let skill_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let skill_cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let skill_outcome = skill_cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Skill, &[skill], &NoopSink)
             .unwrap();
@@ -1240,22 +1152,21 @@ mod tests {
         assert!(skill_outcome.missing.is_empty());
         assert_eq!(
             skill_cache.state.lock().unwrap().vectors.get("search"),
-            Some(&unit2([0.0, 1.0]))
+            Some(&unit([0.0, 1.0]))
         );
     }
 
     #[test]
     fn warm_subset_corpus_from_superset_artifact() {
         let artifact_items = [doc("a", "alpha"), doc("b", "bravo"), doc("c", "charlie")];
-        let bytes = build_tool_artifact(
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
             &artifact_items,
             "fp-warm",
-            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0]), unit2([0.6, 0.8])],
+            vec![unit([1.0, 0.0]), unit([0.0, 1.0]), unit([0.6, 0.8])],
         );
         let corpus = [doc("a", "alpha"), doc("c", "charlie")];
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-warm")));
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
             .unwrap();
@@ -1267,38 +1178,37 @@ mod tests {
     #[test]
     fn warm_then_extend_embeds_only_missing_ids() {
         let artifact_items = [doc("a", "read file")];
-        let bytes = build_tool_artifact(&artifact_items, "fp-warm", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &artifact_items,
+            "fp-warm",
+            vec![unit([1.0, 0.0])],
+        );
         let corpus = [doc("a", "read file"), doc("b", "write file")];
 
-        let count_stub = Arc::new(CountingFpStub {
-            fingerprint: "fp-warm".into(),
-            docs: AtomicUsize::new(0),
-        });
+        let count_stub = Arc::new(FpCountingEmbedder::new("fp-warm", vec_for));
         let cache = DenseCache::with_embedder(count_stub.clone());
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &corpus, &NoopSink)
             .unwrap();
         assert_eq!(outcome.reused, vec!["a"]);
         assert_eq!(outcome.missing, vec!["b"]);
-        assert_eq!(
-            count_stub.docs.load(Ordering::SeqCst),
-            0,
-            "warm must not embed reused ids"
-        );
+        assert_eq!(count_stub.docs(), 0, "warm must not embed reused ids");
 
         cache.extend(&corpus, &NoopSink).unwrap();
-        assert_eq!(
-            count_stub.docs.load(Ordering::SeqCst),
-            1,
-            "only the missing id is embedded"
-        );
+        assert_eq!(count_stub.docs(), 1, "only the missing id is embedded");
         assert!(cache.require_built(corpus.len()).is_ok());
     }
 
     #[test]
     fn warm_on_endpoint_skips_probe_when_static_fingerprint_already_matches() {
         let items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&items, "fp-static", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "fp-static",
+            vec![unit([1.0, 0.0])],
+        );
         let stub = Arc::new(EndpointProbeStub {
             static_fingerprint: "fp-static".into(),
             probe_fingerprint: "fp-should-not-matter".into(),
@@ -1316,7 +1226,12 @@ mod tests {
     #[test]
     fn warm_on_endpoint_probes_and_accepts_on_resolved_match() {
         let items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&items, "fp-resolved", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "fp-resolved",
+            vec![unit([1.0, 0.0])],
+        );
         let stub = Arc::new(EndpointProbeStub {
             static_fingerprint: "fp-configured".into(),
             probe_fingerprint: "fp-resolved".into(),
@@ -1335,7 +1250,12 @@ mod tests {
     #[test]
     fn warm_on_endpoint_probes_and_rejects_on_genuine_mismatch() {
         let items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&items, "fp-artifact", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "fp-artifact",
+            vec![unit([1.0, 0.0])],
+        );
         let stub = Arc::new(EndpointProbeStub {
             static_fingerprint: "fp-configured".into(),
             probe_fingerprint: "fp-other".into(),
@@ -1361,10 +1281,11 @@ mod tests {
     #[test]
     fn warm_compares_artifact_identity_stamps_runtime() {
         let items = [doc("a", "read"), doc("b", "write")];
-        let bytes = build_tool_artifact(
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
             &items,
             "content-x",
-            vec![unit2([1.0, 0.0]), unit2([0.0, 1.0])],
+            vec![unit([1.0, 0.0]), unit([0.0, 1.0])],
         );
         let cache = DenseCache::with_embedder(Arc::new(SplitIdentityStub {
             runtime: "runtime-path-b".into(),
@@ -1384,7 +1305,12 @@ mod tests {
     #[test]
     fn warm_rejects_artifact_identity_mismatch() {
         let items = [doc("a", "read")];
-        let bytes = build_tool_artifact(&items, "content-a", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "content-a",
+            vec![unit([1.0, 0.0])],
+        );
         let cache = DenseCache::with_embedder(Arc::new(SplitIdentityStub {
             runtime: "runtime-path".into(),
             artifact: "content-b".into(),
@@ -1414,9 +1340,7 @@ mod tests {
                 vector: vec![],
             }],
         );
-        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "unused".into(),
-        }));
+        let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("unused")));
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
             Err(WarmError::Artifact(ArtifactError::NonEmptyZeroDim))
@@ -1445,7 +1369,12 @@ mod tests {
             .expect("prebuilt id a");
 
         let warm_items = [doc("b", "y")];
-        let bytes = build_tool_artifact(&warm_items, "unknown", vec![unit2([1.0, 0.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &warm_items,
+            "unknown",
+            vec![unit([1.0, 0.0])],
+        );
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &NoopSink),
             Err(WarmError::Embedder(EmbedderError::DimensionMismatch {
@@ -1487,7 +1416,12 @@ mod tests {
         assert_eq!(probes_before, 1);
 
         let warm_items = [doc("b", "write")];
-        let bytes = build_tool_artifact(&warm_items, "fp-static-Y", vec![unit2([0.0, 1.0])]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &warm_items,
+            "fp-static-Y",
+            vec![unit([0.0, 1.0])],
+        );
         let sink = MemorySink::new("warm-second-guard");
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &sink),
@@ -1520,26 +1454,28 @@ mod tests {
 
     #[test]
     fn warm_into_prebuilt_adds_compatible_id() {
-        let stub = Arc::new(CountingFpStub {
-            fingerprint: "fp-add".into(),
-            docs: AtomicUsize::new(0),
-        });
+        let stub = Arc::new(FpCountingEmbedder::new("fp-add", vec_for));
         let cache = DenseCache::with_embedder(stub.clone());
         let prebuilt = doc("a", "read");
         cache.extend([&prebuilt], &NoopSink).unwrap();
-        assert_eq!(stub.docs.load(Ordering::SeqCst), 1);
+        assert_eq!(stub.docs(), 1);
         assert_eq!(cache.dim(), Some(2));
         assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-add"));
 
         let warm_items = [doc("b", "write")];
-        let bytes = build_tool_artifact(&warm_items, "fp-add", vec![unit2([0.0, 1.0])]);
-        let docs_before_warm = stub.docs.load(Ordering::SeqCst);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &warm_items,
+            "fp-add",
+            vec![unit([0.0, 1.0])],
+        );
+        let docs_before_warm = stub.docs();
         let outcome = cache
             .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &NoopSink)
             .unwrap();
         assert_eq!(outcome.reused, vec!["b"]);
         assert!(outcome.missing.is_empty());
-        assert_eq!(stub.docs.load(Ordering::SeqCst), docs_before_warm);
+        assert_eq!(stub.docs(), docs_before_warm);
         assert_eq!(cache.dim(), Some(2));
         assert_eq!(cache.built_fingerprint().as_deref(), Some("fp-add"));
         let state = cache.state.lock().unwrap();

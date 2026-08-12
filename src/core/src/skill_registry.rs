@@ -836,6 +836,9 @@ impl SkillRegistry {
 mod tests {
     use super::*;
     use crate::embedding::Embedder;
+    use crate::test_support::{
+        FailOnEmbedStub, FpCountingEmbedder, PanicOnEmbedStub, build_test_artifact, unit,
+    };
     use crate::trace::MemorySink;
 
     struct StubEmbedder;
@@ -1662,112 +1665,17 @@ mod tests {
         assert!(reg.rebuild_intent_graph().is_ok());
     }
 
-    /// Fixed-identity stub used to serialize artifacts for warm tests.
-    struct ArtifactBuildStub {
-        fingerprint: String,
-        vectors: Vec<Vec<f32>>,
-    }
-
-    impl Embedder for ArtifactBuildStub {
-        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            unreachable!("artifact build uses batch")
-        }
-        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            unreachable!("artifact build uses batch")
-        }
-        fn embed_batch_with_identity(
-            &self,
-            texts: &[String],
-        ) -> Result<crate::embedding::Embedded<Vec<Vec<f32>>>, EmbedderError> {
-            assert_eq!(texts.len(), self.vectors.len());
-            Ok(crate::embedding::Embedded {
-                value: self.vectors.clone(),
-                fingerprint: self.fingerprint.clone(),
-            })
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
-    struct FpCountingEmbedder {
-        fingerprint: String,
-        doc_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl FpCountingEmbedder {
-        fn new(fingerprint: &str) -> Self {
-            Self {
-                fingerprint: fingerprint.into(),
-                doc_calls: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-        fn docs(&self) -> usize {
-            self.doc_calls.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl Embedder for FpCountingEmbedder {
-        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            self.doc_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(StubEmbedder::vec_for(text))
-        }
-        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Ok(StubEmbedder::vec_for(text))
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
-    struct FailOnEmbedStub {
-        fingerprint: String,
-    }
-
-    impl Embedder for FailOnEmbedStub {
-        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Err(EmbedderError::Inference {
-                source: "forced embed failure".into(),
-            })
-        }
-        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Err(EmbedderError::Inference {
-                source: "forced embed failure".into(),
-            })
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
-    fn unit3(v: [f32; 3]) -> Vec<f32> {
-        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        v.iter().map(|x| x / n).collect()
-    }
-
-    fn skill_artifact<'a>(
-        items: impl IntoIterator<Item = &'a Skill>,
-        fingerprint: &str,
-        vectors: Vec<Vec<f32>>,
-    ) -> Vec<u8> {
-        let stub = ArtifactBuildStub {
-            fingerprint: fingerprint.into(),
-            vectors,
-        };
-        crate::embedding_artifact::build_artifact(ArtifactEntryKind::Skill, items, &stub).unwrap()
-    }
-
     #[test]
     fn warm_embeddings_error_ok_when_artifact_covers_corpus() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
         let b = skill("frontend", "frontend", "frontend slides", &[]);
-        let bytes = skill_artifact(
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
             [&a, &b],
             "fp-warm",
-            vec![unit3([1.0, 0.0, 0.0]), unit3([0.0, 1.0, 0.0])],
+            vec![unit([1.0, 0.0, 0.0]), unit([0.0, 1.0, 0.0])],
         );
-        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
         let mut reg = with_embedder(counter.clone());
         reg.register(a);
         reg.register(b);
@@ -1784,8 +1692,13 @@ mod tests {
     fn warm_embeddings_error_fails_when_ids_missing() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
         let b = skill("frontend", "frontend", "frontend slides", &[]);
-        let bytes = skill_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
-        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
         let mut reg = with_embedder(counter.clone());
         reg.register(a);
         reg.register(b);
@@ -1804,8 +1717,13 @@ mod tests {
     fn warm_embeddings_embed_completes_only_missing_ids() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
         let b = skill("frontend", "frontend", "frontend slides", &[]);
-        let bytes = skill_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
-        let counter = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
         let mut reg = with_embedder(counter.clone());
         reg.register(a);
         reg.register(b);
@@ -1822,10 +1740,13 @@ mod tests {
     fn warm_embeddings_embed_policy_propagates_build_embeddings_failure() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
         let b = skill("frontend", "frontend", "frontend slides", &[]);
-        let bytes = skill_artifact([&a], "fp-warm", vec![unit3([1.0, 0.0, 0.0])]);
-        let mut reg = with_embedder(Arc::new(FailOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
         reg.register(a);
         reg.register(b);
         assert!(matches!(
@@ -1837,8 +1758,13 @@ mod tests {
     #[test]
     fn warm_embeddings_propagates_warm_error_without_embed() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
-        let bytes = skill_artifact([&a], "fp-artifact", vec![unit3([1.0, 0.0, 0.0])]);
-        let counter = Arc::new(FpCountingEmbedder::new("fp-active"));
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-artifact",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-active", StubEmbedder::vec_for));
         let mut reg = with_embedder(counter.clone());
         reg.register(a);
         assert!(matches!(
@@ -1850,37 +1776,11 @@ mod tests {
         assert_eq!(counter.docs(), 0);
     }
 
-    /// Resolves identity without inference — panics if any embed path is hit.
-    struct PanicOnEmbedStub {
-        fingerprint: String,
-    }
-
-    impl Embedder for PanicOnEmbedStub {
-        fn embed_doc(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            panic!("embed_doc must not be called")
-        }
-        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedderError> {
-            panic!("embed_query must not be called")
-        }
-        fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
-            panic!("embed_batch must not be called")
-        }
-        fn embed_batch_with_identity(
-            &self,
-            _texts: &[String],
-        ) -> Result<crate::embedding::Embedded<Vec<Vec<f32>>>, EmbedderError> {
-            panic!("embed_batch_with_identity must not be called")
-        }
-        fn fingerprint(&self) -> String {
-            self.fingerprint.clone()
-        }
-    }
-
     #[test]
     fn build_embedding_artifact_round_trips_via_warm() {
         let a = skill("api-design", "api-design", "rest api design", &[]);
         let b = skill("frontend", "frontend", "frontend slides", &[]);
-        let builder = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let builder = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
         let mut reg_a = with_embedder(builder.clone());
         reg_a.register(skill("api-design", "api-design", "rest api design", &[]));
         reg_a.register(skill("frontend", "frontend", "frontend slides", &[]));
@@ -1891,7 +1791,7 @@ mod tests {
             "build embeds each corpus document exactly once"
         );
 
-        let warmer = Arc::new(FpCountingEmbedder::new("fp-warm"));
+        let warmer = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
         let mut reg_b = with_embedder(warmer.clone());
         reg_b.register(a);
         reg_b.register(b);
@@ -1908,9 +1808,7 @@ mod tests {
 
     #[test]
     fn build_embedding_artifact_propagates_embedder_failure() {
-        let mut reg = with_embedder(Arc::new(FailOnEmbedStub {
-            fingerprint: "fp-warm".into(),
-        }));
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
         reg.register(skill("api-design", "api-design", "rest api design", &[]));
         assert!(matches!(
             reg.build_embedding_artifact(),
@@ -1920,9 +1818,7 @@ mod tests {
 
     #[test]
     fn build_embedding_artifact_empty_corpus_is_valid() {
-        let reg = with_embedder(Arc::new(PanicOnEmbedStub {
-            fingerprint: "unused".into(),
-        }));
+        let reg = with_embedder(Arc::new(PanicOnEmbedStub::new("unused")));
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
