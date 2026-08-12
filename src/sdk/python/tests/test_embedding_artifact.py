@@ -562,6 +562,134 @@ async def test_skill_replace_all_warms_configured_artifact(
     assert hits[0].skill_id == "frontend-slides"
 
 
+async def test_second_register_rewarms_without_document_inference(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    """PY-1: split-register re-warm with zero document inference."""
+    url, state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "both-tools.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output,
+        embedding=embedding,
+        tools=[READ_FILE, WRITE_FILE],
+    )
+    # Artifact holds A+B, but warm only applies entries in the current corpus.
+    # First register ({A}) must not populate B; the second register must warm B
+    # from the artifact (no document inference) — search for B proves it.
+    corpus = _corpus_inputs(state.requests)
+    docs_after_build = len(state.requests)
+
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    await catalog.register(_executable(READ_FILE))
+    _assert_corpus_not_reembedded(corpus, state.requests[docs_after_build:])
+    hits_after_a = await catalog.search_async("write a file", 5)
+    assert "write_file" not in [h.tool_id for h in hits_after_a]
+
+    docs_after_first = len(state.requests)
+    await catalog.register(_executable(WRITE_FILE))
+    _assert_corpus_not_reembedded(corpus, state.requests[docs_after_first:])
+
+    hits = await catalog.search_async("write a file", 5)
+    assert "write_file" in [h.tool_id for h in hits]
+
+
+async def test_path_artifact_reread_on_second_register(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    """PY-2: same path config re-reads changed artifact bytes between registers."""
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    path = tmp_path / "path-swap.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=path, embedding=embedding, tools=[READ_FILE]
+    )
+    artifact = {"path": str(path)}
+
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact=artifact,
+    )
+    await catalog.register(_executable(READ_FILE))
+    hits_after_a = await catalog.search_async("write a file", 5)
+    assert "write_file" not in [h.tool_id for h in hits_after_a]
+
+    await experimental_build_embedding_artifact(
+        output=path,
+        embedding=embedding,
+        tools=[READ_FILE, WRITE_FILE],
+    )
+    await catalog.register(_executable(WRITE_FILE))
+
+    hits = await catalog.search_async("write a file", 5)
+    assert "write_file" in [h.tool_id for h in hits]
+
+
+async def test_incremental_register_fails_closed_on_second_register(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    """PY-3: second register beyond artifact coverage fails with exact missing ids."""
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "tool-a-only.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, tools=[READ_FILE]
+    )
+
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    await catalog.register(_executable(READ_FILE))
+
+    with pytest.raises(ArtifactWarmError) as caught:
+        await catalog.register(_executable(WRITE_FILE))
+    err = caught.value
+    assert isinstance(err, ArtifactWarmError)
+    assert err.code == "Incomplete"
+    assert err.missing == ["write_file"]
+
+
+async def test_replace_all_twice_rereads_path_artifact(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    """PY-4: replace_all twice observes new bytes at the same configured path."""
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    path = tmp_path / "skills-path-swap.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=path, embedding=embedding, skills=[SLIDES]
+    )
+    artifact = {"path": str(path)}
+
+    catalog = SkillCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact=artifact,
+    )
+    reload1 = catalog.replace_all([SLIDES])
+    assert reload1.added == 1
+    assert reload1.removed == 0
+    await reload1
+
+    await experimental_build_embedding_artifact(
+        output=path, embedding=embedding, skills=[API_DESIGN]
+    )
+    reload2 = catalog.replace_all([API_DESIGN])
+    assert reload2.added == 1
+    assert reload2.removed == 1
+    await reload2
+
+    hits = await catalog.search_async("REST API design", 5)
+    assert hits[0].skill_id == "api-design"
+
+
 async def test_artifact_bytes_rejects_bytearray_and_memoryview() -> None:
     with pytest.raises(TypeError, match="must be bytes"):
         await resolve_embedding_artifact({"bytes": bytearray(b"RAT1")})
