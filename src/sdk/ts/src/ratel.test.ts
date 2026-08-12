@@ -349,7 +349,7 @@ describe("ratel() standalone core", () => {
 
 describe("ratel() semantic/hybrid config", () => {
   // Semantic/hybrid is a first-class config through the factory. These prove
-  // method + embedding are forwarded to both catalogs and that register is
+  // method + embedding are forwarded to the tool, skill, and fact catalogs and that register is
   // async (awaits/surfaces the embedding pass) — offline except where a fake
   // embedding endpoint is needed for the end-to-end embed-then-search.
   it("forwards method: the handle's sync search is BM25-only and points to searchAsync", () => {

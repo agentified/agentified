@@ -31,8 +31,8 @@ export interface RatelConfig {
    * BM25 search is model-free, but an explicitly configured embedding artifact is
    * still warmed during Tool/Skill registration. */
   method?: SearchMethod;
-  /** Embedding model backing `"semantic"`/`"hybrid"` retrieval, forwarded to both
-   * catalogs — see {@link ToolCatalogOptions.embedding}. A string is a local model
+  /** Embedding model backing `"semantic"`/`"hybrid"` retrieval, forwarded to the tool, skill, and fact catalogs
+   * — see {@link ToolCatalogOptions.embedding}. A string is a local model
    * directory path; every other source is a keyed object (`{ huggingface }`,
    * `{ ollama }`, `{ url, model, apiKeyEnv }`). Omit to use the built-in default
    * model. `await r.tools.register(...)` awaits dense preparation (artifact warm
