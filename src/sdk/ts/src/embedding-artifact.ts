@@ -39,9 +39,16 @@ export interface ExperimentalBuildEmbeddingArtifactOptions {
 }
 
 /**
- * Build one mixed Tool+Skill RAT1 and write it to `output`. Registers metadata
- * on BM25 registries so each document is embedded once (not via catalog
- * `buildDense`).
+ * Build one mixed Tool+Skill RAT1 and write it to `output`. Builds a Tool half
+ * and a Skill half via the registry single-kind
+ * {@link ToolRegistry.experimentalBuildEmbeddingArtifact | experimentalBuildEmbeddingArtifact}
+ * builders (metadata registered on BM25 registries so each document is embedded
+ * once, not via catalog `buildDense`), merges them internally, and writes the
+ * combined artifact.
+ *
+ * @throws {EmbedderError} When embedding or backend resolution fails.
+ * @throws {ArtifactError} When artifact construction fails for a non-embedder reason.
+ * @throws {IncompatibleMergeError} When the Tool and Skill halves are incompatible.
  */
 export async function experimentalBuildEmbeddingArtifact(
   options: ExperimentalBuildEmbeddingArtifactOptions,

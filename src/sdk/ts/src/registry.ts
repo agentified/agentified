@@ -97,11 +97,16 @@ export class ToolRegistry {
   }
 
   /**
-   * Build a binary embedding artifact from the registered corpus (ADR-0017).
-   * Embedding for the artifact is independent of the mutable dense cache —
-   * it does not consume or update cached vectors. Returns a Node `Buffer`
-   * suitable for `fs.writeFile`. Independent of the registry's search method
-   * (works with `"bm25"` as well as `"semantic"`/`"hybrid"`).
+   * Build a single-kind binary embedding artifact from this registry's
+   * registered corpus (ADR-0017). Embedding for the artifact is independent of
+   * the mutable dense cache — it does not consume or update cached vectors.
+   * Returns a Node `Buffer` suitable for `fs.writeFile`. Independent of the
+   * registry's search method (works with `"bm25"` as well as
+   * `"semantic"`/`"hybrid"`). For a mixed Tool+Skill artifact, use the
+   * top-level {@link experimentalBuildEmbeddingArtifact} module helper instead.
+   *
+   * @throws {EmbedderError} When embedding or backend resolution fails.
+   * @throws {ArtifactError} When artifact construction fails for a non-embedder reason.
    */
   async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
     try {
@@ -366,8 +371,11 @@ export class SkillRegistry {
   }
 
   /**
-   * Build a binary embedding artifact from the registered corpus — see
-   * {@link ToolRegistry.experimentalBuildEmbeddingArtifact}.
+   * Build a single-kind binary embedding artifact from this registry's
+   * registered corpus — see {@link ToolRegistry.experimentalBuildEmbeddingArtifact}.
+   *
+   * @throws {EmbedderError} When embedding or backend resolution fails.
+   * @throws {ArtifactError} When artifact construction fails for a non-embedder reason.
    */
   async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
     try {
