@@ -18,48 +18,87 @@ when ids and searchable projections still match.
 
 ## Decision
 
-Ship a build-time binary embedding artifact (RAT1). Hosts own persistence;
-`ratel-ai-core` consumes and produces `Vec<u8>` and remains filesystem/I/O-free
-on this surface. Embedding artifacts and model-weight caches are separate
-lifecycles.
+Ship a build-time binary embedding artifact (RAT1). Artifact persistence
+remains host-owned; the core artifact APIs accept/return bytes and perform no
+artifact filesystem I/O. Embedding artifacts and model-weight caches are
+separate lifecycles.
 
 **Format.** Magic `RAT1`, `format_version` (`1`), `payload_len`, SHA-256 of
-payload, then payload. Header: `projection_version`, `dim`,
+payload, then payload. The checksum provides integrity/corruption detection
+only — not authentication, signing, or semantic validity by itself. After
+checksum verification, the core applies canonical semantic validation before
+merge or cache mutation: a non-empty artifact requires `dim > 0`; vector widths
+must match `dim`; values must be finite; vectors must be unit-normalized using
+the same squared-L2-norm tolerance as the dense cache (not a tolerance on the
+vector length itself). Malformed checksum-valid bytes are rejected. Canonical builder output for an empty artifact: `entry_count = 0`, `dim = 0`.
+Decoding does not introduce a new rejection solely because an otherwise valid empty RAT1 has `entry_count = 0` and `dim > 0`. Builders enforce the same vector semantic invariants before serialization. Header: `projection_version`, `dim`,
 `model_fingerprint`. Each entry: `kind` (Tool or Skill), stable `id`,
 `projection_hash` (SHA-256 of projection text — text never stored),
-L2-normalized vector. One RAT1 v1 file may mix Tool and Skill entries. Unknown
-kind bytes are corrupt. Descriptions, bodies, executors, and credentials are
-not stored.
+L2-normalized vector. One RAT1 v1 file may mix Tool and Skill entries.
+Unknown kind bytes are corrupt. Descriptions, bodies, executors, and credentials are not stored.
+
+**Local model identity (artifact vs runtime).** RAT1 header `model_fingerprint`
+for `Local` uses the artifact compatibility digest (see ADR-0012); runtime
+dense-cache identity for `Local` remains path-based. Hashing happens lazily
+only when RAT1 build or warm requires it; no persistent digest store;
+`(len, mtime)` memo is a process-local accelerator only.
 
 **Warm.** A Tool registry reuses only Tool entries; a Skill registry only Skill
 entries. Matching requires kind + id + `projection_hash == sha256(embed_text())`.
 Fingerprint mismatch fails closed (zero commits). Artifact-only entries are
-ignored, so a larger artifact can warm a subset corpus. Id+hash matching runs
-before embedder resolve; an empty reuse set never loads a model.
+ignored, so a larger artifact can warm a subset corpus. Other-kind entries do
+not satisfy missing entries for the active kind. The same textual id across Tool
+and Skill kinds is allowed. Id+hash matching runs before embedder resolve; warm
+may skip embedder resolution when no corpus entries need embedding inference.
 
 **Build / merge.** Each registry builds a single-kind artifact (empty corpus →
-valid empty RAT1, no embedder). `merge_embedding_artifacts` combines compatible
-parts into one mixed RAT1 (shared format/projection version, fingerprint, and
-dim; no duplicate `(kind, id)`). Malformed input is corruption;
-valid-but-incompatible parts are `IncompatibleMerge`.
+valid empty RAT1, no embedder). `merge_embedding_artifacts` is a public Rust
+core bytes-only primitive that combines compatible parts into one mixed RAT1
+(shared format/projection version, fingerprint, and dim; no duplicate
+`(kind, id)`). SDK high-level mixed builders (`experimentalBuildEmbeddingArtifact`
+/ `experimental_build_embedding_artifact`) build a Tool half and a Skill half
+and merge internally — merge is not a public SDK API. Malformed input is
+corruption; valid-but-incompatible parts are `IncompatibleMerge`.
 
-**Miss policy.** `OnArtifactMiss::Error` → `Incomplete { missing }`;
-`Embed` → embed only uncached ids. Bytes are immutable build output (no
-runtime write-through).
+**Coverage / miss policy.** Default `onMiss` / `on_miss` is `"error"`. With
+that default, every id in each non-empty registering corpus must be covered. A
+tool-only artifact is valid while the Skill corpus stays empty (and vice versa).
+When both sides register, use a mixed artifact or `onMiss` / `on_miss`
+`"embed"` to fill uncovered current entries. `OnArtifactMiss::Error` →
+`Incomplete { missing }`; `Embed` → embed only uncached ids. Bytes are immutable
+build output (no runtime write-through).
+
+**Lifecycle.** Every `register` / `replaceAll` / `replace_all` re-resolves the
+configured artifact source (path-backed config re-reads current bytes),
+re-warms against the whole current corpus, and applies the current miss policy.
+No resolve-once memoization, path-byte cache, or already-warmed flag.
 
 **TypeScript.** `experimentalBuildEmbeddingArtifact` builds BM25 metadata
-registries, embeds once per side, merges, and writes the file. Runtime
+registries, embeds once per side, merges internally, and writes the file.
+`ToolRegistry` / `SkillRegistry` expose
+`experimentalBuildEmbeddingArtifact` and
+`experimentalWarmEmbeddingsFromArtifact`. Runtime
 `experimentalEmbeddingArtifact: { path } | { bytes }` (default
 `onMiss: "error"`) is warmed on registration **before** eager document
-embedding.
+embedding. Public errors include `ArtifactError`, `IncompatibleMergeError`
+(may surface from the high-level mixed builder's internal Tool+Skill
+composition), and `ArtifactWarmError`.
 
 **Python.** `experimental_build_embedding_artifact` mirrors that build helper
-(snake_case). Runtime `experimental_embedding_artifact` on registry/catalog
-constructors warms before eager document embedding; default `on_miss` is
-`"error"`. PyO3 maps core artifact errors directly (no NAPI JSON envelope).
+(snake_case). Registries expose `experimental_build_embedding_artifact` and
+`experimental_warm_embeddings_from_artifact`. Runtime
+`experimental_embedding_artifact` on registry/catalog constructors warms before
+eager document embedding; default `on_miss` is `"error"`. PyO3 maps core
+artifact errors directly (no NAPI JSON envelope). Public errors include
+`ArtifactError`, `IncompatibleMergeError`, and `ArtifactWarmError` (`.code`,
+`.missing`; no JS-style `.name` — use `type(err).__name__`).
 
 ## Consequences
 
-Unchanged catalog entries can skip document inference at cold start.
-Changed or missing projections follow the configured miss policy. Semantic
-search still requires query embedding against the warmed or built dense cache.
+Covered artifact entries avoid corpus/document embedding inference at cold
+start. Changed or missing projections follow the configured miss policy.
+Semantic/hybrid search still requires query embedding through the configured
+embedding backend against the warmed or built dense cache; Local/HF backends
+may therefore still require runtime model initialization/loading, and endpoint
+continues to perform its normal remote query-embedding operation. RAT1 does not
+eliminate runtime query embedding.

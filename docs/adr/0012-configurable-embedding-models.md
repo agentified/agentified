@@ -105,12 +105,17 @@ land in different vector spaces.
   than reintroduce an ONNX/C++ runtime, which would reverse ADR-0011's
   clean-wheels decision. MPNet-specific architecture/pooling corrections remain
   deferred; use an endpoint for MPNet models in the meantime.
-- **Local model identity is content-derived.** A `Local` fingerprint hashes the
-  files Candle loads (`config.json`, `tokenizer.json`, weights, and optional
-  `1_Pooling/config.json`), not the directory path. Path-keyed identity breaks
-  when the same weights are remounted at a different path (typical
-  build-time → runtime / Docker); content identity is what a future on-disk
-  embedding artifact needs to validate the model after that remount. Digests are
-  memoized against file `(len, mtime)` so warm process-cache lookups do not
-  re-read weight bytes.
-- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0017 adds a persistent build-time artifact keyed by the fingerprint already stamped on the cache. Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
+- **Runtime / global `Local` model identity is path-based.** The process-wide
+  embedder cache, dense-cache stamp, and `IntentGraph` model-identity checks
+  use the configured directory path. Failed loads are not cached (ADR-0012
+  unchanged).
+- **Artifact-specific `Local` compatibility fingerprint
+  ([ADR-0017](0017-build-time-embedding-artifacts.md) only).** RAT1 build/warm
+  uses a content-derived full digest of the effective Candle model inputs
+  (weights, tokenizer, config, resolved pooling, effective query/document
+  prefixes). Computed lazily only when RAT1 build or warm requires it.
+  Irrelevant files (for example `1_Pooling/config.json` when pooling is
+  explicitly overridden) do not affect the digest. `(len, mtime)` memoization
+  is a process-local accelerator for digest recomputation — not authoritative
+  runtime or artifact identity storage.
+- **Known limitation, addressed in [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is in-process only — every process start re-embeds the corpus, cheap locally but costly over an endpoint. ADR-0017 adds persistent build-time RAT1 artifacts; for `Local` models the artifact header carries a separate content-derived artifact compatibility fingerprint used only for RAT1 build/warm — it is not substituted into normal runtime identity (typical build-time → runtime / Docker remounts are why that separate fingerprint exists). Also deferred: non-OpenAI endpoint request shapes and in-process GGUF/ONNX.
