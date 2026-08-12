@@ -89,24 +89,26 @@ function validateEmbeddingArtifact(config: unknown): {
       `experimentalEmbeddingArtifact has unknown keys: ${unknown.sort().join(", ")}`,
     );
   }
-  const hasPath = Object.hasOwn(record, "path");
-  const hasBytes = Object.hasOwn(record, "bytes");
+  const path = record.path;
+  const bytes = record.bytes;
+  const hasPath = path !== undefined;
+  const hasBytes = bytes !== undefined;
   if (hasPath === hasBytes) {
     throw new TypeError("experimentalEmbeddingArtifact requires exactly one of 'path' or 'bytes'");
   }
-  const onMissRaw = Object.hasOwn(record, "onMiss") ? record.onMiss : "error";
+  const onMissRaw = record.onMiss === undefined ? "error" : record.onMiss;
   if (onMissRaw !== "error" && onMissRaw !== "embed") {
     throw new Error(
       `unknown on-artifact-miss policy ${JSON.stringify(onMissRaw)} (expected "error" or "embed")`,
     );
   }
   if (hasPath) {
-    if (typeof record.path !== "string") {
+    if (typeof path !== "string") {
       throw new TypeError("experimentalEmbeddingArtifact path must be a string");
     }
-    return { path: record.path, onMiss: onMissRaw };
+    return { path, onMiss: onMissRaw };
   }
-  const raw = record.bytes;
+  const raw = bytes;
   if (!(raw instanceof Uint8Array)) {
     throw new TypeError("experimentalEmbeddingArtifact bytes must be a Uint8Array or Buffer");
   }

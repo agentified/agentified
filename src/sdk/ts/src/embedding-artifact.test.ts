@@ -381,6 +381,59 @@ describe("catalog experimentalEmbeddingArtifact", () => {
     }
   });
 
+  it("ratel() shared artifact is fail-closed per kind corpus coverage (and recoverable)", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tools-only.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+        skills: [],
+      });
+
+      const expectedSkillId = slides.id;
+
+      const core = ratel({
+        method: "hybrid",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      await core.tools.register({ ...readFileTool, execute: async () => ({}) });
+
+      let caught: unknown;
+      try {
+        await core.skills.register(slides);
+      } catch (e: unknown) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ArtifactWarmError);
+      expect((caught as ArtifactWarmError).code).toBe("Incomplete");
+      expect((caught as ArtifactWarmError).missing).toEqual([expectedSkillId]);
+      expect(caught).not.toBeInstanceOf(EmbedderError);
+
+      const recovered = ratel({
+        method: "hybrid",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output, onMiss: "embed" },
+      });
+      await recovered.tools.register({ ...readFileTool, execute: async () => ({}) });
+      await recovered.skills.register(slides);
+
+      const skillHits = await recovered.skills.searchAsync(
+        "html presentations",
+        5,
+        "direct",
+        "semantic",
+      );
+      expect(skillHits[0]?.skillId).toBe(expectedSkillId);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("bm25 catalog with explicit artifact still warms for semantic override", async () => {
     const server = await startDelayedEmbeddingServer();
     try {
@@ -474,6 +527,83 @@ describe("resolveEmbeddingArtifact", () => {
     await expect(
       resolveEmbeddingArtifact({ path: "/tmp/a.rat1", bytes: new Uint8Array([1]) } as never),
     ).rejects.toThrow(/exactly one of 'path' or 'bytes'/);
+  });
+
+  it("treats explicit undefined as absence (path/bytes + onMiss)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ratel-artifact-validate-"));
+    const output = join(dir, "a.rat1");
+    try {
+      await writeFile(output, "RAT1");
+      const pathBytes = Buffer.from("RAT1");
+      const validBytes = new Uint8Array([1, 2, 3]);
+
+      const fromPath = await resolveEmbeddingArtifact({
+        path: output,
+        // Explicit undefined counts as “absent”.
+        bytes: undefined,
+      } as never);
+      expect(fromPath.onMiss).toBe("error");
+      expect(Buffer.compare(fromPath.bytes, pathBytes)).toBe(0);
+
+      const fromBytes = await resolveEmbeddingArtifact({
+        bytes: validBytes,
+        // Explicit undefined counts as “absent”.
+        path: undefined,
+      } as never);
+      expect(fromBytes.onMiss).toBe("error");
+      expect(fromBytes.bytes).toEqual(Buffer.from(validBytes));
+
+      const onMissDefaulted = await resolveEmbeddingArtifact({
+        path: output,
+        onMiss: undefined,
+      } as never);
+      expect(onMissDefaulted.onMiss).toBe("error");
+
+      await expect(
+        resolveEmbeddingArtifact({
+          path: undefined,
+          bytes: undefined,
+        } as never),
+      ).rejects.toThrow(/experimentalEmbeddingArtifact requires exactly one of 'path' or 'bytes'/);
+
+      await expect(
+        resolveEmbeddingArtifact({
+          path: output,
+          bytes: validBytes,
+        } as never),
+      ).rejects.toThrow(/experimentalEmbeddingArtifact requires exactly one of 'path' or 'bytes'/);
+
+      await expect(
+        resolveEmbeddingArtifact({
+          path: output,
+          onMiss: "nope",
+        } as never),
+      ).rejects.toThrow(/unknown on-artifact-miss policy/);
+
+      // `null` is a defined invalid value: it must fail type checks (not be treated as absence).
+      await expect(
+        resolveEmbeddingArtifact({
+          path: null,
+          bytes: undefined,
+        } as never),
+      ).rejects.toThrow(/path must be a string/);
+
+      await expect(
+        resolveEmbeddingArtifact({
+          bytes: null,
+          path: undefined,
+        } as never),
+      ).rejects.toThrow(/bytes must be a Uint8Array or Buffer/);
+
+      await expect(
+        resolveEmbeddingArtifact({
+          path: output,
+          onMiss: null,
+        } as never),
+      ).rejects.toThrow(/unknown on-artifact-miss policy/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects unknown keys", async () => {

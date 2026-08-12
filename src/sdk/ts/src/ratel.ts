@@ -36,7 +36,18 @@ export interface RatelConfig {
    * model. `await r.tools.register(...)` awaits dense preparation (artifact warm
    * or embedding) and rejects if it fails, so errors surface at registration. */
   embedding?: EmbeddingSpec;
-  /** Build-time embedding artifact forwarded to both catalogs (default `onMiss: "error"`). */
+  /**
+   * Build-time embedding artifact forwarded to both catalogs (default `onMiss: "error"`).
+   *
+   * Under the default fail-closed policy, the shared artifact must cover every
+   * non-empty Tool/Skill corpus that actually registers. A tool-only artifact is
+   * valid when the Skill corpus stays empty.
+   *
+   * Remedies:
+   * - Build one mixed artifact with {@link experimentalBuildEmbeddingArtifact}
+   *   so it covers all expected Tool + Skill corpora.
+   * - Or set `onMiss: "embed"` to infer uncovered current-kind entries at runtime.
+   */
   experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
   /** Max tools each host-driven `recall` returns: capped at 50; 0, negative, or
    * non-integer values fall back to the default 5. */

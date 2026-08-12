@@ -51,6 +51,9 @@ export interface SkillCatalogOptions {
    * default `onMiss: "error"`). Each call re-resolves and re-warms over the
    * whole current corpus — intended for one batch at startup; incremental
    * register/replaceAll calls repeat I/O and id+hash matching.
+   *
+   * With the default fail-closed `onMiss: "error"`, warm fails when the
+   * artifact is missing one or more ids from the catalog's current corpus.
    */
   experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
 }
