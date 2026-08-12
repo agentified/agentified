@@ -110,7 +110,7 @@ land in different vector spaces.
   use the configured directory path. Failed loads are not cached (ADR-0012
   unchanged).
 - **Artifact-specific `Local` compatibility fingerprint
-  ([ADR-0017](0017-build-time-embedding-artifacts.md) only).** RAT1 build/warm
+  ([ADR-0018](0018-build-time-embedding-artifacts.md) only).** RAT1 build/warm
   uses a content-derived full digest of the effective Candle model inputs
   (weights, tokenizer, config, resolved pooling, effective query/document
   prefixes). Computed lazily only when RAT1 build or warm requires it.
@@ -119,9 +119,9 @@ land in different vector spaces.
   is a process-local accelerator for digest recomputation — not authoritative
   runtime or artifact identity storage.
 - **Known limitation, addressed in
-  [ADR-0017](0017-build-time-embedding-artifacts.md):** the embedding cache is
+  [ADR-0018](0018-build-time-embedding-artifacts.md):** the embedding cache is
   in-process only — every process start re-embeds the corpus, cheap locally but
-  costly over an endpoint. ADR-0017 adds persistent build-time RAT1 artifacts;
+  costly over an endpoint. ADR-0018 adds persistent build-time RAT1 artifacts;
   for `Local` models the artifact header carries a separate content-derived
   artifact compatibility fingerprint used only for RAT1 build/warm — it is not
   substituted into normal runtime identity (typical build-time → runtime /

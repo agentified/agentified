@@ -1,4 +1,4 @@
-# 17. Build-time embedding artifacts
+# 18. Build-time embedding artifacts
 
 Date: 2026-08-10
 
