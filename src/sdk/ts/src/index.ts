@@ -70,7 +70,13 @@ export type {
   ExperimentalEmbeddingArtifact,
 } from "./embedding-artifact.js";
 export { experimentalBuildEmbeddingArtifact } from "./embedding-artifact.js";
-export { ArtifactWarmError, DimensionMismatchError, EmbedderError } from "./errors.js";
+export {
+  ArtifactError,
+  ArtifactWarmError,
+  DimensionMismatchError,
+  EmbedderError,
+  IncompatibleMergeError,
+} from "./errors.js";
 export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
 export { McpToolsListError, registerMcpServer } from "./mcp.js";
 // The framework-adapter SPI and factory (ADR-0013): `ratel(config).adaptTo(adapter)`.

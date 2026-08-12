@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  ArtifactError,
   ArtifactWarmError,
   EmbedderError,
   type Skill,
@@ -156,6 +157,53 @@ describe("ToolRegistry embedding artifacts", () => {
     // Fixture yields a load failure today; assert the mapped code matches that path.
     expect((error as EmbedderError).code).toBe("Load");
   });
+
+  const artifactEnvelopeCases: Array<{
+    name: string;
+    Registry: typeof ToolRegistry | typeof SkillRegistry;
+    item: Tool | Skill;
+  }> = [
+    { name: "ToolRegistry", Registry: ToolRegistry, item: readFile },
+    { name: "SkillRegistry", Registry: SkillRegistry, item: slides },
+  ];
+
+  for (const { name, Registry, item } of artifactEnvelopeCases) {
+    it(`${name}.experimentalBuildEmbeddingArtifact maps RATEL_ARTIFACT_ERROR VectorNotNormalized`, async () => {
+      const server = await startDelayedEmbeddingServer();
+      try {
+        const registry = new Registry({ url: server.url, model: "test-model" }, "bm25");
+        await registry.register(item);
+        const human = "embedding vector for corpus item is not unit-normalized (hint: …)";
+        const nativeError = new Error(
+          `RATEL_ARTIFACT_ERROR:${JSON.stringify({
+            code: "VectorNotNormalized",
+            message: human,
+          })}`,
+        );
+        const spy = vi
+          .spyOn(
+            (registry as unknown as { native: { buildEmbeddingArtifact: () => Promise<Buffer> } })
+              .native,
+            "buildEmbeddingArtifact",
+          )
+          .mockRejectedValue(nativeError);
+        try {
+          const error = await registry.experimentalBuildEmbeddingArtifact().then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+          expect(error).toBeInstanceOf(ArtifactError);
+          expect((error as ArtifactError).code).toBe("VectorNotNormalized");
+          expect(error).not.toBeInstanceOf(EmbedderError);
+          expect((error as ArtifactError).message).toBe(human);
+        } finally {
+          spy.mockRestore();
+        }
+      } finally {
+        await server.close();
+      }
+    });
+  }
 
   it("does not block concurrent semantic search while experimentalBuildEmbeddingArtifact is in flight", async () => {
     const server = await startDelayedEmbeddingServer();

@@ -13,6 +13,11 @@
  * {@link ArtifactWarmError} / {@link mapArtifactWarmError} cover failures from
  * `experimentalWarmEmbeddingsFromArtifact` (ADR-0017), decoded from a private
  * native→TS envelope (not part of the public API).
+ *
+ * {@link ArtifactError} / {@link IncompatibleMergeError} / {@link mapArtifactError}
+ * cover build-time artifact encode/decode/merge failures from
+ * `experimentalBuildEmbeddingArtifact` and internal merge, decoded from a
+ * separate private envelope.
  */
 
 /**
@@ -53,6 +58,58 @@ export class DimensionMismatchError extends EmbedderError {
   constructor(message: string) {
     super(message, "DimensionMismatch");
     this.name = "DimensionMismatchError";
+  }
+}
+
+/** Stable discriminant for non-embedder {@link ArtifactError} codes (exact Rust variant names). */
+type ArtifactErrorCode =
+  | "TooShort"
+  | "InvalidMagic"
+  | "UnsupportedFormatVersion"
+  | "ChecksumMismatch"
+  | "CorruptPayload"
+  | "InconsistentVectorWidth"
+  | "VectorNotNormalized"
+  | "NonEmptyZeroDim"
+  | "InvalidVector"
+  | "IncompatibleMerge";
+
+/**
+ * Build-time embedding artifact encode/decode/merge failure (non-embedder
+ * {@link ArtifactError} variants). Prefer {@link ArtifactError.code} over
+ * parsing {@link Error.message}.
+ */
+export class ArtifactError extends Error {
+  /**
+   * Stable machine-readable discriminant — exact Rust variant name (for example
+   * `"IncompatibleMerge"` or `"VectorNotNormalized"`). Prefer this (or
+   * `instanceof`) over parsing {@link Error.message}.
+   */
+  readonly code: ArtifactErrorCode;
+
+  /**
+   * @param message - The underlying failure description (the core error text).
+   * @param code - The stable {@link ArtifactError.code} discriminant.
+   */
+  constructor(message: string, code: ArtifactErrorCode) {
+    super(message);
+    this.name = "ArtifactError";
+    this.code = code;
+  }
+}
+
+/**
+ * Valid RAT1 parts that cannot be merged (header mismatch or duplicate
+ * kind+id). A subclass of {@link ArtifactError}; its {@link ArtifactError.code}
+ * is `"IncompatibleMerge"`.
+ */
+export class IncompatibleMergeError extends ArtifactError {
+  /**
+   * @param message - Why the parts cannot be combined.
+   */
+  constructor(message: string) {
+    super(message, "IncompatibleMerge");
+    this.name = "IncompatibleMergeError";
   }
 }
 
@@ -136,6 +193,22 @@ export function mapEmbedderError(error: unknown): unknown {
 /** Private NAPI→TS transport prefix — must match native `ARTIFACT_WARM_ERROR_PREFIX`. */
 const ARTIFACT_WARM_ERROR_PREFIX = "RATEL_ARTIFACT_WARM_ERROR:";
 
+/** Private NAPI→TS transport prefix — must match native `ARTIFACT_ERROR_PREFIX`. */
+const ARTIFACT_ERROR_PREFIX = "RATEL_ARTIFACT_ERROR:";
+
+const ARTIFACT_ERROR_CODES: ReadonlySet<string> = new Set([
+  "TooShort",
+  "InvalidMagic",
+  "UnsupportedFormatVersion",
+  "ChecksumMismatch",
+  "CorruptPayload",
+  "InconsistentVectorWidth",
+  "VectorNotNormalized",
+  "NonEmptyZeroDim",
+  "InvalidVector",
+  "IncompatibleMerge",
+]);
+
 type ArtifactWarmCode = "Warm" | "Incomplete" | "Embedder";
 
 function isStringArray(value: unknown): value is string[] {
@@ -173,4 +246,45 @@ export function mapArtifactWarmError(error: unknown): unknown {
   // Warm / Embedder: `missing` must be absent.
   if ("missing" in record) return error;
   return new ArtifactWarmError(record.message, code as ArtifactWarmCode);
+}
+
+/**
+ * Decode the private native artifact-build envelope into a typed
+ * {@link ArtifactError} / {@link IncompatibleMergeError}. Malformed envelopes
+ * and non-artifact errors are returned unchanged.
+ *
+ * @param error - The error thrown by the native binding.
+ * @returns The typed artifact error, or `error` unchanged when it is not one.
+ */
+export function mapArtifactError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  if (!error.message.startsWith(ARTIFACT_ERROR_PREFIX)) return error;
+  const raw = error.message.slice(ARTIFACT_ERROR_PREFIX.length);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return error;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return error;
+  const record = parsed as Record<string, unknown>;
+  const code = record.code;
+  if (typeof code !== "string" || !ARTIFACT_ERROR_CODES.has(code)) return error;
+  if (typeof record.message !== "string") return error;
+  return code === "IncompatibleMerge"
+    ? new IncompatibleMergeError(record.message)
+    : new ArtifactError(record.message, code as ArtifactErrorCode);
+}
+
+/**
+ * Re-raise native artifact-build failures: embedder errors first, then typed
+ * {@link ArtifactError}. Any unrecognized error is returned unchanged.
+ *
+ * @param error - The error thrown by the native binding.
+ * @returns The typed error, or `error` unchanged when it is not recognized.
+ */
+export function mapArtifactBuildError(error: unknown): unknown {
+  const embedder = mapEmbedderError(error);
+  if (embedder !== error) return embedder;
+  return mapArtifactError(error);
 }

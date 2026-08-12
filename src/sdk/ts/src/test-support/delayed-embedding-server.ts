@@ -17,10 +17,15 @@ export interface DelayedEmbeddingServer {
   waitForHeld: () => Promise<void>;
   /** Release the currently held batch request (if any). */
   releaseHeld: () => void;
+  /** Override response `model` per request (FIFO); empty restores request model. */
+  setResponseModels: (models: string[]) => Promise<void>;
   close: () => Promise<void>;
 }
 
-type ControlMessage = { type: "armed"; minBatch: number } | { type: "held"; n: number };
+type ControlMessage =
+  | { type: "armed"; minBatch: number }
+  | { type: "held"; n: number }
+  | { type: "models"; models: string[] };
 
 /** An OpenAI-compatible embedding endpoint that sleeps briefly per request, run
  * in a child process (real wall-clock delay) — shared by tool- and
@@ -33,9 +38,22 @@ export async function startDelayedEmbeddingServer(delayMs = 120): Promise<Delaye
     const readline = require("node:readline");
     let holdMinBatch = 0;
     const held = [];
+    let responseModels = [];
     const rl = readline.createInterface({ input: process.stdin });
     rl.on("line", (line) => {
       const text = String(line).trim();
+      if (text === "MODELS") {
+        responseModels = [];
+        process.stdout.write(
+          JSON.stringify({ type: "models", models: responseModels }) + "\\n",
+        );
+        return;
+      }
+      if (text.startsWith("MODELS ")) {
+        responseModels = text.slice(7).split(" ").filter(Boolean);
+        process.stdout.write(JSON.stringify({ type: "models", models: responseModels }) + "\\n");
+        return;
+      }
       if (text.startsWith("HOLD ")) {
         holdMinBatch = Number(text.slice(5)) || 0;
         process.stdout.write(JSON.stringify({ type: "armed", minBatch: holdMinBatch }) + "\\n");
@@ -49,10 +67,11 @@ export async function startDelayedEmbeddingServer(delayMs = 120): Promise<Delaye
       }
     });
     function respond(response, payload, inputs) {
+      const model = responseModels.length > 0 ? responseModels.shift() : payload.model;
       setTimeout(() => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({
-          model: payload.model,
+          model,
           data: inputs.map((_, index) => ({ index, embedding: [index + 1, 1] })),
         }));
       }, ${delayMs});
@@ -98,6 +117,7 @@ export async function startDelayedEmbeddingServer(delayMs = 120): Promise<Delaye
   let heldWaiters: Array<() => void> = [];
   let heldCount = 0;
   let armedWaiters: Array<(msg: ControlMessage & { type: "armed" }) => void> = [];
+  let modelsWaiters: Array<(msg: ControlMessage & { type: "models" }) => void> = [];
 
   lines.on("line", (requestLine) => {
     const parsed = JSON.parse(requestLine) as string[] | ControlMessage;
@@ -108,6 +128,12 @@ export async function startDelayedEmbeddingServer(delayMs = 120): Promise<Delaye
     if (parsed?.type === "armed") {
       const waiters = armedWaiters;
       armedWaiters = [];
+      for (const resolve of waiters) resolve(parsed);
+      return;
+    }
+    if (parsed?.type === "models") {
+      const waiters = modelsWaiters;
+      modelsWaiters = [];
       for (const resolve of waiters) resolve(parsed);
       return;
     }
@@ -138,6 +164,13 @@ export async function startDelayedEmbeddingServer(delayMs = 120): Promise<Delaye
     },
     releaseHeld: () => {
       child.stdin.write("RELEASE\n");
+    },
+    setResponseModels: (models: string[]) => {
+      const ack = new Promise<void>((resolve) => {
+        modelsWaiters.push(() => resolve());
+      });
+      child.stdin.write(`MODELS ${models.join(" ")}\n`);
+      return ack;
     },
     close: async () => {
       lines.close();

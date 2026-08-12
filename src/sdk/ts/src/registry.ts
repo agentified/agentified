@@ -11,7 +11,7 @@ import {
   type Tool,
 } from "../native/index.cjs";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { mapArtifactWarmError, mapEmbedderError } from "./errors.js";
+import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 
 export { IntentGraph };
 
@@ -107,7 +107,7 @@ export class ToolRegistry {
     try {
       return await this.native.buildEmbeddingArtifact();
     } catch (error) {
-      throw mapEmbedderError(error);
+      throw mapArtifactBuildError(error);
     }
   }
 
@@ -373,7 +373,7 @@ export class SkillRegistry {
     try {
       return await this.native.buildEmbeddingArtifact();
     } catch (error) {
-      throw mapEmbedderError(error);
+      throw mapArtifactBuildError(error);
     }
   }
 

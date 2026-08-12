@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveEmbeddingArtifact } from "./embedding-artifact.js";
 import * as sdk from "./index.js";
 import {
+  ArtifactError,
   ArtifactWarmError,
+  EmbedderError,
   experimentalBuildEmbeddingArtifact,
+  IncompatibleMergeError,
   ratel,
   type Skill,
   SkillCatalog,
@@ -85,6 +88,13 @@ describe("experimentalBuildEmbeddingArtifact", () => {
 
   it("does not export mergeEmbeddingArtifacts from the package entry", () => {
     expect(sdk).not.toHaveProperty("mergeEmbeddingArtifacts");
+  });
+
+  it("exports ArtifactError and IncompatibleMergeError from the package entry", () => {
+    expect(sdk).toHaveProperty("ArtifactError");
+    expect(sdk).toHaveProperty("IncompatibleMergeError");
+    expect(sdk.ArtifactError).toBe(ArtifactError);
+    expect(sdk.IncompatibleMergeError).toBe(IncompatibleMergeError);
   });
 
   it("builds one mixed artifact that warms both registry kinds", async () => {
@@ -200,6 +210,30 @@ describe("experimentalBuildEmbeddingArtifact", () => {
         skills: [],
       }),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("raises IncompatibleMergeError when tool and skill batches stamp different models", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      await server.setResponseModels(["model-a", "model-b"]);
+      const dir = await tempDir();
+      const error = await experimentalBuildEmbeddingArtifact({
+        output: join(dir, "merge-fail.ratel-embeddings"),
+        embedding,
+        tools: [readFileTool],
+        skills: [slides],
+      }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(IncompatibleMergeError);
+      expect(error).toBeInstanceOf(ArtifactError);
+      expect((error as IncompatibleMergeError).code).toBe("IncompatibleMerge");
+      expect(error).not.toBeInstanceOf(EmbedderError);
+    } finally {
+      await server.close();
+    }
   });
 });
 

@@ -27,6 +27,26 @@ const REGISTRY_BUSY_MESSAGE: &str =
 /// Must stay identical to the constant in `src/sdk/ts/src/errors.ts`.
 const ARTIFACT_WARM_ERROR_PREFIX: &str = "RATEL_ARTIFACT_WARM_ERROR:";
 
+/// Private NAPI→TypeScript transport prefix for artifact build/merge errors.
+/// Must stay identical to the constant in `src/sdk/ts/src/errors.ts`.
+const ARTIFACT_ERROR_PREFIX: &str = "RATEL_ARTIFACT_ERROR:";
+
+fn artifact_error_variant_code(error: &ArtifactError) -> &'static str {
+    match error {
+        ArtifactError::TooShort { .. } => "TooShort",
+        ArtifactError::InvalidMagic { .. } => "InvalidMagic",
+        ArtifactError::UnsupportedFormatVersion { .. } => "UnsupportedFormatVersion",
+        ArtifactError::ChecksumMismatch => "ChecksumMismatch",
+        ArtifactError::CorruptPayload { .. } => "CorruptPayload",
+        ArtifactError::InconsistentVectorWidth { .. } => "InconsistentVectorWidth",
+        ArtifactError::VectorNotNormalized { .. } => "VectorNotNormalized",
+        ArtifactError::NonEmptyZeroDim => "NonEmptyZeroDim",
+        ArtifactError::InvalidVector { .. } => "InvalidVector",
+        ArtifactError::IncompatibleMerge { .. } => "IncompatibleMerge",
+        ArtifactError::Embedder(_) => "Embedder",
+    }
+}
+
 fn map_artifact_warm_error(error: core::ArtifactWarmError) -> napi::Error {
     let message = error.to_string();
     let payload = match &error {
@@ -52,7 +72,17 @@ fn map_artifact_warm_error(error: core::ArtifactWarmError) -> napi::Error {
 fn map_artifact_build_error(error: ArtifactError) -> napi::Error {
     match error {
         ArtifactError::Embedder(inner) => napi::Error::from_reason(inner.to_string()),
-        other => napi::Error::from_reason(other.to_string()),
+        other => {
+            let code = artifact_error_variant_code(&other);
+            let message = other.to_string();
+            let payload = json!({
+                "code": code,
+                "message": message,
+            });
+            // Value::to_string is infallible for this JSON-safe payload shape.
+            let serialized = payload.to_string();
+            napi::Error::from_reason(format!("{ARTIFACT_ERROR_PREFIX}{serialized}"))
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { mergeEmbeddingArtifacts, type Skill, type Tool } from "../native/index.cjs";
 import type { EmbeddingSpec } from "./catalog.js";
-import { mapEmbedderError } from "./errors.js";
+import { mapArtifactError } from "./errors.js";
 import { SkillRegistry, ToolRegistry } from "./registry.js";
 
 /**
@@ -50,24 +50,26 @@ export async function experimentalBuildEmbeddingArtifact(
   const skills = options.skills ?? [];
   const embedding = options.embedding;
 
-  try {
-    const toolRegistry = new ToolRegistry(embedding, "bm25");
-    if (tools.length > 0) {
-      toolRegistry.registerItems(tools);
-    }
-    const toolBytes = await toolRegistry.experimentalBuildEmbeddingArtifact();
-
-    const skillRegistry = new SkillRegistry(embedding, "bm25");
-    if (skills.length > 0) {
-      skillRegistry.registerItems(skills);
-    }
-    const skillBytes = await skillRegistry.experimentalBuildEmbeddingArtifact();
-
-    const merged = mergeEmbeddingArtifacts([toolBytes, skillBytes]);
-    await writeFile(options.output, merged);
-  } catch (error) {
-    throw mapEmbedderError(error);
+  const toolRegistry = new ToolRegistry(embedding, "bm25");
+  if (tools.length > 0) {
+    toolRegistry.registerItems(tools);
   }
+  const toolBytes = await toolRegistry.experimentalBuildEmbeddingArtifact();
+
+  const skillRegistry = new SkillRegistry(embedding, "bm25");
+  if (skills.length > 0) {
+    skillRegistry.registerItems(skills);
+  }
+  const skillBytes = await skillRegistry.experimentalBuildEmbeddingArtifact();
+
+  const merged = (() => {
+    try {
+      return mergeEmbeddingArtifacts([toolBytes, skillBytes]);
+    } catch (error) {
+      throw mapArtifactError(error);
+    }
+  })();
+  await writeFile(options.output, merged);
 }
 
 function validateEmbeddingArtifact(config: unknown): {
