@@ -1,4 +1,4 @@
-"""Embedding artifact build/warm lifecycle (ADR-0017) — Python Phase 2."""
+"""Embedding artifact build/warm lifecycle (ADR-0018) — Python Phase 2."""
 
 from __future__ import annotations
 

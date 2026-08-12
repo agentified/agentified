@@ -604,7 +604,7 @@ impl ToolRegistry {
             .map_err(map_embedder_err)
     }
 
-    /// Build a binary embedding artifact from the registered corpus (ADR-0017).
+    /// Build a binary embedding artifact from the registered corpus (ADR-0018).
     /// Releases the GIL. Does not touch the mutable dense cache.
     fn _build_embedding_artifact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = py

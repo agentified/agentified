@@ -921,7 +921,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Build a binary embedding artifact from the registered corpus (ADR-0017).
+    /// Build a binary embedding artifact from the registered corpus (ADR-0018).
     /// Runs on a libuv worker. Takes a dense-operation permit so corpus
     /// mutations are rejected while the build is pending, but does **not** take
     /// the dense gate — semantic search may run concurrently (artifact build is

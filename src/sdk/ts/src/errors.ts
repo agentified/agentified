@@ -11,7 +11,7 @@
  * construction-time config errors) are passed through unchanged.
  *
  * {@link ArtifactWarmError} / {@link mapArtifactWarmError} cover failures from
- * `experimentalWarmEmbeddingsFromArtifact` (ADR-0017), decoded from a private
+ * `experimentalWarmEmbeddingsFromArtifact` (ADR-0018), decoded from a private
  * native→TS envelope (not part of the public API).
  *
  * {@link ArtifactError} / {@link IncompatibleMergeError} / {@link mapArtifactError}

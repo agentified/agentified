@@ -5,7 +5,7 @@ import { mapArtifactError } from "./errors.js";
 import { SkillRegistry, ToolRegistry } from "./registry.js";
 
 /**
- * Build-time embedding artifact for catalog warm (ADR-0017). Exactly one of
+ * Build-time embedding artifact for catalog warm (ADR-0018). Exactly one of
  * `path` or `bytes`. Default `onMiss` is `"error"`.
  */
 export type ExperimentalEmbeddingArtifact =

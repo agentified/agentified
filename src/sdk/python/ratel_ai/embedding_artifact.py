@@ -1,4 +1,4 @@
-"""Build-time embedding artifacts (ADR-0017) — Python experimental surface.
+"""Build-time embedding artifacts (ADR-0018) — Python experimental surface.
 
 Hosts own filesystem I/O; core remains bytes-only. Catalogs warm a configured
 artifact before eager document embedding when

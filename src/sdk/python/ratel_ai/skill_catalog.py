@@ -322,7 +322,7 @@ class SkillRegistry:
         return self.search_with_origin(query, top_k, origin)
 
     async def experimental_build_embedding_artifact(self) -> bytes:
-        """Build a RAT1 artifact from the registered corpus (ADR-0017).
+        """Build a RAT1 artifact from the registered corpus (ADR-0018).
 
         Off the event loop and mutation-blocking via ``_dense_pending``, but does
         **not** take ``_dense_gate`` — semantic search may run concurrently.
