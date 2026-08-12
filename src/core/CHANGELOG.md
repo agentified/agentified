@@ -8,11 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- **Build-time embedding artifacts (ADR-0017).** Binary RAT1 format (magic/version/length/checksum, projection header, Tool/Skill entries with id + projection hash + L2-normalized vector). `ToolRegistry` / `SkillRegistry` build a single-kind artifact and warm the dense cache from bytes (`OnArtifactMiss::Error` or `Embed`). `merge_embedding_artifacts` combines compatible parts into one mixed RAT1. Public exports: `ArtifactEntryKind`, `ArtifactError`, `merge_embedding_artifacts`, `OnArtifactMiss`, `ArtifactWarmError`, `WarmError`. Core stays filesystem/I/O-free on this surface — hosts own persistence.
-
-### Changed
-
-- **Local embedding model fingerprints are content-derived.** `EmbeddingModel::Local` identity is a SHA-256 of the files Candle loads, not the directory path, so a build-time embedding artifact can still validate the model after a Docker remount. HuggingFace and endpoint fingerprints are unchanged. **Note:** an `IntentGraph` persisted under a previous path-based Local fingerprint will report `ModelMismatch` until centroids are rebuilt under the active model.
+- **Build-time embedding artifacts (ADR-0017).** Binary RAT1 format (magic/version/length/checksum, projection header, Tool/Skill entries with id + projection hash + L2-normalized vector). Semantic validation on load (checksum plus structure and vector semantics). `ToolRegistry` / `SkillRegistry` build a single-kind artifact and warm the dense cache from bytes (`OnArtifactMiss::Error` or `Embed`). `merge_embedding_artifacts` combines compatible parts into one mixed RAT1. For `Local` models, RAT1 build/warm stamps an artifact compatibility fingerprint (content-derived, lazy); runtime `Local` dense-cache identity remains path-based. Artifact persistence remains host-owned; the core artifact APIs accept/return bytes and perform no artifact filesystem I/O. Public exports: `ArtifactError`, `merge_embedding_artifacts`, `OnArtifactMiss`, `ArtifactWarmError`, `ParseOnArtifactMissError`, `WarmError`.
 
 ## [0.7.0] - 2026-08-07
 

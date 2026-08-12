@@ -54,7 +54,7 @@ fn main() {
 }
 ```
 
-Package layout: `src/` holds the retrieval and trace engine, including `embedding_artifact.rs` (wire format / merge) and `artifact_warm.rs` (miss policy and warm errors) for build-time dense-cache warming ([ADR 0017](../../docs/adr/0017-build-time-embedding-artifacts.md)). `examples/` contains runnable demos, and `tests/` covers integration behavior.
+Package layout: `src/` holds the retrieval and trace engine, including `embedding_artifact.rs` (wire format / merge) and `artifact_warm.rs` (miss policy and warm errors) for build-time dense-cache warming ([ADR 0017](../../docs/adr/0017-build-time-embedding-artifacts.md)); artifact persistence is host-owned and the core artifact APIs accept/return bytes with no artifact filesystem I/O. `examples/` contains runnable demos, and `tests/` covers integration behavior.
 From a repository checkout, run `cargo test -p ratel-ai-core` or `cargo run -p ratel-ai-core --example search_demo`.
 
 Continue with [tool retrieval](https://docs.ratel.sh/docs/tool-retrieval), the [Rust API reference](https://docs.rs/ratel-ai-core/latest/ratel_ai_core/), or the [source repository](https://github.com/ratel-ai/ratel). Benchmark results are maintained separately in [ratel-ai/ratel-bench](https://github.com/ratel-ai/ratel-bench).
