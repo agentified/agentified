@@ -18,6 +18,7 @@ import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from 
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
 import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
+import type { RuntimeEventProjection } from "./telemetry.js";
 
 export { IntentGraph };
 
@@ -164,8 +165,9 @@ export class ToolRegistry {
     topK: number,
     origin: SearchOrigin,
     method: SearchMethod,
+    projection?: RuntimeEventProjection,
   ): SearchHit[] {
-    return this.native.searchWithMethod(query, topK, origin, method);
+    return this.native.searchWithMethod(query, topK, origin, method, projection);
   }
 
   /** Search on a libuv worker; supports `"bm25"`, `"semantic"`, and `"hybrid"`. */
@@ -174,6 +176,7 @@ export class ToolRegistry {
     topK: number,
     origin: SearchOrigin,
     method: SearchMethod,
+    projection?: RuntimeEventProjection,
   ): Promise<SearchHit[]> {
     try {
       // Guard the await behind the flag so the default path stays synchronous
@@ -182,7 +185,7 @@ export class ToolRegistry {
       if (method !== "bm25" && this.#rebuildOnModelChange) {
         await this.#maybeRebuildOnModelChange();
       }
-      return await this.native.searchWithMethodAsync(query, topK, origin, method);
+      return await this.native.searchWithMethodAsync(query, topK, origin, method, projection);
     } catch (error) {
       throw mapEmbedderError(error);
     }
@@ -192,8 +195,12 @@ export class ToolRegistry {
    * Record a custom event on the local trace stream (ADR-0007). Throws on an
    * object that doesn't parse as a known trace event.
    */
-  recordEvent(event: object): void {
-    this.native.recordEvent(event);
+  recordEvent(event: object, projection?: RuntimeEventProjection): void {
+    if (projection) {
+      this.native.recordEventWithContext(event, projection);
+    } else {
+      this.native.recordEvent(event);
+    }
   }
 
   /** Replace the trace sink; subsequent events go to the new destination. */
@@ -435,8 +442,9 @@ export class SkillRegistry {
     topK: number,
     origin: SearchOrigin,
     method: SearchMethod,
+    projection?: RuntimeEventProjection,
   ): SkillHit[] {
-    return this.native.searchWithMethod(query, topK, origin, method);
+    return this.native.searchWithMethod(query, topK, origin, method, projection);
   }
 
   /** Search on a libuv worker — see `ToolRegistry.searchWithMethodAsync`. */
@@ -445,6 +453,7 @@ export class SkillRegistry {
     topK: number,
     origin: SearchOrigin,
     method: SearchMethod,
+    projection?: RuntimeEventProjection,
   ): Promise<SkillHit[]> {
     try {
       // Guard the await behind the flag so the default path stays synchronous
@@ -453,15 +462,19 @@ export class SkillRegistry {
       if (method !== "bm25" && this.#rebuildOnModelChange) {
         await this.#maybeRebuildOnModelChange();
       }
-      return await this.native.searchWithMethodAsync(query, topK, origin, method);
+      return await this.native.searchWithMethodAsync(query, topK, origin, method, projection);
     } catch (error) {
       throw mapEmbedderError(error);
     }
   }
 
   /** Record a custom event on the local trace stream (ADR-0007). */
-  recordEvent(event: object): void {
-    this.native.recordEvent(event);
+  recordEvent(event: object, projection?: RuntimeEventProjection): void {
+    if (projection) {
+      this.native.recordEventWithContext(event, projection);
+    } else {
+      this.native.recordEvent(event);
+    }
   }
 
   /** Replace the trace sink; subsequent events go to the new destination. */

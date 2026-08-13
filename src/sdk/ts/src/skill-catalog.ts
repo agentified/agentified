@@ -195,8 +195,8 @@ export class SkillCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): SkillHit[] {
-    return traceSearch(SearchTarget.Skill, query, topK, origin, () =>
-      this.registry.searchWithMethod(query, topK, origin, method ?? this.method),
+    return traceSearch(SearchTarget.Skill, query, topK, origin, (projection) =>
+      this.registry.searchWithMethod(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -207,8 +207,14 @@ export class SkillCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): Promise<SkillHit[]> {
-    return traceSearchAsync(SearchTarget.Skill, query, topK, origin, () =>
-      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method),
+    return traceSearchAsync(SearchTarget.Skill, query, topK, origin, (projection) =>
+      this.registry.searchWithMethodAsync(
+        query,
+        topK,
+        origin,
+        method ?? this.method,
+        projection,
+      ),
     );
   }
 
@@ -336,14 +342,14 @@ export class SkillCatalog {
     if (!skill) {
       throw new Error(`unknown skillId: ${skillId}`);
     }
-    return traceSkillLoad(skillId, () => {
+    return traceSkillLoad(skillId, (projection) => {
       const started = Date.now();
       const body = skill.body ?? "";
       this.registry.recordEvent({
         type: "skill_invoke",
         skill_id: skillId,
         took_ms: Date.now() - started,
-      });
+      }, projection);
       return body;
     });
   }

@@ -76,7 +76,7 @@ impl EnvelopeFactory {
         self.correlate_invocation(&event, &mut context);
         TraceEnvelope {
             v: ENVELOPE_VERSION,
-            event_id: ulid::Ulid::new().to_string(),
+            event_id: context.event_id.take().unwrap_or_else(new_ulid),
             ts: now_ms(),
             session_id: self.session_id.clone(),
             source_id: self.source_id.clone(),

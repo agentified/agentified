@@ -126,7 +126,7 @@ export class RuntimeEvents {
   emit(event: Record<string, unknown>): RuntimeEvent {
     const envelope: RuntimeEvent = {
       v: 2,
-      event_id: newUlid(),
+      event_id: newRuntimeEventId(),
       ts: Date.now(),
       session_id: this.sessionId,
       source_id: this.sourceId,
@@ -155,7 +155,8 @@ function defaultSourceId(): string {
 }
 
 /** Minimal monotonicity-free ULID generator: event uniqueness, time sorting, wire alphabet. */
-function newUlid(now = Date.now()): string {
+/** @internal Mint the canonical client event id before stream + OTel projection. */
+export function newRuntimeEventId(now = Date.now()): string {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let time = now;
   let encodedTime = "";

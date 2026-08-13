@@ -474,6 +474,8 @@ pub enum TraceEvent {
 /// site. Missing fields are omitted from the flattened JSON envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraceEventContext {
+    /// Client-generated id for this event. Sinks mint one when absent.
+    pub event_id: Option<String>,
     /// Id shared by every event in one invocation lifecycle.
     pub invocation_id: Option<String>,
     /// Catalog revision known when the event was emitted.

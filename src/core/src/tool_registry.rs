@@ -514,10 +514,30 @@ impl ToolRegistry {
         origin: Origin,
         method: SearchMethod,
     ) -> Result<Vec<SearchHit>, EmbedderError> {
+        self.search_with_method_and_context(
+            query,
+            top_k,
+            origin,
+            method,
+            TraceEventContext::default(),
+        )
+    }
+
+    /// Search with caller-supplied event identity and OTel correlation.
+    pub fn search_with_method_and_context(
+        &self,
+        query: &str,
+        top_k: usize,
+        origin: Origin,
+        method: SearchMethod,
+        context: TraceEventContext,
+    ) -> Result<Vec<SearchHit>, EmbedderError> {
         match method {
-            SearchMethod::Bm25 => Ok(self.bm25_search_traced(query, top_k, origin)),
-            SearchMethod::Semantic => self.semantic_search_traced(query, top_k, origin),
-            SearchMethod::Hybrid => self.hybrid_search_traced(query, top_k, origin),
+            SearchMethod::Bm25 => {
+                Ok(self.bm25_search_traced_with_context(query, top_k, origin, context))
+            }
+            SearchMethod::Semantic => self.semantic_search_traced(query, top_k, origin, context),
+            SearchMethod::Hybrid => self.hybrid_search_traced(query, top_k, origin, context),
         }
     }
 
@@ -659,6 +679,16 @@ impl ToolRegistry {
     }
 
     fn bm25_search_traced(&self, query: &str, top_k: usize, origin: Origin) -> Vec<SearchHit> {
+        self.bm25_search_traced_with_context(query, top_k, origin, TraceEventContext::default())
+    }
+
+    fn bm25_search_traced_with_context(
+        &self,
+        query: &str,
+        top_k: usize,
+        origin: Origin,
+        context: TraceEventContext,
+    ) -> Vec<SearchHit> {
         let started = Instant::now();
         let t = Instant::now();
         let arm = self.usage_arm(query, None);
@@ -682,6 +712,7 @@ impl ToolRegistry {
                     top_score,
                 }],
                 took_ms,
+                context,
             );
             return hits;
         };
@@ -709,6 +740,7 @@ impl ToolRegistry {
             &hits,
             vec![bm25_stage, Self::usage_stage(&arm, usage_ms), rrf_stage],
             took_ms,
+            context,
         );
         hits
     }
@@ -718,10 +750,11 @@ impl ToolRegistry {
         query: &str,
         top_k: usize,
         origin: Origin,
+        context: TraceEventContext,
     ) -> Result<Vec<SearchHit>, EmbedderError> {
         let started = Instant::now();
         if self.tools.is_empty() || top_k == 0 {
-            self.record_search(query, origin, top_k, &[], Vec::new(), 0);
+            self.record_search(query, origin, top_k, &[], Vec::new(), 0, context);
             return Ok(Vec::new());
         }
         // Retrieve deeper than `top_k` only when a graph is attached; without
@@ -765,6 +798,7 @@ impl ToolRegistry {
                     top_score,
                 }],
                 took_ms,
+                context,
             );
             return Ok(hits);
         };
@@ -785,6 +819,7 @@ impl ToolRegistry {
             &hits,
             vec![dense_stage, Self::usage_stage(&arm, usage_ms), rrf_stage],
             took_ms,
+            context,
         );
         Ok(hits)
     }
@@ -797,10 +832,11 @@ impl ToolRegistry {
         query: &str,
         top_k: usize,
         origin: Origin,
+        context: TraceEventContext,
     ) -> Result<Vec<SearchHit>, EmbedderError> {
         let started = Instant::now();
         if self.tools.is_empty() || top_k == 0 {
-            self.record_search(query, origin, top_k, &[], Vec::new(), 0);
+            self.record_search(query, origin, top_k, &[], Vec::new(), 0, context);
             return Ok(Vec::new());
         }
         // Retrieve deeper than `top_k` so a tool ranked low by one arm but high
@@ -852,7 +888,7 @@ impl ToolRegistry {
         stages.push(rrf_stage);
 
         let took_ms = started.elapsed().as_millis() as u64;
-        self.record_search(query, origin, top_k, &hits, stages, took_ms);
+        self.record_search(query, origin, top_k, &hits, stages, took_ms, context);
         Ok(hits)
     }
 
@@ -865,21 +901,25 @@ impl ToolRegistry {
         hits: &[SearchHit],
         stages: Vec<SearchStage>,
         took_ms: u64,
+        context: TraceEventContext,
     ) {
-        self.sink.record(TraceEvent::Search {
-            query: query.to_string(),
-            origin,
-            top_k: top_k as u32,
-            hits: hits
-                .iter()
-                .map(|h| SearchHitTrace {
-                    tool_id: h.tool_id.clone(),
-                    score: h.score as f64,
-                })
-                .collect(),
-            stages,
-            took_ms,
-        });
+        self.sink.record_with_context(
+            TraceEvent::Search {
+                query: query.to_string(),
+                origin,
+                top_k: top_k as u32,
+                hits: hits
+                    .iter()
+                    .map(|h| SearchHitTrace {
+                        tool_id: h.tool_id.clone(),
+                        score: h.score as f64,
+                    })
+                    .collect(),
+                stages,
+                took_ms,
+            },
+            context,
+        );
     }
 }
 
