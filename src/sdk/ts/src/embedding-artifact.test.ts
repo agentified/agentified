@@ -855,7 +855,7 @@ describe("catalog experimentalEmbeddingArtifact", () => {
     }
   });
 
-  it("Incomplete never names an id from an interleaved register", async () => {
+  it("racing register cannot contaminate the artifact warm corpus", async () => {
     const server = await startDelayedEmbeddingServer();
     try {
       const embedding = { url: server.url, model: "test-model" };
@@ -875,19 +875,15 @@ describe("catalog experimentalEmbeddingArtifact", () => {
         catalog.register(withExecute(readFileTool)),
         catalog.register(withExecute(writeFileTool)),
       ]);
-      expect(settled[1]?.status).toBe("rejected");
-      if (settled[1]?.status === "rejected") {
-        expect((settled[1].reason as Error).message).toMatch(/registry busy; await/);
-      }
-      if (settled[0]?.status === "rejected") {
-        const error = settled[0].reason;
-        expect(error).toBeInstanceOf(ArtifactWarmError);
-        expect((error as ArtifactWarmError).code).toBe("Incomplete");
-        for (const id of (error as ArtifactWarmError).missing ?? []) {
-          expect(id).not.toBe("write_file");
-          expect(["read_file"]).toContain(id);
-        }
-      }
+      expect(settled.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+      expect(settled[1]).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringMatching(/registry busy; await/),
+        }),
+      });
+      expect(catalog.has("read_file")).toBe(true);
+      expect(catalog.has("write_file")).toBe(false);
     } finally {
       await server.close();
     }
