@@ -160,7 +160,13 @@ class ToolRegistry:
         Model-free and infallible; the trace event records origin "direct".
         """
 
-    def search_with_origin(self, query: str, top_k: int, origin: str) -> list[SearchHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        context: object | None = ...,
+    ) -> list[SearchHit]:
         """BM25 search tagged with who initiated it.
 
         `origin` is "agent" (a model calling a capability tool) or anything
@@ -169,7 +175,12 @@ class ToolRegistry:
         """
 
     def _search_with_method(
-        self, query: str, top_k: int, origin: str, method: str
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        method: str,
+        context: object | None = ...,
     ) -> list[SearchHit]:
         """Search with an explicit method ("bm25" | "semantic" | "hybrid").
 
@@ -202,6 +213,11 @@ class ToolRegistry:
         shapes (ADR-0007, e.g. `{"type": "gateway_search", ...}`); anything
         else raises `ValueError`.
         """
+
+    def record_event_with_context(
+        self, event: dict[str, Any], context: object
+    ) -> None:
+        """Record an event with caller-supplied identity and OTel correlation."""
 
     def subscribe_trace_events(
         self,
@@ -389,11 +405,22 @@ class SkillRegistry:
     def search(self, query: str, top_k: int) -> list[SkillHit]:
         """Lexical BM25 search over the skill corpus — see `ToolRegistry.search`."""
 
-    def search_with_origin(self, query: str, top_k: int, origin: str) -> list[SkillHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        context: object | None = ...,
+    ) -> list[SkillHit]:
         """BM25 search tagged with who initiated it — see `ToolRegistry.search_with_origin`."""
 
     def _search_with_method(
-        self, query: str, top_k: int, origin: str, method: str
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        method: str,
+        context: object | None = ...,
     ) -> list[SkillHit]:
         """Private worker-thread search primitive."""
 
@@ -411,6 +438,11 @@ class SkillRegistry:
 
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""
+
+    def record_event_with_context(
+        self, event: dict[str, Any], context: object
+    ) -> None:
+        """Record an event with caller-supplied identity and OTel correlation."""
 
     def subscribe_trace_events(
         self,

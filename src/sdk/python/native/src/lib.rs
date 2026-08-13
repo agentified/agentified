@@ -47,6 +47,32 @@ const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1_024;
 const DEFAULT_EVENT_BATCH_SIZE: usize = 64;
 const EVENT_BATCH_DELAY: Duration = Duration::from_millis(1);
 
+fn trace_event_context(context: Option<&Bound<'_, PyAny>>) -> PyResult<core::TraceEventContext> {
+    let Some(context) = context else {
+        return Ok(core::TraceEventContext::default());
+    };
+    let value: Value = pythonize::depythonize(context)
+        .map_err(|e| PyValueError::new_err(format!("invalid trace event context: {e}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| PyValueError::new_err("trace event context must be a dict"))?;
+    let string = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+    Ok(core::TraceEventContext {
+        event_id: string("event_id"),
+        invocation_id: string("invocation_id"),
+        catalog_version: string("catalog_version"),
+        environment: string("environment"),
+        end_user_id: string("end_user_id"),
+        trace_id: string("trace_id"),
+        span_id: string("span_id"),
+    })
+}
+
 /// Handle for one private native runtime-event callback subscription.
 #[pyclass]
 struct NativeEventSubscription {
@@ -776,13 +802,29 @@ impl ToolRegistry {
     /// BM25 search tagged with who initiated it: `"agent"` (a model calling a
     /// capability tool) or anything else → `"direct"` (host code). The origin
     /// only labels the emitted trace event — ranking is identical to `search`.
-    fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SearchHit> {
+    #[pyo3(signature = (query, top_k, origin, context=None))]
+    fn search_with_origin(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        context: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<SearchHit>> {
         let parsed = match origin.as_str() {
             "agent" => Origin::Agent,
             _ => Origin::Direct,
         };
-        self.inner
-            .search_with_origin(&query, top_k as usize, parsed)
+        let hits = self
+            .inner
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed,
+                core::SearchMethod::Bm25,
+                trace_event_context(context)?,
+            )
+            .map_err(map_embedder_err)?;
+        Ok(hits
             .into_iter()
             .map(|hit| SearchHit {
                 tool_id: hit.tool_id,
@@ -790,7 +832,7 @@ impl ToolRegistry {
                 rank: hit.rank,
                 fused: hit.fused,
             })
-            .collect()
+            .collect())
     }
 
     /// Search with an explicit method (`"bm25"` | `"semantic"` | `"hybrid"`).
@@ -798,6 +840,7 @@ impl ToolRegistry {
     /// cache and raise `RuntimeError` (`EmbeddingsNotBuilt`) if it isn't built — the
     /// model loads at `_build_embeddings`, never inside a search. Private worker
     /// primitive; releases the GIL. An unknown method raises `ValueError`.
+    #[pyo3(signature = (query, top_k, origin, method, context=None))]
     fn _search_with_method(
         &self,
         py: Python<'_>,
@@ -805,6 +848,7 @@ impl ToolRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SearchHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -813,10 +857,16 @@ impl ToolRegistry {
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let context = trace_event_context(context)?;
         let hits = py
             .allow_threads(|| {
-                self.inner
-                    .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+                self.inner.search_with_method_and_context(
+                    &query,
+                    top_k as usize,
+                    parsed_origin,
+                    parsed_method,
+                    context,
+                )
             })
             .map_err(map_embedder_err)?;
         Ok(hits
@@ -889,6 +939,21 @@ impl ToolRegistry {
         let event: TraceEvent = serde_json::from_value(value)
             .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
         self.inner.record_event(event);
+        Ok(())
+    }
+
+    /// Record an event with caller-supplied identity and OTel correlation.
+    fn record_event_with_context(
+        &self,
+        event: &Bound<'_, PyAny>,
+        context: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let value: Value = pythonize::depythonize(event)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        let event: TraceEvent = serde_json::from_value(value)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        self.inner
+            .record_event_with_context(event, trace_event_context(Some(context))?);
         Ok(())
     }
 
@@ -1179,13 +1244,29 @@ impl SkillRegistry {
 
     /// BM25 search tagged with who initiated it — see
     /// [`ToolRegistry::search_with_origin`].
-    fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SkillHit> {
+    #[pyo3(signature = (query, top_k, origin, context=None))]
+    fn search_with_origin(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        context: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<SkillHit>> {
         let parsed = match origin.as_str() {
             "agent" => Origin::Agent,
             _ => Origin::Direct,
         };
-        self.inner
-            .search_with_origin(&query, top_k as usize, parsed)
+        let hits = self
+            .inner
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed,
+                core::SearchMethod::Bm25,
+                trace_event_context(context)?,
+            )
+            .map_err(map_embedder_err)?;
+        Ok(hits
             .into_iter()
             .map(|hit| SkillHit {
                 skill_id: hit.skill_id,
@@ -1193,10 +1274,11 @@ impl SkillRegistry {
                 rank: hit.rank,
                 fused: hit.fused,
             })
-            .collect()
+            .collect())
     }
 
     /// Private GIL-releasing method search — see [`ToolRegistry::_search_with_method`].
+    #[pyo3(signature = (query, top_k, origin, method, context=None))]
     fn _search_with_method(
         &self,
         py: Python<'_>,
@@ -1204,6 +1286,7 @@ impl SkillRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SkillHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -1212,10 +1295,16 @@ impl SkillRegistry {
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let context = trace_event_context(context)?;
         let hits = py
             .allow_threads(|| {
-                self.inner
-                    .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+                self.inner.search_with_method_and_context(
+                    &query,
+                    top_k as usize,
+                    parsed_origin,
+                    parsed_method,
+                    context,
+                )
             })
             .map_err(map_embedder_err)?;
         Ok(hits
@@ -1283,6 +1372,21 @@ impl SkillRegistry {
         let event: TraceEvent = serde_json::from_value(value)
             .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
         self.inner.record_event(event);
+        Ok(())
+    }
+
+    /// Record an event with caller-supplied identity and OTel correlation.
+    fn record_event_with_context(
+        &self,
+        event: &Bound<'_, PyAny>,
+        context: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let value: Value = pythonize::depythonize(event)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        let event: TraceEvent = serde_json::from_value(value)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        self.inner
+            .record_event_with_context(event, trace_event_context(Some(context))?);
         Ok(())
     }
 

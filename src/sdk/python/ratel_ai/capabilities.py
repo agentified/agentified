@@ -407,9 +407,10 @@ def invoke_tool_tool(
                     maybe = on_unauthorized(upstream)
                     if inspect.isawaitable(maybe):
                         await maybe
-                record_auth_needed(upstream)
+                projection = record_auth_needed(upstream)
                 catalog.record_event(
-                    {"type": "gateway_error", "tool_id": tool_id, "error": "needs_auth"}
+                    {"type": "gateway_error", "tool_id": tool_id, "error": "needs_auth"},
+                    projection,
                 )
                 payload: dict[str, Any] = {
                     "error": "needs_auth",

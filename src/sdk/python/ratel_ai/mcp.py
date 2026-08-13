@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from .catalog import ExecutableTool, ToolCatalog
-from .telemetry import trace_upstream_register
+from .telemetry import RuntimeEventProjection, trace_upstream_register
 
 _MCP_LIST_MAX_PAGES = 64
 
@@ -190,7 +190,10 @@ async def register_mcp_server(
 
     # The whole registration (list + ingest) is one `ratel.upstream.register` span;
     # per-tool invocations later get their own `execute_tool` spans (ADR-0007).
-    async def _run(report_tool_count: Callable[[int], None]) -> McpServerHandle:
+    async def _run(
+        report_tool_count: Callable[[int], None],
+        projection: RuntimeEventProjection,
+    ) -> McpServerHandle:
         tools = await _list_all_mcp_tools(session)
         report_tool_count(len(tools))
         catalog.record_event(
@@ -199,7 +202,8 @@ async def register_mcp_server(
                 "server": name,
                 "transport": transport_label,
                 "tool_count": len(tools),
-            }
+            },
+            projection,
         )
 
         tool_ids, registered = _build_registered_mcp_tools(catalog, session, name, tools)
