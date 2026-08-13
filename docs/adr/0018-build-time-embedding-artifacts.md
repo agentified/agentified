@@ -44,7 +44,11 @@ Unknown kind bytes are corrupt. Descriptions, bodies, executors, and credentials
 for `Local` uses the artifact compatibility digest (see ADR-0012); runtime
 dense-cache identity for `Local` remains path-based. Hashing happens lazily
 only when RAT1 build or warm requires it; no persistent digest store;
-`(len, mtime)` memo is a process-local accelerator only.
+`(len, mtime)` memo is a process-local accelerator only. Once a digest has
+been established for the resident model, stamp drift triggers digest
+recomputation and comparison rather than failing on metadata drift alone. An
+equal digest is accepted and refreshes the stamps; different content, or stamp
+drift before any digest was established, remains fail-closed.
 
 **Warm.** A Tool registry reuses only Tool entries; a Skill registry only Skill
 entries. Matching requires kind + id + `projection_hash == sha256(embed_text())`.
