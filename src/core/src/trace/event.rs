@@ -369,6 +369,17 @@ pub enum TraceEvent {
         /// Whether the flow produced valid credentials.
         ok: bool,
     },
+    /// One fan-out subscriber lost events because its bounded queue overflowed.
+    EventsDropped {
+        /// Number of events dropped during this observation window.
+        dropped_count: u64,
+        /// Stable machine-readable loss reason; currently `queue_overflow`.
+        reason: String,
+        /// Timestamp of the first drop in this report, in Unix milliseconds.
+        window_start_ts: u64,
+        /// Timestamp of the last drop in this report, in Unix milliseconds.
+        window_end_ts: u64,
+    },
     /// Emitted once, on the first (cold) load of the embedding model. `status`
     /// flags a slow load (possibly underpowered machine) or a failed one;
     /// `reason` carries the hint / error. See `embedding.rs` and ADR-0011.
@@ -486,6 +497,7 @@ pub struct TraceEnvelope {
     /// Envelope schema version; currently `2`.
     pub v: u32,
     /// Client-generated ULID identifying exactly this event.
+    #[serde(default)]
     pub event_id: String,
     /// Event time, in milliseconds since the Unix epoch.
     pub ts: u64,
@@ -493,6 +505,7 @@ pub struct TraceEnvelope {
     /// all events from one agent session.
     pub session_id: String,
     /// Stable source identity shared by events and catalog snapshots.
+    #[serde(default)]
     pub source_id: String,
     /// Id shared by every event in one invocation lifecycle.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -45,7 +45,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::trace::{TraceEnvelope, TraceEvent, TraceSink};
+use crate::trace::{TraceEnvelope, TraceEvent, TraceEventContext, TraceSink};
 use crate::usage::{Capability, IntentGraph};
 
 /// The learner's most recent search — the query an invoke attributes to. Kept
@@ -196,6 +196,16 @@ impl TraceSink for UsageLearner {
     fn record(&self, event: TraceEvent) {
         self.learn_from(&event, now_ms());
         self.inner.record(event);
+    }
+
+    fn record_with_context(&self, event: TraceEvent, context: TraceEventContext) {
+        self.learn_from(&event, now_ms());
+        self.inner.record_with_context(event, context);
+    }
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        self.learn_from(&envelope.event, envelope.ts);
+        self.inner.record_envelope(envelope);
     }
 
     fn sample_rate(&self) -> f64 {

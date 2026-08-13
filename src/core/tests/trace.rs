@@ -1,11 +1,51 @@
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, RwLock, mpsc};
 
 use ratel_ai_core::{
-    ChurnKind, JsonlSink, MemorySink, NoopSink, Origin, Tool, ToolRegistry, TraceEnvelope,
-    TraceEvent, TraceEventContext, TraceSink,
+    ChurnKind, FanoutSink, IntentGraph, JsonlSink, MemorySink, NoopSink, Origin, Tool,
+    ToolRegistry, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink, UsageLearner,
 };
 use serde_json::{Value, json};
 use tempfile::tempdir;
+
+struct BlockingSink {
+    released: (Mutex<bool>, Condvar),
+    started: Mutex<Option<mpsc::SyncSender<()>>>,
+    events: Mutex<Vec<TraceEnvelope>>,
+}
+
+impl BlockingSink {
+    fn new(started: mpsc::SyncSender<()>) -> Self {
+        Self {
+            released: (Mutex::new(false), Condvar::new()),
+            started: Mutex::new(Some(started)),
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
+
+    fn snapshot(&self) -> Vec<TraceEnvelope> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl TraceSink for BlockingSink {
+    fn record(&self, _event: TraceEvent) {}
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        if let Some(started) = self.started.lock().unwrap().take() {
+            started.send(()).unwrap();
+            let mut released = self.released.0.lock().unwrap();
+            while !*released {
+                released = self.released.1.wait(released).unwrap();
+            }
+        }
+        self.events.lock().unwrap().push(envelope);
+    }
+}
 
 fn empty_schema() -> Value {
     json!({})
@@ -30,7 +70,7 @@ fn default_registry_uses_noop_sink_and_does_not_panic() {
 
 #[test]
 fn register_emits_index_churn_add() {
-    let sink = Arc::new(MemorySink::new("session-1"));
+    let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
     let mut registry = ToolRegistry::with_trace_sink(sink.clone());
     registry.register(lookup_tool("alpha"));
 
@@ -127,6 +167,84 @@ fn registry_forwards_event_context_to_its_sink() {
     let events = sink.snapshot();
     assert_eq!(events[0].environment.as_deref(), Some("production"));
     assert_eq!(events[0].end_user_id.as_deref(), Some("user-1"));
+}
+
+#[test]
+fn fanout_is_non_blocking_and_reports_drop_oldest_loss() {
+    let fanout = FanoutSink::with_source("session", "source");
+    let fast = Arc::new(MemorySink::new("ignored"));
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let slow = Arc::new(BlockingSink::new(started_tx));
+    let fast_subscription = fanout.subscribe(fast.clone(), 8);
+    let slow_subscription = fanout.subscribe(slow.clone(), 2);
+
+    fanout.record(TraceEvent::AuthNeeds {
+        upstream: "one".into(),
+    });
+    started_rx.recv().unwrap();
+    for upstream in ["two", "three", "four"] {
+        fanout.record(TraceEvent::AuthNeeds {
+            upstream: upstream.into(),
+        });
+    }
+
+    assert_eq!(slow_subscription.dropped_count(), 1);
+    assert_eq!(fanout.dropped_count(), 1);
+    slow.release();
+    fanout.flush();
+
+    let fast_events = fast.snapshot();
+    let slow_events = slow.snapshot();
+    assert_eq!(fast_events.len(), 4);
+    assert_eq!(slow_events.len(), 4);
+    assert_eq!(slow_events[0].event_id, fast_events[0].event_id);
+    assert_eq!(slow_events[2].event_id, fast_events[2].event_id);
+    assert_eq!(slow_events[3].event_id, fast_events[3].event_id);
+    assert!(fast_events.iter().all(|event| event.source_id == "source"));
+    assert_eq!(fast_subscription.dropped_count(), 0);
+
+    match &slow_events[1].event {
+        TraceEvent::EventsDropped {
+            dropped_count,
+            reason,
+            window_start_ts,
+            window_end_ts,
+        } => {
+            assert_eq!(*dropped_count, 1);
+            assert_eq!(reason, "queue_overflow");
+            assert!(*window_start_ts > 0);
+            assert!(*window_end_ts >= *window_start_ts);
+        }
+        event => panic!("expected events_dropped, got {event:?}"),
+    }
+}
+
+#[test]
+fn usage_learner_subscriber_learns_and_preserves_fanout_identity() {
+    let fanout = FanoutSink::with_source("session", "source");
+    let graph = Arc::new(RwLock::new(IntentGraph::empty()));
+    let recorded = Arc::new(MemorySink::new("ignored"));
+    let learner = Arc::new(UsageLearner::new(graph.clone(), recorded.clone()));
+    let subscription = fanout.subscribe(learner, 8);
+
+    fanout.record(TraceEvent::Search {
+        query: "find logs".into(),
+        origin: Origin::Agent,
+        top_k: 5,
+        hits: vec![],
+        stages: vec![],
+        took_ms: 1,
+    });
+    fanout.record(TraceEvent::InvokeStart {
+        tool_id: "logs".into(),
+        args_size_bytes: 0,
+    });
+    subscription.flush();
+
+    assert_eq!(graph.read().unwrap().len(), 1);
+    let events = recorded.snapshot();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.source_id == "source"));
 }
 
 #[test]
@@ -257,7 +375,7 @@ fn noop_sink_drops_everything() {
 fn jsonl_sink_writes_one_line_per_event() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("trace.jsonl");
-    let sink = Arc::new(JsonlSink::new("session-7", &path).expect("open sink"));
+    let sink = Arc::new(JsonlSink::with_source("session-7", "ratel", &path).expect("open sink"));
     sink.record(TraceEvent::AuthNeeds {
         upstream: "github".into(),
     });
@@ -371,6 +489,12 @@ fn trace_event_round_trips_through_json() {
         TraceEvent::AuthFlowEnd {
             upstream: "u".into(),
             ok: true,
+        },
+        TraceEvent::EventsDropped {
+            dropped_count: 2,
+            reason: "queue_overflow".into(),
+            window_start_ts: 10,
+            window_end_ts: 11,
         },
         TraceEvent::IndexChurn {
             kind: ChurnKind::Add,

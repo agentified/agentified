@@ -115,9 +115,9 @@ pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};
 pub use tool::Tool;
 pub use tool_registry::{AdaptiveRankingStatus, SearchHit, ToolRegistry};
 pub use trace::{
-    ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, JsonlSink, MemorySink, NoopSink,
-    Origin, SearchHitTrace, SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent,
-    TraceEventContext, TraceSink,
+    ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, FanoutSink, FanoutSubscription,
+    JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace, SearchStage, SkillHitTrace,
+    TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
 };
 pub use usage::{Intent, IntentGraph, IntentGraphError};
 pub use usage_learner::UsageLearner;
