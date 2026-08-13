@@ -90,7 +90,7 @@ class RuntimeEventSubscription:
     def __init__(
         self,
         subscriptions: list[NativeEventSubscription],
-        pending: set[asyncio.Task[None]],
+        pending: set[asyncio.Future[None]],
         active: list[bool],
     ) -> None:
         """Create a subscription over native handles and pending handler work."""
@@ -144,10 +144,38 @@ class RuntimeEvents:
     def subscribe(self, handler: RuntimeEventHandler) -> RuntimeEventSubscription:
         """Subscribe to bounded asynchronous runtime-event batches."""
         active = [True]
-        pending: set[asyncio.Task[None]] = set()
+        pending: set[asyncio.Future[None]] = set()
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        def schedule_awaitable(awaitable: Awaitable[None]) -> None:
+            if loop is None:
+                close = getattr(awaitable, "close", None)
+                if callable(close):
+                    close()
+                return
+
+            def schedule() -> None:
+                future = asyncio.ensure_future(awaitable, loop=loop)
+                pending.add(future)
+                future.add_done_callback(
+                    lambda finished: _finish_async_handler(finished, pending)
+                )
+
+            try:
+                on_target_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                on_target_loop = False
+            if on_target_loop:
+                schedule()
+            else:
+                loop.call_soon_threadsafe(schedule)
 
         if inspect.iscoroutinefunction(handler):
-            loop = asyncio.get_running_loop()
+            if loop is None:
+                raise RuntimeError("async runtime-event handlers require a running event loop")
             async_handler = cast(Callable[[list[RuntimeEvent]], Coroutine[Any, Any, None]], handler)
 
             def deliver(batch: list[RuntimeEvent]) -> None:
@@ -156,11 +184,7 @@ class RuntimeEvents:
                 def schedule() -> None:
                     if not active[0]:
                         return
-                    task: asyncio.Task[None] = loop.create_task(async_handler(normalized))
-                    pending.add(task)
-                    task.add_done_callback(
-                        lambda finished: _finish_async_handler(finished, pending)
-                    )
+                    schedule_awaitable(async_handler(normalized))
 
                 loop.call_soon_threadsafe(schedule)
 
@@ -170,7 +194,9 @@ class RuntimeEvents:
                 if not active[0]:
                     return
                 try:
-                    handler([_normalize_runtime_event(event) for event in batch])
+                    result = handler([_normalize_runtime_event(event) for event in batch])
+                    if inspect.isawaitable(result):
+                        schedule_awaitable(result)
                 except Exception:
                     pass
 
@@ -199,8 +225,8 @@ def _default_source_id() -> str:
 
 
 def _finish_async_handler(
-    task: asyncio.Task[None],
-    pending: set[asyncio.Task[None]],
+    task: asyncio.Future[None],
+    pending: set[asyncio.Future[None]],
 ) -> None:
     pending.discard(task)
     if task.cancelled():

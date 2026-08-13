@@ -219,3 +219,25 @@ async def test_marshals_async_handlers_to_the_subscribing_event_loop() -> None:
     assert [event["type"] for event in received] == ["search"]
     assert handler_threads == [event_loop_thread]
     subscription.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_marshals_handlers_that_return_an_awaitable_to_the_event_loop() -> None:
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools])
+    received: list[dict[str, object]] = []
+    handler_threads: list[int] = []
+    event_loop_thread = threading.get_ident()
+
+    async def async_handler(batch: list[dict[str, object]]) -> None:
+        received.extend(batch)
+        handler_threads.append(threading.get_ident())
+
+    subscription = events.subscribe(lambda batch: async_handler(batch))
+    tools.search("anything", 1)
+
+    await subscription.flush()
+
+    assert [event["type"] for event in received] == ["search"]
+    assert handler_threads == [event_loop_thread]
+    subscription.unsubscribe()
