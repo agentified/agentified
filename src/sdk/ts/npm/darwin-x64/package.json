@@ -1,6 +1,6 @@
 {
   "name": "@ratel-ai/sdk-darwin-x64",
-  "version": "0.9.1-rc.0",
+  "version": "0.9.1",
   "cpu": [
     "x64"
   ],
