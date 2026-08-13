@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-13
+
 ### Added
 
 - **Experimental build-time embedding artifacts (ADR-0018).** `experimentalBuildEmbeddingArtifact` builds a mixed Tool+Skill RAT1 (Tool and Skill halves merged internally; no public merge API). Hosts own artifact persistence; the core artifact APIs accept/return bytes and perform no artifact filesystem I/O. Catalogs accept `experimentalEmbeddingArtifact: { path } | { bytes }` (default `onMiss: "error"`) and warm on `register` / `replaceAll` for any search method before eager document embedding on semantic/hybrid. `ToolRegistry` / `SkillRegistry` expose `experimentalBuildEmbeddingArtifact` and `experimentalWarmEmbeddingsFromArtifact`. Failures: `ArtifactWarmError` (`.code`, `.missing` for `"Incomplete"`), `ArtifactError`, and `IncompatibleMergeError` (from incompatible Tool/Skill halves during mixed build — not a public merge function). Shipped behind an `experimental` prefix (the API may change until it graduates).
