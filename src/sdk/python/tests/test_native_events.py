@@ -22,16 +22,25 @@ def test_pushes_worker_thread_search_events_in_batches() -> None:
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         producer_thread = executor.submit(threading.get_ident).result()
-        executor.submit(
+        worker_search = executor.submit(
             registry._search_with_method,
             "read",
             1,
             "direct",
             "bm25",
-        ).result()
+        )
+        for index in range(8):
+            registry.search(f"burst-{index}", 1)
+        worker_search.result()
     subscription.flush()
 
-    event = next(event for batch in batches for event in batch if event["type"] == "search")
+    assert any(len(batch) > 1 for batch in batches)
+    event = next(
+        event
+        for batch in batches
+        for event in batch
+        if event["type"] == "search" and event["query"] == "read"
+    )
     assert event | {
         "v": 2,
         "session_id": "session-python",

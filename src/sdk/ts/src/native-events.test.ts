@@ -22,11 +22,17 @@ describe("native runtime event bridge", () => {
       },
     );
 
-    await registry.searchWithMethodAsync("read", 1, "direct", "bm25");
+    const workerSearch = registry.searchWithMethodAsync("read", 1, "direct", "bm25");
+    for (let index = 0; index < 8; index += 1) {
+      registry.search(`burst-${index}`, 1);
+    }
+    await workerSearch;
     await subscription.flush();
 
-    expect(batches.some((batch) => batch.length > 0)).toBe(true);
-    const event = batches.flat().find((candidate) => candidate.type === "search");
+    expect(batches.some((batch) => batch.length > 1)).toBe(true);
+    const event = batches
+      .flat()
+      .find((candidate) => candidate.type === "search" && candidate.query === "read");
     expect(event).toMatchObject({
       v: 2,
       session_id: "session-ts",
