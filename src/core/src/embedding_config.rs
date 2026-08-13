@@ -201,28 +201,17 @@ pub(crate) fn stamp_file(path: &Path, model: &str) -> Result<FileStamp, Embedder
 
 /// Content digest of Local model inputs that produce vectors, memoized against
 /// `(len, mtime)`. Used only for RAT1 artifact identity — never for runtime
-/// cache keys or ordinary dense load.
+/// cache keys or ordinary dense load. Load-stamp coherence is
+/// [`LocalContentIdentity`].
 pub(crate) fn local_model_content_id_from_paths(
     dir: &Path,
     paths: &[&Path],
-    expected_stamps: Option<&[FileStamp]>,
 ) -> Result<String, EmbedderError> {
     let name = dir.display().to_string();
     let stamps: Vec<FileStamp> = paths
         .iter()
         .map(|p| stamp_file(p, &name))
         .collect::<Result<_, _>>()?;
-
-    if let Some(expected) = expected_stamps
-        && expected != stamps.as_slice()
-    {
-        return Err(EmbedderError::Load {
-            model: name,
-            source: "local model files changed since load — reload the embedder before \
-                     building or warming an embedding artifact"
-                .into(),
-        });
-    }
 
     let memo_key = dir
         .canonicalize()
@@ -255,6 +244,101 @@ pub(crate) fn local_model_content_id_from_paths(
     Ok(content_id)
 }
 
+pub(crate) struct LocalContentIdentity {
+    state: Mutex<LocalIdentityState>,
+}
+
+#[derive(Clone)]
+struct LocalIdentityState {
+    stamps: Vec<FileStamp>,
+    established: Option<String>,
+}
+
+impl LocalContentIdentity {
+    pub(crate) fn new(load_stamps: [FileStamp; 3]) -> Self {
+        Self {
+            state: Mutex::new(LocalIdentityState {
+                stamps: load_stamps.to_vec(),
+                established: None,
+            }),
+        }
+    }
+
+    /// Hash and restat with the mutex released; commit only if stamps are unchanged.
+    pub(crate) fn content_id(&self, dir: &Path, paths: &[&Path]) -> Result<String, EmbedderError> {
+        loop {
+            let now = stamp_paths(dir, paths)?;
+            let snapshot = {
+                let guard = self.state.lock().expect("local content identity poisoned");
+                guard.clone()
+            };
+
+            if now == snapshot.stamps {
+                if let Some(id) = &snapshot.established {
+                    return Ok(id.clone());
+                }
+            } else if snapshot.established.is_none() {
+                return Err(drift_before_established(dir));
+            }
+
+            let id = local_model_content_id_from_paths(dir, paths)?;
+            #[cfg(test)]
+            after_hash_hook::take_and_run();
+            let after = stamp_paths(dir, paths)?;
+            if after != now {
+                continue;
+            }
+
+            let mut guard = self.state.lock().expect("local content identity poisoned");
+            if guard.stamps != snapshot.stamps || guard.established != snapshot.established {
+                continue;
+            }
+            match &snapshot.established {
+                None => {
+                    guard.stamps = now;
+                    guard.established = Some(id.clone());
+                    return Ok(id);
+                }
+                Some(known) if known == &id => {
+                    guard.stamps = now;
+                    return Ok(known.clone());
+                }
+                Some(_) => return Err(contents_differ(dir)),
+            }
+        }
+    }
+}
+
+fn stamp_paths(dir: &Path, paths: &[&Path]) -> Result<Vec<FileStamp>, EmbedderError> {
+    let model = dir.display().to_string();
+    paths.iter().map(|p| stamp_file(p, &model)).collect()
+}
+
+fn drift_before_established(dir: &Path) -> EmbedderError {
+    let model = dir.display().to_string();
+    EmbedderError::Load {
+        model: model.clone(),
+        source: format!(
+            "local model files under {model} changed after the model was loaded and before this \
+             process established its artifact identity — the resident model may no longer match \
+             the files on disk; start a new process to build or warm an embedding artifact from \
+             the current files"
+        ),
+    }
+}
+
+fn contents_differ(dir: &Path) -> EmbedderError {
+    let model = dir.display().to_string();
+    EmbedderError::Load {
+        model: model.clone(),
+        source: format!(
+            "local model files under {model} changed since the model was loaded (contents differ, \
+             not just timestamps) — the resident model still holds the previous weights; start a \
+             new process to build or warm an embedding artifact from the current files"
+        ),
+    }
+}
+
 /// Compose the portable Local RAT1 artifact identity for a directory, using the
 /// same effective pooling resolution as load (`override` → pooling file → Mean).
 /// Test/helper surface — production Local artifact identity goes through
@@ -276,7 +360,7 @@ pub(crate) fn local_artifact_fingerprint(
     // Same fallback as `resolve_pooling` in embedding.rs (Mean when undetected).
     let pooling = detected.unwrap_or(Pooling::Mean);
     let paths = files.content_hash_paths();
-    let content_id = local_model_content_id_from_paths(dir, &paths, None)?;
+    let content_id = local_model_content_id_from_paths(dir, &paths)?;
     Ok(format!(
         "{}{}",
         local_content_fingerprint(&content_id),
@@ -332,6 +416,25 @@ mod content_hash_probe {
 
     pub(crate) fn count() -> usize {
         CALLS.with(Cell::get)
+    }
+}
+
+#[cfg(test)]
+mod after_hash_hook {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(super) fn set(hook: impl FnOnce() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn take_and_run() {
+        if let Some(hook) = HOOK.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
     }
 }
 
@@ -1212,6 +1315,33 @@ mod tests {
         std::fs::write(dir.join("model.safetensors"), weights).unwrap();
     }
 
+    fn touch_mtime(path: &Path) {
+        use std::fs::FileTimes;
+        use std::time::Duration;
+
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let current = file.metadata().unwrap().modified().unwrap();
+        let times = FileTimes::new().set_modified(current + Duration::from_secs(2));
+        file.set_times(times).unwrap();
+    }
+
+    fn identity_from_dir(dir: &Path) -> (LocalContentIdentity, [PathBuf; 3]) {
+        let files = resolve_local_model_files(dir).unwrap();
+        let stamps = stamp_local_hash_paths(&files, "m").unwrap();
+        (
+            LocalContentIdentity::new(stamps),
+            [
+                files.config.clone(),
+                files.tokenizer.clone(),
+                files.weights.clone(),
+            ],
+        )
+    }
+
+    fn path_refs(paths: &[PathBuf; 3]) -> [&Path; 3] {
+        [&paths[0], &paths[1], &paths[2]]
+    }
+
     fn write_pooling(dir: &Path, cls: bool, mean: bool) {
         let pooling_dir = dir.join("1_Pooling");
         std::fs::create_dir_all(&pooling_dir).unwrap();
@@ -1528,19 +1658,142 @@ mod tests {
     }
 
     #[test]
-    fn local_artifact_identity_rejects_stamp_drift_since_load() {
+    fn metadata_only_touch_keeps_local_artifact_identity_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        let established = identity.content_id(dir.path(), &refs).unwrap();
+        touch_mtime(&dir.path().join("config.json"));
+        let after = identity.content_id(dir.path(), &refs).unwrap();
+        assert_eq!(
+            established, after,
+            "byte-identical mtime touch must keep the established identity"
+        );
+    }
+
+    #[test]
+    fn metadata_only_touch_is_recoverable_and_stable_across_repeats() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        test_reset_content_hash_calls();
+        let established = identity.content_id(dir.path(), &refs).unwrap();
+        assert_eq!(
+            test_content_hash_calls(),
+            1,
+            "first establishment hashes once"
+        );
+
+        for _ in 0..2 {
+            touch_mtime(&dir.path().join("config.json"));
+            let before = test_content_hash_calls();
+            let after_touch = identity.content_id(dir.path(), &refs).unwrap();
+            assert_eq!(after_touch, established);
+            assert_eq!(
+                test_content_hash_calls(),
+                before + 1,
+                "each metadata-only touch recomputes the digest once"
+            );
+            let repeat = identity.content_id(dir.path(), &refs).unwrap();
+            assert_eq!(repeat, established);
+            assert_eq!(
+                test_content_hash_calls(),
+                before + 1,
+                "unchanged stamps after an accepted touch must take the fast path"
+            );
+        }
+    }
+
+    #[test]
+    fn content_drift_after_established_identity_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
-        let files = resolve_local_model_files(dir.path()).unwrap();
-        let stamps = stamp_local_hash_paths(&files, "m").unwrap();
-        let paths = files.content_hash_paths();
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
 
+        identity.content_id(dir.path(), &refs).unwrap();
         std::fs::write(dir.path().join("model.safetensors"), b"weights-v2-longer").unwrap();
-        let err = local_model_content_id_from_paths(dir.path(), &paths, Some(&stamps)).unwrap_err();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("changed since load"),
-            "stamp drift must hard-fail artifact identity; got {msg}"
+            msg.contains("contents differ") && msg.contains("start a new process"),
+            "content drift after establishment must name contents and a new process; got {msg}"
+        );
+        assert!(
+            !msg.contains("reload the embedder"),
+            "error must not suggest an impossible reload; got {msg}"
+        );
+    }
+
+    #[test]
+    fn stamp_drift_before_established_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        touch_mtime(&dir.path().join("config.json"));
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("before this process established its artifact identity")
+                && msg.contains("start a new process"),
+            "stamp drift before establishment must fail closed with a new-process remedy; got {msg}"
+        );
+        assert!(
+            !msg.contains("reload the embedder"),
+            "error must not suggest an impossible reload; got {msg}"
+        );
+    }
+
+    #[test]
+    fn same_length_content_swap_after_established_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        identity.content_id(dir.path(), &refs).unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-v2").unwrap();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("contents differ"),
+            "same-length weight swap must fail closed; got {msg}"
+        );
+    }
+
+    #[test]
+    fn content_id_does_not_commit_digest_when_stamps_change_during_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+        let config = dir.path().join("config.json");
+
+        super::after_hash_hook::set(move || touch_mtime(&config));
+        test_reset_content_hash_calls();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("before this process established its artifact identity")
+                && msg.contains("start a new process"),
+            "TOCTOU during first hash must not establish identity; got {msg}"
+        );
+        assert!(
+            test_content_hash_calls() >= 1,
+            "the interrupted establishment must have hashed"
+        );
+
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("before this process established its artifact identity"),
+            "identity must remain unestablished after a discarded in-flight digest; got {err}"
         );
     }
 }

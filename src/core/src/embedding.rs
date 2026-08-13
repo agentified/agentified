@@ -50,10 +50,10 @@ use serde::Deserialize;
 use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStrategy};
 
 use crate::embedding_config::{
-    DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, FileStamp, OLLAMA_DEFAULT_URL, Pooling,
-    endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint, local_content_fingerprint,
-    local_fingerprint, local_model_content_id_from_paths, parse_pooling_config,
-    resolve_local_model_files, stamp_local_hash_paths,
+    DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, LocalContentIdentity, OLLAMA_DEFAULT_URL,
+    Pooling, endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint,
+    local_content_fingerprint, local_fingerprint, parse_pooling_config, resolve_local_model_files,
+    stamp_local_hash_paths,
 };
 use crate::trace::{EmbedderLoadStatus, TraceEvent, TraceSink};
 
@@ -551,16 +551,14 @@ pub(crate) struct CandleEmbedder {
     query_prefix: String,
     doc_prefix: String,
     fingerprint: String,
-    /// Set only for Local loads: paths + load-time stamps for lazy RAT1 identity.
     local_source: Option<LocalArtifactSource>,
 }
 
-/// Cheap Local metadata retained at load so RAT1 can hash later without paying
-/// the digest on ordinary dense use, and can detect post-load file mutation.
+/// Paths retained at load so RAT1 can hash later without digesting on ordinary dense use
 struct LocalArtifactSource {
     dir: PathBuf,
     hash_paths: [PathBuf; 3],
-    load_stamps: [FileStamp; 3],
+    identity: LocalContentIdentity,
 }
 
 /// The resolved files + pooling a build needs.
@@ -716,7 +714,7 @@ impl CandleEmbedder {
         let local_source = Some(LocalArtifactSource {
             dir: dir.to_path_buf(),
             hash_paths,
-            load_stamps,
+            identity: LocalContentIdentity::new(load_stamps),
         });
         let embedder = Self::build(
             device,
@@ -954,8 +952,7 @@ impl Embedder for CandleEmbedder {
             &source.hash_paths[1],
             &source.hash_paths[2],
         ];
-        let content_id =
-            local_model_content_id_from_paths(&source.dir, &paths, Some(&source.load_stamps))?;
+        let content_id = source.identity.content_id(&source.dir, &paths)?;
         Ok(format!(
             "{}{}",
             local_content_fingerprint(&content_id),
