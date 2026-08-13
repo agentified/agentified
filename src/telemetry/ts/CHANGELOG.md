@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.1-rc.0] - 2026-08-14
+
 ### Added
 
 - **Retrieval experiment vocabulary (ADR-0019).** Span names (`ratel.experiment.arm`, `.results`, `.comparison`, `.invocation`), the skip/fallback/drop event names, and attribute keys for identity (`ratel.experiment.id`, `.selection_id`, `.role`, `.unit`, `.cold`), per-arm outcomes (`.outcome`, `.duration_ms`, `.hit_count`, `.ranking_error`), result payloads (`.result_ids`, `.result_scores`, `.result_attrs`), the served/shadow comparison pairs, and the top-1 agreement metric. Constants only — this package defines the vocabulary, `@ratel-ai/sdk` emits it.

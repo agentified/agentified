@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.9.1-rc.0] - 2026-08-14
+
 ### Added
 
 - **Retrieval experiments: A/B and shadow evaluation (ADR-0019).** `experimentalDefineExperiment` declares an experiment over retrieval configurations and assigns each unit deterministically — the same unit id always lands in the same arm, so assignment needs no shared state and survives restarts. Two modes: A/B, where the selected arm's ranking is what the caller receives; and shadow, where a candidate arm is scored alongside the control but never served, bounding the blast radius of an unproven configuration to telemetry only. Both emit the `ratel.experiment.*` vocabulary from `@ratel-ai/telemetry` — per-arm outcomes, result payloads, and served-vs-shadow comparison with top-1 agreement — so arms can be compared without the host writing its own metrics. A failure in a shadow arm is contained and reported as a drop; a failure in the serving path reaches the caller rather than being silently swallowed. `Experiment`, `ExperimentConfig`, `ExperimentSelection`, `ExperimentSplit`, `ExperimentArmRole`, `ExperimentArmOutcome`, `ExperimentRankedItem`, `ExperimentReportedOutcome`, `ExperimentEvaluationReference`, and `ExperimentSelectOptions` are exported. Shipped behind an `experimental` prefix — the API may change until it graduates.
