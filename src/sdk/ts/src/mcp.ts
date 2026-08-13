@@ -181,7 +181,7 @@ export async function registerMcpServer(
 
   // The whole registration (connect + list + ingest) is one `ratel.upstream.register`
   // span; per-tool invocations later get their own `execute_tool` spans (ADR-0007).
-  return traceUpstreamRegister(name, transportLabel, async (reportToolCount) => {
+  return traceUpstreamRegister(name, transportLabel, async (reportToolCount, projection) => {
     const client = new Client({ name: "@ratel-ai/sdk", version: "0.0.0" });
     try {
       await client.connect(transport);
@@ -190,12 +190,15 @@ export async function registerMcpServer(
 
       const tools = await listAllMcpTools(client);
       reportToolCount(tools.length);
-      catalog.recordEvent({
-        type: "upstream_register",
-        server: name,
-        transport: transportLabel,
-        tool_count: tools.length,
-      });
+      catalog.recordEvent(
+        {
+          type: "upstream_register",
+          server: name,
+          transport: transportLabel,
+          tool_count: tools.length,
+        },
+        projection,
+      );
       const { toolIds, registered } = buildRegisteredMcpTools(catalog, client, name, tools);
       await catalog.register(registered);
 

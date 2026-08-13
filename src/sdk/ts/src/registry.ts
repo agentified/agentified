@@ -3,6 +3,7 @@ import {
   type FactHit,
   IntentGraph,
   type EmbeddingConfig as NativeEmbeddingConfig,
+  type NativeEventSubscription,
   FactRegistry as NativeFactRegistry,
   SkillRegistry as NativeSkillRegistry,
   ToolRegistry as NativeToolRegistry,
@@ -11,7 +12,6 @@ import {
   type Skill,
   type SkillHit,
   type Tool,
-  type NativeEventSubscription,
 } from "../native/index.cjs";
 import { assertNotArtifactBusy } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";

@@ -1,5 +1,5 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import type { NativeEventSubscription, ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import {
@@ -7,9 +7,8 @@ import {
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
-import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
-import type { NativeEventSubscription } from "../native/index.cjs";
 import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
+import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
 export type { ReplaceOutcome, Skill, SkillHit };
 
@@ -208,13 +207,7 @@ export class SkillCatalog {
     method?: SearchMethod,
   ): Promise<SkillHit[]> {
     return traceSearchAsync(SearchTarget.Skill, query, topK, origin, (projection) =>
-      this.registry.searchWithMethodAsync(
-        query,
-        topK,
-        origin,
-        method ?? this.method,
-        projection,
-      ),
+      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -345,11 +338,14 @@ export class SkillCatalog {
     return traceSkillLoad(skillId, (projection) => {
       const started = Date.now();
       const body = skill.body ?? "";
-      this.registry.recordEvent({
-        type: "skill_invoke",
-        skill_id: skillId,
-        took_ms: Date.now() - started,
-      }, projection);
+      this.registry.recordEvent(
+        {
+          type: "skill_invoke",
+          skill_id: skillId,
+          took_ms: Date.now() - started,
+        },
+        projection,
+      );
       return body;
     });
   }

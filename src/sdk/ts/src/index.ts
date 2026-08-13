@@ -94,19 +94,6 @@ export type {
 // content plus the content-presence re-injection gate. Namespaced so dependence
 // on this unstable surface is explicit: `experimental.FactCatalog`.
 export * as experimental from "./experimental.js";
-export { experimentalDefineExperiment } from "./experiment.js";
-export type {
-  Experiment,
-  ExperimentArmOutcome,
-  ExperimentArmRole,
-  ExperimentConfig,
-  ExperimentEvaluationReference,
-  ExperimentRankedItem,
-  ExperimentReportedOutcome,
-  ExperimentSelection,
-  ExperimentSelectOptions,
-  ExperimentSplit,
-} from "./experiment-types.js";
 export type { McpServerHandle, McpToolsListErrorCode, RegisterMcpServerOptions } from "./mcp.js";
 export { McpToolsListError, registerMcpServer } from "./mcp.js";
 // The framework-adapter SPI and factory (ADR-0013): `ratel(config).adaptTo(adapter)`.
@@ -125,18 +112,25 @@ export type {
 export { ratel } from "./ratel.js";
 /** Adaptive usage ranking: the shared read model of what users invoke (ADR-0014). */
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
-export type { PendingReplace, SkillCatalogOptions } from "./skill-catalog.js";
-export { SkillCatalog } from "./skill-catalog.js";
-export type { SkillDefinition } from "./skill-catalog.js";
 export type {
   CatalogSnapshot,
   RuntimeCatalog,
   RuntimeEvent,
+  RuntimeEventHandler,
   RuntimeEventSubscription,
   RuntimeEventsOptions,
 } from "./runtime-events.js";
-export { RuntimeEvents } from "./runtime-events.js";
+export {
+  RUNTIME_EVENT_MAX_HITS,
+  RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+  RUNTIME_EVENT_MAX_QUERY_BYTES,
+  RUNTIME_EVENT_TYPES,
+  RuntimeEvents,
+} from "./runtime-events.js";
+export type { PendingReplace, SkillCatalogOptions, SkillDefinition } from "./skill-catalog.js";
+export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
+export type { RuntimeEventProjection } from "./telemetry.js";
 // OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel
 // provider the host has registered and never registers one itself — delivery is the host's
 // `new NodeSDK({ spanProcessors })`. `ContentCapture`/`setContentCapture`/

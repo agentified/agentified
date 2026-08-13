@@ -23,13 +23,9 @@ import type { ExperimentalEmbeddingArtifact } from "./embedding-artifact.js";
 import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
+import { type RuntimeCatalog, RuntimeEvents, type RuntimeEventsOptions } from "./runtime-events.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
-import {
-  type RuntimeCatalog,
-  RuntimeEvents,
-  type RuntimeEventsOptions,
-} from "./runtime-events.js";
 
 /** Construction options for {@link ratel}. Shared by every adapter view of the core. */
 export interface RatelConfig {
@@ -452,7 +448,7 @@ export function ratel(config: RatelConfig = {}): Ratel {
   const events = new RuntimeEvents([catalog, skills], config.events);
   const runtimeCatalog: RuntimeCatalog = {
     snapshot: () => ({
-      sourceId: events.sourceId,
+      source_id: events.sourceId,
       tools: catalog.snapshot(),
       skills: skills.snapshot(),
     }),

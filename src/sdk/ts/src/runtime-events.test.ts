@@ -1,14 +1,82 @@
+import { readFileSync } from "node:fs";
 import { trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, it } from "vitest";
-import { type RuntimeEvent, ratel } from "./index.js";
+import {
+  experimentalDefineExperiment,
+  RUNTIME_EVENT_MAX_HITS,
+  RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+  RUNTIME_EVENT_MAX_QUERY_BYTES,
+  RUNTIME_EVENT_TYPES,
+  type RuntimeEvent,
+  ratel,
+} from "./index.js";
+
+interface RuntimeEventsFixture {
+  runtime_events: {
+    version: number;
+    max_payload_bytes: number;
+    max_query_bytes: number;
+    max_hits: number;
+    required_envelope_fields: string[];
+    event_types: string[];
+  };
+}
+
+const conformance = JSON.parse(
+  readFileSync(new URL("../../../telemetry/conformance/fixtures.json", import.meta.url), "utf8"),
+) as RuntimeEventsFixture;
 
 describe("public runtime events", () => {
-  afterEach(() => trace.disable());
+  afterEach(() => {
+    logs.disable();
+    trace.disable();
+  });
+
+  it("matches the frozen cross-language event vocabulary", () => {
+    expect(conformance.runtime_events).toEqual({
+      version: 2,
+      max_payload_bytes: RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+      max_query_bytes: RUNTIME_EVENT_MAX_QUERY_BYTES,
+      max_hits: RUNTIME_EVENT_MAX_HITS,
+      required_envelope_fields: ["v", "event_id", "ts", "session_id", "source_id", "type"],
+      event_types: [...RUNTIME_EVENT_TYPES],
+    });
+  });
+
+  it("enforces public query, hit, and payload bounds before delivery", async () => {
+    const runtime = ratel();
+    const received: RuntimeEvent[] = [];
+    const subscription = runtime.events.subscribe((batch) => received.push(...batch));
+
+    runtime.events.emit({
+      type: "search",
+      search_id: "search-1",
+      query: "é".repeat(4_096),
+      hits: Array.from({ length: 120 }, (_, rank) => ({ id: `tool-${rank}`, rank, score: 1 })),
+      unrecognized_padding: "x".repeat(100_000),
+    });
+    await subscription.flush();
+
+    const [event] = received;
+    expect(Buffer.byteLength(String(event?.query), "utf8")).toBeLessThanOrEqual(
+      RUNTIME_EVENT_MAX_QUERY_BYTES,
+    );
+    expect(event?.hits).toHaveLength(RUNTIME_EVENT_MAX_HITS);
+    expect(Buffer.byteLength(JSON.stringify(event), "utf8")).toBeLessThanOrEqual(
+      RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+    );
+  });
 
   it("merges tool and skill streams under one session stamp", async () => {
     const runtime = ratel({
@@ -73,9 +141,7 @@ describe("public runtime events", () => {
     runtime.tools.search("read", 1);
     await subscription.flush();
 
-    const streamEvent = received.find(
-      (event) => event.type === "search" && event.query === "read",
-    );
+    const streamEvent = received.find((event) => event.type === "search" && event.query === "read");
     const span = exporter.getFinishedSpans().find((candidate) => candidate.name === "ratel.search");
     expect(span?.attributes["ratel.event.id"]).toBe(streamEvent?.event_id);
     expect(streamEvent?.trace_id).toBe(span?.spanContext().traceId);
@@ -112,6 +178,65 @@ describe("public runtime events", () => {
     expect(start?.event_id).not.toBe(end?.event_id);
   });
 
+  it("merges experiment evaluations through the OTel and runtime-event sinks", async () => {
+    const exporter = new InMemorySpanExporter();
+    const logExporter = new InMemoryLogRecordExporter();
+    trace.setGlobalTracerProvider(
+      new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }),
+    );
+    logs.setGlobalLoggerProvider(
+      new LoggerProvider({
+        processors: [new SimpleLogRecordProcessor({ exporter: logExporter })],
+      }),
+    );
+    const runtime = ratel({ events: { sessionId: "session-experiment" } });
+    const received: RuntimeEvent[] = [];
+    const subscription = runtime.events.subscribe((batch) => received.push(...batch));
+    const experiment = experimentalDefineExperiment(
+      {
+        id: "search-v2",
+        arms: { stable: { select: async () => [{ id: "read_file", score: 0.9 }] } },
+        ranking: (result) => result,
+        evaluation: { references: ["peer-selection"], outcome: true },
+      },
+      runtime.events,
+    );
+
+    const selection = await experiment.select({}, { arm: "stable", unitId: "unit-a" });
+    experiment.reportOutcome({ selectionId: selection.selectionId, label: "accepted" });
+    await subscription.flush();
+
+    expect(received.map((event) => event.type)).toEqual([
+      "experiment_selection",
+      "experiment_results",
+      "experiment_outcome",
+    ]);
+    expect(received[0]).toMatchObject({
+      experiment_id: "search-v2",
+      selection_id: selection.selectionId,
+      arm: "stable",
+      role: "serving",
+    });
+    expect(received[1]).toMatchObject({
+      selection_id: selection.selectionId,
+      outcome: "ok",
+      result_ids: ["read_file"],
+      result_scores: [0.9],
+    });
+    expect(received[2]).toMatchObject({
+      selection_id: selection.selectionId,
+      label: "accepted",
+    });
+    const span = exporter
+      .getFinishedSpans()
+      .find((candidate) => candidate.name === "ratel.experiment.arm");
+    expect(span?.attributes["ratel.event.id"]).toBe(received[0]?.event_id);
+    const resultsLog = logExporter
+      .getFinishedLogRecords()
+      .find((record) => record.eventName === "ratel.experiment.results");
+    expect(resultsLog?.attributes["ratel.event.id"]).toBe(received[1]?.event_id);
+  });
+
   it("returns the complete serializable catalog without executable content", async () => {
     const runtime = ratel({ events: { sourceId: "service-a" } });
     const execute = () => ({ secret: "must never escape" });
@@ -144,7 +269,7 @@ describe("public runtime events", () => {
     const snapshot = runtime.catalog.snapshot();
 
     expect(snapshot).toEqual({
-      sourceId: "service-a",
+      source_id: "service-a",
       tools: [
         {
           id: "a_tool",
