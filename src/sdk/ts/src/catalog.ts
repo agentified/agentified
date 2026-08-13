@@ -1,5 +1,5 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { SearchHit, Tool } from "../native/index.cjs";
+import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import {
@@ -9,10 +9,10 @@ import {
 import { type IntentGraph, ToolRegistry } from "./registry.js";
 import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
 import { newRuntimeEventId } from "./runtime-events.js";
-import type { NativeEventSubscription } from "../native/index.cjs";
 import {
   argsSizeBytes,
   errorMessage,
+  type RuntimeEventProjection,
   traceExecuteTool,
   traceSearch,
   traceSearchAsync,
@@ -364,13 +364,7 @@ export class ToolCatalog {
     method?: SearchMethod,
   ): Promise<SearchHit[]> {
     return traceSearchAsync(SearchTarget.Tool, query, topK, origin, (projection) =>
-      this.registry.searchWithMethodAsync(
-        query,
-        topK,
-        origin,
-        method ?? this.method,
-        projection,
-      ),
+      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -460,8 +454,8 @@ export class ToolCatalog {
    * @param event - A tagged trace event in wire shape: `{ type: "...", ... }`
    *   with snake_case fields. Throws if the object is not a known trace event.
    */
-  recordEvent(event: object): void {
-    this.registry.recordEvent(event);
+  recordEvent(event: object, projection?: RuntimeEventProjection): void {
+    this.registry.recordEvent(event, projection);
   }
 
   /**
@@ -589,27 +583,36 @@ export function runToolInvocation<T>(
   // The `execute_tool` OTel span wraps the local trace stream; both record the
   // same invocation, on their two independent channels (ADR-0007).
   return traceExecuteTool(toolId, input, (projection) => {
-    catalog.recordEvent({
-      type: "invoke_start",
-      tool_id: toolId,
-      args_size_bytes: argsSizeBytes(input),
-    }, projection);
+    catalog.recordEvent(
+      {
+        type: "invoke_start",
+        tool_id: toolId,
+        args_size_bytes: argsSizeBytes(input),
+      },
+      projection,
+    );
     const started = Date.now();
 
     const succeed = (_result: unknown): void => {
-      catalog.recordEvent({
-        type: "invoke_end",
-        tool_id: toolId,
-        took_ms: Date.now() - started,
-      }, { ...projection, eventId: newRuntimeEventId() });
+      catalog.recordEvent(
+        {
+          type: "invoke_end",
+          tool_id: toolId,
+          took_ms: Date.now() - started,
+        },
+        { ...projection, eventId: newRuntimeEventId() },
+      );
     };
     const reject = (err: unknown): void => {
-      catalog.recordEvent({
-        type: "invoke_error",
-        tool_id: toolId,
-        took_ms: Date.now() - started,
-        error: errorMessage(err),
-      }, { ...projection, eventId: newRuntimeEventId() });
+      catalog.recordEvent(
+        {
+          type: "invoke_error",
+          tool_id: toolId,
+          took_ms: Date.now() - started,
+          error: errorMessage(err),
+        },
+        { ...projection, eventId: newRuntimeEventId() },
+      );
     };
 
     try {

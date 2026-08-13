@@ -26,6 +26,7 @@ from typing import Any, TypedDict, TypeVar
 from .runtime_events import new_runtime_event_id
 
 try:
+    import ratel_ai_telemetry as _telemetry_vocabulary
     from opentelemetry import _logs as _otel_logs
     from opentelemetry import trace as _otel_trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
@@ -57,12 +58,9 @@ try:
         content_capture_mode,
     )
 
-    try:
-        from ratel_ai_telemetry import RATEL_EVENT_ID
-    except ImportError:
-        # Compatibility with telemetry helpers released before ADR-0019. The
-        # Python helper exports this constant on the same release train.
-        RATEL_EVENT_ID = "ratel.event.id"
+    # Compatibility with telemetry helpers released before ADR-0019. The
+    # Python helper exports this constant on the same release train.
+    RATEL_EVENT_ID: str = getattr(_telemetry_vocabulary, "RATEL_EVENT_ID", "ratel.event.id")
 
     _ENABLED = True
 except ModuleNotFoundError:
