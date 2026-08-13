@@ -13,7 +13,14 @@
 //! the board. Resolution/validation **lives here** (in the core) so both SDKs
 //! share one implementation instead of two that could drift. See ADR-0012.
 
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
+
+use sha2::{Digest, Sha256};
 
 use crate::embedding::EmbedderError;
 
@@ -89,12 +96,401 @@ pub(crate) fn huggingface_fingerprint(repo: &str, revision: &str) -> String {
     fingerprint("hf", &[("repo", repo), ("revision", revision)])
 }
 
+/// Runtime / process-cache Local identity: the configured directory path.
+/// Pre-PR spelling — IntentGraph and dense-cache runtime stamps depend on it.
 pub(crate) fn local_fingerprint(path: &str) -> String {
     fingerprint("local", &[("path", path)])
 }
 
+/// RAT1 artifact Local identity: content digest of the effective model inputs.
+pub(crate) fn local_content_fingerprint(content_id: &str) -> String {
+    fingerprint("local", &[("content", content_id)])
+}
+
 pub(crate) fn endpoint_fingerprint(url: &str, model: &str) -> String {
     fingerprint("endpoint", &[("url", url), ("model", model)])
+}
+
+/// `(len, mtime)` stamp for Local artifact coherence checks / content-id memo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    pub(crate) len: u64,
+    pub(crate) modified: Option<SystemTime>,
+}
+
+struct ContentIdMemo {
+    stamps: Vec<FileStamp>,
+    content_id: String,
+}
+
+/// Files Candle opens for a local model. Shared by load and RAT1 artifact hashing
+/// so the identity set cannot drift from what is actually read.
+#[derive(Clone, Debug)]
+pub(crate) struct LocalModelFiles {
+    pub(crate) config: PathBuf,
+    pub(crate) tokenizer: PathBuf,
+    pub(crate) weights: PathBuf,
+    /// Present when `1_Pooling/config.json` exists — used for autodetection only;
+    /// never part of the content digest (effective pooling is the resolved mode).
+    pub(crate) pooling_config: Option<PathBuf>,
+}
+
+impl LocalModelFiles {
+    /// Ordered paths whose bytes define the Local artifact content identity.
+    pub(crate) fn content_hash_paths(&self) -> [&Path; 3] {
+        [&self.config, &self.tokenizer, &self.weights]
+    }
+}
+
+/// Resolve the Local model files Candle loads from `dir`.
+pub(crate) fn resolve_local_model_files(dir: &Path) -> Result<LocalModelFiles, EmbedderError> {
+    let name = dir.display().to_string();
+    let config = dir.join("config.json");
+    let tokenizer = dir.join("tokenizer.json");
+    let weights = [dir.join("model.safetensors"), dir.join("pytorch_model.bin")]
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| EmbedderError::Load {
+            model: name.clone(),
+            source: format!("missing model.safetensors / pytorch_model.bin in {name}"),
+        })?;
+    for (p, f) in [(&config, "config.json"), (&tokenizer, "tokenizer.json")] {
+        if !p.exists() {
+            return Err(EmbedderError::Load {
+                model: name.clone(),
+                source: format!(
+                    "missing {f} in {name} — a fast tokenizer.json is required; run \
+                     tokenizer.save_pretrained() upstream, or serve the model via an endpoint"
+                ),
+            });
+        }
+    }
+    let pooling = dir.join("1_Pooling/config.json");
+    let pooling_config = pooling.exists().then_some(pooling);
+    Ok(LocalModelFiles {
+        config,
+        tokenizer,
+        weights,
+        pooling_config,
+    })
+}
+
+/// Stat the three content-hash paths at load time (metadata only — not a digest).
+pub(crate) fn stamp_local_hash_paths(
+    files: &LocalModelFiles,
+    model: &str,
+) -> Result<[FileStamp; 3], EmbedderError> {
+    let paths = files.content_hash_paths();
+    Ok([
+        stamp_file(paths[0], model)?,
+        stamp_file(paths[1], model)?,
+        stamp_file(paths[2], model)?,
+    ])
+}
+
+pub(crate) fn stamp_file(path: &Path, model: &str) -> Result<FileStamp, EmbedderError> {
+    let meta = std::fs::metadata(path).map_err(|e| EmbedderError::Load {
+        model: model.to_string(),
+        source: format!("stat {}: {e}", path.display()),
+    })?;
+    Ok(FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+/// Content digest of Local model inputs that produce vectors, memoized against
+/// `(len, mtime)`. Used only for RAT1 artifact identity — never for runtime
+/// cache keys or ordinary dense load. Load-stamp coherence is
+/// [`LocalContentIdentity`].
+pub(crate) fn local_model_content_id_from_paths(
+    dir: &Path,
+    paths: &[&Path],
+) -> Result<String, EmbedderError> {
+    let name = dir.display().to_string();
+    let stamps: Vec<FileStamp> = paths
+        .iter()
+        .map(|p| stamp_file(p, &name))
+        .collect::<Result<_, _>>()?;
+
+    let memo_key = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .display()
+        .to_string();
+
+    {
+        let cache = content_id_memo();
+        let guard = cache.lock().expect("local content-id memo poisoned");
+        if let Some(entry) = guard.get(&memo_key)
+            && entry.stamps == stamps
+        {
+            return Ok(entry.content_id.clone());
+        }
+    }
+
+    let path_bufs: Vec<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
+    let content_id = hash_local_identity_files(&path_bufs, &name)?;
+    let mut guard = content_id_memo()
+        .lock()
+        .expect("local content-id memo poisoned");
+    guard.insert(
+        memo_key,
+        ContentIdMemo {
+            stamps,
+            content_id: content_id.clone(),
+        },
+    );
+    Ok(content_id)
+}
+
+pub(crate) struct LocalContentIdentity {
+    state: Mutex<LocalIdentityState>,
+}
+
+#[derive(Clone)]
+struct LocalIdentityState {
+    stamps: Vec<FileStamp>,
+    established: Option<String>,
+}
+
+impl LocalContentIdentity {
+    pub(crate) fn new(load_stamps: [FileStamp; 3]) -> Self {
+        Self {
+            state: Mutex::new(LocalIdentityState {
+                stamps: load_stamps.to_vec(),
+                established: None,
+            }),
+        }
+    }
+
+    /// Hash and restat with the mutex released; commit only if stamps are unchanged.
+    pub(crate) fn content_id(&self, dir: &Path, paths: &[&Path]) -> Result<String, EmbedderError> {
+        loop {
+            let now = stamp_paths(dir, paths)?;
+            let snapshot = {
+                let guard = self.state.lock().expect("local content identity poisoned");
+                guard.clone()
+            };
+
+            if now == snapshot.stamps {
+                if let Some(id) = &snapshot.established {
+                    return Ok(id.clone());
+                }
+            } else if snapshot.established.is_none() {
+                return Err(drift_before_established(dir));
+            }
+
+            let id = local_model_content_id_from_paths(dir, paths)?;
+            #[cfg(test)]
+            after_hash_hook::take_and_run();
+            let after = stamp_paths(dir, paths)?;
+            if after != now {
+                continue;
+            }
+
+            let mut guard = self.state.lock().expect("local content identity poisoned");
+            if guard.stamps != snapshot.stamps || guard.established != snapshot.established {
+                continue;
+            }
+            match &snapshot.established {
+                None => {
+                    guard.stamps = now;
+                    guard.established = Some(id.clone());
+                    return Ok(id);
+                }
+                Some(known) if known == &id => {
+                    guard.stamps = now;
+                    return Ok(known.clone());
+                }
+                Some(_) => return Err(contents_differ(dir)),
+            }
+        }
+    }
+}
+
+fn stamp_paths(dir: &Path, paths: &[&Path]) -> Result<Vec<FileStamp>, EmbedderError> {
+    let model = dir.display().to_string();
+    paths.iter().map(|p| stamp_file(p, &model)).collect()
+}
+
+fn drift_before_established(dir: &Path) -> EmbedderError {
+    let model = dir.display().to_string();
+    EmbedderError::Load {
+        model: model.clone(),
+        source: format!(
+            "local model files under {model} changed after the model was loaded and before this \
+             process established its artifact identity — the resident model may no longer match \
+             the files on disk; start a new process to build or warm an embedding artifact from \
+             the current files"
+        ),
+    }
+}
+
+fn contents_differ(dir: &Path) -> EmbedderError {
+    let model = dir.display().to_string();
+    EmbedderError::Load {
+        model: model.clone(),
+        source: format!(
+            "local model files under {model} changed since the model was loaded (contents differ, \
+             not just timestamps) — the resident model still holds the previous weights; start a \
+             new process to build or warm an embedding artifact from the current files"
+        ),
+    }
+}
+
+/// Compose the portable Local RAT1 artifact identity for a directory, using the
+/// same effective pooling resolution as load (`override` → pooling file → Mean).
+/// Test/helper surface — production Local artifact identity goes through
+/// [`crate::embedding::Embedder::artifact_identity`] on a loaded Candle embedder.
+#[cfg(test)]
+pub(crate) fn local_artifact_fingerprint(
+    dir: &Path,
+    pooling_override: Option<Pooling>,
+    query_prefix: &str,
+    doc_prefix: &str,
+) -> Result<String, EmbedderError> {
+    let files = resolve_local_model_files(dir)?;
+    let detected = pooling_override.or_else(|| {
+        files
+            .pooling_config
+            .as_ref()
+            .and_then(|p| detect_pooling_config_file(p))
+    });
+    // Same fallback as `resolve_pooling` in embedding.rs (Mean when undetected).
+    let pooling = detected.unwrap_or(Pooling::Mean);
+    let paths = files.content_hash_paths();
+    let content_id = local_model_content_id_from_paths(dir, &paths)?;
+    Ok(format!(
+        "{}{}",
+        local_content_fingerprint(&content_id),
+        fingerprint_suffix(Some(pooling), query_prefix, doc_prefix)
+    ))
+}
+
+/// Pure `1_Pooling/config.json` → [`Pooling`] mapping (shared with the loader).
+pub(crate) fn parse_pooling_config(bytes: &[u8]) -> Option<Pooling> {
+    #[derive(serde::Deserialize)]
+    struct PoolingConfig {
+        #[serde(default)]
+        pooling_mode_cls_token: bool,
+        #[serde(default)]
+        pooling_mode_mean_tokens: bool,
+    }
+    let c: PoolingConfig = serde_json::from_slice(bytes).ok()?;
+    if c.pooling_mode_cls_token {
+        Some(Pooling::Cls)
+    } else if c.pooling_mode_mean_tokens {
+        Some(Pooling::Mean)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+fn detect_pooling_config_file(path: &Path) -> Option<Pooling> {
+    let bytes = std::fs::read(path).ok()?;
+    parse_pooling_config(&bytes)
+}
+
+fn content_id_memo() -> &'static Mutex<HashMap<String, ContentIdMemo>> {
+    static CELL: OnceLock<Mutex<HashMap<String, ContentIdMemo>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+mod content_hash_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn note_call() {
+        CALLS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(crate) fn reset() {
+        CALLS.with(|c| c.set(0));
+    }
+
+    pub(crate) fn count() -> usize {
+        CALLS.with(Cell::get)
+    }
+}
+
+#[cfg(test)]
+mod after_hash_hook {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(super) fn set(hook: impl FnOnce() + 'static) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn take_and_run() {
+        if let Some(hook) = HOOK.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_reset_content_hash_calls() {
+    content_hash_probe::reset();
+}
+
+#[cfg(test)]
+pub(crate) fn test_content_hash_calls() -> usize {
+    content_hash_probe::count()
+}
+
+fn hash_local_identity_files(files: &[PathBuf], model: &str) -> Result<String, EmbedderError> {
+    #[cfg(test)]
+    content_hash_probe::note_call();
+    let mut hasher = Sha256::new();
+    for path in files {
+        // Length-prefix each file so concatenation cannot collide across a
+        // boundary (e.g. "ab"+"c" vs "a"+"bc").
+        let mut file = File::open(path).map_err(|e| EmbedderError::Load {
+            model: model.to_string(),
+            source: format!("open {}: {e}", path.display()),
+        })?;
+        let len = file
+            .metadata()
+            .map_err(|e| EmbedderError::Load {
+                model: model.to_string(),
+                source: format!("stat {}: {e}", path.display()),
+            })?
+            .len();
+        hasher.update(len.to_le_bytes());
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| EmbedderError::Load {
+                model: model.to_string(),
+                source: format!("read {}: {e}", path.display()),
+            })?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+    }
+    Ok(hex_lower(hasher.finalize()))
+}
+
+fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
 }
 
 /// The embedding model backing a catalog's semantic/hybrid engines.
@@ -394,7 +790,8 @@ impl EmbeddingModel {
     /// Pre-load identity used to **key the process model cache** so two catalogs
     /// on the same model load it once. HF `revision` may still be `main` here;
     /// the resolved-with-SHA form is [`crate::embedding::Embedder::fingerprint`],
-    /// stamped on the dense cache after load.
+    /// stamped on the dense cache after load. Local uses the path-derived runtime
+    /// spelling (not the RAT1 content digest).
     pub(crate) fn configured_fingerprint(&self) -> String {
         let base = match self {
             EmbeddingModel::Default => huggingface_fingerprint(DEFAULT_REPO, DEFAULT_REVISION),
@@ -860,6 +1257,263 @@ mod tests {
     }
 
     #[test]
+    fn huggingface_and_endpoint_fingerprints_are_unchanged() {
+        assert_eq!(
+            huggingface_fingerprint("org/m", "abc"),
+            "hf|repo=5:org/m|revision=3:abc"
+        );
+        assert_eq!(
+            endpoint_fingerprint("http://x/v1/embeddings", "nomic"),
+            "endpoint|url=22:http://x/v1/embeddings|model=5:nomic"
+        );
+    }
+
+    #[test]
+    fn local_runtime_fingerprint_matches_pre_pr_path_spelling() {
+        let model = EmbeddingModel::Local {
+            path: PathBuf::from("/models/foo"),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        assert_eq!(model.configured_fingerprint(), "local|path=11:/models/foo");
+        assert_eq!(
+            local_fingerprint("/models/foo"),
+            "local|path=11:/models/foo"
+        );
+
+        let with_pool = EmbeddingModel::Local {
+            path: PathBuf::from("/models/foo"),
+            query_prefix: Some("q: ".into()),
+            doc_prefix: Some("d: ".into()),
+            pooling: Some(Pooling::Cls),
+        };
+        assert_eq!(
+            with_pool.configured_fingerprint(),
+            format!("local|path=11:/models/foo|pool=3:cls|q=3:q: |d=3:d: ")
+        );
+    }
+
+    #[test]
+    fn local_configured_fingerprint_is_infallible_without_model_files() {
+        let model = EmbeddingModel::Local {
+            path: PathBuf::from("/nonexistent/local-model"),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        assert_eq!(
+            model.configured_fingerprint(),
+            "local|path=24:/nonexistent/local-model"
+        );
+        assert_eq!(model.embedder_cache_key(), model.configured_fingerprint());
+    }
+
+    fn write_local_model(dir: &Path, config: &[u8], tokenizer: &[u8], weights: &[u8]) {
+        std::fs::write(dir.join("config.json"), config).unwrap();
+        std::fs::write(dir.join("tokenizer.json"), tokenizer).unwrap();
+        std::fs::write(dir.join("model.safetensors"), weights).unwrap();
+    }
+
+    fn touch_mtime(path: &Path) {
+        use std::fs::FileTimes;
+        use std::time::Duration;
+
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let current = file.metadata().unwrap().modified().unwrap();
+        let times = FileTimes::new().set_modified(current + Duration::from_secs(2));
+        file.set_times(times).unwrap();
+    }
+
+    fn identity_from_dir(dir: &Path) -> (LocalContentIdentity, [PathBuf; 3]) {
+        let files = resolve_local_model_files(dir).unwrap();
+        let stamps = stamp_local_hash_paths(&files, "m").unwrap();
+        (
+            LocalContentIdentity::new(stamps),
+            [
+                files.config.clone(),
+                files.tokenizer.clone(),
+                files.weights.clone(),
+            ],
+        )
+    }
+
+    fn path_refs(paths: &[PathBuf; 3]) -> [&Path; 3] {
+        [&paths[0], &paths[1], &paths[2]]
+    }
+
+    fn write_pooling(dir: &Path, cls: bool, mean: bool) {
+        let pooling_dir = dir.join("1_Pooling");
+        std::fs::create_dir_all(&pooling_dir).unwrap();
+        std::fs::write(
+            pooling_dir.join("config.json"),
+            format!(r#"{{"pooling_mode_cls_token":{cls},"pooling_mode_mean_tokens":{mean}}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn ordinary_local_cache_key_does_not_content_hash() {
+        test_reset_content_hash_calls();
+        let model = EmbeddingModel::Local {
+            path: PathBuf::from("/models/foo"),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        for _ in 0..5 {
+            let _ = model.configured_fingerprint();
+            let _ = model.embedder_cache_key();
+        }
+        assert_eq!(
+            test_content_hash_calls(),
+            0,
+            "runtime Local identity must not stream model bytes"
+        );
+    }
+
+    #[test]
+    fn local_artifact_identity_does_content_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        test_reset_content_hash_calls();
+        let _ = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+        assert!(
+            test_content_hash_calls() >= 1,
+            "artifact identity must digest model inputs"
+        );
+    }
+
+    #[test]
+    fn local_artifact_identity_ignores_mount_path() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        write_local_model(a.path(), b"cfg", b"tok", b"w");
+        write_local_model(b.path(), b"cfg", b"tok", b"w");
+
+        let id_a = local_artifact_fingerprint(a.path(), None, "", "").unwrap();
+        let id_b = local_artifact_fingerprint(b.path(), None, "", "").unwrap();
+        assert_eq!(id_a, id_b, "artifact identity must ignore the mount path");
+        assert!(
+            id_a.starts_with("local|content="),
+            "artifact identity is content-keyed; got {id_a}"
+        );
+        // Runtime identity remains path-keyed and therefore differs across mounts.
+        let model_a = EmbeddingModel::Local {
+            path: a.path().to_path_buf(),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        let model_b = EmbeddingModel::Local {
+            path: b.path().to_path_buf(),
+            query_prefix: None,
+            doc_prefix: None,
+            pooling: None,
+        };
+        assert_ne!(
+            model_a.configured_fingerprint(),
+            model_b.configured_fingerprint()
+        );
+    }
+
+    #[test]
+    fn local_artifact_identity_changes_with_weights_config_tokenizer() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
+        let base = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-v2-longer").unwrap();
+        assert_ne!(
+            base,
+            local_artifact_fingerprint(dir.path(), None, "", "").unwrap()
+        );
+
+        write_local_model(dir.path(), b"cfg-changed", b"tok", b"weights-v2-longer");
+        let after_cfg = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+        assert_ne!(base, after_cfg);
+
+        write_local_model(
+            dir.path(),
+            b"cfg-changed",
+            b"tok-changed",
+            b"weights-v2-longer",
+        );
+        assert_ne!(
+            after_cfg,
+            local_artifact_fingerprint(dir.path(), None, "", "").unwrap()
+        );
+    }
+
+    #[test]
+    fn local_artifact_identity_uses_resolved_pooling_not_irrelevant_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        write_pooling(dir.path(), false, true); // mean in file
+
+        let with_override =
+            local_artifact_fingerprint(dir.path(), Some(Pooling::Cls), "", "").unwrap();
+        assert!(
+            with_override.contains("|pool=3:cls"),
+            "override must win; got {with_override}"
+        );
+
+        // Mutating an unused pooling file must not change artifact identity.
+        write_pooling(dir.path(), true, false);
+        let after_file_change =
+            local_artifact_fingerprint(dir.path(), Some(Pooling::Cls), "", "").unwrap();
+        assert_eq!(with_override, after_file_change);
+
+        // Without override, resolved pooling from the file must affect identity.
+        let cls = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+        write_pooling(dir.path(), false, true);
+        let mean = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+        assert_ne!(cls, mean);
+        assert!(cls.contains("|pool=3:cls"));
+        assert!(mean.contains("|pool=4:mean"));
+    }
+
+    #[test]
+    fn local_artifact_identity_includes_prefixes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let plain = local_artifact_fingerprint(dir.path(), None, "", "").unwrap();
+        let with_q = local_artifact_fingerprint(dir.path(), None, "query: ", "").unwrap();
+        let with_qd = local_artifact_fingerprint(dir.path(), None, "query: ", "passage: ").unwrap();
+        assert_ne!(plain, with_q);
+        assert_ne!(with_q, with_qd);
+        assert!(with_qd.contains("|q=7:query: "));
+        assert!(with_qd.contains("|d=9:passage: "));
+    }
+
+    #[test]
+    fn local_artifact_identity_same_length_weight_change_still_mismatches() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-AAAA");
+        let files = resolve_local_model_files(dir.path()).unwrap();
+        let paths: Vec<PathBuf> = files
+            .content_hash_paths()
+            .iter()
+            .map(|p| (*p).to_path_buf())
+            .collect();
+
+        // Hash bytes directly — not via the (len,mtime) memo — so same-length
+        // overwrites cannot hide behind coarse filesystem timestamps.
+        let before = hash_local_identity_files(&paths, "m").unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-BBBB").unwrap();
+        let after = hash_local_identity_files(&paths, "m").unwrap();
+
+        assert_ne!(
+            before, after,
+            "same-length weight bytes must still change the content digest"
+        );
+        assert_ne!(
+            local_content_fingerprint(&before),
+            local_content_fingerprint(&after)
+        );
+    }
+
+    #[test]
     fn endpoint_client_cache_key_includes_env_name_but_vector_identity_does_not() {
         let endpoint = |api_key_env: &str| EmbeddingModel::Endpoint {
             url: "https://example.test/v1/embeddings".into(),
@@ -973,5 +1627,173 @@ mod tests {
         })
         .unwrap();
         assert_ne!(cls.configured_fingerprint(), mean.configured_fingerprint());
+    }
+
+    #[test]
+    fn missing_local_tokenizer_error_message_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"w").unwrap();
+        let err = resolve_local_model_files(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing tokenizer.json")
+                && msg.contains("fast tokenizer.json is required"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_and_stamp_local_model_files_does_not_content_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        test_reset_content_hash_calls();
+        let files = resolve_local_model_files(dir.path()).unwrap();
+        let _ = stamp_local_hash_paths(&files, "m").unwrap();
+        assert_eq!(
+            test_content_hash_calls(),
+            0,
+            "resolve + stamp may touch metadata but must not digest weights"
+        );
+    }
+
+    #[test]
+    fn metadata_only_touch_keeps_local_artifact_identity_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        let established = identity.content_id(dir.path(), &refs).unwrap();
+        touch_mtime(&dir.path().join("config.json"));
+        let after = identity.content_id(dir.path(), &refs).unwrap();
+        assert_eq!(
+            established, after,
+            "byte-identical mtime touch must keep the established identity"
+        );
+    }
+
+    #[test]
+    fn metadata_only_touch_is_recoverable_and_stable_across_repeats() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        test_reset_content_hash_calls();
+        let established = identity.content_id(dir.path(), &refs).unwrap();
+        assert_eq!(
+            test_content_hash_calls(),
+            1,
+            "first establishment hashes once"
+        );
+
+        for _ in 0..2 {
+            touch_mtime(&dir.path().join("config.json"));
+            let before = test_content_hash_calls();
+            let after_touch = identity.content_id(dir.path(), &refs).unwrap();
+            assert_eq!(after_touch, established);
+            assert_eq!(
+                test_content_hash_calls(),
+                before + 1,
+                "each metadata-only touch recomputes the digest once"
+            );
+            let repeat = identity.content_id(dir.path(), &refs).unwrap();
+            assert_eq!(repeat, established);
+            assert_eq!(
+                test_content_hash_calls(),
+                before + 1,
+                "unchanged stamps after an accepted touch must take the fast path"
+            );
+        }
+    }
+
+    #[test]
+    fn content_drift_after_established_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        identity.content_id(dir.path(), &refs).unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-v2-longer").unwrap();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("contents differ") && msg.contains("start a new process"),
+            "content drift after establishment must name contents and a new process; got {msg}"
+        );
+        assert!(
+            !msg.contains("reload the embedder"),
+            "error must not suggest an impossible reload; got {msg}"
+        );
+    }
+
+    #[test]
+    fn stamp_drift_before_established_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        touch_mtime(&dir.path().join("config.json"));
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("before this process established its artifact identity")
+                && msg.contains("start a new process"),
+            "stamp drift before establishment must fail closed with a new-process remedy; got {msg}"
+        );
+        assert!(
+            !msg.contains("reload the embedder"),
+            "error must not suggest an impossible reload; got {msg}"
+        );
+    }
+
+    #[test]
+    fn same_length_content_swap_after_established_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"weights-v1");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+
+        identity.content_id(dir.path(), &refs).unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"weights-v2").unwrap();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("contents differ"),
+            "same-length weight swap must fail closed; got {msg}"
+        );
+    }
+
+    #[test]
+    fn content_id_does_not_commit_digest_when_stamps_change_during_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_local_model(dir.path(), b"cfg", b"tok", b"w");
+        let (identity, paths) = identity_from_dir(dir.path());
+        let refs = path_refs(&paths);
+        let config = dir.path().join("config.json");
+
+        super::after_hash_hook::set(move || touch_mtime(&config));
+        test_reset_content_hash_calls();
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("before this process established its artifact identity")
+                && msg.contains("start a new process"),
+            "TOCTOU during first hash must not establish identity; got {msg}"
+        );
+        assert!(
+            test_content_hash_calls() >= 1,
+            "the interrupted establishment must have hashed"
+        );
+
+        let err = identity.content_id(dir.path(), &refs).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("before this process established its artifact identity"),
+            "identity must remain unestablished after a discarded in-flight digest; got {err}"
+        );
     }
 }

@@ -7,14 +7,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
-use napi::bindgen_prelude::AsyncTask;
+use napi::bindgen_prelude::{AsyncTask, Buffer};
 use napi::{Env, Task};
 use ratel_ai_core as core;
 use ratel_ai_core::{
-    EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, Origin, SearchMethod,
-    TraceEvent, UsageLearner,
+    ArtifactError, EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, OnArtifactMiss,
+    Origin, SearchMethod, TraceEvent, UsageLearner,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// A constructed sink plus the `MemorySink` handle when the kind is `"memory"`
 /// (so the owner can drain it later).
@@ -23,6 +23,78 @@ type BuiltTraceSink = (Arc<dyn core::TraceSink>, Option<Arc<MemorySink>>);
 const REGISTRY_BUSY_MESSAGE: &str =
     "registry busy; await the active operation before registering more items";
 
+/// Private NAPI→TypeScript transport prefix for structured artifact-warm errors.
+/// Must stay identical to the constant in `src/sdk/ts/src/errors.ts`.
+const ARTIFACT_WARM_ERROR_PREFIX: &str = "RATEL_ARTIFACT_WARM_ERROR:";
+
+/// Private NAPI→TypeScript transport prefix for artifact build/merge errors.
+/// Must stay identical to the constant in `src/sdk/ts/src/errors.ts`.
+const ARTIFACT_ERROR_PREFIX: &str = "RATEL_ARTIFACT_ERROR:";
+
+fn artifact_error_variant_code(error: &ArtifactError) -> &'static str {
+    match error {
+        ArtifactError::TooShort { .. } => "TooShort",
+        ArtifactError::InvalidMagic { .. } => "InvalidMagic",
+        ArtifactError::UnsupportedFormatVersion { .. } => "UnsupportedFormatVersion",
+        ArtifactError::ChecksumMismatch => "ChecksumMismatch",
+        ArtifactError::CorruptPayload { .. } => "CorruptPayload",
+        ArtifactError::InconsistentVectorWidth { .. } => "InconsistentVectorWidth",
+        ArtifactError::VectorNotNormalized { .. } => "VectorNotNormalized",
+        ArtifactError::NonEmptyZeroDim => "NonEmptyZeroDim",
+        ArtifactError::InvalidVector { .. } => "InvalidVector",
+        ArtifactError::IncompatibleMerge { .. } => "IncompatibleMerge",
+        ArtifactError::Embedder(_) => "Embedder",
+    }
+}
+
+fn map_artifact_warm_error(error: core::ArtifactWarmError) -> napi::Error {
+    let message = error.to_string();
+    let payload = match &error {
+        core::ArtifactWarmError::Warm(_) => json!({
+            "code": "Warm",
+            "message": message,
+        }),
+        core::ArtifactWarmError::Incomplete { missing } => json!({
+            "code": "Incomplete",
+            "message": message,
+            "missing": missing,
+        }),
+        core::ArtifactWarmError::Embedder(_) => json!({
+            "code": "Embedder",
+            "message": message,
+        }),
+    };
+    // Value::to_string is infallible for this JSON-safe payload shape.
+    let serialized = payload.to_string();
+    napi::Error::from_reason(format!("{ARTIFACT_WARM_ERROR_PREFIX}{serialized}"))
+}
+
+fn map_artifact_build_error(error: ArtifactError) -> napi::Error {
+    match error {
+        ArtifactError::Embedder(inner) => napi::Error::from_reason(inner.to_string()),
+        other => {
+            let code = artifact_error_variant_code(&other);
+            let message = other.to_string();
+            let payload = json!({
+                "code": code,
+                "message": message,
+            });
+            // Value::to_string is infallible for this JSON-safe payload shape.
+            let serialized = payload.to_string();
+            napi::Error::from_reason(format!("{ARTIFACT_ERROR_PREFIX}{serialized}"))
+        }
+    }
+}
+
+/// Merge valid RAT1 parts into one mixed artifact (see core
+/// `merge_embedding_artifacts`).
+#[napi]
+pub fn merge_embedding_artifacts(parts: Vec<Buffer>) -> napi::Result<Buffer> {
+    let refs: Vec<&[u8]> = parts.iter().map(|part| part.as_ref()).collect();
+    core::merge_embedding_artifacts(&refs)
+        .map(Buffer::from)
+        .map_err(map_artifact_build_error)
+}
 #[derive(Clone, Copy)]
 enum EmbeddingOperation {
     Build,
@@ -81,6 +153,32 @@ pub struct SkillSearchTask {
     _permit: Option<DenseOperationPermit>,
 }
 
+pub struct ToolBuildArtifactTask {
+    inner: Arc<RwLock<core::ToolRegistry>>,
+    _permit: DenseOperationPermit,
+}
+
+pub struct ToolWarmArtifactTask {
+    inner: Arc<RwLock<core::ToolRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    bytes: Buffer,
+    on_miss: String,
+    _permit: DenseOperationPermit,
+}
+
+pub struct SkillBuildArtifactTask {
+    inner: Arc<RwLock<core::SkillRegistry>>,
+    _permit: DenseOperationPermit,
+}
+
+pub struct SkillWarmArtifactTask {
+    inner: Arc<RwLock<core::SkillRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    bytes: Buffer,
+    on_miss: String,
+    _permit: DenseOperationPermit,
+}
+
 impl Task for ToolEmbeddingTask {
     type Output = ();
     type JsValue = ();
@@ -100,6 +198,54 @@ impl Task for ToolEmbeddingTask {
             EmbeddingOperation::RebuildIntentGraph => registry.rebuild_intent_graph(),
         }
         .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Task for ToolBuildArtifactTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
+        registry
+            .build_embedding_artifact()
+            .map_err(map_artifact_build_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(Buffer::from(output))
+    }
+}
+
+impl Task for ToolWarmArtifactTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let on_miss: OnArtifactMiss =
+            self.on_miss
+                .parse()
+                .map_err(|e: ratel_ai_core::ParseOnArtifactMissError| {
+                    napi::Error::from_reason(e.to_string())
+                })?;
+        let _dense = self
+            .dense_gate
+            .lock()
+            .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
+        registry
+            .warm_embeddings_from_artifact(self.bytes.as_ref(), on_miss)
+            .map_err(map_artifact_warm_error)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -178,6 +324,54 @@ impl Task for SkillEmbeddingTask {
             EmbeddingOperation::RebuildIntentGraph => registry.rebuild_intent_graph(),
         }
         .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Task for SkillBuildArtifactTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?;
+        registry
+            .build_embedding_artifact()
+            .map_err(map_artifact_build_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(Buffer::from(output))
+    }
+}
+
+impl Task for SkillWarmArtifactTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let on_miss: OnArtifactMiss =
+            self.on_miss
+                .parse()
+                .map_err(|e: ratel_ai_core::ParseOnArtifactMissError| {
+                    napi::Error::from_reason(e.to_string())
+                })?;
+        let _dense = self
+            .dense_gate
+            .lock()
+            .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?;
+        registry
+            .warm_embeddings_from_artifact(self.bytes.as_ref(), on_miss)
+            .map_err(map_artifact_warm_error)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -723,6 +917,36 @@ impl ToolRegistry {
             inner: self.inner.clone(),
             dense_gate: self.dense_gate.clone(),
             operation: EmbeddingOperation::Rebuild,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Build a binary embedding artifact from the registered corpus (ADR-0018).
+    /// Runs on a libuv worker. Takes a dense-operation permit so corpus
+    /// mutations are rejected while the build is pending, but does **not** take
+    /// the dense gate — semantic search may run concurrently (artifact build is
+    /// independent of the mutable dense cache).
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn build_embedding_artifact(&self) -> AsyncTask<ToolBuildArtifactTask> {
+        AsyncTask::new(ToolBuildArtifactTask {
+            inner: self.inner.clone(),
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// Warm the dense cache from a build-time artifact. `on_miss` is `"error"`
+    /// or `"embed"` (see [`OnArtifactMiss`]).
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn warm_embeddings_from_artifact(
+        &self,
+        bytes: Buffer,
+        on_miss: String,
+    ) -> AsyncTask<ToolWarmArtifactTask> {
+        AsyncTask::new(ToolWarmArtifactTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            bytes,
+            on_miss,
             _permit: DenseOperationPermit::new(self.pending_dense.clone()),
         })
     }
@@ -1497,6 +1721,31 @@ impl SkillRegistry {
             inner: self.inner.clone(),
             dense_gate: self.dense_gate.clone(),
             operation: EmbeddingOperation::Rebuild,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// See `ToolRegistry.build_embedding_artifact`.
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn build_embedding_artifact(&self) -> AsyncTask<SkillBuildArtifactTask> {
+        AsyncTask::new(SkillBuildArtifactTask {
+            inner: self.inner.clone(),
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        })
+    }
+
+    /// See `ToolRegistry.warm_embeddings_from_artifact`.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn warm_embeddings_from_artifact(
+        &self,
+        bytes: Buffer,
+        on_miss: String,
+    ) -> AsyncTask<SkillWarmArtifactTask> {
+        AsyncTask::new(SkillWarmArtifactTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            bytes,
+            on_miss,
             _permit: DenseOperationPermit::new(self.pending_dense.clone()),
         })
     }

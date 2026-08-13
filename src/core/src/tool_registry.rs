@@ -3,8 +3,10 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 
+use crate::artifact_warm::{ArtifactWarmError, OnArtifactMiss};
 use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
+use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::indexing::searchable_text;
@@ -541,6 +543,72 @@ impl ToolRegistry {
         self.dense.rebuild(self.tools.values(), self.sink.as_ref())
     }
 
+    /// Load corpus vectors from a build-time embedding artifact, then apply [`OnArtifactMiss`].
+    ///
+    /// For [`OnArtifactMiss::Embed`], reuse commit and embedding of missing ids run
+    /// under one dense operation write lock so semantic search cannot observe a
+    /// partially warmed cache. This is serialization only — if the follow-up
+    /// embed fails after reuse commit, prior committed vectors are retained
+    /// (no rollback).
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactWarmError::Warm`] from parse / kind / model-mismatch during warm;
+    /// [`ArtifactWarmError::Incomplete`] when `on_miss` is [`OnArtifactMiss::Error`]
+    /// and some corpus ids were not reused; [`ArtifactWarmError::Embedder`] when
+    /// `on_miss` is [`OnArtifactMiss::Embed`] and embedding the missing ids fails.
+    pub fn warm_embeddings_from_artifact(
+        &self,
+        bytes: &[u8],
+        on_miss: OnArtifactMiss,
+    ) -> Result<(), ArtifactWarmError> {
+        match on_miss {
+            OnArtifactMiss::Error => {
+                let outcome = self.dense.warm_from_artifact(
+                    bytes,
+                    ArtifactEntryKind::Tool,
+                    self.tools.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ArtifactWarmError::Incomplete {
+                        missing: outcome.missing,
+                    })
+                }
+            }
+            OnArtifactMiss::Embed => self.dense.with_operation_write(|cache| {
+                let outcome = cache.warm_from_artifact_locked(
+                    bytes,
+                    ArtifactEntryKind::Tool,
+                    self.tools.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    return Ok(());
+                }
+                cache
+                    .extend_locked(self.tools.values(), self.sink.as_ref())
+                    .map_err(ArtifactWarmError::from)
+            }),
+        }
+    }
+
+    /// Serialize the current corpus embeddings into a build-time artifact (bytes only).
+    ///
+    /// # Errors
+    ///
+    /// Any [`ArtifactError`] from resolving the embedder or building the artifact
+    /// (including [`ArtifactError::Embedder`] when inference fails).
+    pub fn build_embedding_artifact(&self) -> Result<Vec<u8>, ArtifactError> {
+        self.dense.build_artifact(
+            ArtifactEntryKind::Tool,
+            self.tools.values(),
+            self.sink.as_ref(),
+        )
+    }
+
     // ---- engines -----------------------------------------------------------
 
     /// The corpus as `(id, searchable_text)` pairs for BM25.
@@ -817,6 +885,9 @@ mod tests {
 
     use super::*;
     use crate::embedding::{Embedded, Embedder};
+    use crate::test_support::{
+        FailOnEmbedStub, FpCountingEmbedder, PanicOnEmbedStub, build_test_artifact, unit,
+    };
     use crate::trace::MemorySink;
     use crate::usage::Capability;
 
@@ -1839,5 +1910,255 @@ mod tests {
             .map(|s| s.name)
             .collect();
         assert_eq!(stages, vec!["bm25", "dense", "rrf"]);
+    }
+
+    #[test]
+    fn warm_embeddings_error_ok_when_artifact_covers_corpus() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a, &b],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0]), unit([0.0, 1.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(counter.docs(), 0);
+        assert!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_error_fails_when_ids_missing() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error),
+            Err(ArtifactWarmError::Incomplete { missing }) if missing == ["delete_file"]
+        ));
+        assert_eq!(counter.docs(), 0);
+        assert!(matches!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_embed_completes_only_missing_ids() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed)
+            .unwrap();
+        assert_eq!(counter.docs(), 1, "only the missing tool is embedded");
+        assert!(
+            reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    /// Blocks inside the Embed-on-miss batch so a concurrent semantic search can
+    /// try to observe the post-reuse / pre-extend window.
+    struct WarmEmbedRaceEmbedder {
+        fingerprint: String,
+        embed_entered: mpsc::Sender<()>,
+        release_embed: Barrier,
+    }
+
+    impl Embedder for WarmEmbedRaceEmbedder {
+        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(StubEmbedder::vec_for(text))
+        }
+
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(StubEmbedder::vec_for(text))
+        }
+
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+
+        fn embed_batch_with_identity(
+            &self,
+            texts: &[String],
+        ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+            self.embed_entered.send(()).unwrap();
+            self.release_embed.wait();
+            Ok(Embedded {
+                value: texts.iter().map(|t| StubEmbedder::vec_for(t)).collect(),
+                fingerprint: self.fingerprint.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn warm_embed_holds_operation_lock_across_reuse_and_missing_embed() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+
+        let (embed_entered_tx, embed_entered_rx) = mpsc::channel();
+        let embedder = Arc::new(WarmEmbedRaceEmbedder {
+            fingerprint: "fp-warm".into(),
+            embed_entered: embed_entered_tx,
+            release_embed: Barrier::new(2),
+        });
+        let mut reg = with_embedder(embedder.clone());
+        reg.register(a);
+        reg.register(b);
+        let reg = Arc::new(reg);
+
+        let warm_reg = reg.clone();
+        let warm = std::thread::spawn(move || {
+            warm_reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed)
+        });
+
+        embed_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Embed follow-up must enter embed_batch while holding the write lock");
+
+        let (search_done_tx, search_done_rx) = mpsc::channel();
+        let search_reg = reg.clone();
+        let search = std::thread::spawn(move || {
+            let result =
+                search_reg.search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic);
+            search_done_tx.send(()).unwrap();
+            result
+        });
+
+        let observed_mid_warm = search_done_rx
+            .recv_timeout(Duration::from_millis(500))
+            .is_ok();
+        assert!(
+            !observed_mid_warm,
+            "semantic search must not complete between partial warm reuse and Embed follow-up"
+        );
+
+        embedder.release_embed.wait();
+        warm.join().unwrap().unwrap();
+        let hits = search.join().unwrap().unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.tool_id.as_str()),
+            Some("read_file")
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_embed_policy_propagates_build_embeddings_failure() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_propagates_warm_error_without_embed() {
+        let a = tool("read_file", "read a file");
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            [&a],
+            "fp-artifact",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-active", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Warm(
+                crate::WarmError::ArtifactModelMismatch { .. }
+            ))
+        ));
+        assert_eq!(counter.docs(), 0);
+    }
+
+    #[test]
+    fn build_embedding_artifact_round_trips_via_warm() {
+        let a = tool("read_file", "read a file");
+        let b = tool("delete_file", "delete a file");
+        let builder = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg_a = with_embedder(builder.clone());
+        reg_a.register(tool("read_file", "read a file"));
+        reg_a.register(tool("delete_file", "delete a file"));
+        let bytes = reg_a.build_embedding_artifact().unwrap();
+        assert_eq!(
+            builder.docs(),
+            2,
+            "build embeds each corpus document exactly once"
+        );
+
+        let warmer = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg_b = with_embedder(warmer.clone());
+        reg_b.register(a);
+        reg_b.register(b);
+        reg_b
+            .warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(warmer.docs(), 0, "warm must not re-embed covered ids");
+        assert!(
+            reg_b
+                .search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn build_embedding_artifact_propagates_embedder_failure() {
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
+        reg.register(tool("read_file", "read a file"));
+        assert!(matches!(
+            reg.build_embedding_artifact(),
+            Err(ArtifactError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn build_embedding_artifact_empty_corpus_is_valid() {
+        let reg = with_embedder(Arc::new(PanicOnEmbedStub::new("unused")));
+        let bytes = reg.build_embedding_artifact().unwrap();
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
     }
 }

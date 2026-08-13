@@ -105,9 +105,25 @@ land in different vector spaces.
   than reintroduce an ONNX/C++ runtime, which would reverse ADR-0011's
   clean-wheels decision. MPNet-specific architecture/pooling corrections remain
   deferred; use an endpoint for MPNet models in the meantime.
-- **Known limitation, not addressed here:** the embedding cache is in-process
-  only, so every process start re-embeds the corpus — cheap for a local model,
-  but real latency and cost over an endpoint. A **persistent on-disk embedding
-  cache** is the natural follow-up; the model-fingerprint stamped on the cache is
-  the invalidation key it will need. Also deferred: non-OpenAI endpoint request
-  shapes and in-process GGUF/ONNX.
+- **Runtime / global `Local` model identity is path-based.** The process-wide
+  embedder cache, dense-cache stamp, and `IntentGraph` model-identity checks
+  use the configured directory path. Failed loads are not cached (ADR-0012
+  unchanged).
+- **Artifact-specific `Local` compatibility fingerprint
+  ([ADR-0018](0018-build-time-embedding-artifacts.md) only).** RAT1 build/warm
+  uses a content-derived full digest of the effective Candle model inputs
+  (weights, tokenizer, config, resolved pooling, effective query/document
+  prefixes). Computed lazily only when RAT1 build or warm requires it.
+  Irrelevant files (for example `1_Pooling/config.json` when pooling is
+  explicitly overridden) do not affect the digest. `(len, mtime)` memoization
+  is a process-local accelerator for digest recomputation — not authoritative
+  runtime or artifact identity storage.
+- **Known limitation, addressed in
+  [ADR-0018](0018-build-time-embedding-artifacts.md):** the embedding cache is
+  in-process only — every process start re-embeds the corpus, cheap locally but
+  costly over an endpoint. ADR-0018 adds persistent build-time RAT1 artifacts;
+  for `Local` models the artifact header carries a separate content-derived
+  artifact compatibility fingerprint used only for RAT1 build/warm — it is not
+  substituted into normal runtime identity (typical build-time → runtime /
+  Docker remounts are why that separate fingerprint exists). Also deferred:
+  non-OpenAI endpoint request shapes and in-process GGUF/ONNX.

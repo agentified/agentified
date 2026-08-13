@@ -18,6 +18,7 @@ import {
   ToolCatalog,
   type TraceSinkConfig,
 } from "./catalog.js";
+import type { ExperimentalEmbeddingArtifact } from "./embedding-artifact.js";
 import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
@@ -26,15 +27,30 @@ import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 
 /** Construction options for {@link ratel}. Shared by every adapter view of the core. */
 export interface RatelConfig {
-  /** Default retrieval method for the tool, skill, and fact catalogs (default `"bm25"`, model-free). */
+  /** Default retrieval method for the tool, skill, and fact catalogs (default `"bm25"`).
+   * BM25 search is model-free, but an explicitly configured embedding artifact is
+   * still warmed during Tool/Skill registration. */
   method?: SearchMethod;
-  /** Embedding model backing `"semantic"`/`"hybrid"` retrieval, forwarded to both
-   * catalogs — see {@link ToolCatalogOptions.embedding}. A string is a local model
+  /** Embedding model backing `"semantic"`/`"hybrid"` retrieval, forwarded to the tool, skill, and fact catalogs
+   * — see {@link ToolCatalogOptions.embedding}. A string is a local model
    * directory path; every other source is a keyed object (`{ huggingface }`,
    * `{ ollama }`, `{ url, model, apiKeyEnv }`). Omit to use the built-in default
-   * model. `await r.tools.register(...)` awaits the embedding pass and rejects if
-   * it fails, so errors surface at registration. */
+   * model. `await r.tools.register(...)` awaits dense preparation (artifact warm
+   * or embedding) and rejects if it fails, so errors surface at registration. */
   embedding?: EmbeddingSpec;
+  /**
+   * Build-time embedding artifact forwarded to the Tool and Skill catalogs (default `onMiss: "error"`).
+   *
+   * Under the default fail-closed policy, the shared artifact must cover every
+   * non-empty Tool/Skill corpus that actually registers. A tool-only artifact is
+   * valid when the Skill corpus stays empty.
+   *
+   * Remedies:
+   * - Build one mixed artifact with {@link experimentalBuildEmbeddingArtifact}
+   *   so it covers all expected Tool + Skill corpora.
+   * - Or set `onMiss: "embed"` to infer uncovered current-kind entries at runtime.
+   */
+  experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
   /** Max tools each host-driven `recall` returns: capped at 50; 0, negative, or
    * non-integer values fall back to the default 5. */
   recallTopK?: number;
@@ -120,18 +136,19 @@ export interface RatelAdapter<
  * invocation time). Guards live here: the reserved capability-tool ids throw,
  * and a framework-shaped tool throws an actionable install-the-adapter error.
  * Registration keeps the catalog's own replace-in-place semantics — the native
- * path is authoritative, unlike the first-wins adapted path — and embeds the
- * batch on a semantic/hybrid catalog.
+ * path is authoritative, unlike the first-wins adapted path — and prepares the
+ * dense cache on a semantic/hybrid catalog (or when an embedding artifact is
+ * configured).
  */
 export interface ToolCollection {
   /**
    * Register native tools (replace-in-place on a duplicate id). Async: input is
    * validated synchronously (a missing `execute`, a reserved id, or a
    * framework-shaped tool throws *at the call site*, before the promise), then
-   * the returned promise resolves when the batch is indexed and — on a
-   * `"semantic"`/`"hybrid"` core — embedded, rejecting if that embedding fails.
-   * `await` it before searching a dense core; embedding errors surface as the
-   * rejection. Pass the whole batch in one call for a single embedding pass.
+   * the returned promise resolves when the batch is indexed and dense preparation
+   * finishes (embed or configured artifact warm), rejecting if that phase fails.
+   * `await` it before searching a dense core; dense-preparation errors surface as
+   * the rejection. Pass the whole batch in one call for a single preparation pass.
    */
   register(...tools: ExecutableTool[]): Promise<void>;
   /** Whether a tool with this id is registered. */
@@ -178,8 +195,9 @@ export interface AdaptedToolCollection<TTool> {
    * Ingest framework tools (keyed by tool id) into the shared catalog. Async,
    * with the same semantics as {@link ToolCollection.register}: ids are validated
    * and ingested synchronously (a reserved id throws at the call site), then the
-   * returned promise resolves when the batch is indexed and, on a semantic/hybrid
-   * core, embedded — rejecting if embedding fails. `await` it before a dense search.
+   * returned promise resolves when the batch is indexed and dense preparation
+   * finishes (embed or configured artifact warm) — rejecting if that phase fails.
+   * `await` it before a dense search.
    */
   register(tools: Record<string, TTool>): Promise<void>;
   /** Whether this id is registered — in the catalog or as this view's passthrough. */
@@ -384,15 +402,18 @@ const KNOWN_FRAMEWORKS: readonly {
  */
 export function ratel(config: RatelConfig = {}): Ratel {
   const catalogMethod: SearchMethod = config.method ?? "bm25";
+  const embeddingArtifact = config.experimentalEmbeddingArtifact;
   const catalog = new ToolCatalog({
     method: config.method,
     embedding: config.embedding,
     trace: config.trace,
+    experimentalEmbeddingArtifact: embeddingArtifact,
   });
   const skills = new SkillCatalog({
     method: config.method,
     embedding: config.embedding,
     trace: config.trace,
+    experimentalEmbeddingArtifact: embeddingArtifact,
   });
   // The fact catalog owns the grounding freshness state (its injected-body map),
   // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:

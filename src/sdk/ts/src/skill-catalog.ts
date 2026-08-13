@@ -1,6 +1,11 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import {
+  type ExperimentalEmbeddingArtifact,
+  resolveEmbeddingArtifact,
+} from "./embedding-artifact.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
@@ -8,25 +13,26 @@ export type { ReplaceOutcome, Skill, SkillHit };
 
 /**
  * What {@link SkillCatalog.replaceAll} returns: the {@link ReplaceOutcome}
- * counts, readable immediately, over a promise for the embedding pass.
+ * counts, readable immediately, over a promise for dense preparation.
  *
  * The corpus swap commits synchronously, so the counts are final the moment
- * `replaceAll` returns and can be read before the embedding pass settles — a
+ * `replaceAll` returns and can be read before dense preparation settles — a
  * source that must report what a reload changed can therefore do so even when
- * that pass fails.
+ * that phase fails.
  *
  * **Always `await` (or `.catch()`) the value, even when you only want the
- * counts.** It is a real promise for the embedding pass, so leaving it
- * unhandled turns an embedding failure into an unhandled rejection — which
- * terminates the process under Node's default `--unhandled-rejections=throw`.
- * Reading the counts is not a substitute for handling it:
+ * counts.** It is a real promise for dense preparation (artifact warm or
+ * embedding), so leaving it unhandled turns a preparation failure into an
+ * unhandled rejection — which terminates the process under Node's default
+ * `--unhandled-rejections=throw`. Reading the counts is not a substitute for
+ * handling it:
  *
  * ```ts
  * const reload = catalog.replaceAll(batch); // corpus live, counts final
  * try {
  *   await reload;
  * } catch {
- *   log.warn(`applied +${reload.added} -${reload.removed}, embeddings pending`);
+ *   log.warn(`applied +${reload.added} -${reload.removed}, dense prep pending`);
  * }
  * ```
  */
@@ -41,6 +47,16 @@ export interface SkillCatalogOptions {
   /** Embedding model for semantic/hybrid retrieval — see
    * {@link ToolCatalogOptions.embedding}. Retained for asynchronous overrides. */
   embedding?: EmbeddingSpec;
+  /**
+   * Build-time embedding artifact to warm on register/replaceAll (any method;
+   * default `onMiss: "error"`). Each call re-resolves and re-warms over the
+   * whole current corpus — intended for one batch at startup; incremental
+   * register/replaceAll calls repeat I/O and id+hash matching.
+   *
+   * With the default fail-closed `onMiss: "error"`, warm fails when the
+   * artifact is missing one or more ids from the catalog's current corpus.
+   */
+  experimentalEmbeddingArtifact?: ExperimentalEmbeddingArtifact;
 }
 
 /**
@@ -53,6 +69,7 @@ export class SkillCatalog {
   private readonly registry: SkillRegistry;
   private readonly skills = new Map<string, Skill>();
   private readonly method: SearchMethod;
+  private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
   /**
    * Create an empty catalog.
@@ -63,6 +80,7 @@ export class SkillCatalog {
   constructor(options: SkillCatalogOptions = {}) {
     this.method = options.method ?? "bm25";
     this.registry = new SkillRegistry(options.embedding, this.method);
+    this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {
       this.registry.setTraceSink(options.trace);
     }
@@ -74,15 +92,16 @@ export class SkillCatalog {
    * description, and tags are indexed for ranking; `tools`, `metadata`, and
    * `body` are stored but not indexed (`body` is the dispatch payload,
    * fetched by {@link SkillCatalog.invoke}). On a `"semantic"`/`"hybrid"`
-   * catalog, embeds the batch in one pass on a libuv worker after metadata is
-   * indexed — embedding errors surface **here**, at registration. A
-   * `"bm25"` catalog never loads a model.
+   * catalog without an artifact, embeds after metadata. With
+   * {@link SkillCatalogOptions.experimentalEmbeddingArtifact}, warms that
+   * artifact first (any method). A `"bm25"` catalog without an artifact never
+   * loads a model.
    *
    * A model or dimension change is not recovered in place — construct a new
    * catalog and re-register.
    *
    * @param skills - A single skill or a readonly array of them. Pass the
-   *   whole batch at once for a single embedding request.
+   *   whole batch at once for a single dense-preparation request.
    */
   async register(skills: Skill | readonly Skill[]): Promise<void> {
     const batch = Array.isArray(skills) ? skills : [skills];
@@ -90,7 +109,7 @@ export class SkillCatalog {
     for (const skill of batch) {
       this.skills.set(skill.id, skill);
     }
-    await this.registry.buildDense();
+    await this.ensureDenseReady();
   }
 
   /**
@@ -107,12 +126,10 @@ export class SkillCatalog {
    * skills alongside a remote source composes the batch itself:
    * `await catalog.replaceAll([...localSkills, ...remoteSkills])`.
    *
-   * Embedding follows the same two-phase contract as
-   * {@link SkillCatalog.register}: the corpus swap lands first, then the batch
-   * is embedded. Only genuinely new or re-worded skills are embedded — an
-   * unchanged id keeps its vector, so reloading an unchanged catalog costs no
-   * embedding calls at all. If the embedding pass fails, the new corpus is
-   * already live and BM25 still ranks it; semantic search reports
+   * Dense preparation follows the same two-phase contract as
+   * {@link SkillCatalog.register}: corpus swap first, then artifact warm or
+   * embed. Unchanged ids keep their vectors. If that phase fails, the new
+   * corpus is already live and BM25 still ranks it; semantic search reports
    * `EmbeddingsNotBuilt` until a later pass succeeds.
    *
    * A concurrent operation refuses the call outright rather than applying it
@@ -124,10 +141,11 @@ export class SkillCatalog {
    *
    * @param skills - The complete catalog contents. A repeated id keeps its last
    *   entry. An empty array clears the catalog.
-   * @returns The counts, already final, over a promise for the embedding pass —
+   * @returns The counts, already final, over a promise for dense preparation —
    *   see {@link PendingReplace}. `.added`/`.removed` can be read before that
-   *   pass settles, but the value must still always be awaited (or
-   *   `.catch()`-ed), or an embedding failure becomes an unhandled rejection.
+   *   phase settles, but the value must still always be awaited (or
+   *   `.catch()`-ed), or a dense-preparation failure becomes an unhandled
+   *   rejection.
    */
   replaceAll(skills: readonly Skill[]): PendingReplace {
     const outcome = this.registry.replaceAllItems(skills);
@@ -135,10 +153,21 @@ export class SkillCatalog {
     for (const skill of skills) {
       this.skills.set(skill.id, skill);
     }
-    // The counts ride on the promise itself, so a failed embedding pass still
-    // reports what the (already committed) swap changed.
-    const embedded = this.registry.buildDense().then(() => outcome);
+    // The counts ride on the promise itself, so a failed dense-preparation
+    // phase still reports what the (already committed) swap changed.
+    const embedded = this.ensureDenseReady().then(() => outcome);
     return Object.assign(embedded, outcome);
+  }
+
+  private async ensureDenseReady(): Promise<void> {
+    const artifact = this.embeddingArtifact;
+    if (artifact) {
+      await warmFromEmbeddingArtifactSource(this.registry, () =>
+        resolveEmbeddingArtifact(artifact),
+      );
+      return;
+    }
+    await this.registry.buildDense();
   }
 
   /**
@@ -235,7 +264,10 @@ export class SkillCatalog {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } = {},
   ): void {
     this.registry.experimentalEnableAdaptiveRanking(graph, options);
   }

@@ -2334,6 +2334,25 @@ mod tests {
     }
 
     #[test]
+    fn intent_graph_accepts_pre_pr_local_path_model_fingerprint() {
+        let mut g = graph(vec![dense_intent("i0", vec![1.0, 0.0, 0.0])]);
+        let pre_pr = "local|path=11:/models/foo";
+        g.model = Some(pre_pr.into());
+        assert_eq!(
+            g.model_status(pre_pr, 3),
+            GraphModelStatus::Ok,
+            "pre-PR Local path fingerprints must remain IntentGraph-compatible"
+        );
+        assert!(matches!(
+            g.model_status(
+                "local|content=64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                3
+            ),
+            GraphModelStatus::ModelMismatch { .. }
+        ));
+    }
+
+    #[test]
     fn observe_stamps_the_model_on_the_first_centroid() {
         let mut g = IntentGraph::empty();
         g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "model-a");

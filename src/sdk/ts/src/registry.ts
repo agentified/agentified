@@ -12,8 +12,9 @@ import {
   type SkillHit,
   type Tool,
 } from "../native/index.cjs";
+import { assertNotArtifactBusy } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { mapEmbedderError } from "./errors.js";
+import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
 
 export { IntentGraph };
@@ -79,6 +80,7 @@ export class ToolRegistry {
    * @internal
    */
   registerItems(item: Tool | readonly Tool[]): void {
+    assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
   }
@@ -95,6 +97,44 @@ export class ToolRegistry {
       await this.native.buildEmbeddings();
     } catch (error) {
       throw mapEmbedderError(error);
+    }
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Build a single-kind binary embedding artifact from this registry's
+   * registered corpus (ADR-0018). Embedding for the artifact is independent of
+   * the mutable dense cache — it does not consume or update cached vectors.
+   * Returns a Node `Buffer` suitable for `fs.writeFile`. Independent of the
+   * registry's search method (works with `"bm25"` as well as
+   * `"semantic"`/`"hybrid"`). For a mixed Tool+Skill artifact, use the
+   * top-level {@link experimentalBuildEmbeddingArtifact} module helper instead.
+   *
+   * @throws {EmbedderError} When embedding or backend resolution fails.
+   * @throws {ArtifactError} When artifact construction fails for a non-embedder reason.
+   */
+  async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
+    try {
+      return await this.native.buildEmbeddingArtifact();
+    } catch (error) {
+      throw mapArtifactBuildError(error);
+    }
+  }
+
+  /**
+   * Warm the dense cache from a build-time embedding artifact (ADR-0018).
+   * `onMiss` is `"error"` (fail with {@link ArtifactWarmError} / `"Incomplete"`
+   * when some corpus ids are uncovered) or `"embed"` (embed only the missing
+   * ids). Independent of the registry's search method.
+   */
+  async experimentalWarmEmbeddingsFromArtifact(
+    bytes: Buffer,
+    onMiss: "error" | "embed",
+  ): Promise<void> {
+    try {
+      await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
+    } catch (error) {
+      throw mapArtifactWarmError(error);
     }
     this.#maybeWarnModelMismatch();
   }
@@ -303,6 +343,7 @@ export class SkillRegistry {
    * @internal
    */
   registerItems(item: Skill | readonly Skill[]): void {
+    assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
   }
@@ -318,6 +359,7 @@ export class SkillRegistry {
    * @internal
    */
   replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
+    assertNotArtifactBusy(this);
     return this.native.replaceAll([...items]);
   }
 
@@ -332,6 +374,37 @@ export class SkillRegistry {
       await this.native.buildEmbeddings();
     } catch (error) {
       throw mapEmbedderError(error);
+    }
+    this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Build a single-kind binary embedding artifact from this registry's
+   * registered corpus — see {@link ToolRegistry.experimentalBuildEmbeddingArtifact}.
+   *
+   * @throws {EmbedderError} When embedding or backend resolution fails.
+   * @throws {ArtifactError} When artifact construction fails for a non-embedder reason.
+   */
+  async experimentalBuildEmbeddingArtifact(): Promise<Buffer> {
+    try {
+      return await this.native.buildEmbeddingArtifact();
+    } catch (error) {
+      throw mapArtifactBuildError(error);
+    }
+  }
+
+  /**
+   * Warm the dense cache from a build-time embedding artifact — see
+   * {@link ToolRegistry.experimentalWarmEmbeddingsFromArtifact}.
+   */
+  async experimentalWarmEmbeddingsFromArtifact(
+    bytes: Buffer,
+    onMiss: "error" | "embed",
+  ): Promise<void> {
+    try {
+      await this.native.warmEmbeddingsFromArtifact(bytes, onMiss);
+    } catch (error) {
+      throw mapArtifactWarmError(error);
     }
     this.#maybeWarnModelMismatch();
   }

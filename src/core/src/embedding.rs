@@ -50,8 +50,10 @@ use serde::Deserialize;
 use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStrategy};
 
 use crate::embedding_config::{
-    DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, OLLAMA_DEFAULT_URL, Pooling,
-    endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint, local_fingerprint,
+    DEFAULT_REPO, DEFAULT_REVISION, EmbeddingModel, LocalContentIdentity, OLLAMA_DEFAULT_URL,
+    Pooling, endpoint_fingerprint, fingerprint_suffix, huggingface_fingerprint,
+    local_content_fingerprint, local_fingerprint, parse_pooling_config, resolve_local_model_files,
+    stamp_local_hash_paths,
 };
 use crate::trace::{EmbedderLoadStatus, TraceEvent, TraceSink};
 
@@ -282,12 +284,29 @@ pub(crate) trait Embedder: Send + Sync {
         })
     }
 
-    /// Resolved model identity (concrete HF revision/SHA, local path, or endpoint
+    /// Embed documents and return the batch with the identity stamped into a
+    /// RAT1 artifact header. The default preserves [`Self::embed_batch_with_identity`]
+    /// (Endpoint response-resolved model, HF/Default runtime fingerprint). Local
+    /// Candle overrides this to substitute the portable content-derived identity.
+    fn embed_batch_with_artifact_identity(
+        &self,
+        texts: &[String],
+    ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+        self.embed_batch_with_identity(texts)
+    }
+
+    /// Runtime model identity (concrete HF revision/SHA, local path, or endpoint
     /// URL + model), encoded as collision-proof length-delimited fields. It is
     /// stamped on the dense cache so a later model swap over an existing
     /// embedding set is detectable. Test stubs use the default.
     fn fingerprint(&self) -> String {
         "unknown".to_string()
+    }
+
+    /// RAT1 artifact / warm-compare identity. Default equals [`Self::fingerprint`].
+    /// Local Candle computes a content digest lazily (only when RAT1 needs it).
+    fn artifact_identity(&self) -> Result<String, EmbedderError> {
+        Ok(self.fingerprint())
     }
 }
 
@@ -532,6 +551,14 @@ pub(crate) struct CandleEmbedder {
     query_prefix: String,
     doc_prefix: String,
     fingerprint: String,
+    local_source: Option<LocalArtifactSource>,
+}
+
+/// Paths retained at load so RAT1 can hash later without digesting on ordinary dense use
+struct LocalArtifactSource {
+    dir: PathBuf,
+    hash_paths: [PathBuf; 3],
+    identity: LocalContentIdentity,
 }
 
 /// The resolved files + pooling a build needs.
@@ -643,6 +670,7 @@ impl CandleEmbedder {
             doc_prefix,
             huggingface_fingerprint(repo_id, &sha),
             repo_id,
+            None,
         )?;
         Ok((embedder, notices))
     }
@@ -657,33 +685,20 @@ impl CandleEmbedder {
     ) -> Result<(Self, LoadNotices), EmbedderError> {
         let device = Device::Cpu;
         let name = dir.display().to_string();
-        let config_path = dir.join("config.json");
-        let tokenizer_path = dir.join("tokenizer.json");
-        // Prefer safetensors; fall back to a pickled `pytorch_model.bin`.
-        let weights_path = [dir.join("model.safetensors"), dir.join("pytorch_model.bin")]
-            .into_iter()
-            .find(|p| p.exists())
-            .ok_or_else(|| EmbedderError::Load {
-                model: name.clone(),
-                source: format!("missing model.safetensors / pytorch_model.bin in {name}"),
-            })?;
-        for (p, f) in [
-            (&config_path, "config.json"),
-            (&tokenizer_path, "tokenizer.json"),
-        ] {
-            if !p.exists() {
-                return Err(EmbedderError::Load {
-                    model: name.clone(),
-                    source: format!(
-                        "missing {f} in {name} — a fast tokenizer.json is required; run \
-                         tokenizer.save_pretrained() upstream, or serve the model via an endpoint"
-                    ),
-                });
-            }
-        }
+        let files = resolve_local_model_files(dir)?;
+        let load_stamps = stamp_local_hash_paths(&files, &name)?;
+        let hash_paths = [
+            files.config.clone(),
+            files.tokenizer.clone(),
+            files.weights.clone(),
+        ];
 
-        let detected =
-            pooling_override.or_else(|| detect_pooling_file(&dir.join("1_Pooling/config.json")));
+        let detected = pooling_override.or_else(|| {
+            files
+                .pooling_config
+                .as_ref()
+                .and_then(|p| detect_pooling_file(p))
+        });
         let (pooling, pooling_assumed) = resolve_pooling(detected);
         let notices = LoadNotices {
             download: None,
@@ -691,11 +706,16 @@ impl CandleEmbedder {
         };
 
         let loaded = Loaded {
-            config: config_path,
-            tokenizer: tokenizer_path,
-            weights: weights_path,
+            config: files.config,
+            tokenizer: files.tokenizer,
+            weights: files.weights,
             pooling,
         };
+        let local_source = Some(LocalArtifactSource {
+            dir: dir.to_path_buf(),
+            hash_paths,
+            identity: LocalContentIdentity::new(load_stamps),
+        });
         let embedder = Self::build(
             device,
             &loaded,
@@ -703,6 +723,7 @@ impl CandleEmbedder {
             doc_prefix,
             local_fingerprint(&name),
             &name,
+            local_source,
         )?;
         Ok((embedder, notices))
     }
@@ -716,6 +737,7 @@ impl CandleEmbedder {
         doc_prefix: &str,
         base_fingerprint: String,
         model_name: &str,
+        local_source: Option<LocalArtifactSource>,
     ) -> Result<Self, EmbedderError> {
         let load_err = |source: String| EmbedderError::Load {
             model: model_name.to_string(),
@@ -774,6 +796,7 @@ impl CandleEmbedder {
             query_prefix: query_prefix.to_string(),
             doc_prefix: doc_prefix.to_string(),
             fingerprint,
+            local_source,
         })
     }
 
@@ -919,15 +942,36 @@ impl Embedder for CandleEmbedder {
     fn fingerprint(&self) -> String {
         self.fingerprint.clone()
     }
-}
 
-/// sentence-transformers pooling config (`1_Pooling/config.json`).
-#[derive(Deserialize)]
-struct PoolingConfig {
-    #[serde(default)]
-    pooling_mode_cls_token: bool,
-    #[serde(default)]
-    pooling_mode_mean_tokens: bool,
+    fn artifact_identity(&self) -> Result<String, EmbedderError> {
+        let Some(source) = &self.local_source else {
+            return Ok(self.fingerprint.clone());
+        };
+        let paths: [&Path; 3] = [
+            &source.hash_paths[0],
+            &source.hash_paths[1],
+            &source.hash_paths[2],
+        ];
+        let content_id = source.identity.content_id(&source.dir, &paths)?;
+        Ok(format!(
+            "{}{}",
+            local_content_fingerprint(&content_id),
+            fingerprint_suffix(Some(self.pooling), &self.query_prefix, &self.doc_prefix)
+        ))
+    }
+
+    fn embed_batch_with_artifact_identity(
+        &self,
+        texts: &[String],
+    ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+        if self.local_source.is_none() {
+            return self.embed_batch_with_identity(texts);
+        }
+        Ok(Embedded {
+            value: self.embed_batch(texts)?,
+            fingerprint: self.artifact_identity()?,
+        })
+    }
 }
 
 /// Read a `1_Pooling/config.json` file into a [`Pooling`], or `None` if absent /
@@ -935,18 +979,6 @@ struct PoolingConfig {
 fn detect_pooling_file(path: &Path) -> Option<Pooling> {
     let bytes = std::fs::read(path).ok()?;
     parse_pooling_config(&bytes)
-}
-
-/// Pure `1_Pooling/config.json` → [`Pooling`] mapping (unit-tested offline).
-fn parse_pooling_config(bytes: &[u8]) -> Option<Pooling> {
-    let c: PoolingConfig = serde_json::from_slice(bytes).ok()?;
-    if c.pooling_mode_cls_token {
-        Some(Pooling::Cls)
-    } else if c.pooling_mode_mean_tokens {
-        Some(Pooling::Mean)
-    } else {
-        None
-    }
 }
 
 /// Resolve pooling: a detected/overridden mode, else assume Mean (and flag it so
@@ -2129,6 +2161,31 @@ mod tests {
         assert_eq!(resolve_pooling(Some(Pooling::Cls)), (Pooling::Cls, false));
         assert_eq!(resolve_pooling(Some(Pooling::Mean)), (Pooling::Mean, false));
         assert_eq!(resolve_pooling(None), (Pooling::Mean, true));
+    }
+
+    #[test]
+    fn local_load_path_does_not_content_hash() {
+        use crate::embedding_config::{test_content_hash_calls, test_reset_content_hash_calls};
+
+        let dir = tempfile::tempdir().unwrap();
+        // Resolve/stamp succeed; BERT config parse fails inside `build` — so we
+        // exercise ordinary Local load past identity stamping without needing a
+        // real model, and without ever reaching artifact hashing.
+        std::fs::write(dir.path().join("config.json"), b"not-a-bert-config").unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join("model.safetensors"), b"weights").unwrap();
+
+        test_reset_content_hash_calls();
+        let result = CandleEmbedder::load_path(dir.path(), "", "", None);
+        assert!(
+            matches!(result, Err(EmbedderError::Load { .. })),
+            "expected load failure on invalid config"
+        );
+        assert_eq!(
+            test_content_hash_calls(),
+            0,
+            "CandleEmbedder::load_path must not digest Local model bytes"
+        );
     }
 
     #[test]

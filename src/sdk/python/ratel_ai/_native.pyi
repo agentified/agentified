@@ -175,6 +175,12 @@ class ToolRegistry:
     def _rebuild_embeddings(self) -> None:
         """Recompute and atomically replace every tool embedding."""
 
+    def _build_embedding_artifact(self) -> bytes:
+        """Build a binary RAT1 embedding artifact from the registered corpus."""
+
+    def _warm_embeddings_from_artifact(self, bytes: bytes, on_miss: str) -> None:
+        """Warm the dense cache from artifact bytes (`on_miss`: "error"|"embed")."""
+
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event into the active sink.
 
@@ -238,6 +244,26 @@ class EmbedderError(RuntimeError):
 
 class DimensionMismatchError(EmbedderError):
     """A query/corpus embedding dimension mismatch."""
+
+class ArtifactError(RuntimeError):
+    """Build-time embedding artifact encode/decode/merge failure."""
+
+class IncompatibleMergeError(ArtifactError):
+    """Valid RAT1 parts that cannot be merged."""
+
+class ArtifactWarmError(RuntimeError):
+    """Warming the dense cache from an embedding artifact failed.
+
+    Attributes:
+        code: ``"Warm"`` | ``"Incomplete"`` | ``"Embedder"``.
+        missing: corpus ids when ``code == "Incomplete"``, else ``None``.
+    """
+
+    code: str
+    missing: list[str] | None
+
+def merge_embedding_artifacts(parts: list[bytes]) -> bytes:
+    """Merge valid RAT1 parts into one mixed Tool+Skill artifact."""
 
 class SkillHit:
     """A single skill search result: the matched skill id and its relevance score.
@@ -352,6 +378,12 @@ class SkillRegistry:
 
     def _rebuild_embeddings(self) -> None:
         """Recompute and atomically replace every skill embedding."""
+
+    def _build_embedding_artifact(self) -> bytes:
+        """Build a binary RAT1 embedding artifact from the registered corpus."""
+
+    def _warm_embeddings_from_artifact(self, bytes: bytes, on_miss: str) -> None:
+        """Warm the dense cache from artifact bytes (`on_miss`: "error"|"embed")."""
 
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""

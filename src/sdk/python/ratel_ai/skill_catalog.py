@@ -28,6 +28,11 @@ from .catalog import (
     TraceSinkConfig,
     _registry_embedding_kwargs,
 )
+from .embedding_artifact import (
+    ExperimentalEmbeddingArtifact,
+    OnArtifactMiss,
+    resolve_embedding_artifact,
+)
 from .telemetry import SEARCH_TARGET_SKILL, trace_search, trace_search_async, trace_skill_load
 
 __all__ = [
@@ -78,12 +83,12 @@ class ReplaceOutcome:
 
 @dataclass(frozen=True)
 class PendingReplace(ReplaceOutcome):
-    """What `replace_all` returns: final counts over a pending embedding pass.
+    """What `replace_all` returns: final counts over pending dense preparation.
 
     The corpus swap commits synchronously, so the counts are already final when
-    `replace_all` returns and can be read before the embedding pass settles — a
-    source can report what a reload changed even when that pass fails. **Always**
-    `await` **the result** regardless, so the embedding pass runs and its failure
+    `replace_all` returns and can be read before dense preparation settles — a
+    source can report what a reload changed even when that phase fails. **Always**
+    `await` **the result** regardless, so dense preparation runs and its failure
     is raised rather than swallowed.
 
     Note that this compares unequal to a bare `ReplaceOutcome` with the same
@@ -97,7 +102,7 @@ class PendingReplace(ReplaceOutcome):
     _driver: Awaitable[None] | None = field(default=None, repr=False)
 
     def __await__(self) -> Generator[Any, None, ReplaceOutcome]:
-        """Drive the embedding pass, then resolve to the plain counts."""
+        """Drive dense preparation, then resolve to the plain counts."""
         if self._driver is not None:
             yield from self._driver.__await__()
         return ReplaceOutcome(self.added, self.removed, self.updated, self.unchanged)
@@ -108,7 +113,11 @@ class SkillRegistry:
 
     @overload
     def __init__(
-        self, embedding: EmbeddingSpec | None = None, *, method: SearchMethod = "bm25"
+        self,
+        embedding: EmbeddingSpec | None = None,
+        *,
+        method: SearchMethod = "bm25",
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -119,6 +128,7 @@ class SkillRegistry:
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -131,6 +141,7 @@ class SkillRegistry:
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
         download: bool | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -141,6 +152,7 @@ class SkillRegistry:
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
         pooling: Literal["cls", "mean"] | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -150,6 +162,7 @@ class SkillRegistry:
         ollama: str,
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     @overload
@@ -161,6 +174,7 @@ class SkillRegistry:
         api_key_env: str | None = None,
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
     def __init__(
@@ -168,6 +182,7 @@ class SkillRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
         local: str | None = None,
@@ -183,8 +198,9 @@ class SkillRegistry:
     ) -> None:
         """Create a metadata registry with an optional embedding model.
 
-        A "semantic"/"hybrid" `method` makes `register` embed eagerly (inside the
-        call, on a worker thread); "bm25" keeps registration model-free.
+        A "semantic"/"hybrid" `method` makes `register` prepare the dense cache
+        eagerly; "bm25" stays model-free unless ``experimental_embedding_artifact``
+        is set (warmed on register for any method).
         """
         kwargs = _registry_embedding_kwargs(
             embedding,
@@ -203,13 +219,14 @@ class SkillRegistry:
         )
         self._native = _NativeSkillRegistry(**kwargs)
         self._eager = method in ("semantic", "hybrid")
+        self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
         self._adaptive_warned = False
         self._rebuild_on_model_change = False
         self._dense_gate = threading.Lock()
         self._dense_state = threading.Lock()
         self._dense_pending = 0
-        # See `ToolRegistry.__init__`: scheduled-but-undriven embedding builds, so
+        # See `ToolRegistry.__init__`: scheduled-but-undriven dense preparation, so
         # a forgotten `await register(...)` is caught at the next dense search.
         self._undriven_builds = 0
         self._dense_tasks: set[asyncio.Task[Any]] = set()
@@ -246,9 +263,10 @@ class SkillRegistry:
 
         Metadata is indexed **synchronously** when `register(...)` is called (a
         forgotten `await` never drops the corpus); the returned awaitable drives
-        only the embedding pass. On a "semantic"/"hybrid" registry it embeds in
-        one batched, off-thread pass (errors surface when awaited); "bm25" has
-        nothing to embed. Always `await` the result.
+        dense preparation. On a "semantic"/"hybrid" registry without an artifact
+        it embeds in one batched, off-thread pass; with
+        ``experimental_embedding_artifact`` it warms first (any method); plain
+        "bm25" without an artifact is a no-op. Always `await` the result.
         """
         flat_args = (name, description, tags, tools, metadata, body)
         if isinstance(item, Skill):
@@ -273,7 +291,7 @@ class SkillRegistry:
 
         The corpus swap lands **synchronously** (a forgotten `await` never
         leaves a half-applied reload); the returned `PendingReplace` already
-        carries the counts and drives only the embedding pass when awaited.
+        carries the counts and drives dense preparation when awaited.
         Always `await` the result.
         """
         batch = list(skills)
@@ -303,6 +321,56 @@ class SkillRegistry:
             )
         return self.search_with_origin(query, top_k, origin)
 
+    async def experimental_build_embedding_artifact(self) -> bytes:
+        """Build a RAT1 artifact from the registered corpus (ADR-0018).
+
+        Off the event loop and mutation-blocking via ``_dense_pending``, but does
+        **not** take ``_dense_gate`` — semantic search may run concurrently.
+        Cancelling the await does not clear pending until the native build finishes.
+
+        Raises:
+            EmbedderError: Embedding failed during artifact build.
+            ArtifactError: Non-embedder artifact encode failure from native build.
+        """
+        self._queue_dense()
+        runner = self._run_artifact_build_task()
+        try:
+            task = asyncio.create_task(runner)
+        except BaseException:
+            runner.close()
+            self._finish_dense()
+            raise
+        self._dense_tasks.add(task)
+        task.add_done_callback(self._dense_task_done)
+        await asyncio.wait({task})
+        return task.result()
+
+    async def _run_artifact_build_task(self) -> bytes:
+        try:
+            return await asyncio.to_thread(self._native._build_embedding_artifact)
+        finally:
+            self._finish_dense()
+
+    async def experimental_warm_embeddings_from_artifact(
+        self, artifact: bytes, on_miss: OnArtifactMiss = "error"
+    ) -> None:
+        """Warm the dense cache from artifact bytes (serialized via ``_run_dense``)."""
+        await self._run_dense(
+            lambda: self._native._warm_embeddings_from_artifact(artifact, on_miss)
+        )
+
+    async def _ensure_dense_ready(self) -> None:
+        if self._embedding_artifact is not None:
+            self._queue_dense()
+            try:
+                artifact_bytes, on_miss = await resolve_embedding_artifact(self._embedding_artifact)
+                await self.experimental_warm_embeddings_from_artifact(artifact_bytes, on_miss)
+            finally:
+                self._finish_dense()
+            return
+        if self._eager:
+            await self._build()
+
     async def _build(self) -> None:
         """Embed not-yet-embedded items on a worker thread (used by `register`)."""
         await self._run_dense(self._native._build_embeddings)
@@ -313,7 +381,7 @@ class SkillRegistry:
 
     def _build_tracked(self, has_items: bool) -> Awaitable[None]:
         """The awaitable `register` returns — see `ToolRegistry._build_tracked`."""
-        schedule = self._eager and has_items
+        schedule = self._embedding_artifact is not None or (self._eager and has_items)
         if schedule:
             self._undriven_builds += 1
 
@@ -321,7 +389,7 @@ class SkillRegistry:
             if not schedule:
                 return
             try:
-                await self._build()
+                await self._ensure_dense_ready()
             finally:
                 self._undriven_builds -= 1
 
@@ -537,7 +605,8 @@ class SkillRegistry:
         """`_build_tracked`, carrying the already-computed replace counts.
 
         The counts ride on the awaitable rather than through it, so a failed
-        embedding pass still reports what the (already committed) swap changed.
+        dense-preparation phase still reports what the (already committed) swap
+        changed.
         """
         return PendingReplace(
             outcome.added,
@@ -560,20 +629,40 @@ class SkillCatalog:
         trace: TraceSinkConfig | None = None,
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
+        experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty skill catalog.
 
         Args:
             trace: where trace events go; `None` keeps the default no-op sink.
             method: default retrieval method for `search` — see
-                `ToolCatalog.__init__`; a "semantic"/"hybrid" catalog embeds
-                inside `register`, and dense results come from `search_async`.
+                `ToolCatalog.__init__`. BM25 search is model-free, but an
+                explicitly configured embedding artifact is still warmed during
+                registration.
             embedding: model for semantic/hybrid retrieval — see
                 `ToolCatalog.__init__`; retained and validated under "bm25" too.
+            experimental_embedding_artifact: build-time RAT1 to warm on
+                register/replace_all (any method; default ``on_miss`` is
+                ``"error"``). Each call re-resolves and re-warms over the whole
+                current corpus — intended for one batch at startup; incremental
+                register/replace_all calls repeat I/O and id+hash matching.
+                With the default ``on_miss="error"``, warm fails when the
+                catalog's current corpus includes one or more ids missing
+                from the artifact. If you configure the same artifact for both
+                this SkillCatalog and a ToolCatalog, it must cover every
+                non-empty corpus that actually registers; a skill-only artifact
+                is valid when the Tool corpus stays empty. The normal remedy
+                is a mixed artifact built via
+                ``experimental_build_embedding_artifact``; the runtime remedy
+                for uncovered current-kind entries is ``on_miss="embed"``.
         """
         self._skills: dict[str, Skill] = {}
         self._method: SearchMethod = method
-        self._registry = SkillRegistry(embedding, method=method)
+        self._registry = SkillRegistry(
+            embedding,
+            method=method,
+            experimental_embedding_artifact=experimental_embedding_artifact,
+        )
         if trace is not None:
             self._registry.set_trace_sink(trace.kind, trace.session_id, trace.path)
 
@@ -583,20 +672,22 @@ class SkillCatalog:
         Metadata is stored **synchronously** when `register(...)` is called
         (name/description/tags are indexed; `tools`, `metadata`, `body` are
         stored but not indexed), so a forgotten `await` never drops the corpus.
-        The returned awaitable drives only the embedding pass: on a
-        "semantic"/"hybrid" catalog it embeds the batch off-thread and surfaces
-        errors when awaited; a BM25 catalog never loads a model. **Always
-        `await` the result.** Re-registering an id replaces it in place.
+        The returned awaitable drives dense preparation: on a
+        "semantic"/"hybrid" catalog without an artifact it embeds off-thread;
+        with ``experimental_embedding_artifact`` it warms first (any method). A
+        BM25 catalog without an artifact never loads a model. **Always `await`
+        the result.** Re-registering an id replaces it in place.
 
         A model or dimension change is not recovered in place — construct a new
         catalog and re-register.
 
         Args:
             skills: a single `Skill` or an iterable of them. Pass the whole batch
-                at once for a single embedding request.
+                at once for a single dense-preparation request.
 
         Raises:
-            EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
+            EmbedderError: when embedding fails (when awaited).
+            ArtifactWarmError: when a configured artifact fails (when awaited).
             RuntimeError: if another operation already owns the registry —
                 dense work, but also an in-flight BM25 `search_async` holding
                 the read lock. `registry busy` is retryable, not fatal.
@@ -621,23 +712,25 @@ class SkillCatalog:
         `await catalog.replace_all([*local_skills, *remote_skills])`.
 
         Like `register`, the corpus swap lands synchronously and the returned
-        awaitable drives only the embedding pass — which embeds just the new and
-        re-worded skills, so reloading an unchanged catalog costs nothing. If it
-        fails, the new corpus is already live and BM25 still ranks it; semantic
-        search raises until a later pass succeeds. **Always `await` the result.**
+        awaitable drives dense preparation — artifact warm or embed of just the
+        new and re-worded skills, so reloading an unchanged catalog costs nothing
+        when vectors still match. If it fails, the new corpus is already live and
+        BM25 still ranks it; semantic search raises until a later pass succeeds.
+        **Always `await` the result.**
 
         Args:
             skills: the complete catalog contents. A repeated id keeps its last
                 entry; an empty iterable clears the catalog.
 
         Returns:
-            A `PendingReplace`: the counts, already final, over the pending
-            embedding pass. Read them without awaiting; `await` the result to
-            drive the embedding pass.
+            A `PendingReplace`: the counts, already final, over pending dense
+            preparation. Read them without awaiting; `await` the result to drive
+            that phase.
 
         Raises:
             TypeError: if any item is not a `Skill`.
-            EmbedderError: on a semantic/hybrid catalog, if embedding fails (when awaited).
+            EmbedderError: when embedding fails (when awaited).
+            ArtifactWarmError: when a configured artifact fails (when awaited).
             RuntimeError: if another operation already owns the registry —
                 dense work, but also an in-flight BM25 `search_async` holding
                 the read lock. `registry busy` is retryable, not fatal.

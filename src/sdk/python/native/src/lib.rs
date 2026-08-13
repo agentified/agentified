@@ -9,9 +9,12 @@ use std::sync::{Arc, RwLock};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyBytes, PyList};
 use ratel_ai_core as core;
-use ratel_ai_core::{JsonlSink, MemorySink, NoopSink, Origin, TraceEvent, UsageLearner};
+use ratel_ai_core::{
+    ArtifactError as CoreArtifactError, ArtifactWarmError as CoreArtifactWarmError, JsonlSink,
+    MemorySink, NoopSink, OnArtifactMiss, Origin, TraceEvent, UsageLearner,
+};
 use serde_json::Value;
 
 type ToolBatchItem = (String, String, String, Py<PyAny>, Py<PyAny>);
@@ -49,6 +52,24 @@ create_exception!(
     EmbedderError,
     "A query/corpus embedding dimension mismatch — the model changed under an existing set."
 );
+create_exception!(
+    _native,
+    ArtifactError,
+    PyRuntimeError,
+    "Build-time embedding artifact encode/decode/merge failure (subclass of RuntimeError)."
+);
+create_exception!(
+    _native,
+    IncompatibleMergeError,
+    ArtifactError,
+    "Valid RAT1 parts that cannot be merged (header mismatch or duplicate kind+id)."
+);
+create_exception!(
+    _native,
+    ArtifactWarmError,
+    PyRuntimeError,
+    "Warming the dense cache from an embedding artifact failed (subclass of RuntimeError)."
+);
 
 /// Map a core embedding error to a typed Python exception (base `EmbedderError`,
 /// with `DimensionMismatchError` for the dimension case), keeping `RuntimeError`
@@ -59,6 +80,65 @@ fn map_embedder_err(e: core::EmbedderError) -> PyErr {
         core::EmbedderError::DimensionMismatch { .. } => DimensionMismatchError::new_err(msg),
         _ => EmbedderError::new_err(msg),
     }
+}
+
+fn map_artifact_build_err(e: CoreArtifactError) -> PyErr {
+    match e {
+        CoreArtifactError::Embedder(inner) => map_embedder_err(inner),
+        CoreArtifactError::IncompatibleMerge { .. } => {
+            IncompatibleMergeError::new_err(e.to_string())
+        }
+        other => ArtifactError::new_err(other.to_string()),
+    }
+}
+
+fn artifact_warm_pyerr(code: &str, message: String, missing: Option<Vec<String>>) -> PyErr {
+    Python::with_gil(|py| {
+        let err = ArtifactWarmError::new_err(message);
+        let value = err.value(py);
+        if let Err(attr_err) = value.setattr("code", code) {
+            return attr_err;
+        }
+        match missing {
+            Some(ids) => {
+                if let Err(attr_err) = value.setattr("missing", ids) {
+                    return attr_err;
+                }
+            }
+            None => {
+                if let Err(attr_err) = value.setattr("missing", py.None()) {
+                    return attr_err;
+                }
+            }
+        };
+        err
+    })
+}
+
+fn map_artifact_warm_err(e: CoreArtifactWarmError) -> PyErr {
+    // Compute once from the core enum so the Python exception message cannot drift.
+    let message = e.to_string();
+    match e {
+        CoreArtifactWarmError::Incomplete { missing } => {
+            artifact_warm_pyerr("Incomplete", message, Some(missing))
+        }
+        CoreArtifactWarmError::Warm(_) => artifact_warm_pyerr("Warm", message, None),
+        CoreArtifactWarmError::Embedder(_) => artifact_warm_pyerr("Embedder", message, None),
+    }
+}
+
+fn parse_on_artifact_miss(on_miss: &str) -> PyResult<OnArtifactMiss> {
+    on_miss
+        .parse::<OnArtifactMiss>()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Merge valid RAT1 parts into one mixed Tool+Skill artifact.
+#[pyfunction]
+fn merge_embedding_artifacts(py: Python<'_>, parts: Vec<Vec<u8>>) -> PyResult<Py<PyBytes>> {
+    let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    let bytes = core::merge_embedding_artifacts(&refs).map_err(map_artifact_build_err)?;
+    Ok(PyBytes::new(py, &bytes).unbind())
 }
 
 /// Resolve the flat embedding-config kwargs to a core model, or `None` when none
@@ -524,6 +604,28 @@ impl ToolRegistry {
             .map_err(map_embedder_err)
     }
 
+    /// Build a binary embedding artifact from the registered corpus (ADR-0018).
+    /// Releases the GIL. Does not touch the mutable dense cache.
+    fn _build_embedding_artifact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = py
+            .allow_threads(|| self.inner.build_embedding_artifact())
+            .map_err(map_artifact_build_err)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Warm the dense cache from build-time artifact bytes. `on_miss` is
+    /// `"error"` or `"embed"`.
+    fn _warm_embeddings_from_artifact(
+        &self,
+        py: Python<'_>,
+        bytes: Vec<u8>,
+        on_miss: String,
+    ) -> PyResult<()> {
+        let policy = parse_on_artifact_miss(&on_miss)?;
+        py.allow_threads(|| self.inner.warm_embeddings_from_artifact(&bytes, policy))
+            .map_err(map_artifact_warm_err)
+    }
+
     /// Re-embed the intent graph's members under the current model and replace
     /// its centroids. GIL-releasing worker; the Python facade wraps it as
     /// `rebuild_intent_graph`.
@@ -851,6 +953,26 @@ impl SkillRegistry {
     fn _rebuild_embeddings(&self, py: Python<'_>) -> PyResult<()> {
         py.allow_threads(|| self.inner.rebuild_embeddings())
             .map_err(map_embedder_err)
+    }
+
+    /// See [`ToolRegistry::_build_embedding_artifact`].
+    fn _build_embedding_artifact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = py
+            .allow_threads(|| self.inner.build_embedding_artifact())
+            .map_err(map_artifact_build_err)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// See [`ToolRegistry::_warm_embeddings_from_artifact`].
+    fn _warm_embeddings_from_artifact(
+        &self,
+        py: Python<'_>,
+        bytes: Vec<u8>,
+        on_miss: String,
+    ) -> PyResult<()> {
+        let policy = parse_on_artifact_miss(&on_miss)?;
+        py.allow_threads(|| self.inner.warm_embeddings_from_artifact(&bytes, policy))
+            .map_err(map_artifact_warm_err)
     }
 
     /// Re-embed the intent graph's members under the current model and replace
@@ -1223,6 +1345,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SearchHit>()?;
     m.add_class::<SkillRegistry>()?;
     m.add_class::<SkillHit>()?;
+    m.add_function(wrap_pyfunction!(merge_embedding_artifacts, m)?)?;
     m.add_class::<FactRegistry>()?;
     m.add_class::<FactHit>()?;
     m.add("EmbedderError", m.py().get_type::<EmbedderError>())?;
@@ -1230,5 +1353,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DimensionMismatchError",
         m.py().get_type::<DimensionMismatchError>(),
     )?;
+    m.add("ArtifactError", m.py().get_type::<ArtifactError>())?;
+    m.add(
+        "IncompatibleMergeError",
+        m.py().get_type::<IncompatibleMergeError>(),
+    )?;
+    m.add("ArtifactWarmError", m.py().get_type::<ArtifactWarmError>())?;
     Ok(())
 }

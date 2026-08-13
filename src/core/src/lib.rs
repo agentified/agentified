@@ -77,9 +77,11 @@
 
 #![warn(missing_docs)]
 
+mod artifact_warm;
 mod dense_cache;
 mod dense_search;
 mod embedding;
+mod embedding_artifact;
 mod embedding_config;
 mod fact;
 mod fact_indexing;
@@ -97,7 +99,13 @@ mod trace;
 mod usage;
 mod usage_learner;
 
+#[cfg(test)]
+mod test_support;
+
+pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};
+pub use dense_cache::WarmError;
 pub use embedding::EmbedderError;
+pub use embedding_artifact::{ArtifactError, merge_embedding_artifacts};
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use fact::{Fact, ParsePinModeError, PinMode};
 pub use fact_registry::{FactHit, FactRegistry};

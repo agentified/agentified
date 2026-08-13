@@ -65,7 +65,18 @@ export type {
   SearchToolsToolOptions,
 } from "./compat.js";
 export { SEARCH_TOOLS_ID, searchToolsTool } from "./compat.js";
-export { DimensionMismatchError, EmbedderError } from "./errors.js";
+export type {
+  ExperimentalBuildEmbeddingArtifactOptions,
+  ExperimentalEmbeddingArtifact,
+} from "./embedding-artifact.js";
+export { experimentalBuildEmbeddingArtifact } from "./embedding-artifact.js";
+export {
+  ArtifactError,
+  ArtifactWarmError,
+  DimensionMismatchError,
+  EmbedderError,
+  IncompatibleMergeError,
+} from "./errors.js";
 // ⚠️ Experimental: the facts / grounding API (ADR-0017) — constant grounding
 // content plus the content-presence re-injection gate. Namespaced so dependence
 // on this unstable surface is explicit: `experimental.FactCatalog`.

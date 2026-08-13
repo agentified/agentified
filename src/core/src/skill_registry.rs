@@ -3,8 +3,10 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 
+use crate::artifact_warm::{ArtifactWarmError, OnArtifactMiss};
 use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
+use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::method::SearchMethod;
@@ -549,6 +551,72 @@ impl SkillRegistry {
         self.dense.rebuild(self.skills.values(), self.sink.as_ref())
     }
 
+    /// Load corpus vectors from a build-time embedding artifact, then apply [`OnArtifactMiss`].
+    ///
+    /// For [`OnArtifactMiss::Embed`], reuse commit and embedding of missing ids run
+    /// under one dense operation write lock so semantic search cannot observe a
+    /// partially warmed cache. This is serialization only — if the follow-up
+    /// embed fails after reuse commit, prior committed vectors are retained
+    /// (no rollback).
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactWarmError::Warm`] from parse / kind / model-mismatch during warm;
+    /// [`ArtifactWarmError::Incomplete`] when `on_miss` is [`OnArtifactMiss::Error`]
+    /// and some corpus ids were not reused; [`ArtifactWarmError::Embedder`] when
+    /// `on_miss` is [`OnArtifactMiss::Embed`] and embedding the missing ids fails.
+    pub fn warm_embeddings_from_artifact(
+        &self,
+        bytes: &[u8],
+        on_miss: OnArtifactMiss,
+    ) -> Result<(), ArtifactWarmError> {
+        match on_miss {
+            OnArtifactMiss::Error => {
+                let outcome = self.dense.warm_from_artifact(
+                    bytes,
+                    ArtifactEntryKind::Skill,
+                    self.skills.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ArtifactWarmError::Incomplete {
+                        missing: outcome.missing,
+                    })
+                }
+            }
+            OnArtifactMiss::Embed => self.dense.with_operation_write(|cache| {
+                let outcome = cache.warm_from_artifact_locked(
+                    bytes,
+                    ArtifactEntryKind::Skill,
+                    self.skills.values(),
+                    self.sink.as_ref(),
+                )?;
+                if outcome.missing.is_empty() {
+                    return Ok(());
+                }
+                cache
+                    .extend_locked(self.skills.values(), self.sink.as_ref())
+                    .map_err(ArtifactWarmError::from)
+            }),
+        }
+    }
+
+    /// Serialize the current corpus embeddings into a build-time artifact (bytes only).
+    ///
+    /// # Errors
+    ///
+    /// Any [`ArtifactError`] from resolving the embedder or building the artifact
+    /// (including [`ArtifactError::Embedder`] when inference fails).
+    pub fn build_embedding_artifact(&self) -> Result<Vec<u8>, ArtifactError> {
+        self.dense.build_artifact(
+            ArtifactEntryKind::Skill,
+            self.skills.values(),
+            self.sink.as_ref(),
+        )
+    }
+
     // ---- engines -----------------------------------------------------------
 
     fn bm25_search_traced(&self, query: &str, top_k: usize, origin: Origin) -> Vec<SkillHit> {
@@ -768,6 +836,9 @@ impl SkillRegistry {
 mod tests {
     use super::*;
     use crate::embedding::Embedder;
+    use crate::test_support::{
+        FailOnEmbedStub, FpCountingEmbedder, PanicOnEmbedStub, build_test_artifact, unit,
+    };
     use crate::trace::MemorySink;
 
     struct StubEmbedder;
@@ -1592,5 +1663,164 @@ mod tests {
         reg.set_intent_graph(Some(graph));
 
         assert!(reg.rebuild_intent_graph().is_ok());
+    }
+
+    #[test]
+    fn warm_embeddings_error_ok_when_artifact_covers_corpus() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let b = skill("frontend", "frontend", "frontend slides", &[]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a, &b],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0]), unit([0.0, 1.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(counter.docs(), 0);
+        assert!(
+            reg.search_with_method("api", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_error_fails_when_ids_missing() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let b = skill("frontend", "frontend", "frontend slides", &[]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error),
+            Err(ArtifactWarmError::Incomplete { missing }) if missing == ["frontend"]
+        ));
+        assert_eq!(counter.docs(), 0);
+        assert!(matches!(
+            reg.search_with_method("api", 5, Origin::Direct, SearchMethod::Semantic),
+            Err(EmbedderError::EmbeddingsNotBuilt)
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_embed_completes_only_missing_ids() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let b = skill("frontend", "frontend", "frontend slides", &[]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        reg.register(b);
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed)
+            .unwrap();
+        assert_eq!(counter.docs(), 1, "only the missing skill is embedded");
+        assert!(
+            reg.search_with_method("api", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_embeddings_embed_policy_propagates_build_embeddings_failure() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let b = skill("frontend", "frontend", "frontend slides", &[]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-warm",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
+        reg.register(a);
+        reg.register(b);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn warm_embeddings_propagates_warm_error_without_embed() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Skill,
+            [&a],
+            "fp-artifact",
+            vec![unit([1.0, 0.0, 0.0])],
+        );
+        let counter = Arc::new(FpCountingEmbedder::new("fp-active", StubEmbedder::vec_for));
+        let mut reg = with_embedder(counter.clone());
+        reg.register(a);
+        assert!(matches!(
+            reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
+            Err(ArtifactWarmError::Warm(
+                crate::WarmError::ArtifactModelMismatch { .. }
+            ))
+        ));
+        assert_eq!(counter.docs(), 0);
+    }
+
+    #[test]
+    fn build_embedding_artifact_round_trips_via_warm() {
+        let a = skill("api-design", "api-design", "rest api design", &[]);
+        let b = skill("frontend", "frontend", "frontend slides", &[]);
+        let builder = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg_a = with_embedder(builder.clone());
+        reg_a.register(skill("api-design", "api-design", "rest api design", &[]));
+        reg_a.register(skill("frontend", "frontend", "frontend slides", &[]));
+        let bytes = reg_a.build_embedding_artifact().unwrap();
+        assert_eq!(
+            builder.docs(),
+            2,
+            "build embeds each corpus document exactly once"
+        );
+
+        let warmer = Arc::new(FpCountingEmbedder::new("fp-warm", StubEmbedder::vec_for));
+        let mut reg_b = with_embedder(warmer.clone());
+        reg_b.register(a);
+        reg_b.register(b);
+        reg_b
+            .warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
+        assert_eq!(warmer.docs(), 0, "warm must not re-embed covered ids");
+        assert!(
+            reg_b
+                .search_with_method("api", 5, Origin::Direct, SearchMethod::Semantic)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn build_embedding_artifact_propagates_embedder_failure() {
+        let mut reg = with_embedder(Arc::new(FailOnEmbedStub::new("fp-warm")));
+        reg.register(skill("api-design", "api-design", "rest api design", &[]));
+        assert!(matches!(
+            reg.build_embedding_artifact(),
+            Err(ArtifactError::Embedder(EmbedderError::Inference { .. }))
+        ));
+    }
+
+    #[test]
+    fn build_embedding_artifact_empty_corpus_is_valid() {
+        let reg = with_embedder(Arc::new(PanicOnEmbedStub::new("unused")));
+        let bytes = reg.build_embedding_artifact().unwrap();
+        reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
+            .unwrap();
     }
 }
