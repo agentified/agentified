@@ -11,6 +11,9 @@ auth and scope), and ADR-0021 (sync and storage), all 2026-07-05. The scope mode
 originally carried is split out to [ADR-0010](0010-catalog-scope-model.md) (Proposed); the
 loader interface, auth, and sync semantics recorded here are accepted.
 
+Amended 2026-08-13 by [ADR-0019](0019-runtime-events-lane.md) to distinguish catalog-source
+pull from optional upward runtime facts and source-scoped catalog snapshot publication.
+
 ## Context
 
 An earlier plan scheduled a standalone `ratel-ai-server` binary as the rung between the
@@ -83,16 +86,22 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
 | Data class | Source of truth | Syncs? | Owner |
 |---|---|---|---|
 | **Catalog** (skill definitions) | the source when `RATEL_URL` is set, else local disk | yes: one-directional pull, ETag-gated | cloud / file loader / future self-hosted source |
+| **Runtime facts** | the running SDK | yes: optional append-only publication | application / Cloud adapter |
+| **Published catalog snapshot** | the running SDK registries | yes: optional source-scoped full replacement | application / Cloud adapter |
 | **Secrets** (upstream OAuth, source keys) | local machine / the source, always | **never** | ratel-local (oauth); the source (its keys, hash-only) |
 | **Config / host-wiring** | local machine, always | **never** | ratel-local, unchanged |
 
-- Sync is conditional-GET, not a delta protocol. The ETag content projection
+- Catalog-source pull is conditional-GET, not a delta protocol. The ETag content projection
   (`{id, name, description, tags, tools, metadata, body}`, sorted by id, timestamps excluded)
   is frozen in `protocol/v1`; changing it is a v2.
-- A running agent is a read-only catalog consumer. Authoring is a separate authenticated
-  write path, deferred (PSKS-8, internal tracker), so there is no offline-write/merge class.
-- Secrets-never-sync is enforced **structurally**: no wire shape has a field that can carry a
-  token, and a test fails if a secret-typed field enters a wire payload.
+- A running agent is a read-only consumer of the catalog-source contract. The separate upward
+  path in [ADR-0019](0019-runtime-events-lane.md) publishes append-only observations plus an
+  atomic snapshot of the SDK's current definitions; it is not authoring/CRUD, a delta merge, or
+  a write back into the source. General authoring remains deferred (PSKS-8).
+- Secrets-never-sync is enforced **structurally in both directions**: neither the source wire
+  nor the upward event/snapshot shapes can carry API keys, OAuth tokens, executors, tool
+  arguments/results, or other secret-typed fields. Conformance tests fail if one enters a wire
+  payload.
 - Offline: the client keeps the last-pulled catalog and runs degraded but functional;
   staleness is unbounded and should be surfaced. `RATEL_URL` unset is the permanent offline
   floor. Nothing moves off `~/.ratel/*`: config and oauth stay in ratel-local, so the pivot
@@ -121,8 +130,10 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
   the cloud already implements.
 - **Private cloud API, no `protocol/`:** forecloses future sources; the published contract is
   the insurance policy for the catalog rung.
-- **Bidirectional sync:** adds an offline-merge class and an upward path a secret could leak
-  through; authoring is a separate explicit write path instead.
+- **Bidirectional catalog sync:** still rejected because it adds offline merge and secret-leak
+  classes. [ADR-0019](0019-runtime-events-lane.md)'s upward path is deliberately not its
+  inverse: facts are append-only and snapshots atomically publish observed, secret-free state
+  per source; neither mutates the catalog source or merges offline edits.
 - **KDF-hashed keys / mTLS:** adds weight where a 192-bit random token needs none; a lost
   key is rotated, not brute-forced. (The scope-model alternatives — per-subject keys as the
   default, confidential isolation — are weighed in [ADR-0010](0010-catalog-scope-model.md).)
