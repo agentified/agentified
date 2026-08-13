@@ -49,6 +49,28 @@ pub struct TraceEventSubscriptionConfig {
     pub batch_size: Option<u32>,
 }
 
+/// Per-event identity and active OpenTelemetry correlation from TypeScript.
+#[napi(object)]
+pub struct TraceEventContextConfig {
+    pub event_id: Option<String>,
+    pub invocation_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub span_id: Option<String>,
+}
+
+fn trace_event_context(config: Option<TraceEventContextConfig>) -> core::TraceEventContext {
+    let Some(config) = config else {
+        return core::TraceEventContext::default();
+    };
+    core::TraceEventContext {
+        event_id: config.event_id,
+        invocation_id: config.invocation_id,
+        trace_id: config.trace_id,
+        span_id: config.span_id,
+        ..core::TraceEventContext::default()
+    }
+}
+
 /// Handle for one native runtime-event callback subscription.
 #[napi]
 pub struct NativeEventSubscription {
@@ -419,6 +441,7 @@ pub struct ToolSearchTask {
     top_k: u32,
     origin: String,
     method: String,
+    context: core::TraceEventContext,
     _permit: Option<DenseOperationPermit>,
 }
 
@@ -436,6 +459,7 @@ pub struct SkillSearchTask {
     top_k: u32,
     origin: String,
     method: String,
+    context: core::TraceEventContext,
     _permit: Option<DenseOperationPermit>,
 }
 
@@ -567,11 +591,12 @@ impl Task for ToolSearchTask {
             .read()
             .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
         registry
-            .search_with_method(
+            .search_with_method_and_context(
                 &self.query,
                 self.top_k as usize,
                 parsed_origin,
                 parsed_method,
+                self.context.clone(),
             )
             .map(|hits| {
                 hits.into_iter()
@@ -693,11 +718,12 @@ impl Task for SkillSearchTask {
             .read()
             .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?;
         registry
-            .search_with_method(
+            .search_with_method_and_context(
                 &self.query,
                 self.top_k as usize,
                 parsed_origin,
                 parsed_method,
+                self.context.clone(),
             )
             .map(|hits| {
                 hits.into_iter()
@@ -1156,6 +1182,7 @@ impl ToolRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<TraceEventContextConfig>,
     ) -> napi::Result<Vec<SearchHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -1176,7 +1203,13 @@ impl ToolRegistry {
             .inner
             .read()
             .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?
-            .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed_origin,
+                parsed_method,
+                trace_event_context(context),
+            )
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(hits
             .into_iter()
@@ -1197,6 +1230,7 @@ impl ToolRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<TraceEventContextConfig>,
     ) -> AsyncTask<ToolSearchTask> {
         let is_dense = matches!(method.as_str(), "semantic" | "dense" | "hybrid");
         AsyncTask::new(ToolSearchTask {
@@ -1206,6 +1240,7 @@ impl ToolRegistry {
             top_k,
             origin,
             method,
+            context: trace_event_context(context),
             _permit: is_dense.then(|| DenseOperationPermit::new(self.pending_dense.clone())),
         })
     }
@@ -1277,6 +1312,22 @@ impl ToolRegistry {
             .read()
             .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?
             .record_event(event);
+        Ok(())
+    }
+
+    /// Record an event with caller-supplied identity and OTel correlation.
+    #[napi]
+    pub fn record_event_with_context(
+        &self,
+        event: Value,
+        context: TraceEventContextConfig,
+    ) -> napi::Result<()> {
+        let event: TraceEvent = serde_json::from_value(event)
+            .map_err(|e| napi::Error::from_reason(format!("invalid trace event: {e}")))?;
+        self.inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?
+            .record_event_with_context(event, trace_event_context(Some(context)));
         Ok(())
     }
 
@@ -1986,6 +2037,7 @@ impl SkillRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<TraceEventContextConfig>,
     ) -> napi::Result<Vec<SkillHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -2006,7 +2058,13 @@ impl SkillRegistry {
             .inner
             .read()
             .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?
-            .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed_origin,
+                parsed_method,
+                trace_event_context(context),
+            )
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(hits
             .into_iter()
@@ -2027,6 +2085,7 @@ impl SkillRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<TraceEventContextConfig>,
     ) -> AsyncTask<SkillSearchTask> {
         let is_dense = matches!(method.as_str(), "semantic" | "dense" | "hybrid");
         AsyncTask::new(SkillSearchTask {
@@ -2036,6 +2095,7 @@ impl SkillRegistry {
             top_k,
             origin,
             method,
+            context: trace_event_context(context),
             _permit: is_dense.then(|| DenseOperationPermit::new(self.pending_dense.clone())),
         })
     }
@@ -2098,6 +2158,22 @@ impl SkillRegistry {
             .read()
             .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?
             .record_event(event);
+        Ok(())
+    }
+
+    /// Record an event with caller-supplied identity and OTel correlation.
+    #[napi]
+    pub fn record_event_with_context(
+        &self,
+        event: Value,
+        context: TraceEventContextConfig,
+    ) -> napi::Result<()> {
+        let event: TraceEvent = serde_json::from_value(event)
+            .map_err(|e| napi::Error::from_reason(format!("invalid trace event: {e}")))?;
+        self.inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("skill registry lock poisoned"))?
+            .record_event_with_context(event, trace_event_context(Some(context)));
         Ok(())
     }
 

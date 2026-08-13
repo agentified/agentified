@@ -707,6 +707,7 @@ describe("experiment telemetry", () => {
 
     const [event] = experimentEvents("ratel.experiment.invocation");
     expect(event.attributes).toEqual({
+      "ratel.event.id": expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
       "ratel.experiment.id": "search-v2",
       "ratel.experiment.unit": "a763b7e51e4339b7",
       "ratel.experiment.invocation.attributed": false,
@@ -747,6 +748,7 @@ describe("experiment telemetry", () => {
     expect(events).toHaveLength(2);
     for (const event of events) {
       expect(event.attributes).toEqual({
+        "ratel.event.id": expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
         "ratel.experiment.id": "search-v2",
         "ratel.experiment.selection_id": "selection-1",
         "ratel.experiment.outcome.label": "accepted",

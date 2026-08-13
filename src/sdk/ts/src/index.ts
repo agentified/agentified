@@ -112,9 +112,25 @@ export type {
 export { ratel } from "./ratel.js";
 /** Adaptive usage ranking: the shared read model of what users invoke (ADR-0014). */
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
-export type { PendingReplace, SkillCatalogOptions } from "./skill-catalog.js";
+export type {
+  CatalogSnapshot,
+  RuntimeCatalog,
+  RuntimeEvent,
+  RuntimeEventHandler,
+  RuntimeEventSubscription,
+  RuntimeEventsOptions,
+} from "./runtime-events.js";
+export {
+  RUNTIME_EVENT_MAX_HITS,
+  RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+  RUNTIME_EVENT_MAX_QUERY_BYTES,
+  RUNTIME_EVENT_TYPES,
+  RuntimeEvents,
+} from "./runtime-events.js";
+export type { PendingReplace, SkillCatalogOptions, SkillDefinition } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
+export type { RuntimeEventProjection } from "./telemetry.js";
 // OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel
 // provider the host has registered and never registers one itself — delivery is the host's
 // `new NodeSDK({ spanProcessors })`. `ContentCapture`/`setContentCapture`/

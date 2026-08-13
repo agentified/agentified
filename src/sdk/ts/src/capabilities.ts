@@ -659,12 +659,15 @@ function handleInvokeError(
   if (isUnauthorizedError(error)) {
     const upstream = upstreamFromToolId(toolId);
     const finish = () => {
-      recordAuthNeeded(upstream);
-      catalog.recordEvent({
-        type: "gateway_error",
-        tool_id: toolId,
-        error: "needs_auth",
-      });
+      const projection = recordAuthNeeded(upstream);
+      catalog.recordEvent(
+        {
+          type: "gateway_error",
+          tool_id: toolId,
+          error: "needs_auth",
+        },
+        projection,
+      );
       const payload: { error: string; isError: true; upstream?: string; hint: string } = {
         error: "needs_auth",
         isError: true,

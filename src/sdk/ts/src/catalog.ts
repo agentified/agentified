@@ -7,6 +7,9 @@ import {
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
 import { type IntentGraph, ToolRegistry } from "./registry.js";
+import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
+import { newRuntimeEventId } from "./runtime-events.js";
+import type { NativeEventSubscription } from "../native/index.cjs";
 import {
   argsSizeBytes,
   errorMessage,
@@ -64,6 +67,9 @@ export interface ExecutableTool extends Tool {
   /** Runs the tool. Called by {@link ToolCatalog.invoke} with args and optional context. */
   execute: Executor;
 }
+
+/** Serializable tool definition used by catalog snapshots (never an executor). */
+export type ToolDefinition = Tool;
 
 /**
  * Where the local trace stream (ADR-0007) goes. Distinct from the OTel spans in
@@ -345,8 +351,8 @@ export class ToolCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): SearchHit[] {
-    return traceSearch(SearchTarget.Tool, query, topK, origin, () =>
-      this.registry.searchWithMethod(query, topK, origin, method ?? this.method),
+    return traceSearch(SearchTarget.Tool, query, topK, origin, (projection) =>
+      this.registry.searchWithMethod(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -357,8 +363,14 @@ export class ToolCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): Promise<SearchHit[]> {
-    return traceSearchAsync(SearchTarget.Tool, query, topK, origin, () =>
-      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method),
+    return traceSearchAsync(SearchTarget.Tool, query, topK, origin, (projection) =>
+      this.registry.searchWithMethodAsync(
+        query,
+        topK,
+        origin,
+        method ?? this.method,
+        projection,
+      ),
     );
   }
 
@@ -380,6 +392,21 @@ export class ToolCatalog {
    */
   get(toolId: string): Tool | undefined {
     return this.tools.get(toolId);
+  }
+
+  /** Complete, deterministic, executor-free tool definition set. */
+  snapshot(): ToolDefinition[] {
+    return [...this.tools.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((tool) => structuredClone(tool));
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.registry.subscribeEvents(handler, options);
   }
 
   /**
@@ -561,12 +588,12 @@ export function runToolInvocation<T>(
 ): T {
   // The `execute_tool` OTel span wraps the local trace stream; both record the
   // same invocation, on their two independent channels (ADR-0007).
-  return traceExecuteTool(toolId, input, () => {
+  return traceExecuteTool(toolId, input, (projection) => {
     catalog.recordEvent({
       type: "invoke_start",
       tool_id: toolId,
       args_size_bytes: argsSizeBytes(input),
-    });
+    }, projection);
     const started = Date.now();
 
     const succeed = (_result: unknown): void => {
@@ -574,7 +601,7 @@ export function runToolInvocation<T>(
         type: "invoke_end",
         tool_id: toolId,
         took_ms: Date.now() - started,
-      });
+      }, { ...projection, eventId: newRuntimeEventId() });
     };
     const reject = (err: unknown): void => {
       catalog.recordEvent({
@@ -582,7 +609,7 @@ export function runToolInvocation<T>(
         tool_id: toolId,
         took_ms: Date.now() - started,
         error: errorMessage(err),
-      });
+      }, { ...projection, eventId: newRuntimeEventId() });
     };
 
     try {
