@@ -136,6 +136,7 @@ export class ToolRegistry {
     } catch (error) {
       throw mapArtifactWarmError(error);
     }
+    this.#maybeWarnModelMismatch();
   }
 
   /**
@@ -405,6 +406,7 @@ export class SkillRegistry {
     } catch (error) {
       throw mapArtifactWarmError(error);
     }
+    this.#maybeWarnModelMismatch();
   }
 
   /** Lexical BM25 search over skills — see `ToolRegistry.search`. */

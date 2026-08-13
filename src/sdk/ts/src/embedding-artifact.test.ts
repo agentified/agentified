@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveEmbeddingArtifact } from "./embedding-artifact.js";
 import * as sdk from "./index.js";
 import {
@@ -10,6 +10,7 @@ import {
   EmbedderError,
   experimentalBuildEmbeddingArtifact,
   IncompatibleMergeError,
+  IntentGraph,
   ratel,
   type Skill,
   SkillCatalog,
@@ -992,6 +993,291 @@ describe("catalog experimentalEmbeddingArtifact", () => {
       await second;
       expect(skills.size()).toBe(2);
     } finally {
+      await server.close();
+    }
+  });
+});
+
+/** 2-dim graph matching the stub endpoint width; `model` is a mismatch unless overridden. */
+function stubDimGraph(kind: "tool" | "skill", model = "some-other-model"): IntentGraph {
+  return IntentGraph.fromJson(
+    JSON.stringify({
+      v: 1,
+      built_from_ts: 1,
+      model,
+      intents: [
+        {
+          id: "intent_0",
+          label: "l",
+          terms: [],
+          members: ["read a file"],
+          centroid: [1, 0],
+          support: 9,
+          tools: kind === "tool" ? { read_file: 1.0 } : {},
+          skills: kind === "skill" ? { "frontend-slides": 1.0 } : {},
+        },
+      ],
+    }),
+  );
+}
+
+function withExecute(tool: Tool) {
+  return { ...tool, execute: async () => ({}) };
+}
+
+describe("artifact warm adaptive-ranking warning", () => {
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  async function tempDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ratel-artifact-warn-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("bm25 catalog with artifact warns after warm when the adaptive graph model differs", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tools.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool"));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+
+      await catalog.register(withExecute(readFileTool));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain("experimentalRebuildIntentGraph()");
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("plain bm25 without an artifact stays active and does not warn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const catalog = new ToolCatalog({ method: "bm25" });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool"));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      await catalog.register(withExecute(readFileTool));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("SkillCatalog register with artifact warns once after warm", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides],
+      });
+      const catalog = new SkillCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("skill"));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+
+      await catalog.register(slides);
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain("experimentalRebuildIntentGraph()");
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("SkillCatalog replaceAll with artifact warns once after warm", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills-reload.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides, apiDesign],
+      });
+      const catalog = new SkillCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("skill"));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+
+      const reload = catalog.replaceAll([slides, apiDesign]);
+      await reload;
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain("experimentalRebuildIntentGraph()");
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("failed incomplete warm does not warn", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "partial.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const bytes = new Uint8Array(await readFile(output));
+      const catalog = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { bytes },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool"));
+      expect(warn).not.toHaveBeenCalled();
+
+      const error = await catalog
+        .register([withExecute(readFileTool), withExecute(writeFileTool)])
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+      expect(error).toBeInstanceOf(ArtifactWarmError);
+      expect((error as ArtifactWarmError).code).toBe("Incomplete");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("repeated successful warms warn at most once", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "repeat.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool"));
+      await catalog.register(withExecute(readFileTool));
+      expect(warn).toHaveBeenCalledOnce();
+      await catalog.register(withExecute(readFileTool));
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("stays silent when warnOnModelMismatch is false", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "silent.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool"), {
+        warnOnModelMismatch: false,
+      });
+      await catalog.register(withExecute(readFileTool));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("paused: model mismatch");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it("matching graph model does not warn after artifact warm", async () => {
+    const server = await startDelayedEmbeddingServer();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "match.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const bytes = await readFile(output);
+
+      const probe = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { bytes },
+      });
+      probe.experimentalEnableAdaptiveRanking(stubDimGraph("tool"), {
+        warnOnModelMismatch: false,
+      });
+      await probe.register(withExecute(readFileTool));
+      const active = probe.experimentalAdaptiveRankingStatus.active;
+      expect(active).toBeTruthy();
+
+      const catalog = new ToolCatalog({
+        method: "bm25",
+        embedding,
+        experimentalEmbeddingArtifact: { bytes },
+      });
+      catalog.experimentalEnableAdaptiveRanking(stubDimGraph("tool", active ?? ""));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+      await catalog.register(withExecute(readFileTool));
+      expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
       await server.close();
     }
   });
