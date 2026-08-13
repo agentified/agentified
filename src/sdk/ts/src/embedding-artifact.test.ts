@@ -235,6 +235,29 @@ describe("experimentalBuildEmbeddingArtifact", () => {
       await server.close();
     }
   });
+
+  it("header model mismatch is ArtifactWarmError Warm naming the artifact", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const source = new ToolRegistry({ url: server.url, model: "model-a" }, "bm25");
+      source.registerItems([readFileTool]);
+      const bytes = await source.experimentalBuildEmbeddingArtifact();
+
+      const target = new ToolRegistry({ url: server.url, model: "model-b" }, "bm25");
+      target.registerItems([readFileTool]);
+      const error = await target.experimentalWarmEmbeddingsFromArtifact(bytes, "error").then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(ArtifactWarmError);
+      expect((error as ArtifactWarmError).code).toBe("Warm");
+      const message = String(error);
+      expect(message).toContain("embedding artifact was built with");
+      expect(message).toContain("rebuild the artifact");
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("catalog experimentalEmbeddingArtifact", () => {

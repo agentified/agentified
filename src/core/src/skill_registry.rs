@@ -1769,9 +1769,9 @@ mod tests {
         reg.register(a);
         assert!(matches!(
             reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Embed),
-            Err(ArtifactWarmError::Warm(crate::WarmError::Embedder(
-                EmbedderError::ModelMismatch { .. }
-            )))
+            Err(ArtifactWarmError::Warm(
+                crate::WarmError::ArtifactModelMismatch { .. }
+            ))
         ));
         assert_eq!(counter.docs(), 0);
     }

@@ -46,6 +46,13 @@ pub(crate) struct WarmOutcome {
 pub enum WarmError {
     /// Binary artifact failed [`crate::embedding_artifact::load_and_validate`].
     Artifact(ArtifactError),
+    /// RAT1 header fingerprint does not match the configured embedder.
+    ArtifactModelMismatch {
+        /// Fingerprint recorded in the RAT1 header.
+        artifact: String,
+        /// Artifact-compat identity of the configured embedder.
+        active: String,
+    },
     /// Embedder load, identity probe, or dimension check failed during warm.
     Embedder(EmbedderError),
 }
@@ -54,6 +61,10 @@ impl std::fmt::Display for WarmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WarmError::Artifact(e) => write!(f, "{e}"),
+            WarmError::ArtifactModelMismatch { artifact, active } => write!(
+                f,
+                "embedding artifact was built with model {artifact}, but the configured embedding model is {active} — the artifact cannot warm this catalog (hint: rebuild the artifact with the current model, or configure the model the artifact was built with; artifact identities are opaque build-time values, so compare them rather than reading them)"
+            ),
             WarmError::Embedder(e) => write!(f, "{e}"),
         }
     }
@@ -304,15 +315,15 @@ impl DenseCache {
             runtime_identity = probed.fingerprint;
         }
         if active_artifact != header.model_fingerprint {
-            let built = header.model_fingerprint.clone();
+            let artifact = header.model_fingerprint.clone();
             sink.record(TraceEvent::EmbedderModelMismatch {
-                built: built.clone(),
+                built: artifact.clone(),
                 active: active_artifact.clone(),
             });
-            return Err(WarmError::Embedder(EmbedderError::ModelMismatch {
-                built,
+            return Err(WarmError::ArtifactModelMismatch {
+                artifact,
                 active: active_artifact,
-            }));
+            });
         }
 
         let staged: Vec<Vec<f32>> = reused.iter().map(|(_, v)| v.clone()).collect();
@@ -1081,10 +1092,10 @@ mod tests {
         let cache = DenseCache::with_embedder(Arc::new(PanicOnEmbedStub::new("fp-active")));
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
-            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
-                built,
+            Err(WarmError::ArtifactModelMismatch {
+                artifact,
                 active
-            })) if built == "fp-artifact" && active == "fp-active"
+            }) if artifact == "fp-artifact" && active == "fp-active"
         ));
         assert!(cache.built_fingerprint().is_none());
         assert!(cache.dim().is_none());
@@ -1265,10 +1276,10 @@ mod tests {
         let cache = DenseCache::with_embedder_and_model(stub.clone(), sample_endpoint_model());
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
-            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
-                built,
+            Err(WarmError::ArtifactModelMismatch {
+                artifact,
                 active
-            })) if built == "fp-artifact" && active == "fp-other"
+            }) if artifact == "fp-artifact" && active == "fp-other"
         ));
         assert_eq!(stub.probe_calls.load(Ordering::SeqCst), 1);
         assert!(cache.built_fingerprint().is_none());
@@ -1317,13 +1328,39 @@ mod tests {
         }));
         assert!(matches!(
             cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink),
-            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
-                built,
+            Err(WarmError::ArtifactModelMismatch {
+                artifact,
                 active
-            })) if built == "content-a" && active == "content-b"
+            }) if artifact == "content-a" && active == "content-b"
         ));
         assert!(cache.built_fingerprint().is_none());
         assert!(cache.dim().is_none());
+    }
+
+    #[test]
+    fn artifact_model_mismatch_message_names_the_artifact() {
+        let items = [doc("a", "read")];
+        let bytes = build_test_artifact(
+            ArtifactEntryKind::Tool,
+            &items,
+            "content-a",
+            vec![unit([1.0, 0.0])],
+        );
+        let cache = DenseCache::with_embedder(Arc::new(SplitIdentityStub {
+            runtime: "runtime-path".into(),
+            artifact: "content-b".into(),
+        }));
+        let err = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .expect_err("header mismatch");
+        let message = err.to_string();
+        assert!(
+            message.contains("embedding artifact was built with"),
+            "{message}"
+        );
+        assert!(message.contains("rebuild the artifact"), "{message}");
+        assert!(!message.contains("cache was built with"), "{message}");
+        assert!(!message.contains("re-embed the corpus"), "{message}");
     }
 
     #[test]
@@ -1423,13 +1460,17 @@ mod tests {
             vec![unit([0.0, 1.0])],
         );
         let sink = MemorySink::new("warm-second-guard");
+        let err = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &sink)
+            .expect_err("runtime fingerprint mismatch");
         assert!(matches!(
-            cache.warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &warm_items, &sink),
-            Err(WarmError::Embedder(EmbedderError::ModelMismatch {
+            &err,
+            WarmError::Embedder(EmbedderError::ModelMismatch {
                 built,
                 active
-            })) if built == "fp-probed-X" && active == "fp-static-Y"
+            }) if built == "fp-probed-X" && active == "fp-static-Y"
         ));
+        assert!(err.to_string().contains("cache was built with"), "{err}");
         assert_eq!(stub.probe_calls.load(Ordering::SeqCst), probes_before);
         let mismatch: Vec<_> = sink
             .drain()

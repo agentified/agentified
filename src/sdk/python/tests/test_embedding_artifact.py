@@ -792,6 +792,26 @@ async def test_corrupt_artifact_is_warm_error(
     assert not hasattr(caught.value, "name")
 
 
+async def test_header_model_mismatch_is_warm_error_naming_the_artifact(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint],
+) -> None:
+    url, _state = counting_embedding_endpoint
+    source = ToolRegistry({"url": url, "model": "model-a"}, method="bm25")
+    await source.register(READ_FILE)
+    bytes_ = await source.experimental_build_embedding_artifact()
+
+    target = ToolRegistry({"url": url, "model": "model-b"}, method="bm25")
+    await target.register(READ_FILE)
+    with pytest.raises(ArtifactWarmError) as caught:
+        await target.experimental_warm_embeddings_from_artifact(bytes_, "error")
+    err = caught.value
+    assert err.code == "Warm"
+    assert type(err).__name__ == "ArtifactWarmError"
+    message = str(err)
+    assert "embedding artifact was built with" in message
+    assert "rebuild the artifact" in message
+
+
 async def test_public_exports_and_no_build_embeddings() -> None:
     import ratel_ai
 
