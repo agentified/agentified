@@ -490,8 +490,12 @@ class ToolRegistry:
 
     async def _ensure_dense_ready(self) -> None:
         if self._embedding_artifact is not None:
-            artifact_bytes, on_miss = await resolve_embedding_artifact(self._embedding_artifact)
-            await self.experimental_warm_embeddings_from_artifact(artifact_bytes, on_miss)
+            self._queue_dense()
+            try:
+                artifact_bytes, on_miss = await resolve_embedding_artifact(self._embedding_artifact)
+                await self.experimental_warm_embeddings_from_artifact(artifact_bytes, on_miss)
+            finally:
+                self._finish_dense()
             return
         if self._eager:
             await self._build()

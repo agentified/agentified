@@ -671,6 +671,307 @@ describe("catalog experimentalEmbeddingArtifact", () => {
       }),
     ).rejects.toThrow(/no execute handler/);
   });
+
+  function withExecute(tool: Tool) {
+    return { ...tool, execute: async () => ({}) };
+  }
+
+  it("artifact register refuses a racing register with registry busy ({ path })", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tools-path.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const settled = await Promise.allSettled([
+        catalog.register(withExecute(readFileTool)),
+        catalog.register(withExecute(writeFileTool)),
+      ]);
+      expect(settled.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+      expect(settled[1]).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringMatching(/registry busy; await/),
+        }),
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("artifact register refuses a racing register with registry busy ({ bytes })", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tools-bytes.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+      });
+      const bytes = await readFile(output);
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { bytes },
+      });
+      const settled = await Promise.allSettled([
+        catalog.register(withExecute(readFileTool)),
+        catalog.register(withExecute(writeFileTool)),
+      ]);
+      expect(settled.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+      expect(settled[1]).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringMatching(/registry busy; await/),
+        }),
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("SkillCatalog register refuses a racing register during artifact resolution", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills-path.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides, apiDesign],
+      });
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const settled = await Promise.allSettled([
+        catalog.register(slides),
+        catalog.register(apiDesign),
+      ]);
+      expect(settled.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+      expect(settled[1]).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringMatching(/registry busy; await/),
+        }),
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("SkillCatalog.replaceAll refuses a second reload during artifact resolution", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills-replace.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides],
+      });
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const first = catalog.replaceAll([slides]);
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
+      await first;
+      expect(catalog.has("frontend-slides")).toBe(true);
+      expect(catalog.has("api-design")).toBe(false);
+      expect(catalog.size()).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("first replaceAll counts describe the corpus that is actually live", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "skills-counts.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        skills: [slides],
+      });
+      const catalog = new SkillCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const first = catalog.replaceAll([slides]);
+      expect(first.added).toBe(1);
+      expect(first.removed).toBe(0);
+      expect(() => catalog.replaceAll([apiDesign])).toThrow(/registry busy; await/);
+      await first;
+      expect(first.added).toBe(1);
+      expect(first.removed).toBe(0);
+      expect(catalog.has("frontend-slides")).toBe(true);
+      expect(catalog.has("api-design")).toBe(false);
+      expect(catalog.size()).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("Incomplete never names an id from an interleaved register", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "tool-a-only-race.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const settled = await Promise.allSettled([
+        catalog.register(withExecute(readFileTool)),
+        catalog.register(withExecute(writeFileTool)),
+      ]);
+      expect(settled[1]?.status).toBe("rejected");
+      if (settled[1]?.status === "rejected") {
+        expect((settled[1].reason as Error).message).toMatch(/registry busy; await/);
+      }
+      if (settled[0]?.status === "rejected") {
+        const error = settled[0].reason;
+        expect(error).toBeInstanceOf(ArtifactWarmError);
+        expect((error as ArtifactWarmError).code).toBe("Incomplete");
+        for (const id of (error as ArtifactWarmError).missing ?? []) {
+          expect(id).not.toBe("write_file");
+          expect(["read_file"]).toContain(id);
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("artifact-read failure releases the guard", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const missing = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: "/nonexistent/ratel-artifact.rat1" },
+      });
+      await expect(missing.register(withExecute(readFileTool))).rejects.toThrow(/ENOENT/);
+      await expect(missing.register(withExecute(readFileTool))).rejects.toThrow(/ENOENT/);
+
+      const dir = await tempDir();
+      const output = join(dir, "after-enoent.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      await expect(catalog.register(withExecute(readFileTool))).resolves.toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("Incomplete warm failure releases the guard", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const output = join(dir, "partial-cleanup.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output,
+        embedding,
+        tools: [readFileTool],
+      });
+      const catalog = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: output },
+      });
+      const error = await catalog
+        .register([withExecute(readFileTool), withExecute(writeFileTool)])
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+      expect(error).toBeInstanceOf(ArtifactWarmError);
+      expect((error as ArtifactWarmError).code).toBe("Incomplete");
+      const second = await catalog.register(withExecute(readFileTool)).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(String(second)).not.toMatch(/registry busy/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("sequential register and replaceAll with an artifact succeed", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const embedding = { url: server.url, model: "test-model" };
+      const dir = await tempDir();
+      const toolsOut = join(dir, "seq-tools.ratel-embeddings");
+      const skillsOut = join(dir, "seq-skills.ratel-embeddings");
+      await experimentalBuildEmbeddingArtifact({
+        output: toolsOut,
+        embedding,
+        tools: [readFileTool, writeFileTool],
+      });
+      await experimentalBuildEmbeddingArtifact({
+        output: skillsOut,
+        embedding,
+        skills: [slides, apiDesign],
+      });
+      const tools = new ToolCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: toolsOut },
+      });
+      await tools.register(withExecute(readFileTool));
+      await tools.register(withExecute(writeFileTool));
+      const skills = new SkillCatalog({
+        method: "semantic",
+        embedding,
+        experimentalEmbeddingArtifact: { path: skillsOut },
+      });
+      const first = skills.replaceAll([slides]);
+      await first;
+      const second = skills.replaceAll([slides, apiDesign]);
+      expect(second.added).toBe(1);
+      await second;
+      expect(skills.size()).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("resolveEmbeddingArtifact", () => {

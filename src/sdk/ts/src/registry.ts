@@ -12,6 +12,7 @@ import {
   type SkillHit,
   type Tool,
 } from "../native/index.cjs";
+import { assertNotArtifactBusy } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
@@ -79,6 +80,7 @@ export class ToolRegistry {
    * @internal
    */
   registerItems(item: Tool | readonly Tool[]): void {
+    assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
   }
@@ -340,6 +342,7 @@ export class SkillRegistry {
    * @internal
    */
   registerItems(item: Skill | readonly Skill[]): void {
+    assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
   }
@@ -355,6 +358,7 @@ export class SkillRegistry {
    * @internal
    */
   replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
+    assertNotArtifactBusy(this);
     return this.native.replaceAll([...items]);
   }
 

@@ -1,5 +1,6 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { SearchHit, Tool } from "../native/index.cjs";
+import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import {
   type ExperimentalEmbeddingArtifact,
@@ -314,9 +315,11 @@ export class ToolCatalog {
   }
 
   private async ensureDenseReady(): Promise<void> {
-    if (this.embeddingArtifact) {
-      const { bytes, onMiss } = await resolveEmbeddingArtifact(this.embeddingArtifact);
-      await this.registry.experimentalWarmEmbeddingsFromArtifact(bytes, onMiss);
+    const artifact = this.embeddingArtifact;
+    if (artifact) {
+      await warmFromEmbeddingArtifactSource(this.registry, () =>
+        resolveEmbeddingArtifact(artifact),
+      );
       return;
     }
     await this.registry.buildDense();

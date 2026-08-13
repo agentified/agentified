@@ -1,5 +1,6 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
 import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import {
   type ExperimentalEmbeddingArtifact,
@@ -159,9 +160,11 @@ export class SkillCatalog {
   }
 
   private async ensureDenseReady(): Promise<void> {
-    if (this.embeddingArtifact) {
-      const { bytes, onMiss } = await resolveEmbeddingArtifact(this.embeddingArtifact);
-      await this.registry.experimentalWarmEmbeddingsFromArtifact(bytes, onMiss);
+    const artifact = this.embeddingArtifact;
+    if (artifact) {
+      await warmFromEmbeddingArtifactSource(this.registry, () =>
+        resolveEmbeddingArtifact(artifact),
+      );
       return;
     }
     await this.registry.buildDense();

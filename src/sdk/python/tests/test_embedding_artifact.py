@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -813,3 +813,216 @@ async def test_public_exports_and_no_build_embeddings() -> None:
     assert not hasattr(skills, "warm_embeddings_from_artifact")
     assert not hasattr(tools, "build_embeddings")
     assert not hasattr(skills, "build_embeddings")
+
+
+def _blocked_resolve(
+    artifact_bytes: bytes, entered: asyncio.Event, release: asyncio.Event
+) -> Callable[[object], Awaitable[tuple[bytes, str]]]:
+    """Stand in for path resolution: signal entered, then wait until release.
+
+    Python ``{bytes}`` is not the racy configuration (no ``asyncio.to_thread``);
+    tests still construct catalogs with ``{"path": ...}`` so they stay
+    semantically path-backed.
+    """
+
+    async def resolve(_config: object) -> tuple[bytes, str]:
+        entered.set()
+        await release.wait()
+        return artifact_bytes, "error"
+
+    return resolve
+
+
+async def test_mutation_rejected_while_artifact_warm_pending(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "tools-path.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, tools=[READ_FILE, WRITE_FILE]
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        "ratel_ai.catalog.resolve_embedding_artifact",
+        _blocked_resolve(output.read_bytes(), entered, release),
+    )
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    first = asyncio.ensure_future(catalog.register(_executable(READ_FILE)))
+    await entered.wait()
+    try:
+        with pytest.raises(RuntimeError, match="registry busy"):
+            catalog.register(_executable(WRITE_FILE))
+    finally:
+        release.set()
+    await first
+    assert catalog.has("read_file")
+    assert not catalog.has("write_file")
+
+
+async def test_skill_register_rejected_while_artifact_warm_pending(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "skills-path.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, skills=[SLIDES, API_DESIGN]
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        "ratel_ai.skill_catalog.resolve_embedding_artifact",
+        _blocked_resolve(output.read_bytes(), entered, release),
+    )
+    catalog = SkillCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    first = asyncio.ensure_future(catalog.register(SLIDES))
+    await entered.wait()
+    try:
+        with pytest.raises(RuntimeError, match="registry busy"):
+            catalog.register(API_DESIGN)
+    finally:
+        release.set()
+    await first
+    assert catalog.has("frontend-slides")
+    assert not catalog.has("api-design")
+    assert catalog.size() == 1
+
+
+async def test_replace_all_rejected_while_artifact_warm_pending(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "skills-replace.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, skills=[SLIDES]
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        "ratel_ai.skill_catalog.resolve_embedding_artifact",
+        _blocked_resolve(output.read_bytes(), entered, release),
+    )
+    catalog = SkillCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    first = catalog.replace_all([SLIDES])
+    assert (first.added, first.removed) == (1, 0)
+    task = asyncio.ensure_future(first)
+    await entered.wait()
+    try:
+        with pytest.raises(RuntimeError, match="registry busy"):
+            catalog.replace_all([API_DESIGN])
+    finally:
+        release.set()
+    await task
+    assert (first.added, first.removed) == (1, 0)
+    assert catalog.has("frontend-slides")
+    assert not catalog.has("api-design")
+    assert catalog.size() == 1
+
+
+async def test_artifact_read_failure_releases_pending(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    missing = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": "/nonexistent/ratel-artifact.rat1"},
+    )
+    with pytest.raises(OSError):
+        await missing.register(_executable(READ_FILE))
+    assert missing._registry._dense_pending == 0
+    with pytest.raises(OSError):
+        await missing.register(_executable(READ_FILE))
+    assert missing._registry._dense_pending == 0
+
+    output = tmp_path / "after-enoent.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, tools=[READ_FILE]
+    )
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    await catalog.register(_executable(READ_FILE))
+    assert catalog.has("read_file")
+    assert catalog._registry._dense_pending == 0
+
+
+async def test_incomplete_warm_failure_releases_pending(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    output = tmp_path / "partial.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=output, embedding=embedding, tools=[READ_FILE]
+    )
+    catalog = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(output)},
+    )
+    with pytest.raises(ArtifactWarmError) as caught:
+        await catalog.register([_executable(READ_FILE), _executable(WRITE_FILE)])
+    assert caught.value.code == "Incomplete"
+    assert catalog._registry._dense_pending == 0
+    with pytest.raises(ArtifactWarmError) as second:
+        await catalog.register(_executable(READ_FILE))
+    assert "registry busy" not in str(second.value)
+    assert catalog._registry._dense_pending == 0
+
+
+async def test_sequential_artifact_register_and_replace_all(
+    counting_embedding_endpoint: tuple[str, _CountingEndpoint], tmp_path: Path
+) -> None:
+    url, _state = counting_embedding_endpoint
+    embedding = _emb(url)
+    tools_out = tmp_path / "seq-tools.ratel-embeddings"
+    skills_out = tmp_path / "seq-skills.ratel-embeddings"
+    await experimental_build_embedding_artifact(
+        output=tools_out, embedding=embedding, tools=[READ_FILE, WRITE_FILE]
+    )
+    await experimental_build_embedding_artifact(
+        output=skills_out, embedding=embedding, skills=[SLIDES, API_DESIGN]
+    )
+    tools = ToolCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(tools_out)},
+    )
+    await tools.register(_executable(READ_FILE))
+    await tools.register(_executable(WRITE_FILE))
+    skills = SkillCatalog(
+        method="semantic",
+        embedding=embedding,
+        experimental_embedding_artifact={"path": str(skills_out)},
+    )
+    first = skills.replace_all([SLIDES])
+    await first
+    second = skills.replace_all([SLIDES, API_DESIGN])
+    assert second.added == 1
+    await second
+    assert skills.size() == 2
