@@ -456,19 +456,62 @@ pub enum TraceEvent {
     },
 }
 
+/// Per-event correlation fields supplied by the emitting integration.
+///
+/// Sinks fill stable envelope fields such as `event_id`, `session_id`, and
+/// `source_id`; callers use this context only for facts known at the emission
+/// site. Missing fields are omitted from the flattened JSON envelope.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TraceEventContext {
+    /// Id shared by every event in one invocation lifecycle.
+    pub invocation_id: Option<String>,
+    /// Catalog revision known when the event was emitted.
+    pub catalog_version: Option<String>,
+    /// Deployment environment supplied by the application.
+    pub environment: Option<String>,
+    /// Application-provided subject id.
+    pub end_user_id: Option<String>,
+    /// Active OpenTelemetry trace id, when available.
+    pub trace_id: Option<String>,
+    /// Active OpenTelemetry span id, when available.
+    pub span_id: Option<String>,
+}
+
 /// The versioned wrapper a sink writes around each [`TraceEvent`]: schema
-/// version, timestamp, and session id. On the wire the event is flattened
+/// version, stable identity, timestamp, and correlation fields. On the wire the event is flattened
 /// (`#[serde(flatten)]`), so its `type` tag and fields sit beside `v` / `ts` /
 /// `session_id` in one JSON object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceEnvelope {
-    /// Envelope schema version; currently `1`.
+    /// Envelope schema version; currently `2`.
     pub v: u32,
+    /// Client-generated ULID identifying exactly this event.
+    pub event_id: String,
     /// Event time, in milliseconds since the Unix epoch.
     pub ts: u64,
     /// The session the event belongs to, as given to the sink — correlates
     /// all events from one agent session.
     pub session_id: String,
+    /// Stable source identity shared by events and catalog snapshots.
+    pub source_id: String,
+    /// Id shared by every event in one invocation lifecycle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_id: Option<String>,
+    /// Catalog revision known when the event was emitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_version: Option<String>,
+    /// Deployment environment supplied by the application.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Application-provided subject id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_user_id: Option<String>,
+    /// Active OpenTelemetry trace id, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Active OpenTelemetry span id, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
     /// The event itself, flattened into the envelope on the wire.
     #[serde(flatten)]
     pub event: TraceEvent,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ratel_ai_core::{
     ChurnKind, JsonlSink, MemorySink, NoopSink, Origin, Tool, ToolRegistry, TraceEnvelope,
-    TraceEvent, TraceSink,
+    TraceEvent, TraceEventContext, TraceSink,
 };
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -38,7 +38,9 @@ fn register_emits_index_churn_add() {
     assert_eq!(events.len(), 1);
     let env: &TraceEnvelope = &events[0];
     assert_eq!(env.session_id, "session-1");
-    assert_eq!(env.v, 1);
+    assert_eq!(env.source_id, "ratel");
+    assert_eq!(env.v, 2);
+    assert_eq!(env.event_id.len(), 26);
     assert!(env.ts > 0);
     match &env.event {
         TraceEvent::IndexChurn { kind, tool_id } => {
@@ -47,6 +49,84 @@ fn register_emits_index_churn_add() {
         }
         other => panic!("expected IndexChurn, got {other:?}"),
     }
+}
+
+#[test]
+fn envelope_v2_carries_explicit_source_and_span_context() {
+    let sink = MemorySink::with_source("session", "worker-a");
+
+    sink.record_with_context(
+        TraceEvent::AuthNeeds {
+            upstream: "github".into(),
+        },
+        TraceEventContext {
+            trace_id: Some("trace-1".into()),
+            span_id: Some("span-1".into()),
+            ..TraceEventContext::default()
+        },
+    );
+
+    let events = sink.snapshot();
+    let envelope = &events[0];
+    assert_eq!(envelope.source_id, "worker-a");
+    assert_eq!(envelope.trace_id.as_deref(), Some("trace-1"));
+    assert_eq!(envelope.span_id.as_deref(), Some("span-1"));
+    assert!(envelope.invocation_id.is_none());
+}
+
+#[test]
+fn invocation_lifecycle_events_share_one_invocation_id() {
+    let sink = MemorySink::new("session");
+
+    sink.record(TraceEvent::InvokeStart {
+        tool_id: "alpha".into(),
+        args_size_bytes: 1,
+    });
+    sink.record(TraceEvent::InvokeEnd {
+        tool_id: "alpha".into(),
+        took_ms: 2,
+    });
+    sink.record(TraceEvent::InvokeStart {
+        tool_id: "alpha".into(),
+        args_size_bytes: 3,
+    });
+    sink.record(TraceEvent::InvokeError {
+        tool_id: "alpha".into(),
+        took_ms: 4,
+        error: "boom".into(),
+    });
+
+    let events = sink.snapshot();
+    assert_eq!(events[0].invocation_id, events[1].invocation_id);
+    assert_eq!(events[2].invocation_id, events[3].invocation_id);
+    assert_ne!(events[0].invocation_id, events[2].invocation_id);
+    assert!(events.iter().all(|event| event.invocation_id.is_some()));
+    assert!(
+        events
+            .windows(2)
+            .all(|pair| pair[0].event_id != pair[1].event_id)
+    );
+}
+
+#[test]
+fn registry_forwards_event_context_to_its_sink() {
+    let sink = Arc::new(MemorySink::new("session"));
+    let registry = ToolRegistry::with_trace_sink(sink.clone());
+
+    registry.record_event_with_context(
+        TraceEvent::AuthNeeds {
+            upstream: "github".into(),
+        },
+        TraceEventContext {
+            environment: Some("production".into()),
+            end_user_id: Some("user-1".into()),
+            ..TraceEventContext::default()
+        },
+    );
+
+    let events = sink.snapshot();
+    assert_eq!(events[0].environment.as_deref(), Some("production"));
+    assert_eq!(events[0].end_user_id.as_deref(), Some("user-1"));
 }
 
 #[test]
@@ -192,8 +272,10 @@ fn jsonl_sink_writes_one_line_per_event() {
     assert_eq!(lines.len(), 2);
 
     let first: Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(first["v"], 1);
+    assert_eq!(first["v"], 2);
+    assert_eq!(first["event_id"].as_str().unwrap().len(), 26);
     assert_eq!(first["session_id"], "session-7");
+    assert_eq!(first["source_id"], "ratel");
     assert_eq!(first["type"], "auth_needs");
     assert_eq!(first["upstream"], "github");
     assert!(first["ts"].as_u64().unwrap() > 0);
