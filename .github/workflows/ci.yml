@@ -576,11 +576,20 @@ jobs:
           pnpm --filter @ratel-ai/telemetry run build
           pnpm --filter @ratel-ai/sdk run build:ts
           cp "src/sdk/ts/native/ratel-sdk.$triple.node" "src/sdk/ts/npm/$triple/"
-          rm -rf "$RUNNER_TEMP/tgz" && mkdir -p "$RUNNER_TEMP/tgz/loader" "$RUNNER_TEMP/tgz/sub"
+          rm -rf "$RUNNER_TEMP/tgz" && mkdir -p "$RUNNER_TEMP/tgz/loader" "$RUNNER_TEMP/tgz/sub" "$RUNNER_TEMP/tgz/telemetry"
           pnpm --filter @ratel-ai/sdk pack --pack-destination "$RUNNER_TEMP/tgz/loader"
           npm pack "./src/sdk/ts/npm/$triple" --pack-destination "$RUNNER_TEMP/tgz/sub"
+          # @ratel-ai/telemetry is a runtime dependency of the loader, and pnpm rewrites
+          # `workspace:^` to the in-repo version at pack time (-> `^X.Y.Z`). Between an
+          # in-repo bump and the telemetry-ts-v* release that floor isn't on npm yet, so
+          # the scratch consumer below can't resolve it from the registry and every leg
+          # dies with ETARGET. Pack and install the monorepo sibling too — the same
+          # reason the Python leg above pre-installs its sibling and `ai-sdk-compat`
+          # packs all three. Resolution against the real registry stays covered by
+          # verify-install.yml, which installs the published package.
+          pnpm --filter @ratel-ai/telemetry pack --pack-destination "$RUNNER_TEMP/tgz/telemetry"
           work="$(mktemp -d)"; cd "$work"; npm init -y >/dev/null
-          npm install --no-audit --no-fund "$RUNNER_TEMP"/tgz/loader/*.tgz "$RUNNER_TEMP"/tgz/sub/*.tgz
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/tgz/telemetry/*.tgz "$RUNNER_TEMP"/tgz/loader/*.tgz "$RUNNER_TEMP"/tgz/sub/*.tgz
           cp "$GITHUB_WORKSPACE/e2e/ts/run_e2e.mjs" ./run_e2e.mjs
           RATEL_E2E_DIR="$GITHUB_WORKSPACE/e2e" node run_e2e.mjs
 

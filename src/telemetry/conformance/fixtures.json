@@ -169,6 +169,388 @@
           }
         }
       ]
+    },
+    {
+      "name": "experiment arm span carries dispatch stamp and successful completion",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-42",
+        "ratel_experiment_arm": "stable",
+        "ratel_experiment_role": "serving",
+        "ratel_experiment_unit": "0123456789abcdef",
+        "ratel_experiment_cold": false,
+        "ratel_experiment_outcome": "ok",
+        "ratel_experiment_duration_ms": 12.5,
+        "ratel_experiment_hit_count": 2
+      },
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-42",
+        "ratel.experiment.arm": "stable",
+        "ratel.experiment.role": "serving",
+        "ratel.experiment.unit": "0123456789abcdef",
+        "ratel.experiment.cold": false,
+        "ratel.experiment.outcome": "ok",
+        "ratel.experiment.duration_ms": 12.5,
+        "ratel.experiment.hit_count": 2
+      }
+    },
+    {
+      "name": "experiment arm span carries a ranking failure diagnostic",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-43",
+        "ratel_experiment_arm": "candidate",
+        "ratel_experiment_role": "shadow",
+        "ratel_experiment_unit": "fedcba9876543210",
+        "ratel_experiment_cold": true,
+        "ratel_experiment_outcome": "error",
+        "ratel_experiment_duration_ms": 8,
+        "ratel_experiment_ranking_error": "TypeError"
+      },
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-43",
+        "ratel.experiment.arm": "candidate",
+        "ratel.experiment.role": "shadow",
+        "ratel.experiment.unit": "fedcba9876543210",
+        "ratel.experiment.cold": true,
+        "ratel.experiment.outcome": "error",
+        "ratel.experiment.duration_ms": 8,
+        "ratel.experiment.ranking_error": "TypeError"
+      }
+    },
+    {
+      "name": "experiment arm span carries post-ranking projection diagnostics",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-43b",
+        "ratel_experiment_arm": "candidate",
+        "ratel_experiment_role": "shadow",
+        "ratel_experiment_unit": "fedcba9876543210",
+        "ratel_experiment_cold": true,
+        "ratel_experiment_outcome": "ok",
+        "ratel_experiment_duration_ms": 8,
+        "ratel_experiment_hit_count": 2,
+        "ratel_experiment_result_attributes_error": "RangeError",
+        "ratel_experiment_result_attrs_encoding_error": "EncodingError"
+      },
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-43b",
+        "ratel.experiment.arm": "candidate",
+        "ratel.experiment.role": "shadow",
+        "ratel.experiment.unit": "fedcba9876543210",
+        "ratel.experiment.cold": true,
+        "ratel.experiment.outcome": "ok",
+        "ratel.experiment.duration_ms": 8,
+        "ratel.experiment.hit_count": 2,
+        "ratel.experiment.result_attributes_error": "RangeError",
+        "ratel.experiment.result_attrs_encoding_error": "EncodingError"
+      }
+    },
+    {
+      "name": "experiment results and comparison EventRecords carry ranked measurements",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-44",
+        "ratel_experiment_arm": "candidate",
+        "ratel_experiment_role": "shadow",
+        "ratel_experiment_unit": "0123456789abcdef",
+        "ratel_experiment_cold": false,
+        "ratel_experiment_outcome": "ok",
+        "ratel_experiment_duration_ms": 9,
+        "ratel_experiment_hit_count": 2
+      },
+      "emit_events": [
+        {
+          "event": "ratel_experiment_results",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-44",
+            "ratel_experiment_arm": "candidate",
+            "ratel_experiment_role": "shadow",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_result_ids": ["tool-a", "tool-b"],
+            "ratel_experiment_result_scores": [3.5, 1.25],
+            "ratel_experiment_result_attrs": [
+              {"domain": "docs"},
+              {"domain": "code"}
+            ]
+          }
+        },
+        {
+          "event": "ratel_experiment_comparison",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-44",
+            "ratel_experiment_arm": "candidate",
+            "ratel_experiment_role": "shadow",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_served_arm": "stable",
+            "ratel_experiment_served_outcome": "ok",
+            "ratel_experiment_served_duration_ms": 7,
+            "ratel_experiment_served_hit_count": 2,
+            "ratel_experiment_shadow_arm": "candidate",
+            "ratel_experiment_shadow_outcome": "ok",
+            "ratel_experiment_shadow_duration_ms": 9,
+            "ratel_experiment_shadow_hit_count": 2,
+            "ratel_experiment_agreement_top1": false,
+            "ratel_experiment_agreement_exact_order": false,
+            "ratel_experiment_agreement_overlap_count": 1,
+            "ratel_experiment_agreement_jaccard_at_k": 0.3333333333333333,
+            "ratel_experiment_agreement_k": 2,
+            "ratel_experiment_agreement_item_attrs": {"domain": false},
+            "ratel_experiment_agreement_result_attrs": {
+              "appliedDomain": true,
+              "isSequence": true
+            }
+          }
+        }
+      ],
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-44",
+        "ratel.experiment.arm": "candidate",
+        "ratel.experiment.role": "shadow",
+        "ratel.experiment.unit": "0123456789abcdef",
+        "ratel.experiment.cold": false,
+        "ratel.experiment.outcome": "ok",
+        "ratel.experiment.duration_ms": 9,
+        "ratel.experiment.hit_count": 2
+      },
+      "expect_events": [
+        {
+          "name": "ratel.experiment.results",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-44",
+            "ratel.experiment.arm": "candidate",
+            "ratel.experiment.role": "shadow",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.result_ids": ["tool-a", "tool-b"],
+            "ratel.experiment.result_scores": [3.5, 1.25],
+            "ratel.experiment.result_attrs": [
+              {"domain": "docs"},
+              {"domain": "code"}
+            ]
+          }
+        },
+        {
+          "name": "ratel.experiment.comparison",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-44",
+            "ratel.experiment.arm": "candidate",
+            "ratel.experiment.role": "shadow",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.served.arm": "stable",
+            "ratel.experiment.served.outcome": "ok",
+            "ratel.experiment.served.duration_ms": 7,
+            "ratel.experiment.served.hit_count": 2,
+            "ratel.experiment.shadow.arm": "candidate",
+            "ratel.experiment.shadow.outcome": "ok",
+            "ratel.experiment.shadow.duration_ms": 9,
+            "ratel.experiment.shadow.hit_count": 2,
+            "ratel.experiment.agreement.top1": false,
+            "ratel.experiment.agreement.exact_order": false,
+            "ratel.experiment.agreement.overlap_count": 1,
+            "ratel.experiment.agreement.jaccard_at_k": 0.3333333333333333,
+            "ratel.experiment.agreement.k": 2,
+            "ratel.experiment.agreement.item_attrs": {"domain": false},
+            "ratel.experiment.agreement.result_attrs": {
+              "appliedDomain": true,
+              "isSequence": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "experiment lifecycle EventRecords carry capacity skip and reused fallback",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-45",
+        "ratel_experiment_arm": "stable",
+        "ratel_experiment_role": "serving",
+        "ratel_experiment_unit": "0123456789abcdef",
+        "ratel_experiment_cold": false,
+        "ratel_experiment_outcome": "error",
+        "ratel_experiment_duration_ms": 4
+      },
+      "emit_events": [
+        {
+          "event": "ratel_experiment_skip",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-45",
+            "ratel_experiment_arm": "stable",
+            "ratel_experiment_role": "serving",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_skip_arm": "candidate-c",
+            "ratel_experiment_skip_concurrency": 1,
+            "ratel_experiment_skip_reason": "capacity"
+          }
+        },
+        {
+          "event": "ratel_experiment_fallback",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-45",
+            "ratel_experiment_arm": "stable",
+            "ratel_experiment_role": "serving",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_fallback_effective_arm": "candidate-b",
+            "ratel_experiment_fallback_reused_shadow": true
+          }
+        },
+        {
+          "event": "ratel_experiment_drop",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-45",
+            "ratel_experiment_arm": "candidate-b",
+            "ratel_experiment_role": "shadow",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_drop_reason": "fallback-consumed"
+          }
+        }
+      ],
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-45",
+        "ratel.experiment.arm": "stable",
+        "ratel.experiment.role": "serving",
+        "ratel.experiment.unit": "0123456789abcdef",
+        "ratel.experiment.cold": false,
+        "ratel.experiment.outcome": "error",
+        "ratel.experiment.duration_ms": 4
+      },
+      "expect_events": [
+        {
+          "name": "ratel.experiment.skip",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-45",
+            "ratel.experiment.arm": "stable",
+            "ratel.experiment.role": "serving",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.skip.arm": "candidate-c",
+            "ratel.experiment.skip.concurrency": 1,
+            "ratel.experiment.skip.reason": "capacity"
+          }
+        },
+        {
+          "name": "ratel.experiment.fallback",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-45",
+            "ratel.experiment.arm": "stable",
+            "ratel.experiment.role": "serving",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.fallback.effective_arm": "candidate-b",
+            "ratel.experiment.fallback.reused_shadow": true
+          }
+        },
+        {
+          "name": "ratel.experiment.drop",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-45",
+            "ratel.experiment.arm": "candidate-b",
+            "ratel.experiment.role": "shadow",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.drop.reason": "fallback-consumed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "experiment invocation and outcome EventRecords carry join attributes",
+      "span": "ratel_experiment_arm",
+      "set": {
+        "ratel_experiment_id": "retrieval-v2",
+        "ratel_experiment_selection_id": "selection-46",
+        "ratel_experiment_arm": "stable",
+        "ratel_experiment_role": "serving",
+        "ratel_experiment_unit": "0123456789abcdef",
+        "ratel_experiment_cold": false,
+        "ratel_experiment_outcome": "ok",
+        "ratel_experiment_duration_ms": 6,
+        "ratel_experiment_hit_count": 1
+      },
+      "emit_events": [
+        {
+          "event": "ratel_experiment_invocation",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_unit": "0123456789abcdef",
+            "ratel_experiment_selection_id": "selection-46",
+            "ratel_experiment_effective_arm": "stable",
+            "ratel_experiment_invocation_attributed": true,
+            "ratel_experiment_invocation_rank": 0,
+            "ratel_experiment_invocation_age_ms": 15,
+            "ratel_experiment_turn": 4,
+            "gen_ai_tool_name": "search_docs"
+          }
+        },
+        {
+          "event": "ratel_experiment_outcome",
+          "attributes": {
+            "ratel_experiment_id": "retrieval-v2",
+            "ratel_experiment_selection_id": "selection-46",
+            "ratel_experiment_outcome_label": "accepted",
+            "ratel_experiment_outcome_score": 0.9
+          }
+        }
+      ],
+      "expect_name": "ratel.experiment.arm",
+      "expect_attributes": {
+        "ratel.experiment.id": "retrieval-v2",
+        "ratel.experiment.selection_id": "selection-46",
+        "ratel.experiment.arm": "stable",
+        "ratel.experiment.role": "serving",
+        "ratel.experiment.unit": "0123456789abcdef",
+        "ratel.experiment.cold": false,
+        "ratel.experiment.outcome": "ok",
+        "ratel.experiment.duration_ms": 6,
+        "ratel.experiment.hit_count": 1
+      },
+      "expect_events": [
+        {
+          "name": "ratel.experiment.invocation",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.unit": "0123456789abcdef",
+            "ratel.experiment.selection_id": "selection-46",
+            "ratel.experiment.effective_arm": "stable",
+            "ratel.experiment.invocation.attributed": true,
+            "ratel.experiment.invocation.rank": 0,
+            "ratel.experiment.invocation.age_ms": 15,
+            "ratel.experiment.turn": 4,
+            "gen_ai.tool.name": "search_docs"
+          }
+        },
+        {
+          "name": "ratel.experiment.outcome",
+          "attributes": {
+            "ratel.experiment.id": "retrieval-v2",
+            "ratel.experiment.selection_id": "selection-46",
+            "ratel.experiment.outcome.label": "accepted",
+            "ratel.experiment.outcome.score": 0.9
+          }
+        }
+      ]
     }
   ]
 }

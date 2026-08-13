@@ -24,9 +24,9 @@ Rationale and the two-tier design are documented in [ADR 0007](../../docs/adr/00
 
 Emission needs no wiring and no configuration. `@ratel-ai/sdk` writes to whatever OpenTelemetry
 providers are registered globally and registers none itself, so with no provider wired every
-span is a no-op — there is nothing to switch on, and nothing to switch off. Five span shapes,
-all `SpanKind.INTERNAL`, all on instrumentation scope **`@ratel-ai/sdk`** (`ratel-ai` in
-Python):
+span is a no-op — there is nothing to switch on, and nothing to switch off. Six span shapes
+are emitted today, all `SpanKind.INTERNAL`, all on instrumentation scope **`@ratel-ai/sdk`**
+(`ratel-ai` in Python). The experiment shape is TypeScript-only.
 
 | emitted span name | attributes (gated ones marked) |
 | --- | --- |
@@ -35,23 +35,26 @@ Python):
 | `ratel.skill.load` | `ratel.skill.id` |
 | `ratel.upstream.register` | `ratel.upstream.server` / `.transport` / `.tool_count` |
 | `ratel.auth.flow` | `ratel.upstream.server`, `ratel.auth.outcome` |
+| `ratel.experiment.arm` (TypeScript only) | `ratel.experiment.id` / `.selection_id` / `.arm` / `.role` / `.unit`, `.cold` / `.outcome` / `.duration_ms`; conditional `.hit_count` and projection diagnostics; gated `.result_attrs` |
 
 The tool span's name carries the tool, so it reads `execute_tool send_email` on the wire; bare
 `execute_tool` is the `gen_ai.operation.name` *value*, not the name. The asymmetry in that table
 is the load-bearing detail: `execute_tool <…>` is the only *mixed* shape, carrying `gen_ai.*`
-keys alongside its `ratel.*` ones while the other four are purely `ratel.*`. That one difference
-decides on its own whether a backend shows you the other four (see below).
+keys alongside its `ratel.*` ones while the other five are purely `ratel.*`. That one difference
+decides on its own whether a backend shows you the other five (see below).
 
 One known gap: [`CONVENTIONS.md`](CONVENTIONS.md) lists `ratel.origin` on the tool-invocation
 span, but neither SDK emits it there — both set it on `ratel.search` only, and the AI SDK
 integration's overlay lands on that emitter's own spans rather than on this one. The table above
 reports what is emitted; closing the drift is a follow-up on the emit side, not a docs edit.
 
-The content-bearing half rides the Logs data model as two `EventRecord`s —
-`ratel.search.results` (the query text) and `ratel.tool.execution.details` (tool arguments, plus
-the result on success). Both are off by default and gated by
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` / `setContentCapture()`. Both are
-`ratel.*`-named: a filter keyed on `gen_ai.*` event names drops all of them.
+The emitted content half rides the Logs data model as `ratel.search.results` and
+`ratel.tool.execution.details`; both are off by default. Retrieval experiments emit seven more
+EventRecords (`results`, `comparison`, `skip`, `fallback`, `drop`, `invocation`, `outcome`).
+Their result ids and scores are measurements; only per-item `ratel.experiment.result_attrs` follows
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` / `setContentCapture()`. Every name is under
+`ratel.*`, so a filter keyed only on `gen_ai.*` event names drops the whole Logs signal once
+emitted.
 
 ## Emission is not delivery
 
@@ -65,7 +68,8 @@ The concrete case, pinned by
 `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes
 from a scope on Langfuse's known-instrumentor list. `@ratel-ai/sdk` is on neither list, so
 `execute_tool <…>` survives on the strength of its `gen_ai.tool.name` while `ratel.search`,
-`ratel.skill.load`, `ratel.upstream.register` and `ratel.auth.flow` are dropped before export.
+`ratel.skill.load`, `ratel.upstream.register`, `ratel.auth.flow`, and `ratel.experiment.arm` are
+dropped before export.
 A host wires it up, sees its `gen_ai.*` traces and its tool calls land, concludes it works — and
 never learns that every retrieval span, the thing Ratel exists to show them, was discarded.
 
@@ -102,6 +106,7 @@ and flush and shutdown belong to whoever built it. Ratel ships no provider boots
 emits standard OpenTelemetry, so any provider and exporter receive it.
 
 ```ts
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { NodeSDK } from "@opentelemetry/sdk-node";
@@ -110,6 +115,9 @@ import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { ratel } from "@ratel-ai/sdk";
 
 const sdk = new NodeSDK({
+  // Required for experiment baggage and async parenting even when export is off.
+  // NodeSDK uses this implementation by default; spelling it out makes the invariant visible.
+  contextManager: new AsyncLocalStorageContextManager(),
   spanProcessors: [
     new BatchSpanProcessor(new OTLPTraceExporter({ url: "https://<your-backend>/v1/traces" })),
     // ...or any vendor processor, side by side — see the predicate above for Langfuse's
@@ -164,6 +172,77 @@ global provider, so it coexists with the host's `NodeSDK` without a fight — bu
 pass through the host's processors either. Delivery is two parallel egress paths rather than one
 shared stream: see
 [`@ratel-ai/mastra`](../adapters/ts-mastra/README.md#telemetry).
+
+## Retrieval-experiment telemetry
+
+`experimentalDefineExperiment` emits one `ratel.experiment.arm` span per dispatch and seven
+evaluation/lifecycle EventRecords. A complete host setup has four independent requirements:
+
+1. **Keep a `ContextManager` active on every code path.** Context propagation is part of
+   experiment correctness, not exporter setup. Direct attributes still reach
+   `ratel.experiment.arm` without a manager, but the five baggage join fields and asynchronous
+   parentage disappear. `NodeSDK.start()` installs `AsyncLocalStorageContextManager` by default;
+   the explicit `contextManager` option in scenario 1 documents that invariant. A host that builds
+   providers manually, or configures only Mastra's private observability pipeline, must register
+   one itself even when exporters are disabled. Use one registration path, not both.
+2. **Start the selection under the active request or agent span.** Each arm then inherits that
+   trace, and its results, comparison, and lifecycle records carry the arm span's explicit
+   context. Work started inside an arm callback also inherits the arm baggage. Work started only
+   after `select()` returns is too late because the arm context has been restored.
+   `reportInvocation()` and `reportOutcome()` instead attach to whichever span is active when the
+   host reports them.
+3. **Export both signals.** The arm is a span, but results, comparisons, skips, fallbacks, drops,
+   invocations, and delayed outcomes are Logs EventRecords, never SpanEvents. A span processor
+   alone cannot deliver them. Configure `logRecordProcessors` and point its exporter at the
+   intended `/v1/logs` endpoint.
+4. **Widen vendor filters by instrumentation scope.** `ratel.experiment.arm` is purely
+   `ratel.*`, so Langfuse's default predicate drops it. Scenario 1 plus the
+   [`shouldExportSpan` predicate above](#emission-is-not-delivery) keeps Langfuse's defaults and
+   admits every span emitted from `@ratel-ai/sdk`.
+
+Call `select()` inside an active host span when an HTTP or job runner has not already created one:
+
+```ts
+import { trace } from "@opentelemetry/api";
+import { experimentalDefineExperiment } from "@ratel-ai/sdk";
+
+const experiment = experimentalDefineExperiment<
+  { query: string },
+  string[],
+  "control" | "candidate"
+>({
+  id: "retrieval-v2",
+  arms: {
+    control: { select: async () => ["inspect-ci"] },
+    candidate: { select: async () => ["search-logs"] },
+  },
+  ranking: (ids) => ids.map((id) => ({ id })),
+  evaluation: { outcome: true, references: ["peer-selection"] },
+});
+
+await trace.getTracer("my-app").startActiveSpan("agent turn", async (span) => {
+  try {
+    const selection = await experiment.select({ query: "build failure" }, {
+      arm: "control",
+      unitId: "account-42",
+      shadow: true,
+    });
+    experiment.reportOutcome({
+      selectionId: selection.selectionId,
+      label: "accepted",
+    });
+    return selection.result;
+  } finally {
+    span.end();
+  }
+});
+```
+
+Mind the processor constructor asymmetry in OpenTelemetry JS 0.220 and newer:
+`new BatchSpanProcessor(traceExporter)` is positional, while
+`new BatchLogRecordProcessor({ exporter: logExporter })` requires an options object. TypeScript
+rejects the old positional Logs form; plain JavaScript can construct it with no exporter and lose
+records when the processor flushes.
 
 A complete, offline-runnable emitter built from the vocabulary constants is in
 [`examples/telemetry-ts`](../../examples/telemetry-ts/README.md).

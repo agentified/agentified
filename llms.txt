@@ -57,7 +57,7 @@ There is **no server binary** — a standalone server is deferred (ADR-0003) —
 ## Components
 
 - [Rust engine (`ratel-ai-core`)](https://github.com/ratel-ai/ratel/blob/main/src/core/README.md): Retrieval over a schema-aware text projection of each tool. The engine is in-process; dense embeddings may be local or come from a configured endpoint. The base everything else wraps.
-- [TypeScript SDK (`@ratel-ai/sdk`)](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md): NAPI-bound wrapper. Exposes `ToolRegistry`, `ToolCatalog`, `SkillCatalog`, `searchCapabilitiesTool`, `invokeToolTool`, `getSkillContentTool`, `registerMcpServer`. Ships pre-built natives — no Rust toolchain required to install.
+- [TypeScript SDK (`@ratel-ai/sdk`)](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md): NAPI-bound wrapper. Exposes `ToolRegistry`, `ToolCatalog`, `SkillCatalog`, `searchCapabilitiesTool`, `invokeToolTool`, `getSkillContentTool`, `registerMcpServer`. Its opt-in, TypeScript-only `experimentalDefineExperiment` factory wraps host-supplied selectors for deterministic A/B assignment and bounded shadow evaluation; it does not change default catalog retrieval. Ships pre-built natives — no Rust toolchain required to install.
 - [Python SDK (`ratel-ai`)](https://github.com/ratel-ai/ratel/blob/main/src/sdk/python/README.md): PyO3-bound wrapper, the mirror of the TypeScript SDK. Exposes `ToolRegistry`, `ToolCatalog`, `SkillCatalog`, `search_capabilities_tool`, `invoke_tool_tool`, `get_skill_content_tool`, `register_mcp_server`. Ships pre-built abi3 wheels — no Rust toolchain required to install.
 - [Vercel AI SDK adapter (`@ratel-ai/vercel-ai-sdk`)](https://github.com/ratel-ai/ratel/blob/main/src/adapters/ts-vercel-ai-sdk/README.md): `ratel(config).adaptTo(aiSdk())` speaks the AI SDK's native `Tool` / `ModelMessage` shapes, with `appendRecall` / `prepareStep` recall idioms. Supports `ai` v5, v6, and v7. Its `/otel` subpath adds `RatelOtelIntegration`, an `ai@7`-only telemetry integration that stamps `ratel.origin` onto the AI SDK's `gen_ai.*` spans on a provider the host owns.
 - [Mastra adapter (`@ratel-ai/mastra`)](https://github.com/ratel-ai/ratel/blob/main/src/adapters/ts-mastra/README.md): `ratel(config).adaptTo(mastra())` over `@mastra/core`'s tool and message types, through the same adapter SPI.
@@ -142,7 +142,23 @@ new NodeSDK({ spanProcessors: [/* yours */], logRecordProcessors: [/* yours */] 
 
 `@ratel-ai/telemetry` (npm) is **vocabulary only** — the `ratel.*` constants plus the content-capture gate, zero dependencies, no OpenTelemetry SDK, no exporter config. Recommend it only to someone hand-emitting Ratel-shaped spans, never as the way to "turn telemetry on". Python is the deliberate exception: it keeps turnkey exporter sugar as `init()` behind the optional `[otlp]` extra.
 
-**The trap worth warning about:** a vendor span processor can silently drop most of Ratel's signal *after* it arrives. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so tool-execution spans survive and every retrieval span (`ratel.search`, `ratel.skill.load`, …) is discarded, with no error. The fix is one line of the vendor's own config, keyed on instrumentation **scope** (`@ratel-ai/sdk` in TS, `ratel-ai` in Python), never on a `ratel.` span-name prefix. Full wiring recipes: [src/telemetry/README.md](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md).
+**The trap worth warning about:** a vendor span processor can silently drop most of Ratel's signal *after* it arrives. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so tool-execution spans survive while pure-`ratel.*` spans (`ratel.search`, `ratel.skill.load`, `ratel.experiment.arm`, …) are discarded, with no error. The fix is one line of the vendor's own config, keyed on instrumentation **scope** (`@ratel-ai/sdk` in TS, `ratel-ai` in Python), never on a `ratel.` span-name prefix. Full wiring recipes: [src/telemetry/README.md](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md).
+
+### Retrieval experiments are experimental, opt-in, and TypeScript-only
+
+`@ratel-ai/sdk` exports `experimentalDefineExperiment`; there is no stable alias or Python
+surface. It wraps host-supplied async selectors with deterministic assignment, fallback, bounded
+detached shadows, rank-based served-vs-shadow comparison, invocation attribution, and delayed
+outcome reporting. It is an evaluator around existing retrieval functions, not a new retrieval
+method or a managed experiment service.
+
+Register an OpenTelemetry `ContextManager` even when no exporter is enabled so descendant baggage
+and async parentage survive. Export both signals: arm dispatches are spans, while results,
+comparisons, lifecycle records, invocations, and outcomes are Logs EventRecords that require a
+log-record processor. Ratel registers neither. See
+[ADR-0019](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0019-retrieval-experiments.md),
+the [SDK guide](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md#retrieval-experiments-experimental),
+and the [telemetry scenario](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md#retrieval-experiment-telemetry).
 
 ### `replace` vs `suggest` mode
 
@@ -160,6 +176,7 @@ If you're not sure which one your user wants, default to `replace` — it's the 
 - [ADR-0006 — Native FFI bindings](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0006-native-ffi-bindings.md): Why the SDKs ship pre-built natives (NAPI-RS / PyO3).
 - [ADR-0011 — Selectable retrieval methods](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0011-selectable-retrieval-methods.md): BM25 (default), semantic, and hybrid ranking, chosen per catalog or per call.
 - [ADR-0012 — Configurable embedding models](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0012-configurable-embedding-models.md): Dense embeddings use a configurable in-process HuggingFace/local model, Ollama, or OpenAI-compatible endpoint.
+- [ADR-0019 — Retrieval experiments](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0019-retrieval-experiments.md): The TypeScript-only experimental surface for deterministic assignment, bounded shadow evaluation, lifecycle, comparison, and OpenTelemetry semantics.
 
 ## Examples
 

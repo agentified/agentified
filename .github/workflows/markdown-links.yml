@@ -17,6 +17,13 @@ jobs:
       - name: Check Markdown links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
+          # Self-referencing `blob/main/` URLs are resolved against the checked-out tree,
+          # not github.com. Docs meant to be read standalone (llms.txt above all) have to
+          # link absolutely, but on a PR those URLs point at a `main` that doesn't carry
+          # the branch's new files or headings yet — so a PR adding an ADR and its llms.txt
+          # entry in one commit fails on its own new links, and only stops failing once
+          # merged. Remapping checks the same paths and fragments against the PR's own
+          # tree, which catches typos earlier and drops the merge-order dependency.
           args: >-
             --no-progress
             --hidden
@@ -25,6 +32,7 @@ jobs:
             --retry-wait-time 5
             --timeout 30
             --root-dir "${{ github.workspace }}"
+            --remap 'https://github.com/ratel-ai/ratel/blob/main/(.*) file://${{ github.workspace }}/$1'
             .
           fail: true
           failIfEmpty: true

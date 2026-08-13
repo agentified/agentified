@@ -77,6 +77,19 @@ export {
   EmbedderError,
   IncompatibleMergeError,
 } from "./errors.js";
+export { experimentalDefineExperiment } from "./experiment.js";
+export type {
+  Experiment,
+  ExperimentArmOutcome,
+  ExperimentArmRole,
+  ExperimentConfig,
+  ExperimentEvaluationReference,
+  ExperimentRankedItem,
+  ExperimentReportedOutcome,
+  ExperimentSelection,
+  ExperimentSelectOptions,
+  ExperimentSplit,
+} from "./experiment-types.js";
 // ⚠️ Experimental: the facts / grounding API (ADR-0017) — constant grounding
 // content plus the content-presence re-injection gate. Namespaced so dependence
 // on this unstable surface is explicit: `experimental.FactCatalog`.
@@ -89,6 +102,7 @@ export type {
   AdaptedRatel,
   AdaptedToolCollection,
   CatalogRegistration,
+  ExperimentalPassthroughToolExposure,
   Ratel,
   RatelAdapter,
   RatelConfig,

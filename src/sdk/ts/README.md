@@ -129,10 +129,13 @@ the canonical `search_capabilities` result.
 
 `ratel(config)` owns one `ToolCatalog` + `SkillCatalog` + recall-id counter and every
 framework-independent guard (reserved capability-tool ids, top-K clamp, first-registration-wins
-on the adapted path, passthrough of provider-run tools); an adapter is just three codecs
-(`ingest` / `expose` / `recallMessages`) plus its framework idioms. `adaptTo` infers the
-framework's tool and message types, so app code needs no casts. A framework tool registered on
-the un-adapted core throws an error pointing at the adapter package to install. See ADR-0013.
+on the adapted path, passthrough of provider-run tools); an adapter has three required codecs
+(`ingest` / `expose` / `recallMessages`), an optional `experimentalExposePassthrough` hook, plus
+its framework idioms. The experimental hook receives a core-owned invocation wrapper, so a
+framework can preserve native tool semantics while client-side passthrough execution still enters
+the standard OTel/local trace funnel. `adaptTo` infers the framework's tool and message types, so
+app code needs no casts. A framework tool registered on the un-adapted core throws an error
+pointing at the adapter package to install. See ADR-0013.
 
 Continue with the [TypeScript guide](https://docs.ratel.sh/docs/sdks/typescript), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-typescript), or the [Vercel AI SDK example](https://github.com/ratel-ai/ratel/tree/main/examples/ai-sdk).
 
@@ -196,6 +199,166 @@ Use `ground()` for a long-lived agent whose messages you persist (pays once, sta
 
 Facts are **host-driven, on their own path**: `ground()`/`groundSnapshot()` are the only ways facts reach the context. `modelTools()`, the model-facing `search_capabilities` tool, and `recall()` are all unchanged and never return facts — the model doesn't discover facts by calling a tool, and there is no second place to look. You decide what is true and inject it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
+## Retrieval experiments (experimental)
+
+`experimentalDefineExperiment` wraps host-supplied async selectors with deterministic A/B
+assignment and bounded shadow evaluation. It is opt-in and TypeScript-only. It does not change
+`ToolCatalog` or `SkillCatalog` ranking, and there is deliberately no stable `defineExperiment`
+alias yet.
+
+This complete example assigns a stable unit, serves one arm, runs the other as detached shadow
+work, compares their rankings, attributes a later invocation, and reports an outcome:
+
+```ts
+import { experimentalDefineExperiment } from "@ratel-ai/sdk";
+
+type SearchParams = { query: string };
+type SearchHit = { id: string; score: number };
+type SearchArm = "control" | "candidate";
+
+const experiment = experimentalDefineExperiment<SearchParams, SearchHit[], SearchArm>({
+  id: "retrieval-v2",
+  arms: {
+    control: {
+      select: async () => [
+        { id: "inspect-ci", score: 1 },
+        { id: "search-logs", score: 0.8 },
+      ],
+    },
+    candidate: {
+      select: async () => [
+        { id: "search-logs", score: 0.9 },
+        { id: "inspect-ci", score: 0.7 },
+      ],
+    },
+  },
+  split: [
+    { arm: "control", weight: 90 },
+    { arm: "candidate", weight: 10 },
+  ],
+  ranking: (hits) => hits.map(({ id, score }) => ({ id, score })),
+  evaluation: {
+    k: 2,
+    references: [
+      "peer-selection",
+      { kind: "invocation", window: { turns: 5, maxAgeMs: 300_000 } },
+    ],
+    outcome: true,
+  },
+  fallbackArm: "control",
+  shadowPolicy: { concurrency: 1 },
+});
+
+const selection = await experiment.select(
+  { query: "build failure" },
+  { unitId: "account-42", shadow: true, k: 2 },
+);
+
+const [chosen] = selection.result;
+if (chosen !== undefined) {
+  experiment.reportInvocation({ unitId: "account-42", toolId: chosen.id });
+}
+experiment.reportOutcome({
+  selectionId: selection.selectionId,
+  label: "accepted",
+  score: 1,
+});
+
+console.log(selection.assignedArm, selection.effectiveArm, selection.result);
+await experiment.drain();
+```
+
+The public instance has five operations:
+
+| operation | contract |
+| --- | --- |
+| `select(params, options)` | Returns the transformed effective result plus `selectionId`, `assignedArm`, `effectiveArm`, and arm-callback `durationMs`. An explicit `arm` overrides `split`. |
+| `warm()` | Starts unresolved arm warmups concurrently. It never rejects; failed warmups remain cold and retry on the next call. Selection never waits for warmup. |
+| `drain()` | Waits for a snapshot of detached shadow and comparison work, always all-settled. It is repeatable, does not close the experiment, and does not include work started after the call. |
+| `reportInvocation({ unitId, toolId, turn? })` | Attributes a tool to the configured in-process invocation window. It is a no-op unless an invocation reference is configured. |
+| `reportOutcome({ selectionId, label?, score? })` | Appends a delayed outcome when `evaluation.outcome` is true. At least one non-empty label or finite score is required; repeated reports remain distinct. |
+
+Assignment hashes `JSON.stringify([experimentId, unitId])` with SHA-256 into the ordered integer
+weights. Pass an opaque stable unit id; telemetry separately records the first 16 lowercase hex
+characters of `SHA-256(unitId)`. `shadow: true` attempts every non-assigned arm in declaration
+order. Capacity is per experiment instance and skips instead of queueing. Successful selections
+do not await detached shadows; after an assigned selector rejects, fallback may reuse and await an
+already-running fallback-arm shadow. Fallback does not run for an empty ranking or a projection
+failure.
+
+`transform` runs synchronously after the arm callback and before ranking, result/comparison
+telemetry, and return. Arm callbacks own their deadlines and can choose one from `context.role`; a
+rejection whose `name` is `TimeoutError` is classified as a timeout. Rank comparison uses ids
+(top-1, exact order, overlap, and Jaccard@K), never cross-arm score deltas. Request `k` overrides
+the configured value, whose default is 10, without truncating the returned result. See
+[ADR 0019](../../../docs/adr/0019-retrieval-experiments.md) for every validation and edge-case
+rule.
+
+Experiment telemetry needs an OpenTelemetry `ContextManager` even when no exporter is enabled,
+plus both span and Logs processors when exporting. Start descendant model/tool work inside the
+arm callback so it inherits the five-field experiment baggage join. See the
+[retrieval-experiment telemetry scenario](../../telemetry/README.md#retrieval-experiment-telemetry).
+
+### Migrate a KP-5 vendored stub
+
+Use this mechanical cutover for a host carrying the KP-5 reference implementation:
+
+1. Upgrade to the first published `@ratel-ai/sdk` version that contains
+   `experimentalDefineExperiment`, then update the lockfile.
+2. Replace the vendored import and public names:
+
+   ```diff
+   -import { defineExperiment, type ArmOutcome, type ArmRole, type RankedItem } from "./ratel-ai-sdk.js";
+   +import {
+   +  experimentalDefineExperiment,
+   +  type Experiment,
+   +  type ExperimentArmOutcome,
+   +  type ExperimentArmRole,
+   +  type ExperimentRankedItem,
+   +} from "@ratel-ai/sdk";
+   ```
+
+   Add the declared arm union as the third generic, for example
+   `Experiment<Params, Result, "legacy" | "ratel">` and
+   `experimentalDefineExperiment<Params, Result, "legacy" | "ratel">(...)`. Omitting all explicit
+   generics and relying on inference is also valid.
+3. Rename only the define-time capacity config:
+   `shadow: { concurrency: 1 }` becomes `shadowPolicy: { concurrency: 1 }`. Keep the per-call
+   `select({ shadow })` boolean.
+4. Keep `select({ k })`, `evaluation.attributes`, `fallbackArm`, `transform`, and non-reserved
+   caller attributes. Those KP-5 amendments are part of the package contract.
+5. Delete the vendored implementation and its private helpers. Do not replace
+   `withArmContext`, `hashUnitId`, `compareRankings`, or `drainExperimentForTests` imports; they
+   are intentionally not public. Pass the raw unit id and use `experiment.drain()` in shutdown
+   and tests.
+6. Add a Logs provider/processor beside the existing span processor. Keep saved filters on
+   `otel.scope.name = "@ratel-ai/sdk"`, but move experiment event queries from SpanEvents to Logs
+   EventRecords and rename the old `ratel.search.results` experiment event to
+   `ratel.experiment.results`.
+7. Search for stale stub references, then run the host's typecheck, lint, tests, and an in-memory
+   trace-plus-log integration:
+
+   ```bash
+   rg -n 'ratel-ai-sdk|\bdefineExperiment\b|\bArmOutcome\b|\bArmRole\b|\bRankedItem\b|drainExperimentForTests|withArmContext|hashUnitId|shadow:\s*\{' src
+   ```
+
+   Remaining `shadow:` keys should be per-call booleans. Verify one served-plus-shadow request,
+   fallback, capacity skip, active host-parent correlation, and shutdown drain.
+
+Account for these contract differences when updating tests and dashboards:
+
+| contract | KP-5 vendored stub | published SDK contract |
+| --- | --- | --- |
+| Factory and types | `defineExperiment`, `ArmRole`, `ArmOutcome`, `RankedItem` | `experimentalDefineExperiment`, `ExperimentArmRole`, `ExperimentArmOutcome`, `ExperimentRankedItem`; no stable alias |
+| Assignment and return | Explicit arm only; result/effective arm/duration | Optional ordered integer `split`; return also includes UUID `selectionId` and original `assignedArm` |
+| Lifecycle | Private drain/test helper | Public repeatable `warm()` and snapshot/all-settled `drain()` |
+| Invocation and outcome | Invocation could emit without a reference; outcome unsupported | Invocation is a no-op until configured; `evaluation.outcome: true` enables append-only `reportOutcome()` |
+| Capacity and fallback | Shadow capacity covered the full detached continuation; fallback broadly dropped peer comparison | Capacity releases when the arm callback settles; other shadows compare against the effective fallback |
+| Correlation stamp | Experiment id, arm, role, and unit | Adds the exact `selection_id`; direct arm attributes survive without context, descendant baggage does not |
+| Event carrier | Experiment SpanEvents and an invocation span | Seven Logs EventRecords, never SpanEvents; requires a log-record processor |
+| Results and agreement | `ratel.search.results`; dynamic `agreement.attr.<key>` fields | `ratel.experiment.results`; structured `agreement.item_attrs` and `agreement.result_attrs` plus served/shadow facts |
+| Content boundary | Stub-specific | Ranked ids/scores are always measurements; item attrs are capture-gated; result values are not emitted, only agreement booleans |
+
 ## Adapter conformance testkit
 
 Building a `RatelAdapter` for another framework? `@ratel-ai/sdk/testkit` ships a runner-agnostic
@@ -233,7 +396,7 @@ new NodeSDK({
 
 Both lists matter: with `spanProcessors` alone, `NodeSDK` builds the logger provider from the environment and the EventRecords land on the default OTLP endpoint, not the URL above. Several processors can sit side by side, and flush/shutdown stay with the host that owns the provider.
 
-**A vendor processor may drop most of it, silently.** Emission and delivery are separate: the provider hands every span to every processor, and each destination then applies its own filter. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so `execute_tool <tool>` survives while `ratel.search`, `ratel.skill.load`, `ratel.upstream.register` and `ratel.auth.flow` do not. Nothing errors; the retrieval spans are simply absent. Widening it is one line of the vendor's own config, keyed on scope — see [`src/telemetry/`](../../telemetry/README.md#emission-is-not-delivery) for the predicate, the full span inventory, and the `ai@7` and Mastra wirings.
+**A vendor processor may drop most of it, silently.** Emission and delivery are separate: the provider hands every span to every processor, and each destination then applies its own filter. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so `execute_tool <tool>` survives while `ratel.search`, `ratel.skill.load`, `ratel.upstream.register`, `ratel.auth.flow`, and `ratel.experiment.arm` do not. Nothing errors; the retrieval spans are simply absent. Widening it is one line of the vendor's own config, keyed on scope — see [`src/telemetry/`](../../telemetry/README.md#emission-is-not-delivery) for the predicate, the full span inventory, and the `ai@7` and Mastra wirings.
 
 Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). The `ratel.*` constants themselves live in [`@ratel-ai/telemetry`](../../telemetry/ts/README.md); this package re-exports only the content-capture gate.
 
