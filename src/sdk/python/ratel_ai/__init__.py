@@ -61,7 +61,14 @@ from .exceptions import (
     IncompatibleMergeError,
 )
 from .mcp import McpServerHandle, McpToolsListError, register_mcp_server
-from .runtime_events import RuntimeCatalog
+from .runtime_events import (
+    RUNTIME_EVENT_MAX_HITS,
+    RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+    RUNTIME_EVENT_MAX_QUERY_BYTES,
+    RUNTIME_EVENT_TYPES,
+    RuntimeCatalog,
+    RuntimeEvents,
+)
 from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
 
@@ -98,6 +105,11 @@ __all__ = [
     "PendingReplace",
     "ReplaceOutcome",
     "RuntimeCatalog",
+    "RuntimeEvents",
+    "RUNTIME_EVENT_MAX_HITS",
+    "RUNTIME_EVENT_MAX_PAYLOAD_BYTES",
+    "RUNTIME_EVENT_MAX_QUERY_BYTES",
+    "RUNTIME_EVENT_TYPES",
     "SearchHit",
     "SearchMethod",
     "SearchOrigin",

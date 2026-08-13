@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, overload
 
 from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
-from ._native import SkillHit
+from ._native import NativeEventSubscription, SkillHit
 from ._native import SkillRegistry as _NativeSkillRegistry
 from .catalog import (
     _REGISTRY_BUSY,
@@ -418,6 +418,26 @@ class SkillRegistry:
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event."""
         self._native.record_event(event)
+
+    def subscribe_events(
+        self,
+        handler: Callable[[list[dict[str, Any]]], object],
+        *,
+        session_id: str,
+        source_id: str,
+        queue_capacity: int = 1_024,
+        batch_size: int = 64,
+    ) -> NativeEventSubscription:
+        """Attach one public batched runtime-event subscriber."""
+        with self._dense_state:
+            self._raise_if_busy()
+            return self._native.subscribe_trace_events(
+                handler,
+                session_id,
+                source_id,
+                queue_capacity,
+                batch_size,
+            )
 
     def set_trace_sink(
         self, kind: str, session_id: str | None = None, path: str | None = None
@@ -824,6 +844,24 @@ class SkillCatalog:
         See `ToolCatalog.record_event` for the event contract.
         """
         self._registry.record_event(event)
+
+    def subscribe_events(
+        self,
+        handler: Callable[[list[dict[str, Any]]], object],
+        *,
+        session_id: str,
+        source_id: str,
+        queue_capacity: int = 1_024,
+        batch_size: int = 64,
+    ) -> NativeEventSubscription:
+        """Attach one public runtime-event subscriber."""
+        return self._registry.subscribe_events(
+            handler,
+            session_id=session_id,
+            source_id=source_id,
+            queue_capacity=queue_capacity,
+            batch_size=batch_size,
+        )
 
     def experimental_enable_adaptive_ranking(
         self,
