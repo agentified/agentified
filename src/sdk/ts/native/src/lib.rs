@@ -5,20 +5,29 @@ extern crate napi_derive;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockWriteGuard};
+use std::thread;
+use std::time::Duration;
 
-use napi::bindgen_prelude::{AsyncTask, Buffer};
-use napi::{Env, Task};
+use napi::bindgen_prelude::{AsyncTask, Buffer, Function};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Env, Status, Task};
 use ratel_ai_core as core;
 use ratel_ai_core::{
     ArtifactError, EmbeddingModel, EmbeddingSpec, JsonlSink, MemorySink, NoopSink, OnArtifactMiss,
-    Origin, SearchMethod, TraceEvent, UsageLearner,
+    Origin, SearchMethod, TraceEnvelope, TraceEvent, UsageLearner,
 };
 use serde_json::{Value, json};
 
 /// A constructed sink plus the `MemorySink` handle when the kind is `"memory"`
 /// (so the owner can drain it later).
 type BuiltTraceSink = (Arc<dyn core::TraceSink>, Option<Arc<MemorySink>>);
+type EventCallback = ThreadsafeFunction<Vec<Value>, (), Vec<Value>, Status, false, false, 1>;
+
+const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1_024;
+const DEFAULT_EVENT_BATCH_SIZE: usize = 64;
+const EVENT_BATCH_DELAY: Duration = Duration::from_millis(1);
 
 const REGISTRY_BUSY_MESSAGE: &str =
     "registry busy; await the active operation before registering more items";
@@ -30,6 +39,283 @@ const ARTIFACT_WARM_ERROR_PREFIX: &str = "RATEL_ARTIFACT_WARM_ERROR:";
 /// Private NAPI→TypeScript transport prefix for artifact build/merge errors.
 /// Must stay identical to the constant in `src/sdk/ts/src/errors.ts`.
 const ARTIFACT_ERROR_PREFIX: &str = "RATEL_ARTIFACT_ERROR:";
+
+/// Private native configuration consumed by the public SDK in Phase 4.
+#[napi(object)]
+pub struct TraceEventSubscriptionConfig {
+    pub session_id: String,
+    pub source_id: Option<String>,
+    pub queue_capacity: Option<u32>,
+    pub batch_size: Option<u32>,
+}
+
+/// Handle for one native runtime-event callback subscription.
+#[napi]
+pub struct NativeEventSubscription {
+    subscription: Arc<Mutex<Option<core::FanoutSubscription>>>,
+    callback: Arc<EventCallbackSink>,
+}
+
+#[napi]
+impl NativeEventSubscription {
+    /// Wait off the JavaScript thread until all work accepted by this subscriber
+    /// has reached the callback. Events dropped before delivery remain reported
+    /// by an `events_dropped` envelope.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn flush(&self) -> AsyncTask<FlushEventSubscriptionTask> {
+        AsyncTask::new(FlushEventSubscriptionTask {
+            subscription: self.subscription.clone(),
+            callback: self.callback.clone(),
+        })
+    }
+
+    /// Stop future delivery. Already-running callback work is best-effort.
+    #[napi]
+    pub fn unsubscribe(&self) {
+        if let Ok(mut subscription) = self.subscription.lock() {
+            subscription.take();
+        }
+    }
+
+    /// Number of envelopes displaced by this subscriber's bounded queue.
+    #[napi(getter)]
+    pub fn dropped_count(&self) -> f64 {
+        self.subscription
+            .lock()
+            .ok()
+            .and_then(|subscription| {
+                subscription
+                    .as_ref()
+                    .map(core::FanoutSubscription::dropped_count)
+            })
+            .unwrap_or(0) as f64
+    }
+}
+
+struct EventStream {
+    fanout: Arc<core::FanoutSink>,
+    base_subscription: core::FanoutSubscription,
+    session_id: String,
+    source_id: Option<String>,
+}
+
+struct EventCallbackSink {
+    sender: SyncSender<TraceEnvelope>,
+    progress: Arc<EventCallbackProgress>,
+}
+
+struct EventCallbackProgress {
+    state: Mutex<EventCallbackState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct EventCallbackState {
+    accepted: u64,
+    delivered: u64,
+}
+
+pub struct FlushEventSubscriptionTask {
+    subscription: Arc<Mutex<Option<core::FanoutSubscription>>>,
+    callback: Arc<EventCallbackSink>,
+}
+
+impl EventStream {
+    fn new(
+        session_id: String,
+        source_id: Option<String>,
+        base_sink: Arc<dyn core::TraceSink>,
+    ) -> Self {
+        let fanout = Arc::new(match source_id.as_ref() {
+            Some(source_id) => core::FanoutSink::with_source(&session_id, source_id),
+            None => core::FanoutSink::new(&session_id),
+        });
+        let base_subscription = fanout.subscribe(base_sink, DEFAULT_EVENT_QUEUE_CAPACITY);
+        Self {
+            fanout,
+            base_subscription,
+            session_id,
+            source_id,
+        }
+    }
+
+    fn validate_identity(&self, config: &TraceEventSubscriptionConfig) -> napi::Result<()> {
+        if self.session_id != config.session_id || self.source_id != config.source_id {
+            return Err(napi::Error::from_reason(
+                "runtime event stream already configured with a different sessionId/sourceId",
+            ));
+        }
+        Ok(())
+    }
+
+    fn replace_base_sink(&mut self, sink: Arc<dyn core::TraceSink>) {
+        self.base_subscription = self.fanout.subscribe(sink, DEFAULT_EVENT_QUEUE_CAPACITY);
+    }
+}
+
+impl EventCallbackSink {
+    fn new(callback: Arc<EventCallback>, batch_size: usize) -> Arc<Self> {
+        let (sender, receiver) = sync_channel(batch_size);
+        let progress = Arc::new(EventCallbackProgress {
+            state: Mutex::new(EventCallbackState::default()),
+            changed: Condvar::new(),
+        });
+        let sink = Arc::new(Self {
+            sender,
+            progress: progress.clone(),
+        });
+        spawn_event_callback_dispatcher(receiver, callback, batch_size, progress);
+        sink
+    }
+
+    fn flush(&self) {
+        self.progress.flush();
+    }
+}
+
+impl EventCallbackProgress {
+    fn flush(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.delivered < state.accepted {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn mark_delivered(&self, count: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.delivered += count as u64;
+            self.changed.notify_all();
+        }
+    }
+}
+
+impl core::TraceSink for EventCallbackSink {
+    fn record(&self, _event: TraceEvent) {}
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        if let Ok(mut state) = self.progress.state.lock() {
+            state.accepted += 1;
+        }
+        if self.sender.send(envelope).is_err() {
+            self.progress.mark_delivered(1);
+        }
+    }
+}
+
+impl Task for FlushEventSubscriptionTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        if let Ok(subscription) = self.subscription.lock()
+            && let Some(subscription) = subscription.as_ref()
+        {
+            subscription.flush();
+        }
+        self.callback.flush();
+        Ok(())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+fn subscribe_event_callback(
+    stream: &mut Option<EventStream>,
+    base_sink: Arc<dyn core::TraceSink>,
+    callback: Function<'_, Vec<Value>, ()>,
+    config: TraceEventSubscriptionConfig,
+) -> napi::Result<NativeEventSubscription> {
+    let queue_capacity = config
+        .queue_capacity
+        .map(|capacity| capacity as usize)
+        .unwrap_or(DEFAULT_EVENT_QUEUE_CAPACITY)
+        .max(1);
+    let batch_size = config
+        .batch_size
+        .map(|size| size as usize)
+        .unwrap_or(DEFAULT_EVENT_BATCH_SIZE)
+        .max(1);
+    let callback = Arc::new(
+        callback
+            .build_threadsafe_function::<Vec<Value>>()
+            .max_queue_size::<1>()
+            .build_callback(|context| Ok(context.value))?,
+    );
+    let callback_sink = EventCallbackSink::new(callback, batch_size);
+    let stream = match stream {
+        Some(stream) => {
+            stream.validate_identity(&config)?;
+            stream
+        }
+        slot @ None => slot.insert(EventStream::new(
+            config.session_id,
+            config.source_id,
+            base_sink,
+        )),
+    };
+    let subscription = stream
+        .fanout
+        .subscribe(callback_sink.clone(), queue_capacity);
+    Ok(NativeEventSubscription {
+        subscription: Arc::new(Mutex::new(Some(subscription))),
+        callback: callback_sink,
+    })
+}
+
+fn spawn_event_callback_dispatcher(
+    receiver: Receiver<TraceEnvelope>,
+    callback: Arc<EventCallback>,
+    batch_size: usize,
+    progress: Arc<EventCallbackProgress>,
+) {
+    thread::spawn(move || dispatch_event_callbacks(receiver, callback, batch_size, progress));
+}
+
+fn dispatch_event_callbacks(
+    receiver: Receiver<TraceEnvelope>,
+    callback: Arc<EventCallback>,
+    batch_size: usize,
+    progress: Arc<EventCallbackProgress>,
+) {
+    while let Ok(first) = receiver.recv() {
+        let mut envelopes = vec![first];
+        while envelopes.len() < batch_size {
+            match receiver.recv_timeout(EVENT_BATCH_DELAY) {
+                Ok(envelope) => envelopes.push(envelope),
+                Err(_) => break,
+            }
+        }
+        let delivered = envelopes.len();
+        let values = envelopes
+            .into_iter()
+            .filter_map(|envelope| serde_json::to_value(envelope).ok())
+            .collect();
+        let (acknowledged, wait_for_ack) = sync_channel(0);
+        let status = callback.call_with_return_value(
+            values,
+            ThreadsafeFunctionCallMode::NonBlocking,
+            move |_result, _env| {
+                let _ = acknowledged.send(());
+                Ok(())
+            },
+        );
+        if status == Status::Ok {
+            let _ = wait_for_ack.recv();
+        }
+        progress.mark_delivered(delivered);
+        if status == Status::Closing {
+            break;
+        }
+    }
+}
 
 fn artifact_error_variant_code(error: &ArtifactError) -> &'static str {
     match error {
@@ -472,6 +758,28 @@ fn build_trace_sink(config: TraceSinkConfig) -> napi::Result<BuiltTraceSink> {
     }
 }
 
+fn wrap_learner(
+    sink: Arc<dyn core::TraceSink>,
+    graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+) -> Arc<dyn core::TraceSink> {
+    match graph {
+        Some(graph) => Arc::new(UsageLearner::new(graph.clone(), sink)),
+        None => sink,
+    }
+}
+
+fn active_trace_sink(
+    base_sink: &Arc<dyn core::TraceSink>,
+    graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    event_stream: &Option<EventStream>,
+) -> Arc<dyn core::TraceSink> {
+    let sink: Arc<dyn core::TraceSink> = match event_stream {
+        Some(stream) => stream.fanout.clone(),
+        None => base_sink.clone(),
+    };
+    wrap_learner(sink, graph)
+}
+
 /// A tool's searchable metadata: what the registry indexes and what a search
 /// hit resolves back to. Execution lives a layer up (the SDK's `ToolCatalog`
 /// pairs each `Tool` with its executor).
@@ -737,6 +1045,9 @@ pub struct ToolRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// Created lazily by the private native subscription seam. The fan-out
+    /// remains the registry's root sink while callbacks and base sinks change.
+    event_stream: Option<EventStream>,
 }
 
 #[napi]
@@ -757,6 +1068,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            event_stream: None,
         })
     }
 
@@ -968,6 +1280,31 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Attach a private batched push subscriber. The public SDK wraps this in
+    /// Phase 4; callback invocation always occurs on Node's JavaScript thread,
+    /// while worker-thread producers only enqueue into a bounded fan-out queue.
+    #[napi]
+    pub fn subscribe_trace_events(
+        &mut self,
+        callback: Function<'_, Vec<Value>, ()>,
+        config: TraceEventSubscriptionConfig,
+    ) -> napi::Result<NativeEventSubscription> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let subscription = subscribe_event_callback(
+            &mut self.event_stream,
+            self.base_sink.clone(),
+            callback,
+            config,
+        )?;
+        let stream = self
+            .event_stream
+            .as_ref()
+            .expect("event stream initialized by subscribe_event_callback");
+        let sink = wrap_learner(stream.fanout.clone(), self.graph.as_ref());
+        registry.set_trace_sink(sink);
+        Ok(subscription)
+    }
+
     /// Replace the trace sink; subsequent events go to the new destination,
     /// already-recorded ones are not replayed. Throws on an unknown `kind`, a
     /// missing `sessionId`/`path`, or a `"jsonl"` file that can't be opened.
@@ -977,14 +1314,10 @@ impl ToolRegistry {
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
-        // the sink outright would quietly stop learning.
-        let sink = match &self.graph {
-            Some(graph) => {
-                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
-            }
-            None => sink,
-        };
+        if let Some(stream) = self.event_stream.as_mut() {
+            stream.replace_base_sink(sink);
+        }
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
@@ -1006,10 +1339,9 @@ impl ToolRegistry {
     #[napi]
     pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
         let handle = graph.inner.clone();
-        let inner_sink = self.base_sink.clone();
-        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        registry.set_trace_sink(learner);
+        registry.set_trace_sink(sink);
         registry.set_intent_graph(Some(handle.clone()));
         drop(registry);
         self.graph = Some(handle);
@@ -1021,9 +1353,9 @@ impl ToolRegistry {
     /// resumes from what it already learned.
     #[napi]
     pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
-        let inner_sink = self.base_sink.clone();
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        registry.set_trace_sink(inner_sink);
+        registry.set_trace_sink(sink);
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
@@ -1061,6 +1393,9 @@ impl ToolRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
+        if let Some(stream) = self.event_stream.as_ref() {
+            stream.base_subscription.flush();
+        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())
@@ -1515,6 +1850,7 @@ pub struct SkillRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    event_stream: Option<EventStream>,
 }
 
 #[napi]
@@ -1533,6 +1869,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            event_stream: None,
         })
     }
 
@@ -1764,6 +2101,30 @@ impl SkillRegistry {
         Ok(())
     }
 
+    /// Attach the private batched push seam — see
+    /// [`ToolRegistry::subscribe_trace_events`].
+    #[napi]
+    pub fn subscribe_trace_events(
+        &mut self,
+        callback: Function<'_, Vec<Value>, ()>,
+        config: TraceEventSubscriptionConfig,
+    ) -> napi::Result<NativeEventSubscription> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let subscription = subscribe_event_callback(
+            &mut self.event_stream,
+            self.base_sink.clone(),
+            callback,
+            config,
+        )?;
+        let stream = self
+            .event_stream
+            .as_ref()
+            .expect("event stream initialized by subscribe_event_callback");
+        let sink = wrap_learner(stream.fanout.clone(), self.graph.as_ref());
+        registry.set_trace_sink(sink);
+        Ok(subscription)
+    }
+
     /// Replace the trace sink — see `ToolRegistry.setTraceSink`.
     #[napi]
     pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
@@ -1771,14 +2132,10 @@ impl SkillRegistry {
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
-        // the sink outright would quietly stop learning.
-        let sink = match &self.graph {
-            Some(graph) => {
-                Arc::new(UsageLearner::new(graph.clone(), sink)) as Arc<dyn core::TraceSink>
-            }
-            None => sink,
-        };
+        if let Some(stream) = self.event_stream.as_mut() {
+            stream.replace_base_sink(sink);
+        }
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
@@ -1800,10 +2157,9 @@ impl SkillRegistry {
     #[napi]
     pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
         let handle = graph.inner.clone();
-        let inner_sink = self.base_sink.clone();
-        let learner = Arc::new(UsageLearner::new(handle.clone(), inner_sink));
+        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        registry.set_trace_sink(learner);
+        registry.set_trace_sink(sink);
         registry.set_intent_graph(Some(handle.clone()));
         drop(registry);
         self.graph = Some(handle);
@@ -1815,9 +2171,9 @@ impl SkillRegistry {
     /// resumes from what it already learned.
     #[napi]
     pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
-        let inner_sink = self.base_sink.clone();
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        registry.set_trace_sink(inner_sink);
+        registry.set_trace_sink(sink);
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
@@ -1855,6 +2211,9 @@ impl SkillRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
+        if let Some(stream) = self.event_stream.as_ref() {
+            stream.base_subscription.flush();
+        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())

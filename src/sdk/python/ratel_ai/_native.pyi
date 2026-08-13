@@ -6,6 +6,7 @@ native layer is a pure pass-through over `ratel-ai-core`; the ergonomic SDK
 surface lives in the pure Python modules of this package.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 class SearchHit:
@@ -96,6 +97,19 @@ class IntentGraph:
         and a stored graph whose ``rev`` is higher than the one you loaded was
         written by another process (stale-base detection).
         """
+
+class NativeEventSubscription:
+    """Private handle for one native runtime-event callback subscription."""
+
+    def flush(self) -> None:
+        """Wait without the GIL until accepted callback work has completed."""
+
+    def unsubscribe(self) -> None:
+        """Stop future delivery; already-running callback work is best-effort."""
+
+    @property
+    def dropped_count(self) -> int:
+        """Envelopes displaced by this subscriber's bounded queue."""
 
 class ToolRegistry:
     """Private native metadata registry over `ratel-ai-core`.
@@ -188,6 +202,16 @@ class ToolRegistry:
         shapes (ADR-0007, e.g. `{"type": "gateway_search", ...}`); anything
         else raises `ValueError`.
         """
+
+    def subscribe_trace_events(
+        self,
+        callback: Callable[[list[dict[str, Any]]], object],
+        session_id: str,
+        source_id: str | None = ...,
+        queue_capacity: int = ...,
+        batch_size: int = ...,
+    ) -> NativeEventSubscription:
+        """Attach the private GIL-safe, batched runtime-event callback seam."""
 
     def set_trace_sink(
         self,
@@ -387,6 +411,16 @@ class SkillRegistry:
 
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""
+
+    def subscribe_trace_events(
+        self,
+        callback: Callable[[list[dict[str, Any]]], object],
+        session_id: str,
+        source_id: str | None = ...,
+        queue_capacity: int = ...,
+        batch_size: int = ...,
+    ) -> NativeEventSubscription:
+        """Attach the private GIL-safe, batched runtime-event callback seam."""
 
     def set_trace_sink(
         self,
