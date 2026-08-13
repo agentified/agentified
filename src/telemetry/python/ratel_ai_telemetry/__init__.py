@@ -245,7 +245,7 @@ RATEL_EXPERIMENT_OUTCOME_LABEL: Final = "ratel.experiment.outcome.label"
 RATEL_EXPERIMENT_OUTCOME_SCORE: Final = "ratel.experiment.outcome.score"
 
 # Experiment baggage keys intentionally equal their matching span-attribute keys
-# (ADR-0017). Explicit aliases keep baggage construction discoverable.
+# (ADR-0019). Explicit aliases keep baggage construction discoverable.
 RATEL_EXPERIMENT_ID_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_ID
 RATEL_EXPERIMENT_SELECTION_ID_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_SELECTION_ID
 RATEL_EXPERIMENT_ARM_BAGGAGE_KEY: Final = RATEL_EXPERIMENT_ARM

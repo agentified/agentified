@@ -291,7 +291,7 @@ telemetry, and return. Arm callbacks own their deadlines and can choose one from
 rejection whose `name` is `TimeoutError` is classified as a timeout. Rank comparison uses ids
 (top-1, exact order, overlap, and Jaccard@K), never cross-arm score deltas. Request `k` overrides
 the configured value, whose default is 10, without truncating the returned result. See
-[ADR 0017](../../../docs/adr/0017-retrieval-experiments.md) for every validation and edge-case
+[ADR 0019](../../../docs/adr/0019-retrieval-experiments.md) for every validation and edge-case
 rule.
 
 Experiment telemetry needs an OpenTelemetry `ContextManager` even when no exporter is enabled,
