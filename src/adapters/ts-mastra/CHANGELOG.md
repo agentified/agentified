@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0-rc.1] - 2026-08-07
+
+### Changed
+
+- Re-cut of `0.3.0-rc.0` on top of `@ratel-ai/sdk@0.7.1-rc.0` and `@ratel-ai/telemetry@0.3.0-rc.1`, which carry the 0.7.0 core (cached BM25 index, adaptive usage ranking). No adapter API or behaviour change from rc.0; the earlier tarball predates that core and is not an ancestor of this one.
+
+## [0.3.0-rc.0] - 2026-07-30
+
+### Added
+
+- `@ratel-ai/mastra/observability` now exports `experimentalRatelSpanOutputProcessor()`, which copies the active retrieval experiment's five controlled baggage fields onto Mastra's private spans for exact cross-stream joins while preserving Mastra's independent telemetry pipeline.
+
 ## [0.2.0] - 2026-07-28
 
 ### Changed
