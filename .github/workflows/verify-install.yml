@@ -103,8 +103,8 @@ jobs:
           REQUESTED_UNIT: ${{ inputs.unit }}
           REQUESTED_VERSION: ${{ inputs.version }}
           REQUESTED_TAG: ${{ inputs.tag || 'latest' }}
-        # vercel-ai-sdk is GA (0.1.0 on `latest`): the cron verifies `latest`.
-        # A caller can pin a version or select the `rc` tag explicitly.
+        # The cron verifies `latest`. A caller can pin a version or select the
+        # `rc` tag explicitly.
         run: |
           set -euo pipefail
           case "$REQUESTED_TAG" in
@@ -123,16 +123,7 @@ jobs:
           else
             adapter_spec="$REQUESTED_TAG"
           fi
-          # Pull the SDK from the channel that MATCHES the adapter: a GA adapter
-          # peers on a GA SDK, which the `rc` SDK dist-tag would not satisfy →
-          # ERESOLVE. An rc adapter pairs with the rc SDK.
-          if [[ "$adapter_spec" == "rc" || "$adapter_spec" == *-rc.* ]]; then
-            sdk_spec="rc"
-          else
-            sdk_spec="latest"
-          fi
           printf 'adapter_spec=%s\n' "$adapter_spec" >> "$GITHUB_OUTPUT"
-          printf 'sdk_spec=%s\n' "$sdk_spec" >> "$GITHUB_OUTPUT"
       - name: Install + smoke-test the published adapter
         shell: bash
         run: |
@@ -140,8 +131,9 @@ jobs:
           tmp=$(mktemp -d)
           cd "$tmp"
           npm init -y >/dev/null
+          # npm installs the adapter's declared SDK peer. Do not force SDK
+          # `latest`: adapters and the SDK are independent release units.
           npm install --no-audit --no-fund \
-            "@ratel-ai/sdk@${{ steps.ver.outputs.sdk_spec }}" \
             "@ratel-ai/vercel-ai-sdk@${{ steps.ver.outputs.adapter_spec }}" \
             "ai@^7.0.0"
           node --input-type=module <<'EOF'
@@ -210,16 +202,7 @@ jobs:
           else
             adapter_spec="$REQUESTED_TAG"
           fi
-          # Pull the SDK from the channel that MATCHES the adapter: GA mastra peers
-          # on a GA SDK (^0.6.0), which the `rc` SDK dist-tag would not satisfy →
-          # ERESOLVE. An rc adapter pairs with the rc SDK.
-          if [[ "$adapter_spec" == "rc" || "$adapter_spec" == *-rc.* ]]; then
-            sdk_spec="rc"
-          else
-            sdk_spec="latest"
-          fi
           printf 'adapter_spec=%s\n' "$adapter_spec" >> "$GITHUB_OUTPUT"
-          printf 'sdk_spec=%s\n' "$sdk_spec" >> "$GITHUB_OUTPUT"
       - name: Install + smoke-test the published adapter
         shell: bash
         # Installs the adapter against @ratel-ai/sdk plus its @mastra/core peer, then
@@ -230,8 +213,9 @@ jobs:
           tmp=$(mktemp -d)
           cd "$tmp"
           npm init -y >/dev/null
+          # npm installs the adapter's declared SDK peer. Do not force SDK
+          # `latest`: adapters and the SDK are independent release units.
           npm install --no-audit --no-fund \
-            "@ratel-ai/sdk@${{ steps.ver.outputs.sdk_spec }}" \
             "@ratel-ai/mastra@${{ steps.ver.outputs.adapter_spec }}" \
             "@mastra/core@^1.11.0" \
             "zod@^4.0.0"
