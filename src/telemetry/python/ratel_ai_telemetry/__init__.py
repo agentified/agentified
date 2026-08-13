@@ -86,6 +86,9 @@ GEN_AI_INFERENCE_DETAILS: Final = "gen_ai.client.inference.operation.details"
 #: ratel.origin — direct library call vs agent-synthesized (shared attribute).
 RATEL_ORIGIN: Final = "ratel.origin"
 
+#: ratel.event.id — runtime-event/OTel deduplication and join key.
+RATEL_EVENT_ID: Final = "ratel.event.id"
+
 #: ratel.search.target — "tool", "skill", or "fact" (see SearchTarget).
 RATEL_SEARCH_TARGET: Final = "ratel.search.target"
 

@@ -57,6 +57,13 @@ try:
         content_capture_mode,
     )
 
+    try:
+        from ratel_ai_telemetry import RATEL_EVENT_ID
+    except ImportError:
+        # Compatibility with telemetry helpers released before ADR-0019. The
+        # Python helper exports this constant on the same release train.
+        RATEL_EVENT_ID = "ratel.event.id"
+
     _ENABLED = True
 except ModuleNotFoundError:
     _ENABLED = False
@@ -70,7 +77,6 @@ SEARCH_TARGET_SKILL = "skill"
 SEARCH_TARGET_FACT = "fact"
 
 T = TypeVar("T")
-RATEL_EVENT_ID = "ratel.event.id"
 
 
 class RuntimeEventProjection(TypedDict, total=False):

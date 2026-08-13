@@ -14,6 +14,7 @@ from ratel_ai_telemetry import (
     GEN_AI_TOOL_NAME,
     RATEL_AUTH_FLOW,
     RATEL_AUTH_OUTCOME,
+    RATEL_EVENT_ID,
     RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
     RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
     RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -108,6 +109,10 @@ def test_names_the_ratel_spans_per_the_pin() -> None:
     assert RATEL_SKILL_LOAD == "ratel.skill.load"
     assert RATEL_UPSTREAM_REGISTER == "ratel.upstream.register"
     assert RATEL_AUTH_FLOW == "ratel.auth.flow"
+
+
+def test_names_the_runtime_event_join_key() -> None:
+    assert RATEL_EVENT_ID == "ratel.event.id"
 
 
 def test_names_the_event_records_per_the_pin() -> None:

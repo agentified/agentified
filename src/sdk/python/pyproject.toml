@@ -37,7 +37,7 @@ dependencies = ["ratel-ai-telemetry>=0.1.3"]
 [project.optional-dependencies]
 # register_mcp_server() ingests upstream MCP servers via the official client.
 # Lazily imported, so the base SDK installs without it. Requires Python >=3.10.
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0; python_version >= '3.10'"]
 # OpenTelemetry export of the ratel.*/gen_ai.* funnel (ADR-0007). The base install
 # already carries the OTel-free vocabulary above; this extra adds the OTLP exporter +
 # OpenTelemetry SDK so configure_telemetry() can ship traces and Logs to Ratel Cloud.
