@@ -14,6 +14,7 @@ const ENVELOPE_VERSION: u32 = 2;
 const QUEUE_OVERFLOW: &str = "queue_overflow";
 
 /// A handle to one [`FanoutSink`] subscriber.
+#[must_use = "dropping the handle unsubscribes the sink"]
 pub struct FanoutSubscription {
     id: u64,
     inner: Arc<Subscriber>,
@@ -90,6 +91,10 @@ impl EnvelopeFactory {
     }
 
     fn correlate_invocation(&self, event: &TraceEvent, context: &mut TraceEventContext) {
+        // Explicit context is the concurrency-safe path. The pending queues keep
+        // legacy sequential record(event) callers conformant until higher layers
+        // can carry context; same-tool calls that may finish out of order must use
+        // TraceEventContext::new_invocation().
         match event {
             TraceEvent::InvokeStart { tool_id, .. } => {
                 let invocation_id = context.invocation_id.get_or_insert_with(new_ulid).clone();

@@ -149,6 +149,49 @@ fn invocation_lifecycle_events_share_one_invocation_id() {
 }
 
 #[test]
+fn explicit_invocation_context_pairs_concurrent_same_tool_calls() {
+    let sink = MemorySink::new("session");
+    let first = TraceEventContext::new_invocation();
+    let second = TraceEventContext::new_invocation();
+
+    sink.record_with_context(
+        TraceEvent::InvokeStart {
+            tool_id: "alpha".into(),
+            args_size_bytes: 1,
+        },
+        first.clone(),
+    );
+    sink.record_with_context(
+        TraceEvent::InvokeStart {
+            tool_id: "alpha".into(),
+            args_size_bytes: 2,
+        },
+        second.clone(),
+    );
+    sink.record_with_context(
+        TraceEvent::InvokeEnd {
+            tool_id: "alpha".into(),
+            took_ms: 3,
+        },
+        second.clone(),
+    );
+    sink.record_with_context(
+        TraceEvent::InvokeError {
+            tool_id: "alpha".into(),
+            took_ms: 4,
+            error: "boom".into(),
+        },
+        first.clone(),
+    );
+
+    let events = sink.snapshot();
+    assert_eq!(events[0].invocation_id, first.invocation_id);
+    assert_eq!(events[1].invocation_id, second.invocation_id);
+    assert_eq!(events[2].invocation_id, second.invocation_id);
+    assert_eq!(events[3].invocation_id, first.invocation_id);
+}
+
+#[test]
 fn registry_forwards_event_context_to_its_sink() {
     let sink = Arc::new(MemorySink::new("session"));
     let registry = ToolRegistry::with_trace_sink(sink.clone());

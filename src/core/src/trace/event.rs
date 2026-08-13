@@ -488,6 +488,18 @@ pub struct TraceEventContext {
     pub span_id: Option<String>,
 }
 
+impl TraceEventContext {
+    /// Create context for one invocation lifecycle with a fresh opaque id.
+    /// Clone and pass it with the start and terminal event so concurrent calls
+    /// to the same tool remain paired even when they finish out of order.
+    pub fn new_invocation() -> Self {
+        Self {
+            invocation_id: Some(ulid::Ulid::new().to_string()),
+            ..Self::default()
+        }
+    }
+}
+
 /// The versioned wrapper a sink writes around each [`TraceEvent`]: schema
 /// version, stable identity, timestamp, and correlation fields. On the wire the event is flattened
 /// (`#[serde(flatten)]`), so its `type` tag and fields sit beside `v` / `ts` /
