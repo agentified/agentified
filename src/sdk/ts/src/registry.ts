@@ -11,11 +11,13 @@ import {
   type Skill,
   type SkillHit,
   type Tool,
+  type NativeEventSubscription,
 } from "../native/index.cjs";
 import { assertNotArtifactBusy } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
+import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
 
 export { IntentGraph };
 
@@ -197,6 +199,14 @@ export class ToolRegistry {
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.native.subscribeTraceEvents(handler, options);
   }
 
   /**
@@ -457,6 +467,14 @@ export class SkillRegistry {
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.native.subscribeTraceEvents(handler, options);
   }
 
   /**

@@ -8,6 +8,8 @@ import {
 } from "./embedding-artifact.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
+import type { NativeEventSubscription } from "../native/index.cjs";
+import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
 
 export type { ReplaceOutcome, Skill, SkillHit };
 
@@ -37,6 +39,9 @@ export type { ReplaceOutcome, Skill, SkillHit };
  * ```
  */
 export type PendingReplace = Promise<ReplaceOutcome> & ReplaceOutcome;
+
+/** Serializable skill definition used by catalog snapshots (never the private body). */
+export type SkillDefinition = Omit<Skill, "body">;
 
 /** Construction options for {@link SkillCatalog}. */
 export interface SkillCatalogOptions {
@@ -226,6 +231,21 @@ export class SkillCatalog {
    */
   get(skillId: string): Skill | undefined {
     return this.skills.get(skillId);
+  }
+
+  /** Complete, deterministic public skill definition set. */
+  snapshot(): SkillDefinition[] {
+    return [...this.skills.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(({ body: _body, ...skill }) => structuredClone(skill));
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.registry.subscribeEvents(handler, options);
   }
 
   /**

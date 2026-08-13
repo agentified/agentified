@@ -25,6 +25,11 @@ import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./gr
 import { isPackageInstalled } from "./package-resolution.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
+import {
+  type RuntimeCatalog,
+  RuntimeEvents,
+  type RuntimeEventsOptions,
+} from "./runtime-events.js";
 
 /** Construction options for {@link ratel}. Shared by every adapter view of the core. */
 export interface RatelConfig {
@@ -60,6 +65,8 @@ export interface RatelConfig {
   factsTopK?: number;
   /** Local trace-stream destination for all catalogs (default: discard). */
   trace?: TraceSinkConfig;
+  /** Public runtime-event stream identity and bounded delivery options (ADR-0019). */
+  events?: RuntimeEventsOptions;
 }
 
 /**
@@ -255,6 +262,10 @@ export interface AdaptedBase<TTool, TMessage> {
   readonly skills: SkillCatalog;
   /** ⚠️ Experimental (facts, ADR-0017). The shared fact catalog — framework-neutral grounding content. */
   readonly facts: FactCatalog;
+  /** Merged runtime-event stream shared by every view of this core. */
+  readonly events: RuntimeEvents;
+  /** Complete executor-free tool + skill state for snapshot publication. */
+  readonly catalog: RuntimeCatalog;
   /**
    * The model-facing toolset in the framework's shape: this view's passthroughs
    * plus the three capability tools run through the adapter's `expose` codec.
@@ -318,6 +329,10 @@ export interface Ratel {
   readonly skills: SkillCatalog;
   /** ⚠️ Experimental (facts, ADR-0017). The shared fact catalog — constant grounding content, injected via {@link Ratel.ground}. */
   readonly facts: FactCatalog;
+  /** Merged runtime-event stream shared by tools, skills, and SDK-owned facts. */
+  readonly events: RuntimeEvents;
+  /** Complete executor-free tool + skill state for snapshot publication. */
+  readonly catalog: RuntimeCatalog;
   /**
    * The three capability tools (`search_capabilities`, `invoke_tool`,
    * `get_skill_content`) in native shape, for framework-free hosts. All three
@@ -434,6 +449,14 @@ export function ratel(config: RatelConfig = {}): Ratel {
     trace: config.trace,
     experimentalEmbeddingArtifact: embeddingArtifact,
   });
+  const events = new RuntimeEvents([catalog, skills], config.events);
+  const runtimeCatalog: RuntimeCatalog = {
+    snapshot: () => ({
+      sourceId: events.sourceId,
+      tools: catalog.snapshot(),
+      skills: skills.snapshot(),
+    }),
+  };
   // The fact catalog owns the grounding freshness state (its injected-body map),
   // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:
   // facts are experimental, and building one eagerly would fire the
@@ -580,6 +603,8 @@ export function ratel(config: RatelConfig = {}): Ratel {
     const baseWithoutFacts: Omit<AdaptedBase<unknown, unknown>, "facts"> = {
       tools: adaptedTools,
       skills,
+      events,
+      catalog: runtimeCatalog,
       ground,
       groundSnapshot,
       modelTools() {
@@ -614,6 +639,8 @@ export function ratel(config: RatelConfig = {}): Ratel {
   return withLazyFacts(facts, {
     tools,
     skills,
+    events,
+    catalog: runtimeCatalog,
     modelTools,
     recall,
     ground,

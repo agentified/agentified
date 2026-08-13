@@ -114,6 +114,15 @@ export { ratel } from "./ratel.js";
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type { PendingReplace, SkillCatalogOptions } from "./skill-catalog.js";
 export { SkillCatalog } from "./skill-catalog.js";
+export type { SkillDefinition } from "./skill-catalog.js";
+export type {
+  CatalogSnapshot,
+  RuntimeCatalog,
+  RuntimeEvent,
+  RuntimeEventSubscription,
+  RuntimeEventsOptions,
+} from "./runtime-events.js";
+export { RuntimeEvents } from "./runtime-events.js";
 export { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 // OpenTelemetry emission of the ratel.*/gen_ai.* funnel. The SDK emits to whatever OTel
 // provider the host has registered and never registers one itself — delivery is the host's

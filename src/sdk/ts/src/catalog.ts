@@ -7,6 +7,8 @@ import {
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
 import { type IntentGraph, ToolRegistry } from "./registry.js";
+import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
+import type { NativeEventSubscription } from "../native/index.cjs";
 import {
   argsSizeBytes,
   errorMessage,
@@ -64,6 +66,9 @@ export interface ExecutableTool extends Tool {
   /** Runs the tool. Called by {@link ToolCatalog.invoke} with args and optional context. */
   execute: Executor;
 }
+
+/** Serializable tool definition used by catalog snapshots (never an executor). */
+export type ToolDefinition = Tool;
 
 /**
  * Where the local trace stream (ADR-0007) goes. Distinct from the OTel spans in
@@ -380,6 +385,21 @@ export class ToolCatalog {
    */
   get(toolId: string): Tool | undefined {
     return this.tools.get(toolId);
+  }
+
+  /** Complete, deterministic, executor-free tool definition set. */
+  snapshot(): ToolDefinition[] {
+    return [...this.tools.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((tool) => structuredClone(tool));
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.registry.subscribeEvents(handler, options);
   }
 
   /**
