@@ -1393,6 +1393,9 @@ impl ToolRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
+        if let Some(stream) = self.event_stream.as_ref() {
+            stream.base_subscription.flush();
+        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())
@@ -2208,6 +2211,9 @@ impl SkillRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
+        if let Some(stream) = self.event_stream.as_ref() {
+            stream.base_subscription.flush();
+        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())

@@ -113,5 +113,8 @@ describe("native runtime event bridge", () => {
     expect(events.map((event) => event.type)).toEqual(
       expect.arrayContaining(["search", "invoke_start"]),
     );
+    expect(registry.drainTraceEvents().map((event) => event.type)).toEqual(
+      expect.arrayContaining(["search", "invoke_start"]),
+    );
   });
 });
