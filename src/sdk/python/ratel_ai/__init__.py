@@ -9,6 +9,8 @@ Mirrors the public surface of the TypeScript SDK (`@ratel-ai/sdk`):
 - `search_capabilities_tool` / `invoke_tool_tool` / `get_skill_content_tool` —
   framework-neutral capability tools.
 - `register_mcp_server` — ingest an upstream MCP server's tools (extra: mcp).
+- `RuntimeEvents` / `RuntimeCatalog` — subscribe to runtime facts and snapshot
+  executor-free tool/skill state (ADR-0019; no Python Cloud transport).
 
 The facts/grounding surface (`FactCatalog` / `Fact`, the push-path grounding
 analogue: constant content injected into the context, gated by the pure
@@ -67,7 +69,10 @@ from .runtime_events import (
     RUNTIME_EVENT_MAX_QUERY_BYTES,
     RUNTIME_EVENT_TYPES,
     RuntimeCatalog,
+    RuntimeEvent,
+    RuntimeEventHandler,
     RuntimeEvents,
+    RuntimeEventSubscription,
 )
 from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
@@ -105,6 +110,9 @@ __all__ = [
     "PendingReplace",
     "ReplaceOutcome",
     "RuntimeCatalog",
+    "RuntimeEvent",
+    "RuntimeEventHandler",
+    "RuntimeEventSubscription",
     "RuntimeEvents",
     "RUNTIME_EVENT_MAX_HITS",
     "RUNTIME_EVENT_MAX_PAYLOAD_BYTES",

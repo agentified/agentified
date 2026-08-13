@@ -158,7 +158,9 @@ class RuntimeEvents:
                         return
                     task: asyncio.Task[None] = loop.create_task(async_handler(normalized))
                     pending.add(task)
-                    task.add_done_callback(pending.discard)
+                    task.add_done_callback(
+                        lambda finished: _finish_async_handler(finished, pending)
+                    )
 
                 loop.call_soon_threadsafe(schedule)
 
@@ -194,6 +196,16 @@ def _default_source_id() -> str:
         if separator and key == "service.name" and value:
             return value
     return "ratel"
+
+
+def _finish_async_handler(
+    task: asyncio.Task[None],
+    pending: set[asyncio.Task[None]],
+) -> None:
+    pending.discard(task)
+    if task.cancelled():
+        return
+    task.exception()
 
 
 def _normalize_runtime_event(event: RuntimeEvent) -> RuntimeEvent:

@@ -27,6 +27,16 @@ def test_public_exports_present() -> None:
         "register_mcp_server",
         "McpServerHandle",
         "McpToolsListError",
+        # runtime facts + snapshot seam
+        "RuntimeCatalog",
+        "RuntimeEvent",
+        "RuntimeEventHandler",
+        "RuntimeEventSubscription",
+        "RuntimeEvents",
+        "RUNTIME_EVENT_TYPES",
+        "RUNTIME_EVENT_MAX_PAYLOAD_BYTES",
+        "RUNTIME_EVENT_MAX_QUERY_BYTES",
+        "RUNTIME_EVENT_MAX_HITS",
         # skills surface
         "SkillRegistry",
         "SkillHit",
