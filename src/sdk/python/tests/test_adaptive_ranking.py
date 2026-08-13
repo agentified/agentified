@@ -200,7 +200,14 @@ class _FakeNative:
     def adaptive_ranking_status(self) -> tuple[str, str, str, bool]:
         return (self._status, "old-model", "new-model", False)
 
-    def _search_with_method(self, query: str, top_k: int, origin: str, method: str) -> list:
+    def _search_with_method(
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        method: str,
+        context: object | None = None,
+    ) -> list:
         return []
 
 

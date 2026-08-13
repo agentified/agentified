@@ -34,7 +34,13 @@ from .embedding_artifact import (
     OnArtifactMiss,
     resolve_embedding_artifact,
 )
-from .telemetry import SEARCH_TARGET_SKILL, trace_search, trace_search_async, trace_skill_load
+from .telemetry import (
+    SEARCH_TARGET_SKILL,
+    RuntimeEventProjection,
+    trace_search,
+    trace_search_async,
+    trace_skill_load,
+)
 
 __all__ = [
     "PendingReplace",
@@ -305,9 +311,15 @@ class SkillRegistry:
         """Run synchronous, model-free BM25 retrieval."""
         return self._native.search(query, top_k)
 
-    def search_with_origin(self, query: str, top_k: int, origin: SearchOrigin) -> list[SkillHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: SearchOrigin,
+        projection: RuntimeEventProjection | None = None,
+    ) -> list[SkillHit]:
         """Run BM25 retrieval with an explicit trace origin."""
-        return self._native.search_with_origin(query, top_k, origin)
+        return self._native.search_with_origin(query, top_k, origin, projection)
 
     def search_with_method(
         self, query: str, top_k: int, origin: SearchOrigin, method: SearchMethod
@@ -402,22 +414,30 @@ class SkillRegistry:
         top_k: int,
         origin: SearchOrigin = "direct",
         method: SearchMethod = "bm25",
+        projection: RuntimeEventProjection | None = None,
     ) -> list[SkillHit]:
         """Search immediately with BM25 or run dense retrieval on a worker thread."""
         if method not in ("bm25", "semantic", "hybrid"):
             raise ValueError(f"unknown search method: {method}")
         if method == "bm25":
-            return self.search_with_origin(query, top_k, origin)
+            return self.search_with_origin(query, top_k, origin, projection)
         if self._undriven_builds > 0:
             raise RuntimeError(_UNAWAITED_REGISTER)
         await self._maybe_rebuild_on_model_change()
         return await self._run_dense(
-            lambda: self._native._search_with_method(query, top_k, origin, method)
+            lambda: self._native._search_with_method(query, top_k, origin, method, projection)
         )
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record an SDK-layer trace event."""
-        self._native.record_event(event)
+        if projection is None:
+            self._native.record_event(event)
+        else:
+            self._native.record_event_with_context(event, projection)
 
     def subscribe_events(
         self,
@@ -789,7 +809,9 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_with_origin(query, top_k, origin),
+            lambda projection: self._registry.search_with_origin(
+                query, top_k, origin, projection
+            ),
         )
 
     async def search_async(
@@ -809,7 +831,9 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_async(query, top_k, origin, resolved_method),
+            lambda projection: self._registry.search_async(
+                query, top_k, origin, resolved_method, projection
+            ),
         )
 
     def has(self, skill_id: str) -> bool:
@@ -838,12 +862,16 @@ class SkillCatalog:
         """Return the number of registered skills."""
         return len(self._skills)
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record a trace event into the catalog's sink.
 
         See `ToolCatalog.record_event` for the event contract.
         """
-        self._registry.record_event(event)
+        self._registry.record_event(event, projection)
 
     def subscribe_events(
         self,
@@ -930,7 +958,7 @@ class SkillCatalog:
         if skill is None:
             raise ValueError(f"unknown skillId: {skill_id}")
 
-        def _run() -> str:
+        def _run(projection: RuntimeEventProjection) -> str:
             started = time.monotonic()
             body = skill.body
             self._registry.record_event(
@@ -938,7 +966,8 @@ class SkillCatalog:
                     "type": "skill_invoke",
                     "skill_id": skill_id,
                     "took_ms": int((time.monotonic() - started) * 1000),
-                }
+                },
+                projection,
             )
             return body
 

@@ -26,7 +26,14 @@ from .embedding_artifact import (
     OnArtifactMiss,
     resolve_embedding_artifact,
 )
-from .telemetry import SEARCH_TARGET_TOOL, trace_execute_tool, trace_search, trace_search_async
+from .runtime_events import new_runtime_event_id
+from .telemetry import (
+    SEARCH_TARGET_TOOL,
+    RuntimeEventProjection,
+    trace_execute_tool,
+    trace_search,
+    trace_search_async,
+)
 
 Executor = Callable[[dict[str, Any]], Union[Awaitable[Any], Any]]
 """A tool handler: takes the tool's arguments dict, returns the result.
@@ -434,9 +441,15 @@ class ToolRegistry:
         """Run synchronous, model-free BM25 retrieval."""
         return self._native.search(query, top_k)
 
-    def search_with_origin(self, query: str, top_k: int, origin: SearchOrigin) -> list[SearchHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: SearchOrigin,
+        projection: RuntimeEventProjection | None = None,
+    ) -> list[SearchHit]:
         """Run BM25 retrieval with an explicit trace origin."""
-        return self._native.search_with_origin(query, top_k, origin)
+        return self._native.search_with_origin(query, top_k, origin, projection)
 
     def search_with_method(
         self, query: str, top_k: int, origin: SearchOrigin, method: SearchMethod
@@ -536,22 +549,30 @@ class ToolRegistry:
         top_k: int,
         origin: SearchOrigin = "direct",
         method: SearchMethod = "bm25",
+        projection: RuntimeEventProjection | None = None,
     ) -> list[SearchHit]:
         """Search immediately with BM25 or run dense retrieval on a worker thread."""
         if method not in ("bm25", "semantic", "hybrid"):
             raise ValueError(f"unknown search method: {method}")
         if method == "bm25":
-            return self.search_with_origin(query, top_k, origin)
+            return self.search_with_origin(query, top_k, origin, projection)
         if self._undriven_builds > 0:
             raise RuntimeError(_UNAWAITED_REGISTER)
         await self._maybe_rebuild_on_model_change()
         return await self._run_dense(
-            lambda: self._native._search_with_method(query, top_k, origin, method)
+            lambda: self._native._search_with_method(query, top_k, origin, method, projection)
         )
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record an SDK-layer trace event."""
-        self._native.record_event(event)
+        if projection is None:
+            self._native.record_event(event)
+        else:
+            self._native.record_event_with_context(event, projection)
 
     def subscribe_events(
         self,
@@ -884,7 +905,9 @@ class ToolCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_with_origin(query, top_k, origin),
+            lambda projection: self._registry.search_with_origin(
+                query, top_k, origin, projection
+            ),
         )
 
     async def search_async(
@@ -905,7 +928,9 @@ class ToolCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_async(query, top_k, origin, resolved_method),
+            lambda projection: self._registry.search_async(
+                query, top_k, origin, resolved_method, projection
+            ),
         )
 
     def has(self, tool_id: str) -> bool:
@@ -944,17 +969,22 @@ class ToolCatalog:
             execute=execute,
         )
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record a trace event into the catalog's sink.
 
         Args:
             event: a dict matching one of the core-owned `TraceEvent` shapes
                 (ADR-0007), e.g. `{"type": "gateway_search", ...}`.
+            projection: optional event identity and OTel correlation shared with the envelope.
 
         Raises:
             ValueError: if the dict doesn't match any known event shape.
         """
-        self._registry.record_event(event)
+        self._registry.record_event(event, projection)
 
     def subscribe_events(
         self,
@@ -1048,13 +1078,14 @@ class ToolCatalog:
         if fn is None:
             raise ValueError(f"unknown toolId: {tool_id}")
 
-        async def _run() -> Any:
+        async def _run(projection: RuntimeEventProjection) -> Any:
             self._registry.record_event(
                 {
                     "type": "invoke_start",
                     "tool_id": tool_id,
                     "args_size_bytes": _args_size_bytes(args),
-                }
+                },
+                projection,
             )
             started = time.monotonic()
             try:
@@ -1063,22 +1094,28 @@ class ToolCatalog:
                 result = fn(args)
                 if inspect.isawaitable(result):
                     result = await result
+                terminal_projection = projection.copy()
+                terminal_projection["event_id"] = new_runtime_event_id()
                 self._registry.record_event(
                     {
                         "type": "invoke_end",
                         "tool_id": tool_id,
                         "took_ms": _elapsed_ms(started),
-                    }
+                    },
+                    terminal_projection,
                 )
                 return result
             except Exception as err:
+                terminal_projection = projection.copy()
+                terminal_projection["event_id"] = new_runtime_event_id()
                 self._registry.record_event(
                     {
                         "type": "invoke_error",
                         "tool_id": tool_id,
                         "took_ms": _elapsed_ms(started),
                         "error": _error_message(err),
-                    }
+                    },
+                    terminal_projection,
                 )
                 raise
 

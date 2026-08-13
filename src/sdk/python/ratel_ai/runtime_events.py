@@ -6,6 +6,8 @@ import asyncio
 import inspect
 import json
 import os
+import secrets
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -53,6 +55,21 @@ RUNTIME_EVENT_MAX_QUERY_BYTES = 4 * 1_024
 RUNTIME_EVENT_MAX_HITS = 100
 
 _REQUIRED_ENVELOPE_FIELDS = {"v", "event_id", "ts", "session_id", "source_id", "type"}
+
+
+def new_runtime_event_id(now_ms: int | None = None) -> str:
+    """Mint a client ULID for one runtime event and OTel projection."""
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    timestamp = now_ms if now_ms is not None else int(time.time() * 1_000)
+    encoded_time = ""
+    for _ in range(10):
+        encoded_time = alphabet[timestamp % 32] + encoded_time
+        timestamp //= 32
+    entropy = int.from_bytes(secrets.token_bytes(10), "big")
+    encoded_entropy = ""
+    for shift in range(75, -1, -5):
+        encoded_entropy += alphabet[(entropy >> shift) & 31]
+    return encoded_time + encoded_entropy
 
 
 class _EventSource(Protocol):
