@@ -61,6 +61,7 @@ from .exceptions import (
     IncompatibleMergeError,
 )
 from .mcp import McpServerHandle, McpToolsListError, register_mcp_server
+from .runtime_events import RuntimeCatalog
 from .skill_catalog import PendingReplace, ReplaceOutcome, Skill, SkillCatalog, SkillRegistry
 from .skill_tools import GET_SKILL_CONTENT_ID, get_skill_content_tool
 
@@ -96,6 +97,7 @@ __all__ = [
     "OllamaEmbeddingConfig",
     "PendingReplace",
     "ReplaceOutcome",
+    "RuntimeCatalog",
     "SearchHit",
     "SearchMethod",
     "SearchOrigin",

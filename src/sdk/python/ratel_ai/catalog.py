@@ -8,6 +8,7 @@ layers executable handlers on top and emits the same trace events the TS SDK doe
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import threading
@@ -894,6 +895,19 @@ class ToolCatalog:
     def get(self, tool_id: str) -> Tool | None:
         """Return the metadata-only `Tool` for an id, or `None` if unknown."""
         return self._tools.get(tool_id)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return the complete deterministic executor-free tool definitions."""
+        return [
+            {
+                "id": tool.id,
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": copy.deepcopy(tool.input_schema),
+                "output_schema": copy.deepcopy(tool.output_schema),
+            }
+            for tool in sorted(self._tools.values(), key=lambda item: item.id)
+        ]
 
     def get_executable(self, tool_id: str) -> ExecutableTool | None:
         """Return the `ExecutableTool` (metadata plus handler) for an id, or `None`."""

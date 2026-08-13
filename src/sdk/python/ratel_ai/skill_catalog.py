@@ -8,6 +8,7 @@ relevance, and the matching body is fetched only on `invoke`.
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 import time
 import warnings
@@ -798,6 +799,20 @@ class SkillCatalog:
     def get(self, skill_id: str) -> Skill | None:
         """Return the registered `Skill` for an id, or `None` if unknown."""
         return self._skills.get(skill_id)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return the complete deterministic public skill definitions."""
+        return [
+            {
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "tags": copy.deepcopy(skill.tags),
+                "tools": copy.deepcopy(skill.tools),
+                "metadata": copy.deepcopy(skill.metadata),
+            }
+            for skill in sorted(self._skills.values(), key=lambda item: item.id)
+        ]
 
     def size(self) -> int:
         """Return the number of registered skills."""
