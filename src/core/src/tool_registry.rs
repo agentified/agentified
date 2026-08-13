@@ -14,7 +14,8 @@ use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
 use crate::tool::Tool;
 use crate::trace::{
-    ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEvent, TraceSink,
+    ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEvent, TraceEventContext,
+    TraceSink,
 };
 use crate::usage::{Capability, IntentGraph, UsageArm};
 
@@ -203,6 +204,11 @@ impl ToolRegistry {
     /// registry's own search and churn events (ADR-0007).
     pub fn record_event(&self, event: TraceEvent) {
         self.sink.record(event);
+    }
+
+    /// Record an arbitrary event with per-emission envelope correlation.
+    pub fn record_event_with_context(&self, event: TraceEvent, context: TraceEventContext) {
+        self.sink.record_with_context(event, context);
     }
 
     /// Attach (or with `None`, detach) the usage-ranking read model — adaptive

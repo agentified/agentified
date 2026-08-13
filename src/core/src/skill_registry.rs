@@ -15,7 +15,8 @@ use crate::skill::Skill;
 use crate::skill_indexing::searchable_text;
 use crate::tool_registry::AdaptiveRankingStatus;
 use crate::trace::{
-    ChurnKind, NoopSink, Origin, SearchStage, SkillHitTrace, TraceEvent, TraceSink,
+    ChurnKind, NoopSink, Origin, SearchStage, SkillHitTrace, TraceEvent, TraceEventContext,
+    TraceSink,
 };
 use crate::usage::{Capability, IntentGraph, UsageArm};
 
@@ -161,6 +162,11 @@ impl SkillRegistry {
     /// their `skill_invoke` (content-load) events through this.
     pub fn record_event(&self, event: TraceEvent) {
         self.sink.record(event);
+    }
+
+    /// Record an arbitrary event with per-emission envelope correlation.
+    pub fn record_event_with_context(&self, event: TraceEvent, context: TraceEventContext) {
+        self.sink.record_with_context(event, context);
     }
 
     /// Attach (or with `None`, detach) the usage-ranking read model — the
