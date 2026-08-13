@@ -11,6 +11,10 @@ projection), [ADR-0011](0011-selectable-retrieval-methods.md) (the three methods
 and [ADR-0007](0007-telemetry-two-streams.md) (the local trace stream, whose sink seam this
 subscribes to). Ratifies the 2026-07-06 adaptive-ranking brief with the amendments below.
 
+Amended 2026-08-13 by [ADR-0019](0019-runtime-events-lane.md): the sink is now a fan-out
+subscription seam. The learner remains an internal consumer and cannot be replaced by attaching
+another subscriber.
+
 ## Context
 
 Every ranker in the engine scores **text similarity only** — BM25 over the flattened
@@ -201,10 +205,12 @@ to activate it, so they gate all use on their own.
 
 ### Where learning happens
 
-The learner is a `TraceSink` decorator. `Search` and `InvokeStart` arrive through separate
-API calls and the registries have no session concept, but sinks do. ADR-0007 already frames
-the sink as the subscription seam ("rerankers, suggestion analysis, and inspection
-subscribe to different cuts of the same producer"), so this needs no new plumbing.
+The learner consumes `Search` and `InvokeStart` through the core fan-out specified by
+[ADR-0019](0019-runtime-events-lane.md). It is composed as an internal subscriber/decorator,
+not installed into a replace-only sink slot: adding a JSONL, SDK, or Cloud subscriber MUST NOT
+silently disable learning. The public queue and callback machinery stays outside the learner,
+so stalled subscribers cannot block it. Adaptive ranking remains experimental; its decoration
+may be simplified if that is required to keep fan-out robust.
 
 ### What is open source
 
