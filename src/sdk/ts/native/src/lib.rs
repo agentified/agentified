@@ -74,7 +74,7 @@ fn trace_event_context(config: Option<TraceEventContextConfig>) -> core::TraceEv
 /// Handle for one native runtime-event callback subscription.
 #[napi]
 pub struct NativeEventSubscription {
-    subscription: Arc<Mutex<Option<core::FanoutSubscription>>>,
+    subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
     callback: Arc<EventCallbackSink>,
 }
 
@@ -108,7 +108,7 @@ impl NativeEventSubscription {
             .and_then(|subscription| {
                 subscription
                     .as_ref()
-                    .map(core::FanoutSubscription::dropped_count)
+                    .map(|subscription| subscription.dropped_count())
             })
             .unwrap_or(0) as f64
     }
@@ -116,9 +116,13 @@ impl NativeEventSubscription {
 
 struct EventStream {
     fanout: Arc<core::FanoutSink>,
-    base_subscription: core::FanoutSubscription,
     session_id: String,
     source_id: Option<String>,
+}
+
+struct RuntimeEventSink {
+    base: Arc<dyn core::TraceSink>,
+    fanout: Arc<core::FanoutSink>,
 }
 
 struct EventCallbackSink {
@@ -138,24 +142,18 @@ struct EventCallbackState {
 }
 
 pub struct FlushEventSubscriptionTask {
-    subscription: Arc<Mutex<Option<core::FanoutSubscription>>>,
+    subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
     callback: Arc<EventCallbackSink>,
 }
 
 impl EventStream {
-    fn new(
-        session_id: String,
-        source_id: Option<String>,
-        base_sink: Arc<dyn core::TraceSink>,
-    ) -> Self {
+    fn new(session_id: String, source_id: Option<String>) -> Self {
         let fanout = Arc::new(match source_id.as_ref() {
             Some(source_id) => core::FanoutSink::with_source(&session_id, source_id),
             None => core::FanoutSink::new(&session_id),
         });
-        let base_subscription = fanout.subscribe(base_sink, DEFAULT_EVENT_QUEUE_CAPACITY);
         Self {
             fanout,
-            base_subscription,
             session_id,
             source_id,
         }
@@ -169,9 +167,23 @@ impl EventStream {
         }
         Ok(())
     }
+}
 
-    fn replace_base_sink(&mut self, sink: Arc<dyn core::TraceSink>) {
-        self.base_subscription = self.fanout.subscribe(sink, DEFAULT_EVENT_QUEUE_CAPACITY);
+impl core::TraceSink for RuntimeEventSink {
+    fn record(&self, event: TraceEvent) {
+        self.base.record(event.clone());
+        self.fanout.record(event);
+    }
+
+    fn record_with_context(&self, event: TraceEvent, context: core::TraceEventContext) {
+        self.base
+            .record_with_context(event.clone(), context.clone());
+        self.fanout.record_with_context(event, context);
+    }
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        self.base.record_envelope(envelope.clone());
+        self.fanout.record_envelope(envelope);
     }
 }
 
@@ -235,9 +247,12 @@ impl Task for FlushEventSubscriptionTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        if let Ok(subscription) = self.subscription.lock()
-            && let Some(subscription) = subscription.as_ref()
-        {
+        let subscription = self
+            .subscription
+            .lock()
+            .ok()
+            .and_then(|subscription| subscription.clone());
+        if let Some(subscription) = subscription {
             subscription.flush();
         }
         self.callback.flush();
@@ -251,7 +266,6 @@ impl Task for FlushEventSubscriptionTask {
 
 fn subscribe_event_callback(
     stream: &mut Option<EventStream>,
-    base_sink: Arc<dyn core::TraceSink>,
     callback: Function<'_, Vec<Value>, ()>,
     config: TraceEventSubscriptionConfig,
 ) -> napi::Result<NativeEventSubscription> {
@@ -278,17 +292,13 @@ fn subscribe_event_callback(
             stream.validate_identity(&config)?;
             stream
         }
-        slot @ None => slot.insert(EventStream::new(
-            config.session_id,
-            config.source_id,
-            base_sink,
-        )),
+        slot @ None => slot.insert(EventStream::new(config.session_id, config.source_id)),
     };
     let subscription = stream
         .fanout
         .subscribe(callback_sink.clone(), queue_capacity);
     Ok(NativeEventSubscription {
-        subscription: Arc::new(Mutex::new(Some(subscription))),
+        subscription: Arc::new(Mutex::new(Some(Arc::new(subscription)))),
         callback: callback_sink,
     })
 }
@@ -801,7 +811,10 @@ fn active_trace_sink(
     event_stream: &Option<EventStream>,
 ) -> Arc<dyn core::TraceSink> {
     let sink: Arc<dyn core::TraceSink> = match event_stream {
-        Some(stream) => stream.fanout.clone(),
+        Some(stream) => Arc::new(RuntimeEventSink {
+            base: base_sink.clone(),
+            fanout: stream.fanout.clone(),
+        }),
         None => base_sink.clone(),
     };
     wrap_learner(sink, graph)
@@ -1342,17 +1355,8 @@ impl ToolRegistry {
         config: TraceEventSubscriptionConfig,
     ) -> napi::Result<NativeEventSubscription> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        let subscription = subscribe_event_callback(
-            &mut self.event_stream,
-            self.base_sink.clone(),
-            callback,
-            config,
-        )?;
-        let stream = self
-            .event_stream
-            .as_ref()
-            .expect("event stream initialized by subscribe_event_callback");
-        let sink = wrap_learner(stream.fanout.clone(), self.graph.as_ref());
+        let subscription = subscribe_event_callback(&mut self.event_stream, callback, config)?;
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
         registry.set_trace_sink(sink);
         Ok(subscription)
     }
@@ -1363,14 +1367,11 @@ impl ToolRegistry {
     #[napi]
     pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
         let (sink, memory) = build_trace_sink(config)?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        if let Some(stream) = self.event_stream.as_mut() {
-            stream.replace_base_sink(sink);
-        }
         let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
-        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
@@ -1445,9 +1446,6 @@ impl ToolRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
-        if let Some(stream) = self.event_stream.as_ref() {
-            stream.base_subscription.flush();
-        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())
@@ -2187,17 +2185,8 @@ impl SkillRegistry {
         config: TraceEventSubscriptionConfig,
     ) -> napi::Result<NativeEventSubscription> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
-        let subscription = subscribe_event_callback(
-            &mut self.event_stream,
-            self.base_sink.clone(),
-            callback,
-            config,
-        )?;
-        let stream = self
-            .event_stream
-            .as_ref()
-            .expect("event stream initialized by subscribe_event_callback");
-        let sink = wrap_learner(stream.fanout.clone(), self.graph.as_ref());
+        let subscription = subscribe_event_callback(&mut self.event_stream, callback, config)?;
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
         registry.set_trace_sink(sink);
         Ok(subscription)
     }
@@ -2206,14 +2195,11 @@ impl SkillRegistry {
     #[napi]
     pub fn set_trace_sink(&mut self, config: TraceSinkConfig) -> napi::Result<()> {
         let (sink, memory) = build_trace_sink(config)?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        if let Some(stream) = self.event_stream.as_mut() {
-            stream.replace_base_sink(sink);
-        }
         let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
-        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
@@ -2288,9 +2274,6 @@ impl SkillRegistry {
         let Some(sink) = self.memory_sink.as_ref() else {
             return Vec::new();
         };
-        if let Some(stream) = self.event_stream.as_ref() {
-            stream.base_subscription.flush();
-        }
         sink.drain()
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())

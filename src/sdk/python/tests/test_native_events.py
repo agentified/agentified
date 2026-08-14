@@ -1,10 +1,63 @@
 """Native push bridge tests; the public Python API lands in Phase 5."""
 
+import subprocess
+import sys
+import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import pytest
+
 from ratel_ai._native import IntentGraph, SkillRegistry, ToolRegistry
+
+
+@pytest.mark.parametrize("accessor", ["subscription.unsubscribe()", "subscription.dropped_count"])
+def test_subscription_access_does_not_deadlock_a_callback_draining_flush(accessor: str) -> None:
+    script = textwrap.dedent(
+        f"""
+        import threading
+        import time
+
+        from ratel_ai._native import ToolRegistry
+
+        registry = ToolRegistry()
+        callback_started = threading.Event()
+
+        def callback(_batch):
+            if not callback_started.is_set():
+                callback_started.set()
+                time.sleep(0.5)
+
+        subscription = registry.subscribe_trace_events(
+            callback,
+            "session-flush-access",
+            queue_capacity=16,
+            batch_size=1,
+        )
+        registry.search("queued", 1)
+        assert callback_started.wait(timeout=1)
+        for index in range(100):
+            registry.search(f"queued-{{index}}", 1)
+
+        flushing = threading.Thread(target=subscription.flush)
+        flushing.start()
+        time.sleep(0.05)
+        {accessor}
+        flushing.join(timeout=2)
+        assert not flushing.is_alive()
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=4,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_pushes_worker_thread_search_events_in_batches() -> None:

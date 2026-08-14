@@ -165,9 +165,15 @@ export class RuntimeEvents {
     const deliver = (batch: RuntimeEvent[]): void => {
       trackHandlerWork(sdkSubscriber, batch.map(normalizeRuntimeEvent));
     };
-    const subscriptions = this.#sources.map((source) =>
-      source.subscribeEvents(deliver, this.#options),
-    );
+    const subscriptions: NativeEventSubscription[] = [];
+    try {
+      for (const source of this.#sources) {
+        subscriptions.push(source.subscribeEvents(deliver, this.#options));
+      }
+    } catch (error) {
+      for (const subscription of subscriptions.reverse()) subscription.unsubscribe();
+      throw error;
+    }
     this.#sdkSubscribers.add(sdkSubscriber);
     let active = true;
     return {

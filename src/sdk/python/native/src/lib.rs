@@ -76,7 +76,7 @@ fn trace_event_context(context: Option<&Bound<'_, PyAny>>) -> PyResult<core::Tra
 /// Handle for one private native runtime-event callback subscription.
 #[pyclass]
 struct NativeEventSubscription {
-    subscription: Arc<Mutex<Option<core::FanoutSubscription>>>,
+    subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
     callback: Arc<EventCallbackSink>,
 }
 
@@ -108,9 +108,12 @@ impl NativeEventSubscription {
     /// Wait without the GIL until accepted callback work has completed.
     fn flush(&self, py: Python<'_>) {
         py.allow_threads(|| {
-            if let Ok(subscription) = self.subscription.lock()
-                && let Some(subscription) = subscription.as_ref()
-            {
+            let subscription = self
+                .subscription
+                .lock()
+                .ok()
+                .and_then(|subscription| subscription.clone());
+            if let Some(subscription) = subscription {
                 subscription.flush();
             }
             self.callback.flush();
@@ -118,24 +121,28 @@ impl NativeEventSubscription {
     }
 
     /// Stop accepting new events. Envelopes already queued still drain.
-    fn unsubscribe(&self) {
-        if let Ok(mut subscription) = self.subscription.lock() {
-            subscription.take();
-        }
+    fn unsubscribe(&self, py: Python<'_>) {
+        py.allow_threads(|| {
+            if let Ok(mut subscription) = self.subscription.lock() {
+                subscription.take();
+            }
+        });
     }
 
     /// Number of envelopes displaced by this subscriber's bounded queue.
     #[getter]
-    fn dropped_count(&self) -> u64 {
-        self.subscription
-            .lock()
-            .ok()
-            .and_then(|subscription| {
-                subscription
-                    .as_ref()
-                    .map(core::FanoutSubscription::dropped_count)
-            })
-            .unwrap_or(0)
+    fn dropped_count(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| {
+            self.subscription
+                .lock()
+                .ok()
+                .and_then(|subscription| {
+                    subscription
+                        .as_ref()
+                        .map(|subscription| subscription.dropped_count())
+                })
+                .unwrap_or(0)
+        })
     }
 }
 
@@ -248,7 +255,7 @@ fn subscribe_event_callback(
         .fanout
         .subscribe(callback_sink.clone(), queue_capacity.max(1));
     Ok(NativeEventSubscription {
-        subscription: Arc::new(Mutex::new(Some(subscription))),
+        subscription: Arc::new(Mutex::new(Some(Arc::new(subscription)))),
         callback: callback_sink,
     })
 }

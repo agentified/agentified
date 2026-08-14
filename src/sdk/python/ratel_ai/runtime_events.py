@@ -182,8 +182,6 @@ class RuntimeEvents:
                 normalized = [_normalize_runtime_event(event) for event in batch]
 
                 def schedule() -> None:
-                    if not active[0]:
-                        return
                     schedule_awaitable(async_handler(normalized))
 
                 loop.call_soon_threadsafe(schedule)
@@ -191,8 +189,6 @@ class RuntimeEvents:
         else:
 
             def deliver(batch: list[RuntimeEvent]) -> None:
-                if not active[0]:
-                    return
                 try:
                     result = handler([_normalize_runtime_event(event) for event in batch])
                     if inspect.isawaitable(result):

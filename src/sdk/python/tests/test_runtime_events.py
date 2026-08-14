@@ -169,6 +169,31 @@ def test_matches_frozen_cross_language_event_vocabulary() -> None:
     }
 
 
+def test_unsubscribe_still_delivers_envelopes_already_queued_by_native() -> None:
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools], queue_capacity=16, batch_size=1)
+    first_batch_started = threading.Event()
+    release_first_batch = threading.Event()
+    queued_batch_delivered = threading.Event()
+
+    def handler(batch: list[dict[str, object]]) -> None:
+        if not first_batch_started.is_set():
+            first_batch_started.set()
+            release_first_batch.wait(timeout=1)
+        if any(event.get("query") == "already-queued" for event in batch):
+            queued_batch_delivered.set()
+
+    subscription = events.subscribe(handler)
+    tools.search("first", 1)
+    assert first_batch_started.wait(timeout=1)
+    tools.search("already-queued", 1)
+
+    subscription.unsubscribe()
+    release_first_batch.set()
+
+    assert queued_batch_delivered.wait(timeout=2)
+
+
 @pytest.mark.asyncio
 async def test_bounds_query_hits_and_payload_before_delivery() -> None:
     tools = ToolCatalog()

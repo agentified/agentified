@@ -20,6 +20,7 @@ import {
   RUNTIME_EVENT_MAX_QUERY_BYTES,
   RUNTIME_EVENT_TYPES,
   type RuntimeEvent,
+  RuntimeEvents,
   ratel,
 } from "./index.js";
 
@@ -78,6 +79,28 @@ describe("public runtime events", () => {
     expect(Buffer.byteLength(JSON.stringify(event), "utf8")).toBeLessThanOrEqual(
       RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
     );
+  });
+
+  it("rolls back earlier native subscriptions when a later source rejects", () => {
+    let firstUnsubscribed = false;
+    const first = {
+      subscribeEvents: () => ({
+        unsubscribe: () => {
+          firstUnsubscribed = true;
+        },
+        flush: async () => {},
+        droppedCount: 0,
+      }),
+    };
+    const second = {
+      subscribeEvents: () => {
+        throw new Error("registry busy");
+      },
+    };
+    const events = new RuntimeEvents([first, second] as never);
+
+    expect(() => events.subscribe(() => {})).toThrow("registry busy");
+    expect(firstUnsubscribed).toBe(true);
   });
 
   it("waits for async native-event handlers before flush resolves", async () => {
