@@ -40,7 +40,7 @@ A. collecting — scoring after each turn against held-out: "is the build broken
 
   log -> /tmp/ratel-baseline-XXXX/trace.jsonl
 
-intent graph  
+intent graph
   schema v1   rev 10   clusters 3   built 2026-08-05 12:00:00Z
   model  BAAI/bge-small-en-v1.5
 
