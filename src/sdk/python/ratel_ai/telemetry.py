@@ -429,6 +429,10 @@ def configure_telemetry(
             ``/v1/logs`` URL derived from `endpoint`.
         headers: Extra headers sent with every export request.
         service_name: ``service.name`` resource attribute; defaults per `init`.
+            Once the provider is installed, the effective name is also recorded
+            as the default runtime-events ``source_id`` (ADR-0020), after the
+            ``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES`` env vars —
+            so the facts lane and the OTel lane share one identity.
         capture_content: Exact content-capture mode to set (see above).
         include_span_and_events: Boolean sugar for `capture_content` (see above).
         export_all_spans: Export every span, not just the ``gen_ai.*``/``ratel.*``

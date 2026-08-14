@@ -81,10 +81,13 @@ ULID. Each event in an invocation has its own `event_id`; `invocation_id` groups
 
 `source_id` is an explicit attach option, defaulting to the env-var-configured OTel
 `service.name` (`OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`),
-falling back to `ratel`. A programmatically configured OTel resource — including a
-service name passed to the SDK's own `configure_telemetry` — is not read; pass `source_id`
-explicitly in that case. It MUST remain stable: renaming it starts a new source era and a
-distinct catalog snapshot.
+then — in Python — the service name the SDK's own telemetry configuration recorded
+(`configure_telemetry(service_name=...)` / `ratel_ai_telemetry.init` write it into the
+OTel-free `recorded_service_name()` seam once the provider is installed), falling back to
+`ratel`. Env vars keep precedence, matching the OTel convention. Any other programmatically
+configured OTel resource is not read; pass `source_id` explicitly in that case — including
+in TypeScript, whose programmatic telemetry configuration lives outside this repository.
+It MUST remain stable: renaming it starts a new source era and a distinct catalog snapshot.
 
 ### Delivery and bounds
 

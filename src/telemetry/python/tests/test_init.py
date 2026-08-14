@@ -19,6 +19,7 @@ from ratel_ai_telemetry.otlp import (
     clear_content_capture,
     content_capture_mode,
     init,
+    recorded_service_name,
     resolve_otlp_config,
     set_content_capture,
 )
@@ -407,18 +408,73 @@ class TestInit:
             init(api_key="k")
 
 
+class TestRecordedServiceName:
+    """The OTel-free seam runtime-events readers use to share init()'s identity
+    (ADR-0020): the effective service.name is recorded only when init() actually
+    installs the provider, so a reader never sees a name that no telemetry carries."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Module-level state, like the OTel globals conftest resets around each test.
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.setattr(otlp, "_recorded_service_name", None, raising=False)
+
+    def test_init_records_the_effective_service_name_for_otel_free_readers(self) -> None:
+        handle = init(
+            endpoint="http://localhost:4318/v1/traces", service_name="checkout-agent"
+        )
+        try:
+            assert recorded_service_name() == "checkout-agent"
+        finally:
+            handle.shutdown()
+
+    def test_disabled_init_records_nothing(self) -> None:
+        handle = init(enabled=False, service_name="never-installed")
+
+        assert recorded_service_name() is None
+        assert handle.shutdown() is None
+
+    def test_records_the_default_service_name_when_none_is_passed(self) -> None:
+        handle = init(endpoint="http://localhost:4318/v1/traces")
+        try:
+            assert recorded_service_name() == DEFAULT_SERVICE_NAME
+        finally:
+            handle.shutdown()
+
+    def test_repeated_init_restores_a_record_lost_to_module_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # importlib.reload resets module-level state while the installed provider
+        # survives (it lives in OTel's global); re-entry must recover the name the
+        # provider actually carries rather than leave readers on the bare fallback.
+        from ratel_ai_telemetry import otlp
+
+        handle = init(
+            endpoint="http://localhost:4318/v1/traces", service_name="checkout-agent"
+        )
+        try:
+            monkeypatch.setattr(otlp, "_recorded_service_name", None)
+            assert init() is handle
+            assert recorded_service_name() == "checkout-agent"
+        finally:
+            handle.shutdown()
+
+
 def test_top_level_lazy_accessor_resolves_the_otlp_surface() -> None:
     """`from ratel_ai_telemetry import init` still works via the module __getattr__,
     resolving to the same object as the .otlp submodule (ADR-0007 back-compat)."""
     import ratel_ai_telemetry
     from ratel_ai_telemetry.otlp import TelemetryHandle as otlp_handle
     from ratel_ai_telemetry.otlp import init as otlp_init
+    from ratel_ai_telemetry.otlp import recorded_service_name as otlp_recorded
     from ratel_ai_telemetry.otlp import resolve_otlp_config as otlp_resolve
 
     assert ratel_ai_telemetry.init is otlp_init
     assert ratel_ai_telemetry.resolve_otlp_config is otlp_resolve
     assert ratel_ai_telemetry.API_KEY_ENV == API_KEY_ENV
     assert ratel_ai_telemetry.TelemetryHandle is otlp_handle
+    assert ratel_ai_telemetry.recorded_service_name is otlp_recorded
 
 
 class TestSetContentCapture:

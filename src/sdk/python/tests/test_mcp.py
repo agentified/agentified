@@ -6,6 +6,8 @@ require the optional `mcp` package. A separate test pins the helpful error when
 `mcp` is absent.
 """
 
+from __future__ import annotations
+
 import importlib.metadata
 import importlib.util
 from collections.abc import AsyncGenerator, Callable

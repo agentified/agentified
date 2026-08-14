@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- The default runtime-events `source_id` now also reads the service name recorded by this SDK's own telemetry configuration: `OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, then the name a programmatic `configure_telemetry(service_name=...)` / `ratel_ai_telemetry.init` installed, then `"ratel"` (ADR-0020). Env vars keep precedence, matching the OTel convention; a telemetry helper predating `recorded_service_name()` degrades to the previous behavior. Only deployments that configured telemetry programmatically without passing `source_id` see a different (now correct) identity.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added

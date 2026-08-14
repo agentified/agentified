@@ -170,6 +170,66 @@ def test_matches_frozen_cross_language_event_vocabulary() -> None:
     }
 
 
+class TestDefaultSourceId:
+    """The default source_id chain (ADR-0020): OTEL_SERVICE_NAME, then service.name in
+    OTEL_RESOURCE_ATTRIBUTES, then the service name the telemetry helper recorded from a
+    programmatic configure_telemetry/init, then "ratel"."""
+
+    @pytest.fixture(autouse=True)
+    def _no_service_name_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+
+    def test_falls_back_to_the_recorded_telemetry_service_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.setattr(otlp, "recorded_service_name", lambda: "checkout-agent")
+
+        assert RuntimeEvents(()).source_id == "checkout-agent"
+
+    def test_otel_service_name_env_wins_over_the_recorded_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.setattr(otlp, "recorded_service_name", lambda: "recorded-loser")
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "env-winner")
+
+        assert RuntimeEvents(()).source_id == "env-winner"
+
+    def test_resource_attributes_env_wins_over_the_recorded_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.setattr(otlp, "recorded_service_name", lambda: "recorded-loser")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=attr-winner")
+
+        assert RuntimeEvents(()).source_id == "attr-winner"
+
+    def test_falls_back_to_ratel_when_nothing_is_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.setattr(otlp, "recorded_service_name", lambda: None)
+
+        assert RuntimeEvents(()).source_id == "ratel"
+
+    def test_tolerates_a_telemetry_release_predating_the_seam(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ratel-ai floors ratel-ai-telemetry below the seam's release; an older helper
+        # without recorded_service_name must degrade to the bare fallback, not raise.
+        from ratel_ai_telemetry import otlp
+
+        monkeypatch.delattr(otlp, "recorded_service_name")
+
+        assert RuntimeEvents(()).source_id == "ratel"
+
+
 def test_rolls_back_earlier_native_subscriptions_when_a_later_source_rejects() -> None:
     unsubscribed: list[str] = []
 

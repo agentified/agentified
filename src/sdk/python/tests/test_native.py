@@ -1,5 +1,7 @@
 """Tests for public registry facades backed by the PyO3 extension."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 from typing import Any

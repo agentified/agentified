@@ -412,6 +412,26 @@ jobs:
         run: .venv/bin/mypy ratel_ai
       - name: Test
         run: .venv/bin/pytest
+      # Python 3.9 floor (requires-python >=3.9; ADR-0006 ships cp39 abi3 wheels). The
+      # suite above runs on 3.11 only, and the AST guard (tests/test_py39_compat.py)
+      # catches just the PEP-604 class of import breakage — stdlib/typing drift (e.g.
+      # tomllib) ships undetected until a real 3.9 interpreter imports the package.
+      # Reuse the extension compiled by `maturin develop` above through one abi3 wheel
+      # (same debug profile, so the cargo work is shared), then import + test on actual
+      # 3.9. mcp is impossible there (>=3.10 env marker) and its tests skip; the OTel
+      # SDK is pinned to the last 3.9-compatible line so the telemetry glue runs rather
+      # than skips. test_typing.py is excluded: it pins exact mypy error counts — a
+      # dev-tool contract already enforced on 3.11 that drifts across the older mypy a
+      # 3.9 environment resolves.
+      - name: Build the abi3 wheel
+        run: .venv/bin/maturin build --out dist
+      - name: Import + test on Python 3.9
+        run: |
+          uv venv --python 3.9 .venv39
+          uv pip install --python .venv39 pytest pytest-asyncio \
+            'opentelemetry-sdk>=1.41,<1.42' ../../telemetry/python dist/*.whl
+          .venv39/bin/python -c "import ratel_ai"
+          .venv39/bin/pytest --ignore=tests/test_typing.py
       # Example wiring (pydantic-ai) — folded in here to keep one Python check row.
       # `main.py` diagnostic mode never invokes a tool, so a model-free `TestModel`
       # run is the only thing that exercises the BM25 top-K -> tool-call path in CI
