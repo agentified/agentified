@@ -272,18 +272,32 @@ export function newRuntimeEventId(now = Date.now()): string {
 
 function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
   const normalized = sanitizeValue(input, "") as Record<string, unknown>;
-  if (serializedSize(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
+  if (serializedSizeUpperBound(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
+    return normalized as unknown as RuntimeEvent;
+  }
+
+  // The public subscribe API still delivers objects. Passing pre-serialized envelopes through so
+  // cloud-sdk can reuse them in its batcher is a deferred cross-repo design change.
+  let normalizedSize = serializedSize(normalized);
+  if (normalizedSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
     return normalized as unknown as RuntimeEvent;
   }
 
   for (const key of Object.keys(normalized)) {
     if (!REQUIRED_ENVELOPE_FIELDS.has(key) && !isProductFactField(key)) {
+      normalizedSize = sizeAfterDeletingProperty(normalized, key, normalizedSize);
       delete normalized[key];
+      normalizedSize = sizeAfterSettingProperty(
+        normalized,
+        "payload_truncated",
+        true,
+        normalizedSize,
+      );
       normalized.payload_truncated = true;
-      if (serializedSize(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) break;
+      if (normalizedSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) break;
     }
   }
-  if (serializedSize(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
+  if (normalizedSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
     return normalized as unknown as RuntimeEvent;
   }
 
@@ -291,10 +305,14 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
     Object.entries(normalized).filter(([key]) => REQUIRED_ENVELOPE_FIELDS.has(key)),
   );
   bounded.payload_truncated = true;
+  let boundedSize = serializedSize(bounded);
   for (const [key, value] of Object.entries(normalized)) {
     if (REQUIRED_ENVELOPE_FIELDS.has(key) || !isProductFactField(key)) continue;
-    bounded[key] = sanitizeBoundedValue(value);
-    if (serializedSize(bounded) > RUNTIME_EVENT_MAX_PAYLOAD_BYTES) delete bounded[key];
+    const boundedValue = sanitizeBoundedValue(value);
+    const candidateSize = sizeAfterSettingProperty(bounded, key, boundedValue, boundedSize);
+    if (candidateSize > RUNTIME_EVENT_MAX_PAYLOAD_BYTES) continue;
+    bounded[key] = boundedValue;
+    boundedSize = candidateSize;
   }
   return bounded as unknown as RuntimeEvent;
 }
@@ -340,6 +358,65 @@ function truncateUtf8(value: string, maxBytes: number): string {
 
 function serializedSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function serializedSizeUpperBound(value: unknown, limit = RUNTIME_EVENT_MAX_PAYLOAD_BYTES): number {
+  if (value === null) return 4;
+  if (typeof value === "string") return Math.min(6 * value.length + 2, limit + 1);
+  if (typeof value === "number") return 32;
+  if (typeof value === "boolean") return 5;
+  if (typeof value !== "object") return limit + 1;
+
+  if (Array.isArray(value)) {
+    let size = 2;
+    for (const [index, child] of value.entries()) {
+      size += serializedSizeUpperBound(child, limit - size) + (index === 0 ? 0 : 1);
+      if (size > limit) return limit + 1;
+    }
+    return size;
+  }
+
+  let size = 2;
+  for (const [index, [key, child]] of Object.entries(value).entries()) {
+    size +=
+      6 * key.length + 3 + serializedSizeUpperBound(child, limit - size) + (index === 0 ? 0 : 1);
+    if (size > limit) return limit + 1;
+  }
+  return size;
+}
+
+function sizeAfterDeletingProperty(
+  value: Record<string, unknown>,
+  key: string,
+  currentSize: number,
+): number {
+  const propertySize = serializedPropertySize(key, value[key]);
+  if (propertySize === 0) return currentSize;
+  const commaSize = currentSize > propertySize + 2 ? 1 : 0;
+  return currentSize - propertySize - commaSize;
+}
+
+function sizeAfterSettingProperty(
+  value: Record<string, unknown>,
+  key: string,
+  nextValue: unknown,
+  currentSize: number,
+): number {
+  const nextPropertySize = serializedPropertySize(key, nextValue);
+  const currentPropertySize = Object.hasOwn(value, key)
+    ? serializedPropertySize(key, value[key])
+    : 0;
+  if (currentPropertySize > 0 && nextPropertySize > 0) {
+    return currentSize - currentPropertySize + nextPropertySize;
+  }
+  if (currentPropertySize > 0) {
+    return currentSize - currentPropertySize - (currentSize > currentPropertySize + 2 ? 1 : 0);
+  }
+  return currentSize + nextPropertySize + (currentSize > 2 && nextPropertySize > 0 ? 1 : 0);
+}
+
+function serializedPropertySize(key: string, value: unknown): number {
+  return serializedSize({ [key]: value }) - 2;
 }
 
 function isProductFactField(key: string): boolean {

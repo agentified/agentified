@@ -58,6 +58,54 @@ describe("public runtime events", () => {
     });
   });
 
+  it("delivers small events unchanged", () => {
+    const input = runtimeEvent({ query: "read docs", top_k: 3 });
+
+    expect(deliverRuntimeEvent(input)).toEqual({
+      v: 2,
+      event_id: "01K2KB4QN2A9XJY5VKQCN8ZM1P",
+      ts: 1_755_000_000_000,
+      session_id: "session-test",
+      source_id: "source-test",
+      type: "search",
+      query: "read docs",
+      top_k: 3,
+    });
+  });
+
+  it("preserves the existing oversize trimming result", () => {
+    const padding = Object.fromEntries(
+      Array.from({ length: 16 }, (_, index) => [
+        `padding_${index.toString().padStart(2, "0")}`,
+        "x".repeat(4_096),
+      ]),
+    );
+
+    const event = deliverRuntimeEvent(runtimeEvent(padding));
+
+    expect(event).toEqual(
+      runtimeEvent({
+        ...Object.fromEntries(Object.entries(padding).slice(1)),
+        payload_truncated: true,
+      }),
+    );
+  });
+
+  it("enforces the payload cap immediately above the exact boundary", () => {
+    const atLimit = runtimeEventWithSerializedSize(RUNTIME_EVENT_MAX_PAYLOAD_BYTES);
+    const aboveLimit = runtimeEventWithSerializedSize(RUNTIME_EVENT_MAX_PAYLOAD_BYTES + 1);
+
+    const atLimitDelivered = deliverRuntimeEvent(atLimit);
+    const aboveLimitDelivered = deliverRuntimeEvent(aboveLimit);
+
+    expect(atLimitDelivered).toEqual(atLimit);
+    expect(atLimitDelivered.payload_truncated).toBeUndefined();
+    expect(aboveLimitDelivered.payload_truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(aboveLimitDelivered), "utf8")).toBeLessThanOrEqual(
+      RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+    );
+  });
+
   it("enforces public query, hit, and payload bounds before delivery", async () => {
     const runtime = ratel();
     const received: RuntimeEvent[] = [];
@@ -386,3 +434,50 @@ describe("public runtime events", () => {
     expect(JSON.stringify(snapshot)).not.toContain("private instructions");
   });
 });
+
+function runtimeEvent(fields: Record<string, unknown> = {}): RuntimeEvent {
+  return {
+    v: 2,
+    event_id: "01K2KB4QN2A9XJY5VKQCN8ZM1P",
+    ts: 1_755_000_000_000,
+    session_id: "session-test",
+    source_id: "source-test",
+    type: "search",
+    ...fields,
+  };
+}
+
+function deliverRuntimeEvent(input: RuntimeEvent): RuntimeEvent {
+  let deliver: (batch: RuntimeEvent[]) => void = () => {};
+  const source = {
+    subscribeEvents: (handler: (batch: RuntimeEvent[]) => void) => {
+      deliver = handler;
+      return { unsubscribe: () => {}, flush: async () => {}, droppedCount: 0 };
+    },
+  };
+  const events = new RuntimeEvents([source] as never);
+  let received: RuntimeEvent | undefined;
+  events.subscribe((batch) => {
+    received = batch[0];
+  });
+
+  deliver([input]);
+
+  if (!received) throw new Error("runtime event was not delivered");
+  return received;
+}
+
+function runtimeEventWithSerializedSize(size: number): RuntimeEvent {
+  const padding = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => [`padding_${index.toString().padStart(2, "0")}`, ""]),
+  );
+  const event = runtimeEvent(padding);
+  let remaining = size - Buffer.byteLength(JSON.stringify(event), "utf8");
+  for (const key of Object.keys(padding)) {
+    const length = Math.min(remaining, 4_096);
+    event[key] = "x".repeat(length);
+    remaining -= length;
+  }
+  if (remaining !== 0) throw new Error(`cannot create a ${size}-byte runtime event`);
+  return event;
+}
