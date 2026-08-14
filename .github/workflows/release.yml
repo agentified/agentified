@@ -572,21 +572,15 @@ jobs:
       - name: Build TS
         run: pnpm --filter "@ratel-ai/mastra..." run build
       # npm keeps `workspace:` specifiers verbatim, so pin the @ratel-ai/sdk peer AND
-      # dev deps to the concrete co-released version before publishing (ephemeral CI
+      # dev deps to the ADR-0020 floor range before publishing (ephemeral CI
       # edit; not committed). Keeps the npm-OIDC dir publish + provenance identical to
       # the other units rather than switching to `pnpm publish`.
       - name: Pin the @ratel-ai/sdk peer and dev dependencies for publish
         shell: bash
         run: |
           set -e
-          sdk_ver=$(node -p "require('./src/sdk/ts/package.json').version")
-          SDK_VER="$sdk_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-mastra/package.json'; const p=require(f); const v='^'+process.env.SDK_VER; p.peerDependencies['@ratel-ai/sdk']=v; p.devDependencies['@ratel-ai/sdk']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
+          node scripts/pin-adapter-sdk-peer.mjs ./src/adapters/ts-mastra/package.json
           echo "pinned @ratel-ai/sdk -> $(node -p "const p=require('./src/adapters/ts-mastra/package.json'); p.peerDependencies['@ratel-ai/sdk'] + ' (peer), ' + p.devDependencies['@ratel-ai/sdk'] + ' (dev)'")"
-          # npm installs peers automatically, so a range the registry can't satisfy is an
-          # ETARGET for every consumer rather than a warning. Same check as the
-          # vercel-ai-sdk job: publish sdk-ts first or fail before the immutable publish.
-          npm view "@ratel-ai/sdk@^${sdk_ver}" version >/dev/null 2>&1 \
-            || { echo "::error::@ratel-ai/sdk@^${sdk_ver} is not on npm — publish sdk-ts before mastra"; exit 1; }
       # Pin the new @ratel-ai/telemetry runtime dependency too. npm publishes a
       # directory's literal `workspace:^`, so leaving it unchanged would make
       # every registry install fail even though the local dry-run succeeds.
@@ -660,21 +654,15 @@ jobs:
       - name: Build TS
         run: pnpm --filter "@ratel-ai/vercel-ai-sdk..." run build
       # npm keeps `workspace:` specifiers verbatim, so pin the @ratel-ai/sdk peer AND
-      # dev deps to the concrete co-released version before publishing (ephemeral CI
+      # dev deps to the ADR-0020 floor range before publishing (ephemeral CI
       # edit; not committed). Keeps the npm-OIDC dir publish + provenance identical to
       # the other units rather than switching to `pnpm publish`.
       - name: Pin the @ratel-ai/sdk peer and dev dependencies for publish
         shell: bash
         run: |
           set -e
-          sdk_ver=$(node -p "require('./src/sdk/ts/package.json').version")
-          SDK_VER="$sdk_ver" node -e "const fs=require('fs'); const f='./src/adapters/ts-vercel-ai-sdk/package.json'; const p=require(f); const v='^'+process.env.SDK_VER; p.peerDependencies['@ratel-ai/sdk']=v; p.devDependencies['@ratel-ai/sdk']=v; fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n')"
+          node scripts/pin-adapter-sdk-peer.mjs ./src/adapters/ts-vercel-ai-sdk/package.json
           echo "pinned @ratel-ai/sdk -> $(node -p "const p=require('./src/adapters/ts-vercel-ai-sdk/package.json'); p.peerDependencies['@ratel-ai/sdk'] + ' (peer), ' + p.devDependencies['@ratel-ai/sdk'] + ' (dev)'")"
-          # A peer is not the soft constraint it used to be: npm installs peers
-          # automatically, so a range the registry can't satisfy is an ETARGET for
-          # every consumer, not a warning. Same immutability, same release ordering.
-          npm view "@ratel-ai/sdk@^${sdk_ver}" version >/dev/null 2>&1 \
-            || { echo "::error::@ratel-ai/sdk@^${sdk_ver} is not on npm — publish sdk-ts before vercel-ai-sdk"; exit 1; }
       # Same treatment for the @ratel-ai/telemetry *runtime* dep: left alone, npm ships
       # the literal `workspace:^`, which no consumer can resolve — the adapter is then
       # uninstallable, not merely mis-ranged.

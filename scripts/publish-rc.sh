@@ -59,6 +59,11 @@ FROM_DIR=""
 FROM_RUN=""
 DRY_RUN=0
 declare -a SELECTED=()
+# Adapter publishes pin the live manifests before pack; git checkout restores
+# them on EXIT (crash included). Guarded so a core/telemetry-only run cannot
+# clobber an unrelated uncommitted edit to those two files.
+PINNED_ADAPTERS=0
+trap '[[ $PINNED_ADAPTERS -eq 1 ]] && git -C "$REPO_ROOT" checkout -- src/adapters/ts-mastra/package.json src/adapters/ts-vercel-ai-sdk/package.json' EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -280,8 +285,9 @@ publish_telemetry_py() {
 
 # ---------- vercel-ai-sdk: @ratel-ai/vercel-ai-sdk on npm, packed locally ----------
 # The Vercel AI SDK framework adapter. Pure-TS like telemetry-ts, with a workspace:^
-# peer on @ratel-ai/sdk and a workspace:^ runtime dep on @ratel-ai/telemetry. `pnpm pack`
-# rewrites both to real version ranges in the tarball, so a plain `npm publish <tarball>`
+# peer on @ratel-ai/sdk (pinned to the ADR-0020 floor range before pack) and a
+# workspace:^ runtime dep on @ratel-ai/telemetry. `pnpm pack` rewrites remaining
+# workspace: specifiers in the tarball, so a plain `npm publish <tarball>`
 # (bootstrap: no OIDC, no provenance) ships a valid manifest.
 publish_vercel_ai_sdk() {
   local version; version="$(resolve_version vercel-ai-sdk)"
@@ -299,6 +305,8 @@ publish_vercel_ai_sdk() {
   # Build the adapter + its @ratel-ai/sdk and @ratel-ai/telemetry workspace
   # dependencies (topo order).
   ( cd "$REPO_ROOT" && pnpm --filter "@ratel-ai/vercel-ai-sdk..." run build )
+  PINNED_ADAPTERS=1
+  ( cd "$REPO_ROOT" && node scripts/pin-adapter-sdk-peer.mjs src/adapters/ts-vercel-ai-sdk/package.json )
   local tgz
   tgz="$( cd "$REPO_ROOT/src/adapters/ts-vercel-ai-sdk" && pnpm pack --pack-destination "$(mktemp -d)" | tail -1 )"
   if [[ $DRY_RUN -eq 1 ]]; then
@@ -336,9 +344,10 @@ publish_telemetry_core() {
 }
 
 # ---------- mastra: @ratel-ai/mastra on npm, packed locally ----------
-# Pure-language framework adapter with a `workspace:^` peer on @ratel-ai/sdk.
-# `pnpm pack` rewrites that specifier to the concrete co-installed version in the
-# tarball, so a plain `npm publish <tarball>` (bootstrap: no OIDC, no provenance)
+# Pure-language framework adapter with a `workspace:^` peer on @ratel-ai/sdk
+# (pinned to the ADR-0020 floor range before pack) and a `workspace:^` runtime
+# dep on @ratel-ai/telemetry. `pnpm pack` rewrites remaining workspace: specifiers
+# in the tarball, so a plain `npm publish <tarball>` (bootstrap: no OIDC, no provenance)
 # ships a valid manifest — same shape as vercel-ai-sdk.
 publish_mastra() {
   local version; version="$(resolve_version mastra)"
@@ -355,6 +364,8 @@ publish_mastra() {
   fi
   # Build the adapter and its @ratel-ai/sdk workspace dependency (topo order).
   ( cd "$REPO_ROOT" && pnpm --filter "@ratel-ai/mastra..." run build )
+  PINNED_ADAPTERS=1
+  ( cd "$REPO_ROOT" && node scripts/pin-adapter-sdk-peer.mjs src/adapters/ts-mastra/package.json )
   local tgz
   tgz="$( cd "$REPO_ROOT/src/adapters/ts-mastra" && pnpm pack --pack-destination "$(mktemp -d)" | tail -1 )"
   if [[ $DRY_RUN -eq 1 ]]; then

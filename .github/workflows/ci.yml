@@ -99,6 +99,7 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
             # maturin builds the Python native binding from the Rust core; the SDK job
             # also installs the telemetry sibling and exercises the pydantic-ai example.
             python:
