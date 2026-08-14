@@ -13,7 +13,7 @@ const REQUIRED_ENVELOPE_FIELDS = new Set([
   "type",
 ]);
 
-/** Frozen remotely publishable v1 event names from ADR-0019. */
+/** Frozen remotely publishable v1 event names from ADR-0020. */
 export const RUNTIME_EVENT_TYPES = [
   "search",
   "skill_search",
@@ -51,7 +51,7 @@ export const RUNTIME_EVENT_MAX_QUERY_BYTES = 4 * 1_024;
 /** Maximum ranked hits carried by one public search event. */
 export const RUNTIME_EVENT_MAX_HITS = 100;
 
-/** Stable envelope shared by every public runtime event (ADR-0019). */
+/** Stable envelope shared by every public runtime event (ADR-0020). */
 export interface RuntimeEvent {
   /** Envelope schema version. */
   readonly v: 2;

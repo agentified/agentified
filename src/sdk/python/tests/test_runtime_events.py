@@ -1,4 +1,4 @@
-"""Public runtime-events and catalog-snapshot contract (ADR-0019)."""
+"""Public runtime-events and catalog-snapshot contract (ADR-0020)."""
 
 from __future__ import annotations
 

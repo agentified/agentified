@@ -10,7 +10,7 @@ Mirrors the public surface of the TypeScript SDK (`@ratel-ai/sdk`):
   framework-neutral capability tools.
 - `register_mcp_server` — ingest an upstream MCP server's tools (extra: mcp).
 - `RuntimeEvents` / `RuntimeCatalog` — subscribe to runtime facts and snapshot
-  executor-free tool/skill state (ADR-0019; no Python Cloud transport).
+  executor-free tool/skill state (ADR-0020; no Python Cloud transport).
 
 The facts/grounding surface (`FactCatalog` / `Fact`, the push-path grounding
 analogue: constant content injected into the context, gated by the pure

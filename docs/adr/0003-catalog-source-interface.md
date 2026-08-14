@@ -11,7 +11,7 @@ auth and scope), and ADR-0021 (sync and storage), all 2026-07-05. The scope mode
 originally carried is split out to [ADR-0010](0010-catalog-scope-model.md) (Proposed); the
 loader interface, auth, and sync semantics recorded here are accepted.
 
-Amended 2026-08-13 by [ADR-0019](0019-runtime-events-lane.md) to distinguish catalog-source
+Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md) to distinguish catalog-source
 pull from optional upward runtime facts and source-scoped catalog snapshot publication.
 
 ## Context
@@ -95,7 +95,7 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
   (`{id, name, description, tags, tools, metadata, body}`, sorted by id, timestamps excluded)
   is frozen in `protocol/v1`; changing it is a v2.
 - A running agent is a read-only consumer of the catalog-source contract. The separate upward
-  path in [ADR-0019](0019-runtime-events-lane.md) publishes append-only observations plus an
+  path in [ADR-0020](0020-runtime-events-lane.md) publishes append-only observations plus an
   atomic snapshot of the SDK's current definitions; it is not authoring/CRUD, a delta merge, or
   a write back into the source. General authoring remains deferred (PSKS-8).
 - Secrets-never-sync is enforced **structurally in both directions**: neither the source wire
@@ -131,7 +131,7 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
 - **Private cloud API, no `protocol/`:** forecloses future sources; the published contract is
   the insurance policy for the catalog rung.
 - **Bidirectional catalog sync:** still rejected because it adds offline merge and secret-leak
-  classes. [ADR-0019](0019-runtime-events-lane.md)'s upward path is deliberately not its
+  classes. [ADR-0020](0020-runtime-events-lane.md)'s upward path is deliberately not its
   inverse: facts are append-only and snapshots atomically publish observed, secret-free state
   per source; neither mutates the catalog source or merges offline edits.
 - **KDF-hashed keys / mTLS:** adds weight where a 192-bit random token needs none; a lost

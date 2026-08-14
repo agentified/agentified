@@ -11,7 +11,7 @@ projection), [ADR-0011](0011-selectable-retrieval-methods.md) (the three methods
 and [ADR-0007](0007-telemetry-two-streams.md) (the local trace stream, whose sink seam this
 subscribes to). Ratifies the 2026-07-06 adaptive-ranking brief with the amendments below.
 
-Amended 2026-08-13 by [ADR-0019](0019-runtime-events-lane.md): the sink is now a fan-out
+Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the sink is now a fan-out
 subscription seam. The learner remains an internal consumer and cannot be replaced by attaching
 another subscriber.
 
@@ -206,7 +206,7 @@ to activate it, so they gate all use on their own.
 ### Where learning happens
 
 The learner consumes `Search` and `InvokeStart` through the core fan-out specified by
-[ADR-0019](0019-runtime-events-lane.md). It is composed as an internal subscriber/decorator,
+[ADR-0020](0020-runtime-events-lane.md). It is composed as an internal subscriber/decorator,
 not installed into a replace-only sink slot: adding a JSONL, SDK, or Cloud subscriber MUST NOT
 silently disable learning. The public queue and callback machinery stays outside the learner,
 so stalled subscribers cannot block it. Adaptive ranking remains experimental; its decoration

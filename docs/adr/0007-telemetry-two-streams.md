@@ -17,7 +17,7 @@ four capture modes.
 Amended 2026-07-26 to drop the `@ratel-ai/telemetry-otlp` helper, and the TS OTLP config
 resolver with it, now that the TS host owns the OTel provider and its configuration.
 
-Amended 2026-08-13 by [ADR-0019](0019-runtime-events-lane.md): the core stream is now a
+Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the core stream is now a
 public subscription seam and may be published as a direct product-facts lane. OTel remains a
 separate, unchanged observability projection.
 
@@ -26,7 +26,7 @@ separate, unchanged observability projection.
 Two telemetry projections exist for different consumers. A core-owned runtime stream feeds the
 offline inspector, statusline / savings reporting, rerankers, suggestion analyzers, and public
 subscribers. An **OTel path** feeds Ratel Cloud and any observability backend the customer
-already runs. [ADR-0019](0019-runtime-events-lane.md) additionally permits an explicit Cloud
+already runs. [ADR-0020](0020-runtime-events-lane.md) additionally permits an explicit Cloud
 adapter to publish the runtime stream as authoritative product facts; that path is not general
 observability.
 The industry standardized the remote payload (OpenTelemetry's `gen_ai.*` semantic
@@ -49,7 +49,7 @@ make Ratel Cloud an island.
   constructing events by literal.
 - **One tagged stream, filtering at the consumer**: rerankers, suggestion analysis, and
   inspection subscribe to different cuts of the same producer; public subscriptions and their
-  delivery bounds are specified by [ADR-0019](0019-runtime-events-lane.md).
+  delivery bounds are specified by [ADR-0020](0020-runtime-events-lane.md).
 - **Query-log semantics, not oplog semantics**: trace events are observations of usage.
   Best-effort, sampleable, lossy on backpressure, loosely ordered, no synchronous durability
   on the hot path (ring buffer, periodic flush). Losing an event is acceptable; corrupting a
@@ -87,7 +87,7 @@ make Ratel Cloud an island.
 
 The runtime stream and OTel stay separate projections of the same operations. The runtime stream
 is offline-first and lossy; OTel remains a host-owned OTLP export with span lifecycle and ambient
-context. [ADR-0019](0019-runtime-events-lane.md) adds shared event ids and an optional direct
+context. [ADR-0020](0020-runtime-events-lane.md) adds shared event ids and an optional direct
 facts publisher, but explicitly does not converge or rebase the OTel producer on the stream.
 
 ## Consequences
@@ -108,4 +108,4 @@ facts publisher, but explicitly does not converge or rebase the OTel producer on
   forking `gen_ai.*`
   into a Ratel namespace (re-breaks the interop the standard buys); tracking semconv
   `latest` (unreviewed breaks); converging the runtime and OTel producers (opposite lifecycle
-  and reliability constraints; [ADR-0019](0019-runtime-events-lane.md) keeps them parallel).
+  and reliability constraints; [ADR-0020](0020-runtime-events-lane.md) keeps them parallel).

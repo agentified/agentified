@@ -61,7 +61,7 @@ export interface RatelConfig {
   factsTopK?: number;
   /** Local trace-stream destination for all catalogs (default: discard). */
   trace?: TraceSinkConfig;
-  /** Public runtime-event stream identity and bounded delivery options (ADR-0019). */
+  /** Public runtime-event stream identity and bounded delivery options (ADR-0020). */
   events?: RuntimeEventsOptions;
 }
 

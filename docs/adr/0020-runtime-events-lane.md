@@ -1,4 +1,4 @@
-# 19. Runtime events lane: subscribable facts and catalog snapshots
+# 20. Runtime events lane: subscribable facts and catalog snapshots
 
 Date: 2026-08-13
 

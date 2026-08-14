@@ -61,7 +61,7 @@ try:
     try:
         from ratel_ai_telemetry import RATEL_EVENT_ID as _IMPORTED_RATEL_EVENT_ID
     except ImportError:
-        # Compatibility with telemetry helpers released before ADR-0019. The
+        # Compatibility with telemetry helpers released before ADR-0020. The
         # Python helper exports this constant on the same release train.
         RATEL_EVENT_ID = "ratel.event.id"
     else:

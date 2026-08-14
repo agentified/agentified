@@ -1,4 +1,4 @@
-"""Public runtime-event stream and catalog snapshot seams (ADR-0019)."""
+"""Public runtime-event stream and catalog snapshot seams (ADR-0020)."""
 
 from __future__ import annotations
 

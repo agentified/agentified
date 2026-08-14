@@ -10,12 +10,12 @@ dashboards, a self-hosted receiver) reads against; the per-language helpers unde
 Decision of record: [ADR-0007, Telemetry: core-owned local trace stream, OTel remote conventions](../../docs/adr/0007-telemetry-two-streams.md).
 This spec is the concrete mapping that ADR locks; it does not re-decide anything the ADR decided.
 
-[ADR-0019, Runtime events lane](../../docs/adr/0019-runtime-events-lane.md) defines the
+[ADR-0020, Runtime events lane](../../docs/adr/0020-runtime-events-lane.md) defines the
 parallel subscribable facts contract. OTel stays independently emitted; the shared
 `ratel.event.id` below is their deduplication and join key.
 
 Scope is the **OTel projection** only. The runtime event wire and its local JSONL/direct
-delivery paths are specified by ADR-0019 and are not restated here. Runtime events and OTel
+delivery paths are specified by ADR-0020 and are not restated here. Runtime events and OTel
 remain parallel projections on purpose.
 
 ## The pin
