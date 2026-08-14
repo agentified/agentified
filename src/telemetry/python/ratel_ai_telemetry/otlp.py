@@ -85,9 +85,19 @@ _PROVIDER_SHUTDOWN_ATTR = "_ratel_ai_telemetry_shutdown"
 _PROVIDER_LOGGER_ATTR = "_ratel_ai_telemetry_logger_provider"
 _PROVIDER_READY_ATTR = "_ratel_ai_telemetry_ready"
 
+# The effective service.name stamped on the provider at install, so re-entry can restore
+# the module-level record after an importlib.reload wiped it (the provider survives in
+# OTel's global; this module's state does not).
+_PROVIDER_SERVICE_NAME_ATTR = "_ratel_ai_telemetry_service_name"
+
 # Python callers may initialize from concurrent worker threads. Serialize the set-once global
 # registrations so no caller can observe and return a tracer provider before Logs is ready.
 _INIT_LOCK = RLock()
+
+# The effective service.name of the provider init() installed, for OTel-free readers
+# (the SDK's runtime-events default source_id, ADR-0020). None until an enabled init()
+# actually installs the provider, so readers never see a name no telemetry carries.
+_recorded_service_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -428,6 +438,18 @@ def init(
         )
 
 
+def recorded_service_name() -> str | None:
+    """The effective ``service.name`` of the provider init() installed, or None.
+
+    The OTel-free identity seam (ADR-0020): the SDK's runtime-events default
+    ``source_id`` reads it so the facts lane and the OTel lane share one identity
+    when telemetry is configured programmatically. Recorded only when an enabled
+    init() actually installs the provider — a disabled or failed init records
+    nothing, and re-initialization returns the original provider's name.
+    """
+    return _recorded_service_name
+
+
 def _init_locked(
     *,
     api_key: str | None,
@@ -472,6 +494,7 @@ def _init_locked(
             raise _already_shut_down_error()
         if not _owned_provider_is_ready(current_provider, _logs.get_logger_provider()):
             raise _foreign_provider_error()
+        _restore_recorded_service_name(owned)
         return cast("TelemetryHandle", owned)
     if not isinstance(current_provider, ProxyTracerProvider):
         raise _foreign_provider_error()
@@ -517,6 +540,7 @@ def _init_locked(
         if owned_winner is not None and _owned_provider_is_ready(
             winner, _logs.get_logger_provider()
         ):
+            _restore_recorded_service_name(owned_winner)
             return cast("TelemetryHandle", owned_winner)
         raise _foreign_provider_error()
     _logs.set_logger_provider(logger_provider)
@@ -524,7 +548,17 @@ def _init_locked(
         provider.shutdown()
         raise _foreign_provider_error()
     setattr(provider, _PROVIDER_READY_ATTR, True)
+    setattr(provider, _PROVIDER_SERVICE_NAME_ATTR, cfg.service_name)
+    _restore_recorded_service_name(provider)
     return cast("TelemetryHandle", provider)
+
+
+def _restore_recorded_service_name(provider: object) -> None:
+    """Sync the module-level record from the name stamped on the installed provider."""
+    global _recorded_service_name
+    stamped = getattr(provider, _PROVIDER_SERVICE_NAME_ATTR, None)
+    if isinstance(stamped, str):
+        _recorded_service_name = stamped
 
 
 def _attach_logger_lifecycle(provider: object, logger_provider: object) -> None:
