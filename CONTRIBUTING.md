@@ -64,7 +64,7 @@ Independently-versioned units publish from this repo (ADR-0008): `ratel-ai-core`
 
 Two rules the unit list doesn't show:
 
-- **Publish in dependency order.** `@ratel-ai/telemetry` before `@ratel-ai/sdk`, and `@ratel-ai/sdk` before either adapter. `workspace:^` specifiers are rewritten to a concrete `^X.Y.Z` at pack time, so a tag cut out of order publishes an immutable version whose dependency is not on the registry yet. The publish jobs check the pinned range against npm and fail before publishing rather than after.
+- **Publish in dependency order.** `@ratel-ai/telemetry` before `@ratel-ai/sdk`, and `@ratel-ai/sdk` before either adapter. Adapter `@ratel-ai/sdk` peers are rewritten at pack time to the floor range in [ADR-0020](docs/adr/0020-adapter-sdk-peer-floor.md), not `^X.Y.Z`. Telemetry runtime deps still become `^X.Y.Z` of the in-repo telemetry version, so a tag cut before `telemetry-ts` publishes an immutable version whose telemetry dependency is not on the registry yet. The adapter publish jobs check that telemetry pin against npm and fail before publishing rather than after.
 - **At 0.x, a breaking change takes a MINOR bump** (`0.4.1` → `0.5.0`), never a major and never a patch. Removing or narrowing a public surface is what makes a change breaking; adding to it is not, however large the addition.
 
 To cut a release — one unit at a time; see [RELEASING.md](RELEASING.md) for the full flow:
