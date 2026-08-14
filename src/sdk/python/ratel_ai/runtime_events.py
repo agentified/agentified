@@ -12,7 +12,7 @@ import time
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
 
 from ._native import NativeEventSubscription
 
@@ -21,7 +21,10 @@ if TYPE_CHECKING:
     from .skill_catalog import SkillCatalog
 
 RuntimeEvent = dict[str, Any]
-RuntimeEventHandler = Callable[[list[RuntimeEvent]], None | Awaitable[None]]
+# typing.Optional, not `None | ...`: this alias evaluates at import time, and PEP 604
+# unions raise TypeError on CPython 3.9 (`from __future__ import annotations` defers
+# only annotations, never assignments).
+RuntimeEventHandler = Callable[[list[RuntimeEvent]], Optional[Awaitable[None]]]
 
 RUNTIME_EVENT_TYPES = (
     "search",
