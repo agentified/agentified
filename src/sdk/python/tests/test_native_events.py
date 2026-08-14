@@ -184,6 +184,28 @@ def test_unsubscribe_releases_the_callback_dispatcher() -> None:
     assert released.is_set()
 
 
+def test_keeps_base_sink_synchronous_and_independently_stamped_after_subscribing() -> None:
+    registry = ToolRegistry()
+    registry.set_trace_sink("memory", "base-session")
+    subscription = registry.subscribe_trace_events(
+        lambda batch: None,
+        "stream-session",
+        queue_capacity=1,
+        batch_size=1,
+    )
+
+    total = 5_000
+    for index in range(total):
+        registry.search(f"persist-{index}", 1)
+
+    drained = registry.drain_trace_events()
+    persisted = [event for event in drained if event["type"] == "search"]
+    assert len(persisted) == total
+    assert all(event["session_id"] == "base-session" for event in persisted)
+    assert not any(event["type"] == "events_dropped" for event in drained)
+    subscription.unsubscribe()
+
+
 def test_keeps_callbacks_and_usage_learning_across_base_sink_rewrap() -> None:
     registry = ToolRegistry()
     graph = IntentGraph()
