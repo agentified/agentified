@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, TypedDict, TypeVar
+
+from .runtime_events import new_runtime_event_id
 
 try:
     from opentelemetry import _logs as _otel_logs
@@ -55,6 +57,16 @@ try:
         content_capture_mode,
     )
 
+    RATEL_EVENT_ID: str
+    try:
+        from ratel_ai_telemetry import RATEL_EVENT_ID as _IMPORTED_RATEL_EVENT_ID
+    except ImportError:
+        # Compatibility with telemetry helpers released before ADR-0020. The
+        # Python helper exports this constant on the same release train.
+        RATEL_EVENT_ID = "ratel.event.id"
+    else:
+        RATEL_EVENT_ID = _IMPORTED_RATEL_EVENT_ID
+
     _ENABLED = True
 except ModuleNotFoundError:
     _ENABLED = False
@@ -68,6 +80,15 @@ SEARCH_TARGET_SKILL = "skill"
 SEARCH_TARGET_FACT = "fact"
 
 T = TypeVar("T")
+
+
+class RuntimeEventProjection(TypedDict, total=False):
+    """Identity shared by one runtime envelope and its OTel projection."""
+
+    event_id: str
+    invocation_id: str
+    trace_id: str
+    span_id: str
 
 
 def _tracer() -> Any:
@@ -92,25 +113,48 @@ def _capture_content_on_event() -> bool:
 _UNSET: Any = object()
 
 
-def _add_tool_content_event(tool_id: str, args: Any, result: Any = _UNSET) -> None:
+def _event_projection(span: Any = None, invocation_id: str | None = None) -> RuntimeEventProjection:
+    projection = RuntimeEventProjection(event_id=new_runtime_event_id())
+    if invocation_id is not None:
+        projection["invocation_id"] = invocation_id
+    if span is None:
+        return projection
+    span.set_attribute(RATEL_EVENT_ID, projection["event_id"])
+    context = span.get_span_context()
+    if context.is_valid:
+        projection["trace_id"] = f"{context.trace_id:032x}"
+        projection["span_id"] = f"{context.span_id:016x}"
+    return projection
+
+
+def _add_tool_content_event(
+    tool_id: str,
+    args: Any,
+    event_id: str,
+    result: Any = _UNSET,
+) -> None:
     """Emit structured tool arguments and result as an OpenTelemetry EventRecord."""
     attributes = {
         GEN_AI_OPERATION_NAME: EXECUTE_TOOL,
         GEN_AI_TOOL_NAME: tool_id,
         GEN_AI_TOOL_CALL_ARGUMENTS: _safe_log_value(args),
+        RATEL_EVENT_ID: event_id,
     }
     if result is not _UNSET:
         attributes[GEN_AI_TOOL_CALL_RESULT] = _safe_log_value(result)
     _logger().emit(event_name=RATEL_TOOL_EXECUTION_DETAILS, attributes=attributes)
 
 
-def _add_search_results_event(query: str) -> None:
+def _add_search_results_event(query: str, event_id: str) -> None:
     """Emit the Opt-In ``ratel.search.results`` EventRecord carrying the search text.
 
     Hit ids/scores/BM25 timing are local-stream only; the OTLP glue carries the gated
     query it has (CONVENTIONS.md § ratel.search).
     """
-    _logger().emit(event_name=RATEL_SEARCH_RESULTS, attributes={RATEL_SEARCH_QUERY: query})
+    _logger().emit(
+        event_name=RATEL_SEARCH_RESULTS,
+        attributes={RATEL_SEARCH_QUERY: query, RATEL_EVENT_ID: event_id},
+    )
 
 
 def _args_size_bytes(args: Any) -> int:
@@ -169,7 +213,7 @@ def _normalize_content(value: Any) -> Any:
 async def trace_execute_tool(
     tool_id: str,
     args: dict[str, Any],
-    run: Callable[[], Awaitable[T]],
+    run: Callable[[RuntimeEventProjection], Awaitable[T]],
 ) -> T:
     """Wrap a tool invocation in a standard `execute_tool` span.
 
@@ -178,10 +222,13 @@ async def trace_execute_tool(
     No-op pass-through when telemetry is disabled.
     """
     if not _ENABLED:
-        return await run()
+        return await run(
+            _event_projection(invocation_id=new_runtime_event_id())
+        )
     with _tracer().start_as_current_span(
         f"{EXECUTE_TOOL} {tool_id}", kind=SpanKind.INTERNAL
     ) as span:
+        projection = _event_projection(span, new_runtime_event_id())
         span.set_attribute(GEN_AI_OPERATION_NAME, EXECUTE_TOOL)
         span.set_attribute(GEN_AI_TOOL_NAME, tool_id)
         span.set_attribute(RATEL_TOOL_ARGS_SIZE_BYTES, _args_size_bytes(args))
@@ -189,15 +236,15 @@ async def trace_execute_tool(
             span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, _safe_json(args))
         # start_as_current_span records the exception + sets ERROR status on raise.
         try:
-            result = await run()
+            result = await run(projection)
         except BaseException:
             if _capture_content_on_event():
-                _add_tool_content_event(tool_id, args)
+                _add_tool_content_event(tool_id, args, projection["event_id"])
             raise
         if _capture_content_on_span():
             span.set_attribute(GEN_AI_TOOL_CALL_RESULT, _safe_json(result))
         if _capture_content_on_event():
-            _add_tool_content_event(tool_id, args, result=result)
+            _add_tool_content_event(tool_id, args, projection["event_id"], result=result)
         span.set_status(Status(StatusCode.OK))
         return result
 
@@ -207,7 +254,7 @@ def trace_search(
     query: str,
     top_k: int,
     origin: str,
-    run: Callable[[], T],
+    run: Callable[[RuntimeEventProjection], T],
 ) -> T:
     """Wrap a capability search (tool or skill) in a `ratel.search` span.
 
@@ -215,17 +262,18 @@ def trace_search(
     `ratel.search.hit_count`.
     """
     if not _ENABLED:
-        return run()
+        return run(_event_projection())
     with _tracer().start_as_current_span(RATEL_SEARCH, kind=SpanKind.INTERNAL) as span:
+        projection = _event_projection(span)
         span.set_attribute(RATEL_SEARCH_TARGET, target)
         span.set_attribute(RATEL_SEARCH_TOP_K, top_k)
         span.set_attribute(RATEL_ORIGIN, origin)
         if _capture_content_on_span():
             span.set_attribute(RATEL_SEARCH_QUERY, query)
-        hits = run()
+        hits = run(projection)
         span.set_attribute(RATEL_SEARCH_HIT_COUNT, len(hits))  # type: ignore[arg-type]
         if _capture_content_on_event():
-            _add_search_results_event(query)
+            _add_search_results_event(query, projection["event_id"])
         span.set_status(Status(StatusCode.OK))
         return hits
 
@@ -235,32 +283,34 @@ async def trace_search_async(
     query: str,
     top_k: int,
     origin: str,
-    run: Callable[[], Awaitable[T]],
+    run: Callable[[RuntimeEventProjection], Awaitable[T]],
 ) -> T:
     """Wrap asynchronous BM25, semantic, or hybrid retrieval in a `ratel.search` span."""
     if not _ENABLED:
-        return await run()
+        return await run(_event_projection())
     with _tracer().start_as_current_span(RATEL_SEARCH, kind=SpanKind.INTERNAL) as span:
+        projection = _event_projection(span)
         span.set_attribute(RATEL_SEARCH_TARGET, target)
         span.set_attribute(RATEL_SEARCH_TOP_K, top_k)
         span.set_attribute(RATEL_ORIGIN, origin)
         if _capture_content_on_span():
             span.set_attribute(RATEL_SEARCH_QUERY, query)
-        hits = await run()
+        hits = await run(projection)
         span.set_attribute(RATEL_SEARCH_HIT_COUNT, len(hits))  # type: ignore[arg-type]
         if _capture_content_on_event():
-            _add_search_results_event(query)
+            _add_search_results_event(query, projection["event_id"])
         span.set_status(Status(StatusCode.OK))
         return hits
 
 
-def trace_skill_load(skill_id: str, run: Callable[[], T]) -> T:
+def trace_skill_load(skill_id: str, run: Callable[[RuntimeEventProjection], T]) -> T:
     """Wrap a skill-content load in a `ratel.skill.load` span."""
     if not _ENABLED:
-        return run()
+        return run(_event_projection())
     with _tracer().start_as_current_span(RATEL_SKILL_LOAD, kind=SpanKind.INTERNAL) as span:
+        projection = _event_projection(span)
         span.set_attribute(RATEL_SKILL_ID, skill_id)
-        body = run()
+        body = run(projection)
         span.set_status(Status(StatusCode.OK))
         return body
 
@@ -268,7 +318,7 @@ def trace_skill_load(skill_id: str, run: Callable[[], T]) -> T:
 async def trace_upstream_register(
     server: str,
     transport: str,
-    run: Callable[[Callable[[int], None]], Awaitable[T]],
+    run: Callable[[Callable[[int], None], RuntimeEventProjection], Awaitable[T]],
 ) -> T:
     """Wrap an upstream-MCP registration in a `ratel.upstream.register` span.
 
@@ -276,27 +326,33 @@ async def trace_upstream_register(
     `ratel.upstream.tool_count` once the tool list is known.
     """
     if not _ENABLED:
-        return await run(lambda _n: None)
+        return await run(lambda _n: None, _event_projection())
     with _tracer().start_as_current_span(RATEL_UPSTREAM_REGISTER, kind=SpanKind.INTERNAL) as span:
+        projection = _event_projection(span)
         span.set_attribute(RATEL_UPSTREAM_SERVER, server)
         span.set_attribute(RATEL_UPSTREAM_TRANSPORT, transport)
-        result = await run(lambda n: span.set_attribute(RATEL_UPSTREAM_TOOL_COUNT, n))
+        result = await run(
+            lambda n: span.set_attribute(RATEL_UPSTREAM_TOOL_COUNT, n),
+            projection,
+        )
         span.set_status(Status(StatusCode.OK))
         return result
 
 
-def record_auth_needed(server: str | None = None) -> None:
+def record_auth_needed(server: str | None = None) -> RuntimeEventProjection:
     """Mark an upstream tool call that failed with a 401 / needs-reauthorization.
 
     Emits a short `ratel.auth.flow` span carrying `ratel.auth.outcome = needs_auth`.
     """
     if not _ENABLED:
-        return
+        return _event_projection()
     span = _tracer().start_span(RATEL_AUTH_FLOW, kind=SpanKind.INTERNAL)
+    projection = _event_projection(span)
     if server:
         span.set_attribute(RATEL_UPSTREAM_SERVER, server)
     span.set_attribute(RATEL_AUTH_OUTCOME, AuthOutcome.NEEDS_AUTH.value)
     span.end()
+    return projection
 
 
 def _resolve_capture_override(

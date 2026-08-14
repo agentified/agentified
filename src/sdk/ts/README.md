@@ -377,6 +377,38 @@ describeAdapterConformance(myConformanceOptions(), { describe, it });
 Assertions use `node:assert`, so no test runner leaks into your published types;
 `referenceConformanceOptions` is a worked example to copy. Prefer full control? `adapterConformanceCases(options)` returns the named cases to run yourself.
 
+## Runtime events and catalog snapshots
+
+`ratel()` exposes a merged, asynchronous facts stream over its tool and skill registries. Every
+envelope has one session/source stamp and a client ULID. The matching OTel projection carries the
+same ID as `ratel.event.id`; OTel remains a parallel observability channel.
+
+```ts
+const r = ratel({ events: { sourceId: "checkout-api" } });
+const subscription = r.events.subscribe(async (batch) => publish(batch));
+
+// Full serializable state; tool executors and skill bodies are always omitted.
+const snapshot = r.catalog.snapshot();
+
+await subscription.flush();
+subscription.unsubscribe();
+```
+
+Delivery is best effort, bounded, and fail-open: subscriber work never blocks catalog operations.
+`flush()` drains work already accepted by this process and waits for async handlers to settle.
+The stream includes search, invocation, catalog churn, upstream/auth, experiment, and observable
+delivery-loss facts described by [ADR 0020](../../../docs/adr/0020-runtime-events-lane.md).
+
+Experiments are SDK-owned facts. Pass the runtime stream as the second argument so their OTel and
+runtime projections share event IDs:
+
+```ts
+const experiment = experimentalDefineExperiment(config, r.events);
+```
+
+`catalog.snapshot()` is deliberately separate from the event stream: consumers publish it as an
+atomic full replacement under `snapshot.source_id`.
+
 ## Telemetry
 
 Telemetry is emit-only and always on: the SDK writes `ratel.*` / `gen_ai.*` spans and EventRecords to whatever OpenTelemetry providers are registered globally, and registers none itself — with no provider wired, every span is a no-op, so there is nothing to configure or switch off. Delivery is yours:
@@ -402,4 +434,4 @@ Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATIO
 
 ## Package layout
 
-`src/` is the TypeScript surface (including `embedding-artifact.ts` for build/warm helpers), `native/` contains the NAPI binding, `npm/` holds platform packages, and tests live beside their source. From the repository root, run `pnpm --filter @ratel-ai/sdk... build` and `pnpm --filter @ratel-ai/sdk test`.
+`src/` is the TypeScript surface (including `embedding-artifact.ts` for build/warm helpers), `native/` contains the NAPI binding, `npm/` holds platform packages, and tests live beside their source. From the repository root, build with `pnpm --filter @ratel-ai/telemetry build && pnpm --filter @ratel-ai/sdk... build`; test with `pnpm --filter @ratel-ai/telemetry build && pnpm --filter @ratel-ai/sdk test`.

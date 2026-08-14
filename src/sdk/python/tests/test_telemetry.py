@@ -35,6 +35,7 @@ from ratel_ai_telemetry import set_content_capture  # noqa: E402
 
 from ratel_ai import (  # noqa: E402
     ExecutableTool,
+    RuntimeEvents,
     Skill,
     SkillCatalog,
     ToolCatalog,
@@ -110,6 +111,54 @@ async def test_execute_tool_span_attributes(exporter: Any) -> None:
     assert attrs["gen_ai.tool.name"] == "read_file"
     assert attrs["ratel.tool.args_size_bytes"] > 0
     assert spans[0].status.status_code == StatusCode.OK
+
+
+@pytest.mark.asyncio
+async def test_search_span_shares_runtime_event_id(exporter: Any) -> None:
+    catalog = ToolCatalog()
+    skills = SkillCatalog()
+    events = RuntimeEvents([catalog, skills], session_id="session-join")
+    received: list[dict[str, Any]] = []
+    subscription = events.subscribe(lambda batch: received.extend(batch))
+    await catalog.register(_read_file())
+
+    catalog.search("read", 1)
+    await subscription.flush()
+
+    stream_event = next(
+        event for event in received if event["type"] == "search" and event["query"] == "read"
+    )
+    span = _spans_named(exporter, "ratel.search")[0]
+    assert span.attributes["ratel.event.id"] == stream_event["event_id"]
+    assert f"{span.context.trace_id:032x}" == stream_event["trace_id"]
+    assert f"{span.context.span_id:016x}" == stream_event["span_id"]
+    subscription.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_invoke_span_and_log_share_runtime_event_id(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+    skills = SkillCatalog()
+    events = RuntimeEvents([catalog, skills], session_id="session-invoke")
+    received: list[dict[str, Any]] = []
+    subscription = events.subscribe(lambda batch: received.extend(batch))
+    await catalog.register(_read_file())
+
+    await catalog.invoke("read_file", {"path": "/tmp/x"})
+    await subscription.flush()
+
+    start = next(event for event in received if event["type"] == "invoke_start")
+    end = next(event for event in received if event["type"] == "invoke_end")
+    span = _spans_named(exporter, "execute_tool read_file")[0]
+    log = _log_events_named("ratel.tool.execution.details")[0]
+    assert span.attributes["ratel.event.id"] == start["event_id"]
+    assert log.attributes["ratel.event.id"] == start["event_id"]
+    assert start["invocation_id"] == end["invocation_id"]
+    assert start["event_id"] != end["event_id"]
+    subscription.unsubscribe()
 
 
 @pytest.mark.asyncio

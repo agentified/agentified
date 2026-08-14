@@ -6,6 +6,7 @@ native layer is a pure pass-through over `ratel-ai-core`; the ergonomic SDK
 surface lives in the pure Python modules of this package.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 class SearchHit:
@@ -97,6 +98,19 @@ class IntentGraph:
         written by another process (stale-base detection).
         """
 
+class NativeEventSubscription:
+    """Private handle for one native runtime-event callback subscription."""
+
+    def flush(self) -> None:
+        """Wait without the GIL until accepted callback work has completed."""
+
+    def unsubscribe(self) -> None:
+        """Stop accepting new events; already-queued envelopes still drain."""
+
+    @property
+    def dropped_count(self) -> int:
+        """Envelopes displaced by this subscriber's bounded queue."""
+
 class ToolRegistry:
     """Private native metadata registry over `ratel-ai-core`.
 
@@ -146,7 +160,13 @@ class ToolRegistry:
         Model-free and infallible; the trace event records origin "direct".
         """
 
-    def search_with_origin(self, query: str, top_k: int, origin: str) -> list[SearchHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        context: object | None = ...,
+    ) -> list[SearchHit]:
         """BM25 search tagged with who initiated it.
 
         `origin` is "agent" (a model calling a capability tool) or anything
@@ -155,7 +175,12 @@ class ToolRegistry:
         """
 
     def _search_with_method(
-        self, query: str, top_k: int, origin: str, method: str
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        method: str,
+        context: object | None = ...,
     ) -> list[SearchHit]:
         """Search with an explicit method ("bm25" | "semantic" | "hybrid").
 
@@ -188,6 +213,21 @@ class ToolRegistry:
         shapes (ADR-0007, e.g. `{"type": "gateway_search", ...}`); anything
         else raises `ValueError`.
         """
+
+    def record_event_with_context(
+        self, event: dict[str, Any], context: object
+    ) -> None:
+        """Record an event with caller-supplied identity and OTel correlation."""
+
+    def subscribe_trace_events(
+        self,
+        callback: Callable[[list[dict[str, Any]]], object],
+        session_id: str,
+        source_id: str | None = ...,
+        queue_capacity: int = ...,
+        batch_size: int = ...,
+    ) -> NativeEventSubscription:
+        """Attach the private GIL-safe, batched runtime-event callback seam."""
 
     def set_trace_sink(
         self,
@@ -365,11 +405,22 @@ class SkillRegistry:
     def search(self, query: str, top_k: int) -> list[SkillHit]:
         """Lexical BM25 search over the skill corpus — see `ToolRegistry.search`."""
 
-    def search_with_origin(self, query: str, top_k: int, origin: str) -> list[SkillHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        context: object | None = ...,
+    ) -> list[SkillHit]:
         """BM25 search tagged with who initiated it — see `ToolRegistry.search_with_origin`."""
 
     def _search_with_method(
-        self, query: str, top_k: int, origin: str, method: str
+        self,
+        query: str,
+        top_k: int,
+        origin: str,
+        method: str,
+        context: object | None = ...,
     ) -> list[SkillHit]:
         """Private worker-thread search primitive."""
 
@@ -387,6 +438,21 @@ class SkillRegistry:
 
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""
+
+    def record_event_with_context(
+        self, event: dict[str, Any], context: object
+    ) -> None:
+        """Record an event with caller-supplied identity and OTel correlation."""
+
+    def subscribe_trace_events(
+        self,
+        callback: Callable[[list[dict[str, Any]]], object],
+        session_id: str,
+        source_id: str | None = ...,
+        queue_capacity: int = ...,
+        batch_size: int = ...,
+    ) -> NativeEventSubscription:
+        """Attach the private GIL-safe, batched runtime-event callback seam."""
 
     def set_trace_sink(
         self,

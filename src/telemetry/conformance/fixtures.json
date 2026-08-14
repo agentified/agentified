@@ -1,6 +1,43 @@
 {
   "semconv_version": "1.42.0",
   "description": "Contract-against-the-pin fixtures shared across the language helpers. Each fixture names a scenario, the span to open, span attributes to set, optional OpenTelemetry EventRecords to emit through the Logs API with structured attributes, and the exact wire output required by CONVENTIONS.md.",
+  "runtime_events": {
+    "version": 2,
+    "max_payload_bytes": 65536,
+    "max_query_bytes": 4096,
+    "max_hits": 100,
+    "otel_event_id_attribute": "ratel.event.id",
+    "required_envelope_fields": ["v", "event_id", "ts", "session_id", "source_id", "type"],
+    "event_types": [
+      "search",
+      "skill_search",
+      "gateway_search",
+      "invoke_start",
+      "invoke_end",
+      "invoke_error",
+      "gateway_invoke",
+      "gateway_error",
+      "skill_invoke",
+      "index_churn",
+      "skill_churn",
+      "upstream_register",
+      "upstream_invoke",
+      "upstream_error",
+      "auth_refresh",
+      "auth_needs",
+      "auth_flow_start",
+      "auth_flow_end",
+      "experiment_selection",
+      "experiment_results",
+      "experiment_comparison",
+      "experiment_skip",
+      "experiment_fallback",
+      "experiment_drop",
+      "experiment_invocation",
+      "experiment_outcome",
+      "events_dropped"
+    ]
+  },
   "fixtures": [
     {
       "name": "tool invocation rides an execute_tool span enriched with ratel.*",

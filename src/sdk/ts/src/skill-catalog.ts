@@ -1,5 +1,5 @@
 import { SearchTarget } from "@ratel-ai/telemetry";
-import type { ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
+import type { NativeEventSubscription, ReplaceOutcome, Skill, SkillHit } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
 import {
@@ -7,6 +7,7 @@ import {
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
 import { type IntentGraph, SkillRegistry } from "./registry.js";
+import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
 import { traceSearch, traceSearchAsync, traceSkillLoad } from "./telemetry.js";
 
 export type { ReplaceOutcome, Skill, SkillHit };
@@ -37,6 +38,9 @@ export type { ReplaceOutcome, Skill, SkillHit };
  * ```
  */
 export type PendingReplace = Promise<ReplaceOutcome> & ReplaceOutcome;
+
+/** Serializable skill definition used by catalog snapshots (never the private body). */
+export type SkillDefinition = Omit<Skill, "body">;
 
 /** Construction options for {@link SkillCatalog}. */
 export interface SkillCatalogOptions {
@@ -190,8 +194,8 @@ export class SkillCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): SkillHit[] {
-    return traceSearch(SearchTarget.Skill, query, topK, origin, () =>
-      this.registry.searchWithMethod(query, topK, origin, method ?? this.method),
+    return traceSearch(SearchTarget.Skill, query, topK, origin, (projection) =>
+      this.registry.searchWithMethod(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -202,8 +206,8 @@ export class SkillCatalog {
     origin: SearchOrigin = "direct",
     method?: SearchMethod,
   ): Promise<SkillHit[]> {
-    return traceSearchAsync(SearchTarget.Skill, query, topK, origin, () =>
-      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method),
+    return traceSearchAsync(SearchTarget.Skill, query, topK, origin, (projection) =>
+      this.registry.searchWithMethodAsync(query, topK, origin, method ?? this.method, projection),
     );
   }
 
@@ -226,6 +230,21 @@ export class SkillCatalog {
    */
   get(skillId: string): Skill | undefined {
     return this.skills.get(skillId);
+  }
+
+  /** Complete, deterministic public skill definition set. */
+  snapshot(): SkillDefinition[] {
+    return [...this.skills.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(({ body: _body, ...skill }) => structuredClone(skill));
+  }
+
+  /** @internal Attach one public runtime-event subscriber. */
+  subscribeEvents(
+    handler: (batch: RuntimeEvent[]) => void,
+    options: Required<RuntimeEventsOptions>,
+  ): NativeEventSubscription {
+    return this.registry.subscribeEvents(handler, options);
   }
 
   /**
@@ -316,14 +335,17 @@ export class SkillCatalog {
     if (!skill) {
       throw new Error(`unknown skillId: ${skillId}`);
     }
-    return traceSkillLoad(skillId, () => {
+    return traceSkillLoad(skillId, (projection) => {
       const started = Date.now();
       const body = skill.body ?? "";
-      this.registry.recordEvent({
-        type: "skill_invoke",
-        skill_id: skillId,
-        took_ms: Date.now() - started,
-      });
+      this.registry.recordEvent(
+        {
+          type: "skill_invoke",
+          skill_id: skillId,
+          took_ms: Date.now() - started,
+        },
+        projection,
+      );
       return body;
     });
   }

@@ -4,7 +4,11 @@
 //! ADR-0007 for the core-owned trace schema this emits into.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::thread;
+use std::time::Duration;
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -13,7 +17,7 @@ use pyo3::types::{PyBytes, PyList};
 use ratel_ai_core as core;
 use ratel_ai_core::{
     ArtifactError as CoreArtifactError, ArtifactWarmError as CoreArtifactWarmError, JsonlSink,
-    MemorySink, NoopSink, OnArtifactMiss, Origin, TraceEvent, UsageLearner,
+    MemorySink, NoopSink, OnArtifactMiss, Origin, TraceEnvelope, TraceEvent, UsageLearner,
 };
 use serde_json::Value;
 
@@ -39,6 +43,280 @@ type FactBatchItem = (
     String,
     String,
 );
+
+const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1_024;
+const DEFAULT_EVENT_BATCH_SIZE: usize = 64;
+const EVENT_BATCH_DELAY: Duration = Duration::from_millis(1);
+
+fn trace_event_context(context: Option<&Bound<'_, PyAny>>) -> PyResult<core::TraceEventContext> {
+    let Some(context) = context else {
+        return Ok(core::TraceEventContext::default());
+    };
+    let value: Value = pythonize::depythonize(context)
+        .map_err(|e| PyValueError::new_err(format!("invalid trace event context: {e}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| PyValueError::new_err("trace event context must be a dict"))?;
+    let string = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+    Ok(core::TraceEventContext {
+        event_id: string("event_id"),
+        invocation_id: string("invocation_id"),
+        catalog_version: string("catalog_version"),
+        environment: string("environment"),
+        end_user_id: string("end_user_id"),
+        trace_id: string("trace_id"),
+        span_id: string("span_id"),
+    })
+}
+
+/// Handle for one private native runtime-event callback subscription.
+#[pyclass]
+struct NativeEventSubscription {
+    subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
+    // Retain progress, not the sink: unsubscribe must release its sender so
+    // the callback dispatcher observes a disconnected receiver and exits.
+    progress: Arc<EventCallbackProgress>,
+    final_dropped_count: AtomicU64,
+}
+
+struct EventStream {
+    fanout: Arc<core::FanoutSink>,
+    session_id: String,
+    source_id: Option<String>,
+}
+
+/// Records to the pre-existing base sink synchronously on the producer thread,
+/// then fans out to bounded push subscribers. Keeping the base sink out of the
+/// bounded fan-out queues preserves the lossless local memory/jsonl projection;
+/// only push subscribers may drop on overflow. Mirrors the TS binding.
+struct RuntimeEventSink {
+    base: Arc<dyn core::TraceSink>,
+    fanout: Arc<core::FanoutSink>,
+}
+
+struct EventCallbackSink {
+    sender: SyncSender<TraceEnvelope>,
+    progress: Arc<EventCallbackProgress>,
+}
+
+struct EventCallbackProgress {
+    state: Mutex<EventCallbackState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct EventCallbackState {
+    accepted: u64,
+    delivered: u64,
+}
+
+#[pymethods]
+impl NativeEventSubscription {
+    /// Wait without the GIL until accepted callback work has completed.
+    fn flush(&self, py: Python<'_>) {
+        py.allow_threads(|| {
+            let subscription = self
+                .subscription
+                .lock()
+                .ok()
+                .and_then(|subscription| subscription.clone());
+            if let Some(subscription) = subscription {
+                subscription.flush();
+            }
+            self.progress.flush();
+        });
+    }
+
+    /// Stop accepting new events. Envelopes already queued still drain.
+    fn unsubscribe(&self, py: Python<'_>) {
+        py.allow_threads(|| {
+            if let Ok(mut subscription) = self.subscription.lock()
+                && let Some(subscription) = subscription.take()
+            {
+                self.final_dropped_count
+                    .store(subscription.dropped_count(), Ordering::Relaxed);
+            }
+        });
+    }
+
+    /// Number of envelopes displaced by this subscriber's bounded queue.
+    #[getter]
+    fn dropped_count(&self, py: Python<'_>) -> u64 {
+        py.allow_threads(|| {
+            let current = self.subscription.lock().ok().and_then(|subscription| {
+                subscription
+                    .as_ref()
+                    .map(|subscription| subscription.dropped_count())
+            });
+            current.unwrap_or_else(|| self.final_dropped_count.load(Ordering::Relaxed))
+        })
+    }
+}
+
+impl EventStream {
+    fn new(session_id: String, source_id: Option<String>) -> Self {
+        let fanout = Arc::new(match source_id.as_ref() {
+            Some(source_id) => core::FanoutSink::with_source(&session_id, source_id),
+            None => core::FanoutSink::new(&session_id),
+        });
+        Self {
+            fanout,
+            session_id,
+            source_id,
+        }
+    }
+
+    fn validate_identity(&self, session_id: &str, source_id: Option<&str>) -> PyResult<()> {
+        if self.session_id != session_id || self.source_id.as_deref() != source_id {
+            return Err(PyValueError::new_err(
+                "runtime event stream already configured with a different session_id/source_id",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl core::TraceSink for RuntimeEventSink {
+    fn record(&self, event: TraceEvent) {
+        self.base.record(event.clone());
+        self.fanout.record(event);
+    }
+
+    fn record_with_context(&self, event: TraceEvent, context: core::TraceEventContext) {
+        self.base
+            .record_with_context(event.clone(), context.clone());
+        self.fanout.record_with_context(event, context);
+    }
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        self.base.record_envelope(envelope.clone());
+        self.fanout.record_envelope(envelope);
+    }
+}
+
+impl EventCallbackSink {
+    fn new(callback: Py<PyAny>, batch_size: usize) -> Arc<Self> {
+        let (sender, receiver) = sync_channel(batch_size);
+        let progress = Arc::new(EventCallbackProgress {
+            state: Mutex::new(EventCallbackState::default()),
+            changed: Condvar::new(),
+        });
+        let sink = Arc::new(Self {
+            sender,
+            progress: progress.clone(),
+        });
+        spawn_event_callback_dispatcher(receiver, callback, batch_size, progress);
+        sink
+    }
+}
+
+impl EventCallbackProgress {
+    fn flush(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.delivered < state.accepted {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn mark_delivered(&self, count: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.delivered += count as u64;
+            self.changed.notify_all();
+        }
+    }
+}
+
+impl core::TraceSink for EventCallbackSink {
+    fn record(&self, _event: TraceEvent) {}
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        if let Ok(mut state) = self.progress.state.lock() {
+            state.accepted += 1;
+        }
+        if self.sender.send(envelope).is_err() {
+            self.progress.mark_delivered(1);
+        }
+    }
+}
+
+fn subscribe_event_callback(
+    stream: &mut Option<EventStream>,
+    callback: Py<PyAny>,
+    session_id: String,
+    source_id: Option<String>,
+    queue_capacity: usize,
+    batch_size: usize,
+) -> PyResult<NativeEventSubscription> {
+    let callback_sink = EventCallbackSink::new(callback, batch_size.max(1));
+    let stream = match stream {
+        Some(stream) => {
+            stream.validate_identity(&session_id, source_id.as_deref())?;
+            stream
+        }
+        slot @ None => slot.insert(EventStream::new(session_id, source_id)),
+    };
+    let subscription = stream
+        .fanout
+        .subscribe(callback_sink.clone(), queue_capacity.max(1));
+    Ok(NativeEventSubscription {
+        subscription: Arc::new(Mutex::new(Some(Arc::new(subscription)))),
+        progress: callback_sink.progress.clone(),
+        final_dropped_count: AtomicU64::new(0),
+    })
+}
+
+fn spawn_event_callback_dispatcher(
+    receiver: Receiver<TraceEnvelope>,
+    callback: Py<PyAny>,
+    batch_size: usize,
+    progress: Arc<EventCallbackProgress>,
+) {
+    thread::spawn(move || dispatch_event_callbacks(receiver, callback, batch_size, progress));
+}
+
+/// Marshal batches from the fan-out subscriber thread onto a dedicated
+/// callback thread. This thread alone acquires the GIL and invokes the Python
+/// callable; core emission and dense-search workers never run subscriber code.
+fn dispatch_event_callbacks(
+    receiver: Receiver<TraceEnvelope>,
+    callback: Py<PyAny>,
+    batch_size: usize,
+    progress: Arc<EventCallbackProgress>,
+) {
+    while let Ok(first) = receiver.recv() {
+        let mut envelopes = vec![first];
+        while envelopes.len() < batch_size {
+            match receiver.recv_timeout(EVENT_BATCH_DELAY) {
+                Ok(envelope) => envelopes.push(envelope),
+                Err(_) => break,
+            }
+        }
+        let delivered = envelopes.len();
+        let _ = Python::with_gil(|py| -> PyResult<()> {
+            let batch = PyList::empty(py);
+            for envelope in envelopes {
+                let Ok(value) = pythonize::pythonize(py, &envelope) else {
+                    continue;
+                };
+                batch.append(value)?;
+            }
+            callback.call1(py, (batch,))?;
+            Ok(())
+        });
+        progress.mark_delivered(delivered);
+    }
+}
 
 create_exception!(
     _native,
@@ -323,6 +601,21 @@ fn wrap_learner(
     }
 }
 
+fn active_trace_sink(
+    base_sink: &Arc<dyn core::TraceSink>,
+    graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    event_stream: &Option<EventStream>,
+) -> Arc<dyn core::TraceSink> {
+    let sink: Arc<dyn core::TraceSink> = match event_stream {
+        Some(stream) => Arc::new(RuntimeEventSink {
+            base: base_sink.clone(),
+            fanout: stream.fanout.clone(),
+        }),
+        None => base_sink.clone(),
+    };
+    wrap_learner(sink, graph)
+}
+
 /// A shared usage-ranking intent graph (ADR-0014): clusters of past queries,
 /// each remembering the capabilities invoked after them.
 ///
@@ -419,6 +712,7 @@ pub struct ToolRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    event_stream: Option<EventStream>,
 }
 
 #[pymethods]
@@ -465,6 +759,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            event_stream: None,
         })
     }
 
@@ -536,13 +831,29 @@ impl ToolRegistry {
     /// BM25 search tagged with who initiated it: `"agent"` (a model calling a
     /// capability tool) or anything else → `"direct"` (host code). The origin
     /// only labels the emitted trace event — ranking is identical to `search`.
-    fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SearchHit> {
+    #[pyo3(signature = (query, top_k, origin, context=None))]
+    fn search_with_origin(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        context: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<SearchHit>> {
         let parsed = match origin.as_str() {
             "agent" => Origin::Agent,
             _ => Origin::Direct,
         };
-        self.inner
-            .search_with_origin(&query, top_k as usize, parsed)
+        let hits = self
+            .inner
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed,
+                core::SearchMethod::Bm25,
+                trace_event_context(context)?,
+            )
+            .map_err(map_embedder_err)?;
+        Ok(hits
             .into_iter()
             .map(|hit| SearchHit {
                 tool_id: hit.tool_id,
@@ -550,7 +861,7 @@ impl ToolRegistry {
                 rank: hit.rank,
                 fused: hit.fused,
             })
-            .collect()
+            .collect())
     }
 
     /// Search with an explicit method (`"bm25"` | `"semantic"` | `"hybrid"`).
@@ -558,6 +869,7 @@ impl ToolRegistry {
     /// cache and raise `RuntimeError` (`EmbeddingsNotBuilt`) if it isn't built — the
     /// model loads at `_build_embeddings`, never inside a search. Private worker
     /// primitive; releases the GIL. An unknown method raises `ValueError`.
+    #[pyo3(signature = (query, top_k, origin, method, context=None))]
     fn _search_with_method(
         &self,
         py: Python<'_>,
@@ -565,6 +877,7 @@ impl ToolRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SearchHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -573,10 +886,16 @@ impl ToolRegistry {
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let context = trace_event_context(context)?;
         let hits = py
             .allow_threads(|| {
-                self.inner
-                    .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+                self.inner.search_with_method_and_context(
+                    &query,
+                    top_k as usize,
+                    parsed_origin,
+                    parsed_method,
+                    context,
+                )
             })
             .map_err(map_embedder_err)?;
         Ok(hits
@@ -652,6 +971,46 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Record an event with caller-supplied identity and OTel correlation.
+    fn record_event_with_context(
+        &self,
+        event: &Bound<'_, PyAny>,
+        context: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let value: Value = pythonize::depythonize(event)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        let event: TraceEvent = serde_json::from_value(value)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        self.inner
+            .record_event_with_context(event, trace_event_context(Some(context))?);
+        Ok(())
+    }
+
+    /// Attach the private batched callback seam consumed by the public SDK in
+    /// Phase 5. A dedicated Rust thread acquires the GIL for each callback;
+    /// producer and dense-search worker threads only enqueue.
+    #[pyo3(signature = (callback, session_id, source_id=None, queue_capacity=DEFAULT_EVENT_QUEUE_CAPACITY, batch_size=DEFAULT_EVENT_BATCH_SIZE))]
+    fn subscribe_trace_events(
+        &mut self,
+        callback: Py<PyAny>,
+        session_id: String,
+        source_id: Option<String>,
+        queue_capacity: usize,
+        batch_size: usize,
+    ) -> PyResult<NativeEventSubscription> {
+        let subscription = subscribe_event_callback(
+            &mut self.event_stream,
+            callback,
+            session_id,
+            source_id,
+            queue_capacity,
+            batch_size,
+        )?;
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        self.inner.set_trace_sink(sink);
+        Ok(subscription)
+    }
+
     /// Route trace events to a sink. `kind` is `"noop"` (drop everything, the
     /// initial state), `"memory"` (buffer for `drain_trace_events`; requires
     /// `session_id`) or `"jsonl"` (append to a file; requires `session_id` and
@@ -668,7 +1027,8 @@ impl ToolRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -677,7 +1037,8 @@ impl ToolRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -688,7 +1049,8 @@ impl ToolRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -712,9 +1074,8 @@ impl ToolRegistry {
     /// compare ordering rather than magnitudes.
     fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
         let handle = graph.inner.clone();
-        let inner_sink = self.base_sink.clone();
-        self.inner
-            .set_trace_sink(Arc::new(UsageLearner::new(handle.clone(), inner_sink)));
+        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
     }
@@ -722,8 +1083,8 @@ impl ToolRegistry {
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
-        let inner_sink = self.base_sink.clone();
-        self.inner.set_trace_sink(inner_sink);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(None);
         self.graph = None;
     }
@@ -757,6 +1118,7 @@ pub struct SkillRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    event_stream: Option<EventStream>,
 }
 
 #[pymethods]
@@ -800,6 +1162,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            event_stream: None,
         })
     }
 
@@ -893,13 +1256,29 @@ impl SkillRegistry {
 
     /// BM25 search tagged with who initiated it — see
     /// [`ToolRegistry::search_with_origin`].
-    fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SkillHit> {
+    #[pyo3(signature = (query, top_k, origin, context=None))]
+    fn search_with_origin(
+        &self,
+        query: String,
+        top_k: u32,
+        origin: String,
+        context: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<SkillHit>> {
         let parsed = match origin.as_str() {
             "agent" => Origin::Agent,
             _ => Origin::Direct,
         };
-        self.inner
-            .search_with_origin(&query, top_k as usize, parsed)
+        let hits = self
+            .inner
+            .search_with_method_and_context(
+                &query,
+                top_k as usize,
+                parsed,
+                core::SearchMethod::Bm25,
+                trace_event_context(context)?,
+            )
+            .map_err(map_embedder_err)?;
+        Ok(hits
             .into_iter()
             .map(|hit| SkillHit {
                 skill_id: hit.skill_id,
@@ -907,10 +1286,11 @@ impl SkillRegistry {
                 rank: hit.rank,
                 fused: hit.fused,
             })
-            .collect()
+            .collect())
     }
 
     /// Private GIL-releasing method search — see [`ToolRegistry::_search_with_method`].
+    #[pyo3(signature = (query, top_k, origin, method, context=None))]
     fn _search_with_method(
         &self,
         py: Python<'_>,
@@ -918,6 +1298,7 @@ impl SkillRegistry {
         top_k: u32,
         origin: String,
         method: String,
+        context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SkillHit>> {
         let parsed_origin = match origin.as_str() {
             "agent" => Origin::Agent,
@@ -926,10 +1307,16 @@ impl SkillRegistry {
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let context = trace_event_context(context)?;
         let hits = py
             .allow_threads(|| {
-                self.inner
-                    .search_with_method(&query, top_k as usize, parsed_origin, parsed_method)
+                self.inner.search_with_method_and_context(
+                    &query,
+                    top_k as usize,
+                    parsed_origin,
+                    parsed_method,
+                    context,
+                )
             })
             .map_err(map_embedder_err)?;
         Ok(hits
@@ -1000,6 +1387,45 @@ impl SkillRegistry {
         Ok(())
     }
 
+    /// Record an event with caller-supplied identity and OTel correlation.
+    fn record_event_with_context(
+        &self,
+        event: &Bound<'_, PyAny>,
+        context: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let value: Value = pythonize::depythonize(event)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        let event: TraceEvent = serde_json::from_value(value)
+            .map_err(|e| PyValueError::new_err(format!("invalid trace event: {e}")))?;
+        self.inner
+            .record_event_with_context(event, trace_event_context(Some(context))?);
+        Ok(())
+    }
+
+    /// Attach the private batched callback seam — see
+    /// [`ToolRegistry::subscribe_trace_events`].
+    #[pyo3(signature = (callback, session_id, source_id=None, queue_capacity=DEFAULT_EVENT_QUEUE_CAPACITY, batch_size=DEFAULT_EVENT_BATCH_SIZE))]
+    fn subscribe_trace_events(
+        &mut self,
+        callback: Py<PyAny>,
+        session_id: String,
+        source_id: Option<String>,
+        queue_capacity: usize,
+        batch_size: usize,
+    ) -> PyResult<NativeEventSubscription> {
+        let subscription = subscribe_event_callback(
+            &mut self.event_stream,
+            callback,
+            session_id,
+            source_id,
+            queue_capacity,
+            batch_size,
+        )?;
+        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        self.inner.set_trace_sink(sink);
+        Ok(subscription)
+    }
+
     /// Route trace events to a sink — see [`ToolRegistry::set_trace_sink`] for
     /// the kind / session_id / path rules and `ValueError` conditions.
     #[pyo3(signature = (kind, session_id=None, path=None))]
@@ -1013,7 +1439,8 @@ impl SkillRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -1022,7 +1449,8 @@ impl SkillRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -1033,7 +1461,8 @@ impl SkillRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink = wrap_learner(self.base_sink.clone(), self.graph.as_ref());
+                let sink =
+                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -1057,9 +1486,8 @@ impl SkillRegistry {
     /// compare ordering rather than magnitudes.
     fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
         let handle = graph.inner.clone();
-        let inner_sink = self.base_sink.clone();
-        self.inner
-            .set_trace_sink(Arc::new(UsageLearner::new(handle.clone(), inner_sink)));
+        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
     }
@@ -1067,8 +1495,8 @@ impl SkillRegistry {
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
-        let inner_sink = self.base_sink.clone();
-        self.inner.set_trace_sink(inner_sink);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(None);
         self.graph = None;
     }
@@ -1340,6 +1768,7 @@ impl FactRegistry {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<NativeEventSubscription>()?;
     m.add_class::<ToolRegistry>()?;
     m.add_class::<IntentGraph>()?;
     m.add_class::<SearchHit>()?;

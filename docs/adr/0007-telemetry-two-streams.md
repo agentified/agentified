@@ -17,11 +17,18 @@ four capture modes.
 Amended 2026-07-26 to drop the `@ratel-ai/telemetry-otlp` helper, and the TS OTLP config
 resolver with it, now that the TS host owns the OTel provider and its configuration.
 
+Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the core stream is now a
+public subscription seam and may be published as a direct product-facts lane. OTel remains a
+separate, unchanged observability projection.
+
 ## Context
 
-Two telemetry surfaces exist for different consumers. A **local** stream feeds the offline
-inspector, statusline / savings reporting, and future rerankers and suggestion analyzers. A
-**remote** path feeds Ratel Cloud and any observability backend the customer already runs.
+Two telemetry projections exist for different consumers. A core-owned runtime stream feeds the
+offline inspector, statusline / savings reporting, rerankers, suggestion analyzers, and public
+subscribers. An **OTel path** feeds Ratel Cloud and any observability backend the customer
+already runs. [ADR-0020](0020-runtime-events-lane.md) additionally permits an explicit Cloud
+adapter to publish the runtime stream as authoritative product facts; that path is not general
+observability.
 The industry standardized the remote payload (OpenTelemetry's `gen_ai.*` semantic
 conventions) after Ratel's first bespoke design; building our own schema and transport would
 make Ratel Cloud an island.
@@ -41,7 +48,8 @@ make Ratel Cloud an island.
   non-exhaustiveness is deliberately avoided, as it would also block downstream from
   constructing events by literal.
 - **One tagged stream, filtering at the consumer**: rerankers, suggestion analysis, and
-  inspection subscribe to different cuts of the same producer; no parallel pipes to drift.
+  inspection subscribe to different cuts of the same producer; public subscriptions and their
+  delivery bounds are specified by [ADR-0020](0020-runtime-events-lane.md).
 - **Query-log semantics, not oplog semantics**: trace events are observations of usage.
   Best-effort, sampleable, lossy on backpressure, loosely ordered, no synchronous durability
   on the hot path (ring buffer, periodic flush). Losing an event is acceptable; corrupting a
@@ -52,9 +60,9 @@ make Ratel Cloud an island.
   project directories and is owned by the consuming shell (today ratel-local), while the
   core sink accepts any path.
 
-### Remote path: OpenTelemetry, pinned, two tiers
+### OpenTelemetry path: pinned, two tiers
 
-- Remote telemetry **is** OpenTelemetry: LLM calls are `gen_ai.*` spans per a **pinned**
+- Remote observability **is** OpenTelemetry: LLM calls are `gen_ai.*` spans per a **pinned**
   semconv baseline (v1.42.0, `gen_ai` group; the group is still `Development`, so the pin is
   the contract and bumps are reviewed changes).
 - **Two tiers, layered not forked**: `gen_ai.*` adopted verbatim (never renamed or re-nested)
@@ -75,11 +83,12 @@ make Ratel Cloud an island.
   configuration, while Python keeps `init()`. Shared conformance fixtures assert every helper
   against the pin so the languages cannot drift.
 
-### Two streams by design
+### Parallel projections by design
 
-Local and remote stay separate producers: the local stream is offline-first with its own
-reliability profile; the remote path is an OTLP export. Converging them is a future decision,
-not an accident of this one.
+The runtime stream and OTel stay separate projections of the same operations. The runtime stream
+is offline-first and lossy; OTel remains a host-owned OTLP export with span lifecycle and ambient
+context. [ADR-0020](0020-runtime-events-lane.md) adds shared event ids and an optional direct
+facts publisher, but explicitly does not converge or rebase the OTel producer on the stream.
 
 ## Consequences
 
@@ -93,10 +102,10 @@ not an accident of this one.
   vocabulary we design and version, with the same care as the local event schema.
 - Cross-language reuse is built in: TS- and Python-emitted remote spans and EventRecords share
   one contract, while their local events continue to share the core-owned schema.
-- Rejected: a bespoke unified schema and per-language clients (duplicates a ratified
+- Rejected: a bespoke unified observability schema and per-language clients (duplicates a ratified
   standard; the pre-compaction 0013 built exactly this and it was deleted unpublished);
   inference-message content on span attributes (attribute limits reject unbounded text);
   forking `gen_ai.*`
   into a Ratel namespace (re-breaks the interop the standard buys); tracking semconv
-  `latest` (unreviewed breaks); converging local and remote now (opposite reliability and
-  offline constraints).
+  `latest` (unreviewed breaks); converging the runtime and OTel producers (opposite lifecycle
+  and reliability constraints; [ADR-0020](0020-runtime-events-lane.md) keeps them parallel).

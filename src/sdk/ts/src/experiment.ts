@@ -18,13 +18,18 @@ import {
   type ServedEvaluationSignal,
   trackShadow,
 } from "./experiment-shadow.js";
-import type { ExperimentEvaluationSink } from "./experiment-sink.js";
+import {
+  composeExperimentEvaluationSinks,
+  createExperimentRuntimeEventSink,
+  type ExperimentEvaluationSink,
+} from "./experiment-sink.js";
 import type { Experiment, ExperimentConfig, ExperimentSelection } from "./experiment-types.js";
 import {
   assignArm,
   validateReportedOutcome,
   validateSplitCoverage,
 } from "./experiment-validation.js";
+import type { RuntimeEvents } from "./runtime-events.js";
 import { createExperimentTelemetrySink, validateExperimentAttributes } from "./telemetry.js";
 
 /**
@@ -32,12 +37,23 @@ import { createExperimentTelemetrySink, validateExperimentAttributes } from "./t
  *
  * Configuration errors throw synchronously. Each selection serves one arm, may run
  * other arms as bounded detached shadows, and exposes {@link Experiment.drain} for
- * orderly shutdown.
+ * orderly shutdown. Pass a {@link RuntimeEvents} instance to merge evaluation facts
+ * into that runtime's public stream while retaining the parallel OTel projection.
+ *
+ * @param config Experiment arms, assignment, and evaluation policy.
+ * @param events Optional `ratel().events` stream receiving experiment facts.
  */
 export function experimentalDefineExperiment<Params, Result, Arm extends string>(
   config: ExperimentConfig<Params, Result, Arm>,
+  events?: RuntimeEvents,
 ): Experiment<Params, Result, Arm> {
-  return defineExperimentInternal(config, createExperimentTelemetrySink());
+  const telemetry = createExperimentTelemetrySink<Arm>();
+  return defineExperimentInternal(
+    config,
+    events === undefined
+      ? telemetry
+      : composeExperimentEvaluationSinks(telemetry, createExperimentRuntimeEventSink(events)),
+  );
 }
 
 /** @internal Builds an experiment with an evaluation sink for package-level composition. */

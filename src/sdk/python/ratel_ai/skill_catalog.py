@@ -8,6 +8,7 @@ relevance, and the matching body is fetched only on `invoke`.
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 import time
 import warnings
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, overload
 
 from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
-from ._native import SkillHit
+from ._native import NativeEventSubscription, SkillHit
 from ._native import SkillRegistry as _NativeSkillRegistry
 from .catalog import (
     _REGISTRY_BUSY,
@@ -33,7 +34,13 @@ from .embedding_artifact import (
     OnArtifactMiss,
     resolve_embedding_artifact,
 )
-from .telemetry import SEARCH_TARGET_SKILL, trace_search, trace_search_async, trace_skill_load
+from .telemetry import (
+    SEARCH_TARGET_SKILL,
+    RuntimeEventProjection,
+    trace_search,
+    trace_search_async,
+    trace_skill_load,
+)
 
 __all__ = [
     "PendingReplace",
@@ -304,9 +311,15 @@ class SkillRegistry:
         """Run synchronous, model-free BM25 retrieval."""
         return self._native.search(query, top_k)
 
-    def search_with_origin(self, query: str, top_k: int, origin: SearchOrigin) -> list[SkillHit]:
+    def search_with_origin(
+        self,
+        query: str,
+        top_k: int,
+        origin: SearchOrigin,
+        projection: RuntimeEventProjection | None = None,
+    ) -> list[SkillHit]:
         """Run BM25 retrieval with an explicit trace origin."""
-        return self._native.search_with_origin(query, top_k, origin)
+        return self._native.search_with_origin(query, top_k, origin, projection)
 
     def search_with_method(
         self, query: str, top_k: int, origin: SearchOrigin, method: SearchMethod
@@ -401,22 +414,50 @@ class SkillRegistry:
         top_k: int,
         origin: SearchOrigin = "direct",
         method: SearchMethod = "bm25",
+        projection: RuntimeEventProjection | None = None,
     ) -> list[SkillHit]:
         """Search immediately with BM25 or run dense retrieval on a worker thread."""
         if method not in ("bm25", "semantic", "hybrid"):
             raise ValueError(f"unknown search method: {method}")
         if method == "bm25":
-            return self.search_with_origin(query, top_k, origin)
+            return self.search_with_origin(query, top_k, origin, projection)
         if self._undriven_builds > 0:
             raise RuntimeError(_UNAWAITED_REGISTER)
         await self._maybe_rebuild_on_model_change()
         return await self._run_dense(
-            lambda: self._native._search_with_method(query, top_k, origin, method)
+            lambda: self._native._search_with_method(query, top_k, origin, method, projection)
         )
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record an SDK-layer trace event."""
-        self._native.record_event(event)
+        if projection is None:
+            self._native.record_event(event)
+        else:
+            self._native.record_event_with_context(event, projection)
+
+    def subscribe_events(
+        self,
+        handler: Callable[[list[dict[str, Any]]], object],
+        *,
+        session_id: str,
+        source_id: str,
+        queue_capacity: int = 1_024,
+        batch_size: int = 64,
+    ) -> NativeEventSubscription:
+        """Attach one public batched runtime-event subscriber."""
+        with self._dense_state:
+            self._raise_if_busy()
+            return self._native.subscribe_trace_events(
+                handler,
+                session_id,
+                source_id,
+                queue_capacity,
+                batch_size,
+            )
 
     def set_trace_sink(
         self, kind: str, session_id: str | None = None, path: str | None = None
@@ -768,7 +809,9 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_with_origin(query, top_k, origin),
+            lambda projection: self._registry.search_with_origin(
+                query, top_k, origin, projection
+            ),
         )
 
     async def search_async(
@@ -788,7 +831,9 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_async(query, top_k, origin, resolved_method),
+            lambda projection: self._registry.search_async(
+                query, top_k, origin, resolved_method, projection
+            ),
         )
 
     def has(self, skill_id: str) -> bool:
@@ -799,16 +844,52 @@ class SkillCatalog:
         """Return the registered `Skill` for an id, or `None` if unknown."""
         return self._skills.get(skill_id)
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return the complete deterministic public skill definitions."""
+        return [
+            {
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "tags": copy.deepcopy(skill.tags),
+                "tools": copy.deepcopy(skill.tools),
+                "metadata": copy.deepcopy(skill.metadata),
+            }
+            for skill in sorted(self._skills.values(), key=lambda item: item.id)
+        ]
+
     def size(self) -> int:
         """Return the number of registered skills."""
         return len(self._skills)
 
-    def record_event(self, event: dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: dict[str, Any],
+        projection: RuntimeEventProjection | None = None,
+    ) -> None:
         """Record a trace event into the catalog's sink.
 
         See `ToolCatalog.record_event` for the event contract.
         """
-        self._registry.record_event(event)
+        self._registry.record_event(event, projection)
+
+    def subscribe_events(
+        self,
+        handler: Callable[[list[dict[str, Any]]], object],
+        *,
+        session_id: str,
+        source_id: str,
+        queue_capacity: int = 1_024,
+        batch_size: int = 64,
+    ) -> NativeEventSubscription:
+        """Attach one public runtime-event subscriber."""
+        return self._registry.subscribe_events(
+            handler,
+            session_id=session_id,
+            source_id=source_id,
+            queue_capacity=queue_capacity,
+            batch_size=batch_size,
+        )
 
     def experimental_enable_adaptive_ranking(
         self,
@@ -877,7 +958,7 @@ class SkillCatalog:
         if skill is None:
             raise ValueError(f"unknown skillId: {skill_id}")
 
-        def _run() -> str:
+        def _run(projection: RuntimeEventProjection) -> str:
             started = time.monotonic()
             body = skill.body
             self._registry.record_event(
@@ -885,7 +966,8 @@ class SkillCatalog:
                     "type": "skill_invoke",
                     "skill_id": skill_id,
                     "took_ms": int((time.monotonic() - started) * 1000),
-                }
+                },
+                projection,
             )
             return body
 

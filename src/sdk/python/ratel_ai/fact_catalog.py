@@ -559,7 +559,7 @@ class FactCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_with_origin(query, top_k, origin),
+            lambda _projection: self._registry.search_with_origin(query, top_k, origin),
         )
 
     async def search_async(
@@ -579,7 +579,7 @@ class FactCatalog:
             query,
             top_k,
             origin,
-            lambda: self._registry.search_async(query, top_k, origin, resolved_method),
+            lambda _projection: self._registry.search_async(query, top_k, origin, resolved_method),
         )
 
     async def ground(

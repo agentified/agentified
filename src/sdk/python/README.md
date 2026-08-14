@@ -90,6 +90,40 @@ asyncio.run(main())
 
 Continue with the [Python guide](https://docs.ratel.sh/docs/sdks/python), [capability tools](https://docs.ratel.sh/docs/capability-tools), [API reference](https://docs.ratel.sh/docs/api/sdk-python), or the [Pydantic AI example](https://github.com/ratel-ai/ratel/tree/main/examples/pydantic-ai).
 
+## Runtime events and catalog snapshots
+
+`RuntimeEvents` merges tool and skill facts into one bounded push stream. Give the paired
+`RuntimeCatalog` the stream's `source_id` so envelopes and full snapshots identify the same
+deployment source:
+
+```python
+from ratel_ai import RuntimeCatalog, RuntimeEvents, SkillCatalog, ToolCatalog
+
+tools = ToolCatalog()
+skills = SkillCatalog()
+events = RuntimeEvents(
+    [tools, skills],
+    session_id="agent-session",
+    source_id="checkout-agent",
+)
+catalog = RuntimeCatalog(tools, skills, source_id=events.source_id)
+
+async def publish(batch):
+    await send_runtime_facts(batch)
+
+subscription = events.subscribe(publish)  # call from the target asyncio event loop
+# Register, search, and invoke through tools / skills as usual.
+await subscription.flush()
+snapshot = catalog.snapshot()
+subscription.unsubscribe()
+```
+
+Async handlers are marshaled onto the subscribing event loop; synchronous handlers run on the
+native callback thread. Both are observational and fail open. `flush()` waits for work already
+accepted by the bounded native queues and for async handlers to settle. Snapshots contain sorted
+public definitions only — never tool executors or skill bodies. Python exposes no Cloud transport;
+applications may publish these events and snapshots through their own adapter.
+
 ## Facts (experimental)
 
 Tools and skills are **pulled** — a query ranks them and only the winners reach the model. Facts are the opposite: constant content the agent should always work from (a shop's address, hours, a brand's voice), **pushed** into the context and deduplicated so it is injected once rather than every turn.

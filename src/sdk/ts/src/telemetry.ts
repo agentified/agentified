@@ -38,6 +38,7 @@ import {
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_EVENT_ID,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
   RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -119,6 +120,7 @@ import type {
   ExperimentEvaluationSink,
 } from "./experiment-sink.js";
 import type { ExperimentRankedItem } from "./experiment-types.js";
+import { newRuntimeEventId } from "./runtime-events.js";
 
 const TRACER_NAME = "@ratel-ai/sdk";
 const LOGGER_NAME = "@ratel-ai/sdk";
@@ -171,6 +173,27 @@ const RESERVED_EXPERIMENT_ATTRIBUTES = new Set([
   RATEL_EXPERIMENT_UNIT,
 ]);
 
+/** @internal Identity shared by one runtime envelope and its OTel projection. */
+export interface RuntimeEventProjection {
+  eventId: string;
+  invocationId?: string;
+  traceId?: string;
+  spanId?: string;
+}
+
+function eventProjection(span: Span, invocationId?: string): RuntimeEventProjection {
+  const eventId = newRuntimeEventId();
+  const spanContext = span.spanContext();
+  span.setAttribute(RATEL_EVENT_ID, eventId);
+  return {
+    eventId,
+    ...(invocationId === undefined ? {} : { invocationId }),
+    ...(spanContext.isRemote || /^0+$/.test(spanContext.traceId)
+      ? {}
+      : { traceId: spanContext.traceId, spanId: spanContext.spanId }),
+  };
+}
+
 function getTracer() {
   return trace.getTracer(TRACER_NAME);
 }
@@ -203,51 +226,68 @@ export function createExperimentTelemetrySink<Arm extends string>(): ExperimentE
       return startExperimentArm(evaluation);
     },
     comparison(evaluation, arm) {
-      arm?.event(RATEL_EXPERIMENT_COMPARISON, {
-        [RATEL_EXPERIMENT_SERVED_ARM]: evaluation.served.arm,
-        [RATEL_EXPERIMENT_SERVED_OUTCOME]: evaluation.served.outcome,
-        [RATEL_EXPERIMENT_SERVED_DURATION_MS]: evaluation.served.durationMs,
-        [RATEL_EXPERIMENT_SERVED_HIT_COUNT]: evaluation.served.hitCount,
-        [RATEL_EXPERIMENT_SHADOW_ARM]: evaluation.shadow.arm,
-        [RATEL_EXPERIMENT_SHADOW_OUTCOME]: evaluation.shadow.outcome,
-        [RATEL_EXPERIMENT_SHADOW_DURATION_MS]: evaluation.shadow.durationMs,
-        [RATEL_EXPERIMENT_SHADOW_HIT_COUNT]: evaluation.shadow.hitCount,
-        [RATEL_EXPERIMENT_AGREEMENT_TOP1]: evaluation.agreement.top1,
-        [RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER]: evaluation.agreement.exactOrder,
-        [RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT]: evaluation.agreement.overlapCount,
-        [RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K]: evaluation.agreement.jaccardAtK,
-        [RATEL_EXPERIMENT_AGREEMENT_K]: evaluation.agreement.k,
-        ...(evaluation.agreement.itemAttrs === undefined
-          ? {}
-          : { [RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS]: evaluation.agreement.itemAttrs }),
-        ...(evaluation.agreement.resultAttrs === undefined
-          ? {}
-          : { [RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS]: evaluation.agreement.resultAttrs }),
-      });
+      arm?.event(
+        RATEL_EXPERIMENT_COMPARISON,
+        {
+          [RATEL_EXPERIMENT_SERVED_ARM]: evaluation.served.arm,
+          [RATEL_EXPERIMENT_SERVED_OUTCOME]: evaluation.served.outcome,
+          [RATEL_EXPERIMENT_SERVED_DURATION_MS]: evaluation.served.durationMs,
+          [RATEL_EXPERIMENT_SERVED_HIT_COUNT]: evaluation.served.hitCount,
+          [RATEL_EXPERIMENT_SHADOW_ARM]: evaluation.shadow.arm,
+          [RATEL_EXPERIMENT_SHADOW_OUTCOME]: evaluation.shadow.outcome,
+          [RATEL_EXPERIMENT_SHADOW_DURATION_MS]: evaluation.shadow.durationMs,
+          [RATEL_EXPERIMENT_SHADOW_HIT_COUNT]: evaluation.shadow.hitCount,
+          [RATEL_EXPERIMENT_AGREEMENT_TOP1]: evaluation.agreement.top1,
+          [RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER]: evaluation.agreement.exactOrder,
+          [RATEL_EXPERIMENT_AGREEMENT_OVERLAP_COUNT]: evaluation.agreement.overlapCount,
+          [RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K]: evaluation.agreement.jaccardAtK,
+          [RATEL_EXPERIMENT_AGREEMENT_K]: evaluation.agreement.k,
+          ...(evaluation.agreement.itemAttrs === undefined
+            ? {}
+            : { [RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS]: evaluation.agreement.itemAttrs }),
+          ...(evaluation.agreement.resultAttrs === undefined
+            ? {}
+            : { [RATEL_EXPERIMENT_AGREEMENT_RESULT_ATTRS]: evaluation.agreement.resultAttrs }),
+        },
+        evaluation.eventId,
+      );
     },
     skip(evaluation, arm) {
-      arm?.event(RATEL_EXPERIMENT_SKIP, {
-        [RATEL_EXPERIMENT_SKIP_ARM]: evaluation.skippedArm,
-        [RATEL_EXPERIMENT_SKIP_CONCURRENCY]: evaluation.concurrency,
-        [RATEL_EXPERIMENT_SKIP_REASON]: "capacity",
-      });
+      arm?.event(
+        RATEL_EXPERIMENT_SKIP,
+        {
+          [RATEL_EXPERIMENT_SKIP_ARM]: evaluation.skippedArm,
+          [RATEL_EXPERIMENT_SKIP_CONCURRENCY]: evaluation.concurrency,
+          [RATEL_EXPERIMENT_SKIP_REASON]: "capacity",
+        },
+        evaluation.eventId,
+      );
     },
     fallback(evaluation, arm) {
-      arm?.event(RATEL_EXPERIMENT_FALLBACK, {
-        [RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM]: evaluation.effectiveArm,
-        [RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW]: evaluation.reusedShadow,
-      });
+      arm?.event(
+        RATEL_EXPERIMENT_FALLBACK,
+        {
+          [RATEL_EXPERIMENT_FALLBACK_EFFECTIVE_ARM]: evaluation.effectiveArm,
+          [RATEL_EXPERIMENT_FALLBACK_REUSED_SHADOW]: evaluation.reusedShadow,
+        },
+        evaluation.eventId,
+      );
     },
     drop(evaluation, arm) {
-      arm?.event(RATEL_EXPERIMENT_DROP, {
-        [RATEL_EXPERIMENT_DROP_REASON]: evaluation.reason,
-      });
+      arm?.event(
+        RATEL_EXPERIMENT_DROP,
+        {
+          [RATEL_EXPERIMENT_DROP_REASON]: evaluation.reason,
+        },
+        evaluation.eventId,
+      );
     },
     invocation(evaluation) {
       const attribution = evaluation.attribution;
       getLogger().emit({
         eventName: RATEL_EXPERIMENT_INVOCATION,
         attributes: {
+          [RATEL_EVENT_ID]: evaluation.eventId ?? newRuntimeEventId(),
           [RATEL_EXPERIMENT_ID]: evaluation.experimentId,
           [RATEL_EXPERIMENT_UNIT]: evaluation.unitHash,
           [GEN_AI_TOOL_NAME]: evaluation.toolId,
@@ -269,6 +309,7 @@ export function createExperimentTelemetrySink<Arm extends string>(): ExperimentE
       getLogger().emit({
         eventName: RATEL_EXPERIMENT_OUTCOME,
         attributes: {
+          [RATEL_EVENT_ID]: evaluation.eventId ?? newRuntimeEventId(),
           [RATEL_EXPERIMENT_ID]: evaluation.experimentId,
           [RATEL_EXPERIMENT_SELECTION_ID]: evaluation.selectionId,
           ...(evaluation.label === undefined
@@ -310,6 +351,7 @@ function startExperimentArm<Arm extends string>(
       kind: SpanKind.INTERNAL,
       attributes: {
         ...attributes,
+        [RATEL_EVENT_ID]: evaluation.eventId ?? newRuntimeEventId(),
         [RATEL_EXPERIMENT_COLD]: evaluation.cold,
       },
     },
@@ -320,8 +362,8 @@ function startExperimentArm<Arm extends string>(
   return {
     run: (callback) => context.with(armContext, callback),
     complete: (completion) => completeExperimentArm(span, armContext, attributes, completion),
-    event: (eventName, eventAttributes) =>
-      addExperimentEvent(eventName, attributes, eventAttributes, armContext),
+    event: (eventName, eventAttributes, eventId) =>
+      addExperimentEvent(eventName, attributes, eventAttributes, armContext, eventId),
   };
 }
 
@@ -330,10 +372,15 @@ function addExperimentEvent(
   armAttributes: Record<string, string | number | boolean>,
   eventAttributes: Record<string, unknown>,
   armContext: OtelContext,
+  eventId?: string,
 ): void {
   getLogger().emit({
     eventName,
-    attributes: { ...armAttributes, ...eventAttributes } as AnyValueMap,
+    attributes: {
+      ...armAttributes,
+      ...eventAttributes,
+      [RATEL_EVENT_ID]: eventId ?? newRuntimeEventId(),
+    } as AnyValueMap,
     context: armContext,
   });
 }
@@ -384,6 +431,7 @@ function completeExperimentArm(
         attributes,
         armContext,
         itemAttributes?.eventValue,
+        completion.eventId,
       );
     }
   } finally {
@@ -396,12 +444,14 @@ function addExperimentResultsEvent(
   attributes: Record<string, string | number | boolean>,
   armContext: OtelContext,
   resultAttributes?: AnyValue,
+  eventId?: string,
 ): void {
   const scores = ranking.map((item) => item.score);
   getLogger().emit({
     eventName: RATEL_EXPERIMENT_RESULTS,
     attributes: {
       ...attributes,
+      [RATEL_EVENT_ID]: eventId ?? newRuntimeEventId(),
       [RATEL_EXPERIMENT_RESULT_IDS]: ranking.map((item) => item.id),
       ...(scores.every(
         (score): score is number => typeof score === "number" && Number.isFinite(score),
@@ -477,11 +527,13 @@ function addToolContentEvent(
   toolId: string,
   args: unknown,
   eventContext: OtelContext,
+  eventId: string,
   result?: { value: unknown },
 ): void {
   const attributes = {
     [GEN_AI_OPERATION_NAME]: EXECUTE_TOOL,
     [GEN_AI_TOOL_NAME]: toolId,
+    [RATEL_EVENT_ID]: eventId,
     [GEN_AI_TOOL_CALL_ARGUMENTS]: toLogValue(args),
     ...(result ? { [GEN_AI_TOOL_CALL_RESULT]: toLogValue(result.value) } : {}),
   };
@@ -496,10 +548,10 @@ function addToolContentEvent(
  * Emit the Opt-In `ratel.search.results` EventRecord carrying the search text.
  * Hit ids/scores/BM25 timing are local-stream only.
  */
-function addSearchResultsEvent(query: string, eventContext: OtelContext): void {
+function addSearchResultsEvent(query: string, eventContext: OtelContext, eventId: string): void {
   getLogger().emit({
     eventName: RATEL_SEARCH_RESULTS,
-    attributes: { [RATEL_SEARCH_QUERY]: query },
+    attributes: { [RATEL_SEARCH_QUERY]: query, [RATEL_EVENT_ID]: eventId },
     context: eventContext,
   });
 }
@@ -554,12 +606,17 @@ function fail(span: Span, err: unknown): void {
  * (ADR-0007). Preserves the executor's immediate return shape and keeps the
  * span open through `AsyncIterable` completion, cancellation, or failure.
  */
-export function traceExecuteTool<T>(toolId: string, args: unknown, run: () => T): T {
+export function traceExecuteTool<T>(
+  toolId: string,
+  args: unknown,
+  run: (projection: RuntimeEventProjection) => T,
+): T {
   return getTracer().startActiveSpan(
     `${EXECUTE_TOOL} ${toolId}`,
     { kind: SpanKind.INTERNAL },
     (span) => {
       const activeContext = trace.setSpan(context.active(), span);
+      const projection = eventProjection(span, newRuntimeEventId());
       span.setAttribute(GEN_AI_OPERATION_NAME, EXECUTE_TOOL);
       span.setAttribute(GEN_AI_TOOL_NAME, toolId);
       const upstream = upstreamFromToolId(toolId);
@@ -570,19 +627,21 @@ export function traceExecuteTool<T>(toolId: string, args: unknown, run: () => T)
       const succeed = (result: unknown): void => {
         if (captureContentOnSpan()) span.setAttribute(GEN_AI_TOOL_CALL_RESULT, safeJson(result));
         if (captureContentOnEvent()) {
-          addToolContentEvent(toolId, args, activeContext, { value: result });
+          addToolContentEvent(toolId, args, activeContext, projection.eventId, { value: result });
         }
         span.setStatus({ code: SpanStatusCode.OK });
         span.end();
       };
       const reject = (err: unknown): void => {
-        if (captureContentOnEvent()) addToolContentEvent(toolId, args, activeContext);
+        if (captureContentOnEvent()) {
+          addToolContentEvent(toolId, args, activeContext, projection.eventId);
+        }
         fail(span, err);
         span.end();
       };
 
       try {
-        return observeExecutionResult(run(), succeed, reject, activeContext) as T;
+        return observeExecutionResult(run(projection), succeed, reject, activeContext) as T;
       } catch (err) {
         reject(err);
         throw err;
@@ -674,18 +733,19 @@ export function traceSearch<T extends { length: number }>(
   query: string,
   topK: number,
   origin: SearchOrigin,
-  run: () => T,
+  run: (projection: RuntimeEventProjection) => T,
 ): T {
   return getTracer().startActiveSpan(RATEL_SEARCH, { kind: SpanKind.INTERNAL }, (span) => {
     const eventContext = trace.setSpan(context.active(), span);
+    const projection = eventProjection(span);
     span.setAttribute(RATEL_SEARCH_TARGET, target);
     span.setAttribute(RATEL_SEARCH_TOP_K, topK);
     span.setAttribute(RATEL_ORIGIN, origin);
     if (captureContentOnSpan()) span.setAttribute(RATEL_SEARCH_QUERY, query);
     try {
-      const hits = run();
+      const hits = run(projection);
       span.setAttribute(RATEL_SEARCH_HIT_COUNT, hits.length);
-      if (captureContentOnEvent()) addSearchResultsEvent(query, eventContext);
+      if (captureContentOnEvent()) addSearchResultsEvent(query, eventContext, projection.eventId);
       span.setStatus({ code: SpanStatusCode.OK });
       return hits;
     } catch (err) {
@@ -703,18 +763,19 @@ export function traceSearchAsync<T extends { length: number }>(
   query: string,
   topK: number,
   origin: SearchOrigin,
-  run: () => Promise<T>,
+  run: (projection: RuntimeEventProjection) => Promise<T>,
 ): Promise<T> {
   return getTracer().startActiveSpan(RATEL_SEARCH, { kind: SpanKind.INTERNAL }, async (span) => {
     const eventContext = trace.setSpan(context.active(), span);
+    const projection = eventProjection(span);
     span.setAttribute(RATEL_SEARCH_TARGET, target);
     span.setAttribute(RATEL_SEARCH_TOP_K, topK);
     span.setAttribute(RATEL_ORIGIN, origin);
     if (captureContentOnSpan()) span.setAttribute(RATEL_SEARCH_QUERY, query);
     try {
-      const hits = await run();
+      const hits = await run(projection);
       span.setAttribute(RATEL_SEARCH_HIT_COUNT, hits.length);
-      if (captureContentOnEvent()) addSearchResultsEvent(query, eventContext);
+      if (captureContentOnEvent()) addSearchResultsEvent(query, eventContext, projection.eventId);
       span.setStatus({ code: SpanStatusCode.OK });
       return hits;
     } catch (err) {
@@ -727,11 +788,15 @@ export function traceSearchAsync<T extends { length: number }>(
 }
 
 /** Wrap a skill-content load in a `ratel.skill.load` span. */
-export function traceSkillLoad<T>(skillId: string, run: () => T): T {
+export function traceSkillLoad<T>(
+  skillId: string,
+  run: (projection: RuntimeEventProjection) => T,
+): T {
   return getTracer().startActiveSpan(RATEL_SKILL_LOAD, { kind: SpanKind.INTERNAL }, (span) => {
+    const projection = eventProjection(span);
     span.setAttribute(RATEL_SKILL_ID, skillId);
     try {
-      const body = run();
+      const body = run(projection);
       span.setStatus({ code: SpanStatusCode.OK });
       return body;
     } catch (err) {
@@ -751,16 +816,20 @@ export function traceSkillLoad<T>(skillId: string, run: () => T): T {
 export function traceUpstreamRegister<T>(
   server: string,
   transport: string,
-  run: (reportToolCount: (n: number) => void) => Promise<T>,
+  run: (reportToolCount: (n: number) => void, projection: RuntimeEventProjection) => Promise<T>,
 ): Promise<T> {
   return getTracer().startActiveSpan(
     RATEL_UPSTREAM_REGISTER,
     { kind: SpanKind.INTERNAL },
     async (span) => {
+      const projection = eventProjection(span);
       span.setAttribute(RATEL_UPSTREAM_SERVER, server);
       span.setAttribute(RATEL_UPSTREAM_TRANSPORT, transport);
       try {
-        const result = await run((n) => span.setAttribute(RATEL_UPSTREAM_TOOL_COUNT, n));
+        const result = await run(
+          (n) => span.setAttribute(RATEL_UPSTREAM_TOOL_COUNT, n),
+          projection,
+        );
         span.setStatus({ code: SpanStatusCode.OK });
         return result;
       } catch (err) {
@@ -777,11 +846,13 @@ export function traceUpstreamRegister<T>(
  * Mark an upstream tool call that failed with a 401 / needs-reauthorization: a
  * short `ratel.auth.flow` span carrying `ratel.auth.outcome = needs_auth`.
  */
-export function recordAuthNeeded(server?: string): void {
+export function recordAuthNeeded(server?: string): RuntimeEventProjection {
   const span = getTracer().startSpan(RATEL_AUTH_FLOW, { kind: SpanKind.INTERNAL });
+  const projection = eventProjection(span);
   if (server) span.setAttribute(RATEL_UPSTREAM_SERVER, server);
   span.setAttribute(RATEL_AUTH_OUTCOME, AuthOutcome.NeedsAuth);
   span.end();
+  return projection;
 }
 
 // Re-exported so hosts configuring capture don't need a second import from

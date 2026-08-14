@@ -106,6 +106,9 @@ export const GEN_AI_INFERENCE_DETAILS = "gen_ai.client.inference.operation.detai
 /** `ratel.origin` — direct library call vs agent-synthesized (shared attribute). */
 export const RATEL_ORIGIN = "ratel.origin";
 
+/** `ratel.event.id` — runtime-event/OTel deduplication and join key. */
+export const RATEL_EVENT_ID = "ratel.event.id";
+
 /** `ratel.search.target` — `tool`, `skill`, or `fact` (see {@link SearchTarget}). */
 export const RATEL_SEARCH_TARGET = "ratel.search.target";
 
