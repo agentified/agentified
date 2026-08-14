@@ -170,6 +170,49 @@ def test_matches_frozen_cross_language_event_vocabulary() -> None:
     }
 
 
+def test_rolls_back_earlier_native_subscriptions_when_a_later_source_rejects() -> None:
+    unsubscribed: list[str] = []
+
+    class FirstSubscription:
+        dropped_count = 0
+
+        def unsubscribe(self) -> None:
+            unsubscribed.append("first")
+
+        def flush(self) -> None:
+            pass
+
+    class FirstSource:
+        def subscribe_events(
+            self,
+            handler: object,
+            *,
+            session_id: str,
+            source_id: str,
+            queue_capacity: int,
+            batch_size: int,
+        ) -> FirstSubscription:
+            return FirstSubscription()
+
+    class BusySource:
+        def subscribe_events(
+            self,
+            handler: object,
+            *,
+            session_id: str,
+            source_id: str,
+            queue_capacity: int,
+            batch_size: int,
+        ) -> FirstSubscription:
+            raise RuntimeError("registry busy")
+
+    events = RuntimeEvents([FirstSource(), BusySource()])  # type: ignore[list-item]
+
+    with pytest.raises(RuntimeError, match="registry busy"):
+        events.subscribe(lambda batch: None)
+    assert unsubscribed == ["first"]
+
+
 def test_unsubscribe_still_delivers_envelopes_already_queued_by_native() -> None:
     tools = ToolCatalog()
     events = RuntimeEvents([tools], queue_capacity=16, batch_size=1)

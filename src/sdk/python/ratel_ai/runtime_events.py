@@ -238,16 +238,25 @@ class RuntimeEvents:
                 except Exception:
                     pass
 
-        subscriptions = [
-            source.subscribe_events(
-                deliver,
-                session_id=self.session_id,
-                source_id=self.source_id,
-                queue_capacity=self._queue_capacity,
-                batch_size=self._batch_size,
-            )
-            for source in self._sources
-        ]
+        # Subscribe incrementally so a later source's failure explicitly unwinds the
+        # native handles already granted (newest first), mirroring the TS SDK rather
+        # than leaving the rollback to garbage collection.
+        subscriptions: list[NativeEventSubscription] = []
+        try:
+            for source in self._sources:
+                subscriptions.append(
+                    source.subscribe_events(
+                        deliver,
+                        session_id=self.session_id,
+                        source_id=self.source_id,
+                        queue_capacity=self._queue_capacity,
+                        batch_size=self._batch_size,
+                    )
+                )
+        except BaseException:
+            for subscription in reversed(subscriptions):
+                subscription.unsubscribe()
+            raise
         return RuntimeEventSubscription(subscriptions, pending, state)
 
 
