@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-15
+
+### Added
+
+- **Runtime events stream (ADR-0020), mirroring the TypeScript SDK.** `RuntimeEvents` delivers envelope-v2 batches to subscribed handlers (sync or async) for the frozen remotely publishable v1 set `RUNTIME_EVENT_TYPES`, with event ids stable and shared with the OTel projection (`ratel.event.id`). Bounded per-subscriber queues drop oldest and surface losses as `events_dropped`; pre-existing local sinks (memory/JSONL) keep recording synchronously and losslessly. Multi-source subscribe rolls back earlier subscriptions when a later source fails. Imports cleanly on CPython 3.9 (the package floor), now guarded by a real-3.9 CI leg. Exported: `RuntimeEvents`, `RuntimeEvent`, `RuntimeEventHandler`, `RuntimeEventSubscription`, `RuntimeCatalog`, `RUNTIME_EVENT_TYPES`, and the `RUNTIME_EVENT_MAX_*` caps.
+
 ### Changed
 
 - The default runtime-events `source_id` now also reads the service name recorded by this SDK's own telemetry configuration: `OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, then the name a programmatic `configure_telemetry(service_name=...)` / `ratel_ai_telemetry.init` installed, then `"ratel"` (ADR-0020). Env vars keep precedence, matching the OTel convention; a telemetry helper predating `recorded_service_name()` degrades to the previous behavior. Only deployments that configured telemetry programmatically without passing `source_id` see a different (now correct) identity.

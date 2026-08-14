@@ -6,6 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-15
 ### Added
 
 - `recorded_service_name()` — OTel-free read of the effective `service.name` that `init()` installed (None until an enabled `init()` actually installs the provider). The identity seam (ADR-0020) the Python SDK's runtime-events default `source_id` falls back to, so a programmatic `init(service_name=...)` / `configure_telemetry(service_name=...)` no longer splits the facts-lane identity from the OTel lane. Additive: nothing else changes.

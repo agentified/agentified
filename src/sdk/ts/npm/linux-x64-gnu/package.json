@@ -1,6 +1,6 @@
 {
   "name": "@ratel-ai/sdk-linux-x64-gnu",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "cpu": [
     "x64"
   ],
@@ -8,7 +8,7 @@
   "files": [
     "ratel-sdk.linux-x64-gnu.node"
   ],
-  "description": "TypeScript SDK for Ratel — context engineering platform for AI agents. BM25 tool retrieval, MCP ingestion, framework-neutral capability tools.",
+  "description": "TypeScript SDK for Ratel \u2014 context engineering platform for AI agents. BM25 tool retrieval, MCP ingestion, framework-neutral capability tools.",
   "keywords": [
     "mcp",
     "ai-agents",

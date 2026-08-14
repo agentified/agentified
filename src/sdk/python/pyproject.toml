@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ratel-ai"
-version = "0.9.0"
+version = "0.10.0"
 description = "Python SDK for Ratel — context engineering platform for AI agents. BM25 tool retrieval, MCP ingestion, framework-neutral capability tools."
 readme = "README.md"
 license = { file = "LICENSE.md" }

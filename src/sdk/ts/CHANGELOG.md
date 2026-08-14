@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-15
+
+### Added
+
+- **Runtime events stream (ADR-0020).** `ratel.events` exposes a first-class, subscribable runtime-events stream: `subscribe(handler)` delivers envelope-v2 batches (`v`, `event_id`, `ts`, `session_id`, `source_id`, `type`, plus trace/span ids when a span is active) for the frozen remotely publishable v1 set exported as `RUNTIME_EVENT_TYPES` — searches, invocation lifecycle, catalog churn, upstream MCP, auth, the experiment lifecycle, and the `events_dropped` backpressure meta-event. Event ids are stable and shared with the OTel projection (`ratel.event.id`), so consumers can cross-link facts with spans. Subscriptions ride a bounded per-subscriber queue (drop-oldest; losses surface as `events_dropped`), while pre-existing local sinks keep recording synchronously and losslessly. `RuntimeEventSubscription` exposes `flush()` and `unsubscribe()` (stops intake; already-queued envelopes drain). `sourceId` defaults to the env-configured OTel `service.name` (`OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`), then `"ratel"`. Exported: `RuntimeEvents`, `RuntimeEvent`, `RuntimeEventHandler`, `RuntimeEventsOptions`, `RuntimeEventSubscription`, `RuntimeCatalog`, `CatalogSnapshot`, `newRuntimeEventId`, and the `RUNTIME_EVENT_MAX_*` caps. Primary consumer: `@ratel-ai/cloud-sdk`'s `attach()`.
+
 ## [0.9.1] - 2026-08-14
 
 ### Added
