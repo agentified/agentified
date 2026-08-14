@@ -84,7 +84,12 @@ export interface RuntimeEvent {
 export interface RuntimeEventsOptions {
   /** Stable identity for this process/session. Defaults to a fresh UUID. */
   sessionId?: string;
-  /** Stable deployment source. Defaults to OTel `service.name`, then `"ratel"`. */
+  /**
+   * Stable deployment source. Defaults to the env-var-configured OTel `service.name`
+   * (`OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`), then
+   * `"ratel"`. A programmatically configured OTel resource is not read; pass this
+   * option explicitly in that case.
+   */
   sourceId?: string;
   /** Per-registry subscriber queue capacity. Defaults to the native bridge default. */
   queueCapacity?: number;

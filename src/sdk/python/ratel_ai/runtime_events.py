@@ -173,7 +173,15 @@ class RuntimeEvents:
         queue_capacity: int = 1_024,
         batch_size: int = 64,
     ) -> None:
-        """Create a stream sharing one identity across all event sources."""
+        """Create a stream sharing one identity across all event sources.
+
+        ``source_id`` defaults to the env-var-configured OTel ``service.name``
+        (``OTEL_SERVICE_NAME``, then ``service.name`` in
+        ``OTEL_RESOURCE_ATTRIBUTES``), falling back to ``"ratel"``. A
+        programmatically configured OTel resource — including
+        ``configure_telemetry(service_name=...)`` — is not read; pass
+        ``source_id`` explicitly in that case.
+        """
         self.session_id = session_id or str(uuid.uuid4())
         self.source_id = source_id or _default_source_id()
         self._sources = tuple(sources)

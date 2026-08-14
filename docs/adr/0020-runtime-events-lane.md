@@ -79,8 +79,12 @@ EventRecord. A receiver derives its storage id deterministically as UUIDv8 over
 `(project_id, event_id)`; replaying a batch is therefore idempotent without changing the public
 ULID. Each event in an invocation has its own `event_id`; `invocation_id` groups the lifecycle.
 
-`source_id` is an explicit attach option, defaulting to OTel `service.name`, and MUST remain
-stable. Renaming it starts a new source era and a distinct catalog snapshot.
+`source_id` is an explicit attach option, defaulting to the env-var-configured OTel
+`service.name` (`OTEL_SERVICE_NAME`, then `service.name` in `OTEL_RESOURCE_ATTRIBUTES`),
+falling back to `ratel`. A programmatically configured OTel resource — including a
+service name passed to the SDK's own `configure_telemetry` — is not read; pass `source_id`
+explicitly in that case. It MUST remain stable: renaming it starts a new source era and a
+distinct catalog snapshot.
 
 ### Delivery and bounds
 
