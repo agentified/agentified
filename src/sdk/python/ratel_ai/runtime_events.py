@@ -177,10 +177,12 @@ class RuntimeEvents:
 
         ``source_id`` defaults to the env-var-configured OTel ``service.name``
         (``OTEL_SERVICE_NAME``, then ``service.name`` in
-        ``OTEL_RESOURCE_ATTRIBUTES``), falling back to ``"ratel"``. A
-        programmatically configured OTel resource — including
-        ``configure_telemetry(service_name=...)`` — is not read; pass
-        ``source_id`` explicitly in that case.
+        ``OTEL_RESOURCE_ATTRIBUTES``), then the service name recorded by this
+        SDK's own telemetry configuration (``configure_telemetry(service_name=...)``
+        / ``ratel_ai_telemetry.init``), falling back to ``"ratel"``. Env vars keep
+        precedence, matching the OTel convention. Any other programmatically
+        configured OTel resource is not read; pass ``source_id`` explicitly in
+        that case.
         """
         self.session_id = session_id or str(uuid.uuid4())
         self.source_id = source_id or _default_source_id()
@@ -295,7 +297,24 @@ def _default_source_id() -> str:
         key, separator, value = entry.strip().partition("=")
         if separator and key == "service.name" and value:
             return value
+    if recorded := _recorded_telemetry_service_name():
+        return recorded
     return "ratel"
+
+
+def _recorded_telemetry_service_name() -> str | None:
+    """The service.name a programmatic `configure_telemetry`/`init` installed, or None.
+
+    Read lazily from the OTel-free seam the telemetry helper records into
+    (`ratel_ai_telemetry.recorded_service_name`, ADR-0020), so the env vars keep
+    precedence and a telemetry release predating the seam degrades to the bare
+    fallback instead of raising.
+    """
+    try:
+        from ratel_ai_telemetry.otlp import recorded_service_name
+    except ImportError:  # telemetry helper predates the seam
+        return None
+    return recorded_service_name()
 
 
 def _finish_async_handler(
