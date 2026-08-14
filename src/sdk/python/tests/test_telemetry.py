@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 pytest.importorskip("opentelemetry.sdk.trace", reason="OpenTelemetry SDK not installed")
 pytest.importorskip("ratel_ai_telemetry", reason="ratel-ai telemetry vocabulary not installed")
@@ -489,6 +488,8 @@ def test_base_sdk_depends_on_the_vocabulary_so_host_owned_otel_works() -> None:
     host bringing its own OpenTelemetry provider on a base install gets no Ratel spans —
     contradicting the documented behavior. The vocabulary is OTel-free, so this keeps the
     base install lightweight (the [otlp] extra still adds the exporter/OTel SDK)."""
+    # tomllib is 3.11+ stdlib; the 3.9 leg skips this packaging contract (asserted on 3.11).
+    tomllib = pytest.importorskip("tomllib", reason="tomllib requires Python 3.11+")
     pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
     base_deps = pyproject["project"]["dependencies"]
     assert any(dep.startswith("ratel-ai-telemetry") for dep in base_deps), (

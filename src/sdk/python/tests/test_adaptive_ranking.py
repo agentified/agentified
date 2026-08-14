@@ -5,6 +5,8 @@ The load-bearing negative is that a query with no evidence behind it is
 completely unaffected.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import warnings
