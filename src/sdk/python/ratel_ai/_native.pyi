@@ -105,7 +105,7 @@ class NativeEventSubscription:
         """Wait without the GIL until accepted callback work has completed."""
 
     def unsubscribe(self) -> None:
-        """Stop future delivery; already-running callback work is best-effort."""
+        """Stop accepting new events; already-queued envelopes still drain."""
 
     @property
     def dropped_count(self) -> int:

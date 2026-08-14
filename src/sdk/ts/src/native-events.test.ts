@@ -1,7 +1,28 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { IntentGraph, SkillRegistry, ToolRegistry } from "../native/index.cjs";
 
 describe("native runtime event bridge", () => {
+  it("does not keep the Node process alive while subscribed", () => {
+    const moduleUrl = new URL("../native/index.cjs", import.meta.url).href;
+    const script = `
+      import { ToolRegistry } from ${JSON.stringify(moduleUrl)};
+      const registry = new ToolRegistry();
+      globalThis.subscription = registry.subscribeTraceEvents(() => {}, {
+        sessionId: "session-exit",
+      });
+    `;
+
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      timeout: 2_000,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(0);
+  });
+
   it("pushes worker-thread search events to JavaScript in batches", async () => {
     const registry = new ToolRegistry();
     registry.register({

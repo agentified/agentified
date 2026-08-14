@@ -117,7 +117,7 @@ impl NativeEventSubscription {
         });
     }
 
-    /// Stop future delivery. Already-running callback work is best-effort.
+    /// Stop accepting new events. Envelopes already queued still drain.
     fn unsubscribe(&self) {
         if let Ok(mut subscription) = self.subscription.lock() {
             subscription.take();
@@ -283,7 +283,10 @@ fn dispatch_event_callbacks(
         let _ = Python::with_gil(|py| -> PyResult<()> {
             let batch = PyList::empty(py);
             for envelope in envelopes {
-                batch.append(pythonize::pythonize(py, &envelope)?)?;
+                let Ok(value) = pythonize::pythonize(py, &envelope) else {
+                    continue;
+                };
+                batch.append(value)?;
             }
             callback.call1(py, (batch,))?;
             Ok(())

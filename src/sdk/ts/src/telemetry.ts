@@ -38,6 +38,7 @@ import {
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_EVENT_ID,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
   RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -171,7 +172,6 @@ const RESERVED_EXPERIMENT_ATTRIBUTES = new Set([
   RATEL_EXPERIMENT_TURN,
   RATEL_EXPERIMENT_UNIT,
 ]);
-const RATEL_EVENT_ID = "ratel.event.id";
 
 /** @internal Identity shared by one runtime envelope and its OTel projection. */
 export interface RuntimeEventProjection {

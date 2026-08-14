@@ -94,9 +94,9 @@ export interface RuntimeEventsOptions {
 
 /** One runtime-events subscription. */
 export interface RuntimeEventSubscription {
-  /** Stop accepting future events for this subscriber. */
+  /** Stop accepting new events; already-queued native envelopes still drain. */
   unsubscribe(): void;
-  /** Wait until work already accepted by both registry streams reaches the handler. */
+  /** Wait until accepted registry events reach the handler and async work settles. */
   flush(): Promise<void>;
   /** Envelopes dropped from this subscriber's bounded native queues. */
   readonly droppedCount: number;
@@ -161,17 +161,13 @@ export class RuntimeEvents {
    * bounded; handler work never blocks the emitting registry operation.
    */
   subscribe(handler: RuntimeEventHandler): RuntimeEventSubscription {
+    const sdkSubscriber: SdkSubscriber = { handler, pending: new Set() };
     const deliver = (batch: RuntimeEvent[]): void => {
-      try {
-        void Promise.resolve(handler(batch.map(normalizeRuntimeEvent))).catch(() => {});
-      } catch {
-        // Runtime-event consumers are observational and fail open.
-      }
+      trackHandlerWork(sdkSubscriber, batch.map(normalizeRuntimeEvent));
     };
     const subscriptions = this.#sources.map((source) =>
       source.subscribeEvents(deliver, this.#options),
     );
-    const sdkSubscriber: SdkSubscriber = { handler, pending: new Set() };
     this.#sdkSubscribers.add(sdkSubscriber);
     let active = true;
     return {
@@ -193,14 +189,15 @@ export class RuntimeEvents {
 
   /** @internal Merge an SDK-owned fact (experiments) into every public subscriber. */
   emit(event: Record<string, unknown>): RuntimeEvent {
+    const eventId = typeof event.event_id === "string" ? event.event_id : newRuntimeEventId();
     const envelope = normalizeRuntimeEvent({
+      ...event,
       v: 2,
-      event_id: newRuntimeEventId(),
+      event_id: eventId,
       ts: Date.now(),
       session_id: this.sessionId,
       source_id: this.sourceId,
       type: String(event.type ?? "unknown"),
-      ...event,
     });
     for (const subscriber of this.#sdkSubscribers) {
       const pending = new Promise<void>((resolve) => {
@@ -217,6 +214,21 @@ export class RuntimeEvents {
     }
     return envelope;
   }
+}
+
+function trackHandlerWork(subscriber: SdkSubscriber, batch: readonly RuntimeEvent[]): void {
+  let pending: Promise<void>;
+  try {
+    pending = Promise.resolve(subscriber.handler(batch)).then(
+      () => {},
+      () => {},
+    );
+  } catch {
+    // Runtime-event consumers are observational and fail open.
+    return;
+  }
+  subscriber.pending.add(pending);
+  void pending.then(() => subscriber.pending.delete(pending));
 }
 
 function defaultSourceId(): string {

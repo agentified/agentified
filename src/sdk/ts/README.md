@@ -395,9 +395,9 @@ subscription.unsubscribe();
 ```
 
 Delivery is best effort, bounded, and fail-open: subscriber work never blocks catalog operations.
-`flush()` drains work already accepted by this process. The stream includes search, invocation,
-catalog churn, upstream/auth, experiment, and observable delivery-loss facts described by
-[ADR 0019](../../../docs/adr/0019-runtime-events-lane.md).
+`flush()` drains work already accepted by this process and waits for async handlers to settle.
+The stream includes search, invocation, catalog churn, upstream/auth, experiment, and observable
+delivery-loss facts described by [ADR 0019](../../../docs/adr/0019-runtime-events-lane.md).
 
 Experiments are SDK-owned facts. Pass the runtime stream as the second argument so their OTel and
 runtime projections share event IDs:

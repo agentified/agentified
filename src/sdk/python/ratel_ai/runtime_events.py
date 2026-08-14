@@ -109,7 +109,7 @@ class RuntimeEventSubscription:
             await asyncio.sleep(0)
 
     def unsubscribe(self) -> None:
-        """Stop accepting future events; already-running work is best-effort."""
+        """Stop accepting new events; already-queued native envelopes still drain."""
         if not self._active[0]:
             return
         self._active[0] = False

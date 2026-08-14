@@ -6,6 +6,7 @@
     "max_payload_bytes": 65536,
     "max_query_bytes": 4096,
     "max_hits": 100,
+    "otel_event_id_attribute": "ratel.event.id",
     "required_envelope_fields": ["v", "event_id", "ts", "session_id", "source_id", "type"],
     "event_types": [
       "search",

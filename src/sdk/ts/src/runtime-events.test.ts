@@ -11,6 +11,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { RATEL_EVENT_ID } from "@ratel-ai/telemetry";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   experimentalDefineExperiment,
@@ -28,6 +29,7 @@ interface RuntimeEventsFixture {
     max_payload_bytes: number;
     max_query_bytes: number;
     max_hits: number;
+    otel_event_id_attribute: string;
     required_envelope_fields: string[];
     event_types: string[];
   };
@@ -49,6 +51,7 @@ describe("public runtime events", () => {
       max_payload_bytes: RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
       max_query_bytes: RUNTIME_EVENT_MAX_QUERY_BYTES,
       max_hits: RUNTIME_EVENT_MAX_HITS,
+      otel_event_id_attribute: RATEL_EVENT_ID,
       required_envelope_fields: ["v", "event_id", "ts", "session_id", "source_id", "type"],
       event_types: [...RUNTIME_EVENT_TYPES],
     });
@@ -61,7 +64,6 @@ describe("public runtime events", () => {
 
     runtime.events.emit({
       type: "search",
-      search_id: "search-1",
       query: "é".repeat(4_096),
       hits: Array.from({ length: 120 }, (_, rank) => ({ id: `tool-${rank}`, rank, score: 1 })),
       unrecognized_padding: "x".repeat(100_000),
@@ -76,6 +78,66 @@ describe("public runtime events", () => {
     expect(Buffer.byteLength(JSON.stringify(event), "utf8")).toBeLessThanOrEqual(
       RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
     );
+  });
+
+  it("waits for async native-event handlers before flush resolves", async () => {
+    const runtime = ratel();
+    let releaseHandler: () => void = () => {};
+    const handlerReleased = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let markHandlerStarted: () => void = () => {};
+    const handlerStarted = new Promise<void>((resolve) => {
+      markHandlerStarted = resolve;
+    });
+    let handlerCompleted = false;
+    const subscription = runtime.events.subscribe(async (batch) => {
+      if (!batch.some((event) => event.type === "search")) return;
+      markHandlerStarted();
+      await handlerReleased;
+      handlerCompleted = true;
+    });
+
+    runtime.tools.search("read", 1);
+    let flushCompleted = false;
+    const flushing = subscription.flush().then(() => {
+      flushCompleted = true;
+    });
+    await handlerStarted;
+    const flushState = await Promise.race([
+      flushing.then(() => "resolved" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
+    ]);
+
+    releaseHandler();
+    await flushing;
+    expect(flushState).toBe("pending");
+    expect(flushCompleted).toBe(true);
+    expect(handlerCompleted).toBe(true);
+  });
+
+  it("protects envelope fields while preserving a shared event id", () => {
+    const runtime = ratel({
+      events: { sessionId: "session-owned", sourceId: "source-owned" },
+    });
+
+    const event = runtime.events.emit({
+      type: "experiment_outcome",
+      event_id: "01K2KB4QN2A9XJY5VKQCN8ZM1P",
+      v: 1,
+      ts: 0,
+      session_id: "session-forged",
+      source_id: "source-forged",
+    });
+
+    expect(event).toMatchObject({
+      type: "experiment_outcome",
+      event_id: "01K2KB4QN2A9XJY5VKQCN8ZM1P",
+      v: 2,
+      session_id: "session-owned",
+      source_id: "source-owned",
+    });
+    expect(event.ts).toBeGreaterThan(0);
   });
 
   it("merges tool and skill streams under one session stamp", async () => {

@@ -33,7 +33,7 @@ The remotely publishable v1 event set is:
 
 | Family | Event types | Required product facts |
 |---|---|---|
-| Search | `search`, `skill_search`, `gateway_search` | `search_id`, query, target/origin, `top_k`, duration, and ordered `hits[]` of target id, rank, and score |
+| Search | `search`, `skill_search`, `gateway_search` | query, target/origin, `top_k`, duration, and ordered `hits[]` of target id and score |
 | Tool invocation | `invoke_start`, `invoke_end`, `invoke_error`, `gateway_invoke`, `gateway_error` | tool id, `invocation_id`, outcome/error class, and duration where known |
 | Skill use | `skill_invoke` | skill id, outcome, and duration |
 | Catalog churn | `index_churn`, `skill_churn` | add/remove, target id, and catalog version where known |
@@ -41,6 +41,9 @@ The remotely publishable v1 event set is:
 | Auth | `auth_refresh`, `auth_needs`, `auth_flow_start`, `auth_flow_end` | upstream id and outcome; never credentials |
 | Experiments | `experiment_selection`, `experiment_results`, `experiment_comparison`, `experiment_skip`, `experiment_fallback`, `experiment_drop`, `experiment_invocation`, `experiment_outcome` | `selection_id`; served/shadow arm data; agreement metrics; result ids/scores; attribution, drop/fallback reason, and labelled outcome as applicable |
 | Delivery | `events_dropped` | dropped count, reason, and observation window |
+
+For search events, the envelope `event_id` identifies the search. A hit's zero-based rank is its
+position in the ordered `hits[]` array rather than a repeated field on each hit.
 
 Newer SDKs may emit additive types before every receiver understands them; the receiver stores
 the unknown envelope rather than rejecting the batch. Core diagnostic variants that are not in

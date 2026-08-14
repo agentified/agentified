@@ -65,6 +65,8 @@ pub const GEN_AI_INFERENCE_DETAILS: &str = "gen_ai.client.inference.operation.de
 // `ratel.*` attribute keys (CONVENTIONS.md, Tier 2)
 // ---------------------------------------------------------------------------
 
+/// `ratel.event.id` — runtime-event/OTel deduplication and join key.
+pub const RATEL_EVENT_ID: &str = "ratel.event.id";
 /// `ratel.origin` — direct library call vs agent-synthesized (shared attribute).
 pub const RATEL_ORIGIN: &str = "ratel.origin";
 /// `ratel.search.target` — `tool`, `skill`, or `fact` (see [`SearchTarget`]).
@@ -444,6 +446,7 @@ mod tests {
 
     #[test]
     fn ratel_attribute_keys_match_the_pin() {
+        assert_eq!(RATEL_EVENT_ID, "ratel.event.id");
         assert_eq!(RATEL_ORIGIN, "ratel.origin");
         assert_eq!(RATEL_SEARCH_TARGET, "ratel.search.target");
         assert_eq!(RATEL_SEARCH_TOP_K, "ratel.search.top_k");

@@ -156,6 +156,7 @@ def test_matches_frozen_cross_language_event_vocabulary() -> None:
         "max_payload_bytes": RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
         "max_query_bytes": RUNTIME_EVENT_MAX_QUERY_BYTES,
         "max_hits": RUNTIME_EVENT_MAX_HITS,
+        "otel_event_id_attribute": "ratel.event.id",
         "required_envelope_fields": [
             "v",
             "event_id",

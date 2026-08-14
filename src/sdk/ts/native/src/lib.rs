@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 /// A constructed sink plus the `MemorySink` handle when the kind is `"memory"`
 /// (so the owner can drain it later).
 type BuiltTraceSink = (Arc<dyn core::TraceSink>, Option<Arc<MemorySink>>);
-type EventCallback = ThreadsafeFunction<Vec<Value>, (), Vec<Value>, Status, false, false, 1>;
+type EventCallback = ThreadsafeFunction<Vec<Value>, (), Vec<Value>, Status, false, true, 1>;
 
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1_024;
 const DEFAULT_EVENT_BATCH_SIZE: usize = 64;
@@ -91,7 +91,7 @@ impl NativeEventSubscription {
         })
     }
 
-    /// Stop future delivery. Already-running callback work is best-effort.
+    /// Stop accepting new events. Envelopes already queued still drain.
     #[napi]
     pub fn unsubscribe(&self) {
         if let Ok(mut subscription) = self.subscription.lock() {
@@ -268,6 +268,7 @@ fn subscribe_event_callback(
     let callback = Arc::new(
         callback
             .build_threadsafe_function::<Vec<Value>>()
+            .weak::<true>()
             .max_queue_size::<1>()
             .build_callback(|context| Ok(context.value))?,
     );
