@@ -4,6 +4,7 @@
 //! ADR-0007 for the core-owned trace schema this emits into.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
@@ -77,7 +78,10 @@ fn trace_event_context(context: Option<&Bound<'_, PyAny>>) -> PyResult<core::Tra
 #[pyclass]
 struct NativeEventSubscription {
     subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
-    callback: Arc<EventCallbackSink>,
+    // Retain progress, not the sink: unsubscribe must release its sender so
+    // the callback dispatcher observes a disconnected receiver and exits.
+    progress: Arc<EventCallbackProgress>,
+    final_dropped_count: AtomicU64,
 }
 
 struct EventStream {
@@ -116,15 +120,18 @@ impl NativeEventSubscription {
             if let Some(subscription) = subscription {
                 subscription.flush();
             }
-            self.callback.flush();
+            self.progress.flush();
         });
     }
 
     /// Stop accepting new events. Envelopes already queued still drain.
     fn unsubscribe(&self, py: Python<'_>) {
         py.allow_threads(|| {
-            if let Ok(mut subscription) = self.subscription.lock() {
-                subscription.take();
+            if let Ok(mut subscription) = self.subscription.lock()
+                && let Some(subscription) = subscription.take()
+            {
+                self.final_dropped_count
+                    .store(subscription.dropped_count(), Ordering::Relaxed);
             }
         });
     }
@@ -133,15 +140,12 @@ impl NativeEventSubscription {
     #[getter]
     fn dropped_count(&self, py: Python<'_>) -> u64 {
         py.allow_threads(|| {
-            self.subscription
-                .lock()
-                .ok()
-                .and_then(|subscription| {
-                    subscription
-                        .as_ref()
-                        .map(|subscription| subscription.dropped_count())
-                })
-                .unwrap_or(0)
+            let current = self.subscription.lock().ok().and_then(|subscription| {
+                subscription
+                    .as_ref()
+                    .map(|subscription| subscription.dropped_count())
+            });
+            current.unwrap_or_else(|| self.final_dropped_count.load(Ordering::Relaxed))
         })
     }
 }
@@ -192,10 +196,6 @@ impl EventCallbackSink {
         });
         spawn_event_callback_dispatcher(receiver, callback, batch_size, progress);
         sink
-    }
-
-    fn flush(&self) {
-        self.progress.flush();
     }
 }
 
@@ -256,7 +256,8 @@ fn subscribe_event_callback(
         .subscribe(callback_sink.clone(), queue_capacity.max(1));
     Ok(NativeEventSubscription {
         subscription: Arc::new(Mutex::new(Some(Arc::new(subscription)))),
-        callback: callback_sink,
+        progress: callback_sink.progress.clone(),
+        final_dropped_count: AtomicU64::new(0),
     })
 }
 

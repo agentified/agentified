@@ -7,8 +7,10 @@ import inspect
 import json
 import os
 import secrets
+import threading
 import time
 import uuid
+import warnings
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -84,6 +86,38 @@ class _EventSource(Protocol):
     ) -> NativeEventSubscription: ...
 
 
+class _SubscriptionState:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = True
+        self._dropped_count = 0
+        self._warned_closed_loop = False
+
+    def unsubscribe(self) -> bool:
+        with self._lock:
+            if not self._active:
+                return False
+            self._active = False
+            return True
+
+    def record_closed_loop_drop(self, count: int) -> None:
+        with self._lock:
+            self._dropped_count += count
+            warn = not self._warned_closed_loop
+            self._warned_closed_loop = True
+        if warn:
+            warnings.warn(
+                "runtime events dropped because the async handler's event loop is closed",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    @property
+    def dropped_count(self) -> int:
+        with self._lock:
+            return self._dropped_count
+
+
 class RuntimeEventSubscription:
     """Handle over one merged bounded runtime-event subscription."""
 
@@ -91,12 +125,12 @@ class RuntimeEventSubscription:
         self,
         subscriptions: list[NativeEventSubscription],
         pending: set[asyncio.Future[None]],
-        active: list[bool],
+        state: _SubscriptionState,
     ) -> None:
         """Create a subscription over native handles and pending handler work."""
         self._subscriptions = subscriptions
         self._pending = pending
-        self._active = active
+        self._state = state
 
     async def flush(self) -> None:
         """Wait until accepted native and async-handler work completes."""
@@ -110,16 +144,18 @@ class RuntimeEventSubscription:
 
     def unsubscribe(self) -> None:
         """Stop accepting new events; already-queued native envelopes still drain."""
-        if not self._active[0]:
+        if not self._state.unsubscribe():
             return
-        self._active[0] = False
         for subscription in self._subscriptions:
             subscription.unsubscribe()
 
     @property
     def dropped_count(self) -> int:
-        """Envelopes displaced by this subscriber's native queues."""
-        return sum(subscription.dropped_count for subscription in self._subscriptions)
+        """Envelopes lost to native overflow or a closed async-handler loop."""
+        native_dropped = sum(
+            subscription.dropped_count for subscription in self._subscriptions
+        )
+        return native_dropped + self._state.dropped_count
 
 
 class RuntimeEvents:
@@ -143,7 +179,7 @@ class RuntimeEvents:
 
     def subscribe(self, handler: RuntimeEventHandler) -> RuntimeEventSubscription:
         """Subscribe to bounded asynchronous runtime-event batches."""
-        active = [True]
+        state = _SubscriptionState()
         pending: set[asyncio.Future[None]] = set()
         try:
             loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -171,7 +207,10 @@ class RuntimeEvents:
             if on_target_loop:
                 schedule()
             else:
-                loop.call_soon_threadsafe(schedule)
+                if not _schedule_on_loop(loop, schedule, state, 1):
+                    close = getattr(awaitable, "close", None)
+                    if callable(close):
+                        close()
 
         if inspect.iscoroutinefunction(handler):
             if loop is None:
@@ -184,7 +223,7 @@ class RuntimeEvents:
                 def schedule() -> None:
                     schedule_awaitable(async_handler(normalized))
 
-                loop.call_soon_threadsafe(schedule)
+                _schedule_on_loop(loop, schedule, state, len(normalized))
 
         else:
 
@@ -206,7 +245,26 @@ class RuntimeEvents:
             )
             for source in self._sources
         ]
-        return RuntimeEventSubscription(subscriptions, pending, active)
+        return RuntimeEventSubscription(subscriptions, pending, state)
+
+
+def _schedule_on_loop(
+    loop: asyncio.AbstractEventLoop,
+    callback: Callable[[], None],
+    state: _SubscriptionState,
+    dropped_count: int,
+) -> bool:
+    if loop.is_closed():
+        state.record_closed_loop_drop(dropped_count)
+        return False
+    try:
+        loop.call_soon_threadsafe(callback)
+    except RuntimeError:
+        if not loop.is_closed():
+            raise
+        state.record_closed_loop_drop(dropped_count)
+        return False
+    return True
 
 
 def _default_source_id() -> str:

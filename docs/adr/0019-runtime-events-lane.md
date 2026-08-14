@@ -87,8 +87,9 @@ stable. Renaming it starts a new source era and a distinct catalog snapshot.
 Emission fans out to multiple independent subscribers. Each push subscriber has a bounded
 queue; enqueue is synchronous and cheap, delivery is batched and asynchronous, and subscriber
 code can never block the emitting operation. On overflow the queue drops its oldest event and
-reports loss through a later `events_dropped` meta-event plus an OTel counter. The test-only
-memory sink may remain unbounded.
+reports loss through a later `events_dropped` meta-event; monotonic SDK drop counts remain
+available for local accounting. An OTel counter projection is deferred. The test-only memory
+sink may remain unbounded.
 
 Delivery is deliberately best-effort: in-memory queue plus explicit `flush()`, with no disk
 spool, ordering guarantee across producers, or synchronous durability. `flush()` drains work

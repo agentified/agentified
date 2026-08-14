@@ -672,6 +672,28 @@ async def test_invoke_emits_error_telemetry_and_reraises() -> None:
     assert events[1]["error"] == "kaboom"
 
 
+async def test_cancelled_invoke_emits_error_telemetry_and_reraises() -> None:
+    started = asyncio.Event()
+
+    async def wait_forever(_args):
+        started.set()
+        await asyncio.Event().wait()
+
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id="s"))
+    await catalog.register(_read_file_tool(wait_forever))
+    catalog.drain_trace_events()
+    invocation = asyncio.create_task(catalog.invoke("read_file", {"path": "/a"}))
+    await started.wait()
+
+    invocation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await invocation
+
+    events = catalog.drain_trace_events()
+    assert [event["type"] for event in events] == ["invoke_start", "invoke_error"]
+    assert events[1]["error"] == "CancelledError"
+
+
 async def test_re_register_replaces_in_place() -> None:
     # Re-registering an id replaces it in the native corpus, not appends a
     # duplicate: the id ranks once and the latest executor wins (RAT-378).

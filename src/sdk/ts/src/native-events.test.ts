@@ -121,13 +121,16 @@ describe("native runtime event bridge", () => {
     );
     await subscription.flush();
 
-    expect(subscription.droppedCount).toBeGreaterThan(0);
+    const droppedCount = subscription.droppedCount;
+    expect(droppedCount).toBeGreaterThan(0);
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "events_dropped",
         reason: "queue_overflow",
       }),
     );
+    subscription.unsubscribe();
+    expect(subscription.droppedCount).toBe(droppedCount);
   });
 
   it("pushes skill-registry events through the same native seam", async () => {

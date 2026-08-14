@@ -192,6 +192,53 @@ fn explicit_invocation_context_pairs_concurrent_same_tool_calls() {
 }
 
 #[test]
+fn explicit_invocation_start_does_not_shift_legacy_pairing() {
+    let sink = MemorySink::new("session");
+    let explicit = TraceEventContext::new_invocation();
+
+    sink.record_with_context(
+        TraceEvent::InvokeStart {
+            tool_id: "alpha".into(),
+            args_size_bytes: 1,
+        },
+        explicit.clone(),
+    );
+    sink.record(TraceEvent::InvokeStart {
+        tool_id: "alpha".into(),
+        args_size_bytes: 2,
+    });
+    sink.record(TraceEvent::InvokeEnd {
+        tool_id: "alpha".into(),
+        took_ms: 3,
+    });
+
+    let events = sink.snapshot();
+    assert_eq!(events[0].invocation_id, explicit.invocation_id);
+    assert_eq!(events[1].invocation_id, events[2].invocation_id);
+    assert_ne!(events[0].invocation_id, events[2].invocation_id);
+}
+
+#[test]
+fn legacy_invocation_pairing_drops_oldest_after_the_per_tool_limit() {
+    let sink = MemorySink::new("session");
+
+    for _ in 0..=1_024 {
+        sink.record(TraceEvent::InvokeStart {
+            tool_id: "alpha".into(),
+            args_size_bytes: 0,
+        });
+    }
+    sink.record(TraceEvent::InvokeEnd {
+        tool_id: "alpha".into(),
+        took_ms: 1,
+    });
+
+    let events = sink.snapshot();
+    assert_eq!(events[1].invocation_id, events[1_025].invocation_id);
+    assert_ne!(events[0].invocation_id, events[1_025].invocation_id);
+}
+
+#[test]
 fn registry_forwards_event_context_to_its_sink() {
     let sink = Arc::new(MemorySink::new("session"));
     let registry = ToolRegistry::with_trace_sink(sink.clone());

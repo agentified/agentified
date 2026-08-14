@@ -1,5 +1,6 @@
 """Native push bridge tests; the public Python API lands in Phase 5."""
 
+import gc
 import subprocess
 import sys
 import textwrap
@@ -148,11 +149,39 @@ def test_drops_oldest_and_reports_loss_while_python_callback_is_stalled() -> Non
     release_callback.set()
     subscription.flush()
 
-    assert subscription.dropped_count > 0
+    dropped_count = subscription.dropped_count
+    assert dropped_count > 0
     assert any(
         event["type"] == "events_dropped" and event["reason"] == "queue_overflow"
         for event in events
     )
+    subscription.unsubscribe()
+    assert subscription.dropped_count == dropped_count
+
+
+def test_unsubscribe_releases_the_callback_dispatcher() -> None:
+    registry = ToolRegistry()
+    released = threading.Event()
+
+    class Callback:
+        def __call__(self, _batch: list[dict[str, Any]]) -> None:
+            pass
+
+        def __del__(self) -> None:
+            released.set()
+
+    callback = Callback()
+    subscription = registry.subscribe_trace_events(callback, "session-dispatcher")
+    del callback
+
+    subscription.unsubscribe()
+
+    for _ in range(100):
+        _ = subscription.dropped_count
+        gc.collect()
+        if released.wait(timeout=0.01):
+            break
+    assert released.is_set()
 
 
 def test_keeps_callbacks_and_usage_learning_across_base_sink_rewrap() -> None:

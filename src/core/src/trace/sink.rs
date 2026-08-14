@@ -11,6 +11,7 @@ use crate::trace::event::{TraceEnvelope, TraceEvent, TraceEventContext};
 
 const DEFAULT_SOURCE_ID: &str = "ratel";
 const ENVELOPE_VERSION: u32 = 2;
+const MAX_PENDING_INVOCATIONS_PER_TOOL: usize = 1_024;
 const QUEUE_OVERFLOW: &str = "queue_overflow";
 
 /// A handle to one [`FanoutSink`] subscriber.
@@ -97,12 +98,17 @@ impl EnvelopeFactory {
         // TraceEventContext::new_invocation().
         match event {
             TraceEvent::InvokeStart { tool_id, .. } => {
+                let has_explicit_invocation = context.invocation_id.is_some();
                 let invocation_id = context.invocation_id.get_or_insert_with(new_ulid).clone();
+                if has_explicit_invocation {
+                    return;
+                }
                 if let Ok(mut pending) = self.pending_invocations.lock() {
-                    pending
-                        .entry(tool_id.clone())
-                        .or_default()
-                        .push_back(invocation_id);
+                    let ids = pending.entry(tool_id.clone()).or_default();
+                    if ids.len() == MAX_PENDING_INVOCATIONS_PER_TOOL {
+                        ids.pop_front();
+                    }
+                    ids.push_back(invocation_id);
                 }
             }
             TraceEvent::InvokeEnd { tool_id, .. } | TraceEvent::InvokeError { tool_id, .. } => {

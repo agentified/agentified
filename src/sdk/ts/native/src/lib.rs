@@ -4,7 +4,7 @@
 extern crate napi_derive;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockWriteGuard};
 use std::thread;
@@ -75,7 +75,10 @@ fn trace_event_context(config: Option<TraceEventContextConfig>) -> core::TraceEv
 #[napi]
 pub struct NativeEventSubscription {
     subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
-    callback: Arc<EventCallbackSink>,
+    // Retain progress, not the sink: unsubscribe must release its sender so
+    // the callback dispatcher observes a disconnected receiver and exits.
+    progress: Arc<EventCallbackProgress>,
+    final_dropped_count: AtomicU64,
 }
 
 #[napi]
@@ -87,30 +90,30 @@ impl NativeEventSubscription {
     pub fn flush(&self) -> AsyncTask<FlushEventSubscriptionTask> {
         AsyncTask::new(FlushEventSubscriptionTask {
             subscription: self.subscription.clone(),
-            callback: self.callback.clone(),
+            progress: self.progress.clone(),
         })
     }
 
     /// Stop accepting new events. Envelopes already queued still drain.
     #[napi]
     pub fn unsubscribe(&self) {
-        if let Ok(mut subscription) = self.subscription.lock() {
-            subscription.take();
+        if let Ok(mut subscription) = self.subscription.lock()
+            && let Some(subscription) = subscription.take()
+        {
+            self.final_dropped_count
+                .store(subscription.dropped_count(), Ordering::Relaxed);
         }
     }
 
     /// Number of envelopes displaced by this subscriber's bounded queue.
     #[napi(getter)]
     pub fn dropped_count(&self) -> f64 {
-        self.subscription
-            .lock()
-            .ok()
-            .and_then(|subscription| {
-                subscription
-                    .as_ref()
-                    .map(|subscription| subscription.dropped_count())
-            })
-            .unwrap_or(0) as f64
+        let current = self.subscription.lock().ok().and_then(|subscription| {
+            subscription
+                .as_ref()
+                .map(|subscription| subscription.dropped_count())
+        });
+        current.unwrap_or_else(|| self.final_dropped_count.load(Ordering::Relaxed)) as f64
     }
 }
 
@@ -143,7 +146,7 @@ struct EventCallbackState {
 
 pub struct FlushEventSubscriptionTask {
     subscription: Arc<Mutex<Option<Arc<core::FanoutSubscription>>>>,
-    callback: Arc<EventCallbackSink>,
+    progress: Arc<EventCallbackProgress>,
 }
 
 impl EventStream {
@@ -201,10 +204,6 @@ impl EventCallbackSink {
         spawn_event_callback_dispatcher(receiver, callback, batch_size, progress);
         sink
     }
-
-    fn flush(&self) {
-        self.progress.flush();
-    }
 }
 
 impl EventCallbackProgress {
@@ -255,7 +254,7 @@ impl Task for FlushEventSubscriptionTask {
         if let Some(subscription) = subscription {
             subscription.flush();
         }
-        self.callback.flush();
+        self.progress.flush();
         Ok(())
     }
 
@@ -299,7 +298,8 @@ fn subscribe_event_callback(
         .subscribe(callback_sink.clone(), queue_capacity);
     Ok(NativeEventSubscription {
         subscription: Arc::new(Mutex::new(Some(Arc::new(subscription)))),
-        callback: callback_sink,
+        progress: callback_sink.progress.clone(),
+        final_dropped_count: AtomicU64::new(0),
     })
 }
 

@@ -1071,6 +1071,7 @@ class ToolCatalog:
 
         Raises:
             ValueError: if `tool_id` is not registered.
+            asyncio.CancelledError: after recording a cancelled `invoke_error`.
             Exception: whatever the handler raises, re-raised after an
                 `invoke_error` trace event is recorded.
         """
@@ -1105,6 +1106,19 @@ class ToolCatalog:
                     terminal_projection,
                 )
                 return result
+            except asyncio.CancelledError as err:
+                terminal_projection = projection.copy()
+                terminal_projection["event_id"] = new_runtime_event_id()
+                self._registry.record_event(
+                    {
+                        "type": "invoke_error",
+                        "tool_id": tool_id,
+                        "took_ms": _elapsed_ms(started),
+                        "error": _error_message(err),
+                    },
+                    terminal_projection,
+                )
+                raise
             except Exception as err:
                 terminal_projection = projection.copy()
                 terminal_projection["event_id"] = new_runtime_event_id()

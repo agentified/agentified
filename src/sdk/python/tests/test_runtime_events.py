@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -244,6 +245,30 @@ async def test_marshals_async_handlers_to_the_subscribing_event_loop() -> None:
 
     assert [event["type"] for event in received] == ["search"]
     assert handler_threads == [event_loop_thread]
+    subscription.unsubscribe()
+
+
+def test_counts_and_warns_when_an_async_handlers_event_loop_is_closed() -> None:
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools], batch_size=1)
+
+    async def handler(_batch: list[dict[str, object]]) -> None:
+        pass
+
+    async def subscribe():
+        return events.subscribe(handler)
+
+    subscription = asyncio.run(subscribe())
+
+    with pytest.warns(RuntimeWarning, match="event loop is closed") as warning_records:
+        tools.search("after-close", 1)
+        tools.search("still-closed", 1)
+        deadline = time.monotonic() + 1
+        while subscription.dropped_count < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert subscription.dropped_count == 2
+    assert len(warning_records) == 1
     subscription.unsubscribe()
 
 
