@@ -102,8 +102,9 @@ termination. The TypeScript bridge uses a napi threadsafe callback and Python ma
 delivery safely off the Rust worker thread/GIL-sensitive hot path.
 
 The Cloud receiver exposes `POST /api/v1/events` with the same `rtl_` Bearer-key model as OTLP.
-Wire limits are 64 KB (65,536 bytes) per serialized event and 4 MB (4,194,304 bytes) or 5,000
-events per batch, whichever is reached first. It accepts valid events with OTLP-style partial
+Wire limits are 64 KB (65,536 bytes) per serialized event and 4,000,000 bytes or 5,000
+events per batch, whichever is reached first; the first-party Cloud SDK batches below
+3,900,000 bytes to stay clear of the receiver cap. It accepts valid events with OTLP-style partial
 success, returning rejected event ids and reasons, and rate-limits each key to 120 batch
 requests/minute with burst 240 (`429` plus `Retry-After`). Runtime facts are quota-exempt for
 now. Reject storage is metadata-only with roughly seven-day retention; raw accepted envelopes
