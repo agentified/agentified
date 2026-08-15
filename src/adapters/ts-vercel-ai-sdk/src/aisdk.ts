@@ -112,6 +112,7 @@ export function aiSdk(): RatelAdapter<Tool, ModelMessage, AiSdkExt> {
       const inputSchema = asSchema(t.inputSchema as never) as NormalizedSchema;
       const registration: CatalogRegistration = {
         description: resolveDescription(t.description),
+        searchableDescription: (t as { searchableDescription?: string }).searchableDescription,
         inputSchema: toJsonSchema(id, "inputSchema", inputSchema),
         // A model-facing capability call threads the live AI SDK options through
         // the catalog as an opaque, adapter-tagged value (set by `expose`). A

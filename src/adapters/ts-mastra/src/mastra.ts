@@ -80,6 +80,7 @@ export function mastra(): RatelAdapter<MastraTool, MastraDBMessage, MastraExt> {
       const t = tool as {
         execute?: unknown;
         description?: string;
+        searchableDescription?: string;
         inputSchema?: unknown;
         outputSchema?: unknown;
       };
@@ -89,6 +90,7 @@ export function mastra(): RatelAdapter<MastraTool, MastraDBMessage, MastraExt> {
       const execute = t.execute as (input: unknown, context: unknown) => unknown;
       const registration: CatalogRegistration = {
         description: t.description ?? "",
+        searchableDescription: t.searchableDescription,
         // `createTool` normalized the input schema at build time; read its JSON
         // Schema straight off the normalized standard schema (works for tools
         // built from zod 3, zod 4, or a raw JSON Schema).
