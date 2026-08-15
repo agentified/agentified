@@ -170,13 +170,16 @@ fn registration_emits_complete_catalog_definitions_for_every_kind() {
     assert_eq!(definitions[0].3, "Read records");
     assert!(definitions[0].4.is_empty());
     assert_eq!(
-        definitions[0].5,
-        Some(json!({
+        definitions[0].5.as_deref(),
+        Some(&json!({
             "type": "object",
             "properties": { "path": { "type": "string" } }
         }))
     );
-    assert_eq!(definitions[0].6, Some(json!({ "type": "string" })));
+    assert_eq!(
+        definitions[0].6.as_deref(),
+        Some(&json!({ "type": "string" }))
+    );
     assert_eq!(definitions[0].7, "find archive");
     assert!(definitions[0].8);
     assert_eq!(

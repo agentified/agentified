@@ -1224,8 +1224,14 @@ mod tests {
         assert_eq!(definition.2, "read_file");
         assert_eq!(definition.3, "read a file");
         assert!(definition.4.is_empty());
-        assert_eq!(definition.5, Some(serde_json::json!({"type": "object"})));
-        assert_eq!(definition.6, Some(serde_json::json!({"type": "string"})));
+        assert_eq!(
+            definition.5.as_deref(),
+            Some(&serde_json::json!({"type": "object"}))
+        );
+        assert_eq!(
+            definition.6.as_deref(),
+            Some(&serde_json::json!({"type": "string"}))
+        );
         assert_eq!(definition.7, "open local documents");
         assert!(definition.8);
         assert_eq!(definition.9.len(), 64);

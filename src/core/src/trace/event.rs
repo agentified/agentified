@@ -203,9 +203,9 @@ pub enum TraceEvent {
         /// Search tags; empty for tools.
         tags: Vec<String>,
         /// Tool input JSON Schema; absent for skills and facts.
-        input_schema: Option<serde_json::Value>,
+        input_schema: Option<Box<serde_json::Value>>,
         /// Tool output JSON Schema; absent for skills and facts.
-        output_schema: Option<serde_json::Value>,
+        output_schema: Option<Box<serde_json::Value>>,
         /// Effective searchable description after applying the optional override.
         searchable_description: String,
         /// Whether the effective searchable description came from an override.
@@ -635,8 +635,8 @@ impl TraceEvent {
             name: name.into(),
             description: description.into(),
             tags: tags.to_vec(),
-            input_schema,
-            output_schema,
+            input_schema: input_schema.map(Box::new),
+            output_schema: output_schema.map(Box::new),
             searchable_description: searchable_description.into(),
             searchable_description_overridden,
             content_hash,
