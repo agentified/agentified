@@ -56,6 +56,21 @@ async def test_registers_facts_and_ranks_relevant_first() -> None:
     assert hits[0].fact_id == "cancellation"
 
 
+async def test_searchable_description_replaces_fact_description_for_ranking() -> None:
+    catalog = FactCatalog()
+    await catalog.register(
+        Fact(
+            id="fact",
+            name="fact",
+            description="composedonlyterm",
+            searchable_description="overrideonlyterm",
+        )
+    )
+
+    assert [hit.fact_id for hit in catalog.search("overrideonlyterm", 5)] == ["fact"]
+    assert catalog.search("composedonlyterm", 5) == []
+
+
 async def test_pinned_returns_only_always_in_registration_order() -> None:
     catalog = FactCatalog()
     await catalog.register(

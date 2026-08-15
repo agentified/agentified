@@ -232,6 +232,8 @@ class Tool:
     description: str
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
+    # Optional replacement for the description component used by retrieval.
+    searchable_description: str | None = None
 
 
 @dataclass
@@ -831,6 +833,7 @@ class ToolRegistry:
                         tool.id,
                         tool.name,
                         tool.description,
+                        tool.searchable_description,
                         tool.input_schema,
                         tool.output_schema,
                     )

@@ -100,11 +100,12 @@ fn parse_trace_log(jsonl: &str) -> PyResult<Vec<core::TraceEnvelope>> {
         .collect()
 }
 
-type ToolBatchItem = (String, String, String, Py<PyAny>, Py<PyAny>);
+type ToolBatchItem = (String, String, String, Option<String>, Py<PyAny>, Py<PyAny>);
 type SkillBatchItem = (
     String,
     String,
     String,
+    Option<String>,
     Vec<String>,
     Vec<String>,
     HashMap<String, Vec<String>>,
@@ -117,6 +118,7 @@ type FactBatchItem = (
     String,
     String,
     String,
+    Option<String>,
     Vec<String>,
     HashMap<String, Vec<String>>,
     String,
@@ -888,20 +890,24 @@ impl ToolRegistry {
     fn _register_many(&mut self, py: Python<'_>, tools: Vec<ToolBatchItem>) -> PyResult<()> {
         let tools = tools
             .into_iter()
-            .map(|(id, name, description, input_schema, output_schema)| {
-                let input_schema: Value = pythonize::depythonize(input_schema.bind(py))
-                    .map_err(|e| PyValueError::new_err(format!("invalid input_schema: {e}")))?;
-                let output_schema: Value = pythonize::depythonize(output_schema.bind(py))
-                    .map_err(|e| PyValueError::new_err(format!("invalid output_schema: {e}")))?;
-                Ok(core::Tool {
-                    id,
-                    name,
-                    description,
-                    searchable_description: None,
-                    input_schema,
-                    output_schema,
-                })
-            })
+            .map(
+                |(id, name, description, searchable_description, input_schema, output_schema)| {
+                    let input_schema: Value = pythonize::depythonize(input_schema.bind(py))
+                        .map_err(|e| PyValueError::new_err(format!("invalid input_schema: {e}")))?;
+                    let output_schema: Value = pythonize::depythonize(output_schema.bind(py))
+                        .map_err(|e| {
+                            PyValueError::new_err(format!("invalid output_schema: {e}"))
+                        })?;
+                    Ok(core::Tool {
+                        id,
+                        name,
+                        description,
+                        searchable_description,
+                        input_schema,
+                        output_schema,
+                    })
+                },
+            )
             .collect::<PyResult<Vec<_>>>()?;
         for tool in tools {
             self.inner.register(tool);
@@ -1356,12 +1362,12 @@ impl SkillRegistry {
     /// Register a batch only after PyO3 has converted every item's full shape.
     /// A bad later item therefore fails before this method mutates the registry.
     fn _register_many(&mut self, skills: Vec<SkillBatchItem>) {
-        for (id, name, description, tags, tools, metadata, body) in skills {
+        for (id, name, description, searchable_description, tags, tools, metadata, body) in skills {
             self.inner.register(core::Skill {
                 id,
                 name,
                 description,
-                searchable_description: None,
+                searchable_description,
                 tags,
                 tools,
                 metadata,
@@ -1380,11 +1386,20 @@ impl SkillRegistry {
             skills
                 .into_iter()
                 .map(
-                    |(id, name, description, tags, tools, metadata, body)| core::Skill {
+                    |(
                         id,
                         name,
                         description,
-                        searchable_description: None,
+                        searchable_description,
+                        tags,
+                        tools,
+                        metadata,
+                        body,
+                    )| core::Skill {
+                        id,
+                        name,
+                        description,
+                        searchable_description,
                         tags,
                         tools,
                         metadata,
@@ -1798,21 +1813,23 @@ impl FactRegistry {
     fn _register_many(&mut self, facts: Vec<FactBatchItem>) -> PyResult<()> {
         let facts = facts
             .into_iter()
-            .map(|(id, name, description, tags, metadata, body, pin)| {
-                let pin = pin
-                    .parse::<core::PinMode>()
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(core::Fact {
-                    id,
-                    name,
-                    description,
-                    searchable_description: None,
-                    tags,
-                    metadata,
-                    body,
-                    pin,
-                })
-            })
+            .map(
+                |(id, name, description, searchable_description, tags, metadata, body, pin)| {
+                    let pin = pin
+                        .parse::<core::PinMode>()
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                    Ok(core::Fact {
+                        id,
+                        name,
+                        description,
+                        searchable_description,
+                        tags,
+                        metadata,
+                        body,
+                        pin,
+                    })
+                },
+            )
             .collect::<PyResult<Vec<_>>>()?;
         for fact in facts {
             self.inner.register(fact);
