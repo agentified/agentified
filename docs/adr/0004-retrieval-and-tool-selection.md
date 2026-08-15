@@ -4,7 +4,7 @@ Date: 2026-07-05
 
 ## Status
 
-Accepted
+Superseded by [ADR-0021](0021-catalog-searchable-description-projections.md).
 
 Compacted 2026-07 from pre-compaction ADR-0003 (tool selection, 2026-04-30) and ADR-0004
 (tool indexing, 2026-04-30).

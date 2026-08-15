@@ -160,6 +160,7 @@ impl FactRegistry {
     ///     id: "cancellation".into(),
     ///     name: "cancellation-policy".into(),
     ///     description: "How to cancel or reschedule a booking".into(),
+    ///     searchable_description: None,
     ///     tags: vec!["booking".into()],
     ///     metadata: std::collections::HashMap::new(),
     ///     body: "Cancel at least 24h ahead for a full refund.".into(),
@@ -430,6 +431,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
+            searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             metadata: std::collections::HashMap::new(),
             body: format!("{name} body"),
@@ -534,6 +536,25 @@ mod tests {
     }
 
     #[test]
+    fn searchable_description_replaces_fact_description_but_keeps_name_and_tags() {
+        let mut reg = FactRegistry::new();
+        let mut overridden = fact(
+            "billing",
+            "billing_policy",
+            "orchestrate zeppelin manifests",
+            &["finance_ops"],
+            PinMode::Retrieved,
+        );
+        overridden.searchable_description = Some("reconcile overdue invoices".into());
+        reg.register(overridden);
+
+        assert_eq!(reg.search("overdue invoices", 5)[0].fact_id, "billing");
+        assert!(reg.search("zeppelin manifests", 5).is_empty());
+        assert_eq!(reg.search("billing", 5)[0].fact_id, "billing");
+        assert_eq!(reg.search("finance ops", 5)[0].fact_id, "billing");
+    }
+
+    #[test]
     fn search_on_empty_registry_returns_no_hits() {
         let reg = FactRegistry::new();
         assert!(reg.search("anything", 5).is_empty());
@@ -623,6 +644,81 @@ mod tests {
             hits.first().map(|h| h.fact_id.as_str()),
             Some("shop-address")
         );
+    }
+
+    #[test]
+    fn semantic_uses_searchable_description_and_keeps_name_and_tags() {
+        let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut overridden = fact(
+            "target",
+            "catalog",
+            "shop address",
+            &["general"],
+            PinMode::Retrieved,
+        );
+        overridden.searchable_description = Some("cancel refund policy".into());
+        overridden_reg.register(overridden);
+        overridden_reg.register(fact(
+            "decoy",
+            "decoy",
+            "shop address",
+            &["general"],
+            PinMode::Retrieved,
+        ));
+        overridden_reg.build_embeddings().unwrap();
+        let override_hits = overridden_reg
+            .search_with_method("cancel refund", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            override_hits.first().map(|h| h.fact_id.as_str()),
+            Some("target")
+        );
+
+        let mut name_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut named = fact(
+            "named",
+            "shop_address",
+            "unrelated",
+            &["general"],
+            PinMode::Retrieved,
+        );
+        named.searchable_description = Some("cancel refund".into());
+        name_reg.register(named);
+        name_reg.register(fact(
+            "name-decoy",
+            "decoy",
+            "cancel refund",
+            &[],
+            PinMode::Retrieved,
+        ));
+        name_reg.build_embeddings().unwrap();
+        let name_hits = name_reg
+            .search_with_method("shop address", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(name_hits.first().map(|h| h.fact_id.as_str()), Some("named"));
+
+        let mut tag_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut tagged = fact(
+            "tagged",
+            "catalog",
+            "unrelated",
+            &["location"],
+            PinMode::Retrieved,
+        );
+        tagged.searchable_description = Some("cancel refund".into());
+        tag_reg.register(tagged);
+        tag_reg.register(fact(
+            "tag-decoy",
+            "decoy",
+            "cancel refund",
+            &[],
+            PinMode::Retrieved,
+        ));
+        tag_reg.build_embeddings().unwrap();
+        let tag_hits = tag_reg
+            .search_with_method("shop location", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(tag_hits.first().map(|h| h.fact_id.as_str()), Some("tagged"));
     }
 
     #[test]

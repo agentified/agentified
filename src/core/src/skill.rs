@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 /// A skill registered for retrieval — the on-demand analog of a [`crate::Tool`].
 ///
-/// `name`, `description`, and `tags` drive ranking (they are folded into the
-/// searchable text). `tags` are author-declared labels and task phrases
-/// ("frontend", "login form") folded into the BM25 text so a terse intent
-/// prompt matches the skill. `tools` are the ids of tools the body's
+/// `name`, the effective searchable description, and `tags` drive ranking.
+/// The description component defaults to [`Self::description`] and can be
+/// replaced by [`Self::searchable_description`]. `tags` are author-declared
+/// labels and task phrases ("frontend", "login form") folded into the BM25
+/// text so a terse intent prompt matches the skill. `tools` are the ids of tools the body's
 /// instructions call — an explicit dependency edge, **not** indexed;
 /// `search_capabilities` pulls them into its tools bucket so the agent gets a
 /// skill and the tools it needs in one turn instead of a second search.
@@ -24,6 +25,10 @@ pub struct Skill {
     pub name: String,
     /// What the skill is for — the primary ranking text.
     pub description: String,
+    /// Optional replacement for the description component used by BM25 and
+    /// dense retrieval. The skill name and tags remain indexed. `None` uses
+    /// [`Self::description`].
+    pub searchable_description: Option<String>,
     /// Author-declared labels and task phrases, indexed alongside the
     /// description.
     pub tags: Vec<String>,

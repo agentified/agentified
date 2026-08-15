@@ -12,8 +12,8 @@
 //!
 //! Three registries hold the corpus, one per capability kind:
 //!
-//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints described by a
-//!   name, a description, and JSON schemas.
+//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints ranked by name and
+//!   searchable description; JSON schemas remain model-facing.
 //! - [`SkillRegistry`] indexes [`Skill`]s — reusable instruction playbooks
 //!   whose body is dispatched on demand (a *pull*).
 //! - [`FactRegistry`] indexes [`Fact`]s — constant grounding content whose body
@@ -52,6 +52,7 @@
 //!     id: "read_file".into(),
 //!     name: "read_file".into(),
 //!     description: "Read a file from disk".into(),
+//!     searchable_description: None,
 //!     input_schema: serde_json::json!({
 //!         "properties": {
 //!             "path": { "type": "string", "description": "absolute path" }
@@ -63,6 +64,7 @@
 //!     id: "send_email".into(),
 //!     name: "send_email".into(),
 //!     description: "Send an email to a recipient".into(),
+//!     searchable_description: None,
 //!     input_schema: serde_json::json!({}),
 //!     output_schema: serde_json::json!({}),
 //! });

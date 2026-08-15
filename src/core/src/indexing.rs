@@ -5,25 +5,14 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
     if !tool.name.is_empty() {
         push_identifier(&tool.name, &mut tokens);
     }
-    if !tool.description.is_empty() {
-        tokens.push(tool.description.clone());
+    let description = tool
+        .searchable_description
+        .as_deref()
+        .unwrap_or(&tool.description);
+    if !description.is_empty() {
+        tokens.push(description.to_string());
     }
-    flatten(&tool.input_schema, &mut tokens);
-    flatten(&tool.output_schema, &mut tokens);
     tokens.join(" ")
-}
-
-fn flatten(value: &serde_json::Value, tokens: &mut Vec<String>) {
-    if let Some(properties) = value.get("properties").and_then(|v| v.as_object()) {
-        for (key, sub) in properties {
-            push_identifier(key, tokens);
-            push_field_tokens(sub, tokens);
-            flatten(sub, tokens);
-        }
-    }
-    if let Some(items) = value.get("items") {
-        flatten(items, tokens);
-    }
 }
 
 // Push the original identifier and, if it differs, a space-split form so that
@@ -54,19 +43,6 @@ pub(crate) fn split_identifier(s: &str) -> String {
     out
 }
 
-fn push_field_tokens(sub: &serde_json::Value, tokens: &mut Vec<String>) {
-    if let Some(desc) = sub.get("description").and_then(|v| v.as_str()) {
-        tokens.push(desc.to_string());
-    }
-    if let Some(values) = sub.get("enum").and_then(|v| v.as_array()) {
-        for v in values {
-            if let Some(s) = v.as_str() {
-                tokens.push(s.to_string());
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +53,7 @@ mod tests {
             id: "read_file".into(),
             name: "read_file".into(),
             description: "Read a file from disk".into(),
+            searchable_description: None,
             input_schema: json!({
                 "properties": {
                     "path": {
@@ -103,30 +80,10 @@ mod tests {
     }
 
     #[test]
-    fn searchable_text_preserves_schema_defined_property_order() {
+    fn searchable_text_excludes_schemas() {
         let tool = read_file_tool();
         let text = searchable_text(&tool);
-        let path_idx = text.find("path").expect("path token missing");
-        let encoding_idx = text.find("encoding").expect("encoding token missing");
-        assert!(
-            path_idx < encoding_idx,
-            "expected schema-defined order (path before encoding) in: {text}"
-        );
-    }
-
-    #[test]
-    fn searchable_text_omits_json_structure_keywords() {
-        let tool = read_file_tool();
-        let text = searchable_text(&tool);
-        // Tokens we explicitly skip: type names, structural keys, JSON syntax.
-        assert!(
-            !text.contains("\"type\""),
-            "raw type quoting leaked: {text}"
-        );
-        assert!(
-            !text.contains("\"properties\""),
-            "properties leaked: {text}"
-        );
-        assert!(!text.contains('{'), "JSON braces leaked: {text}");
+        assert!(!text.contains("path"), "input schema leaked: {text}");
+        assert!(!text.contains("encoding"), "output schema leaked: {text}");
     }
 }

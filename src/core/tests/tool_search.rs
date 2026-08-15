@@ -19,6 +19,7 @@ fn snake_case_name_is_split_for_natural_language_queries() {
         id: "search_files".into(),
         name: "search_files".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -26,6 +27,7 @@ fn snake_case_name_is_split_for_natural_language_queries() {
         id: "decoy".into(),
         name: "decoy".into(),
         description: "unrelated background tool".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -46,6 +48,7 @@ fn camel_case_name_is_split_for_natural_language_queries() {
         id: "computeHash".into(),
         name: "computeHash".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -60,12 +63,13 @@ fn camel_case_name_is_split_for_natural_language_queries() {
 }
 
 #[test]
-fn kebab_case_property_key_is_split_for_natural_language_queries() {
+fn schema_property_names_are_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "tool".into(),
         name: "tool".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "user-id": {}
@@ -76,11 +80,7 @@ fn kebab_case_property_key_is_split_for_natural_language_queries() {
 
     let hits = registry.search("user", 5);
 
-    assert!(
-        !hits.is_empty(),
-        "expected kebab-case key to match its parts"
-    );
-    assert_eq!(hits[0].tool_id, "tool");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
@@ -90,6 +90,7 @@ fn re_registering_same_id_replaces_entry() {
         id: "shared".into(),
         name: "shared".into(),
         description: "yodel mountain".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -97,6 +98,7 @@ fn re_registering_same_id_replaces_entry() {
         id: "shared".into(),
         name: "shared".into(),
         description: "kitchen pancake".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -124,6 +126,7 @@ fn re_register_keeps_corpus_size_stable() {
             id: "hot".into(),
             name: "hot".into(),
             description: format!("revision {i} of a hot-reloaded tool"),
+            searchable_description: None,
             input_schema: empty_schema(),
             output_schema: empty_schema(),
         });
@@ -144,6 +147,7 @@ fn mutation_after_a_warmed_search_is_visible_in_the_next_search() {
         id: id.into(),
         name: id.into(),
         description: desc.into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     };
@@ -184,6 +188,7 @@ fn warmed_registry_hits_are_byte_identical_to_a_fresh_registry() {
         id: id.into(),
         name: id.into(),
         description: desc.into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     };
@@ -222,12 +227,13 @@ fn warmed_registry_hits_are_byte_identical_to_a_fresh_registry() {
 }
 
 #[test]
-fn search_ranks_stronger_match_above_weaker() {
+fn search_ignores_a_schema_only_match() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "strong".into(),
         name: "compress".into(),
         description: "compress directories into compress archives quickly".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -235,6 +241,7 @@ fn search_ranks_stronger_match_above_weaker() {
         id: "weak".into(),
         name: "convert".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "format": {
@@ -248,14 +255,8 @@ fn search_ranks_stronger_match_above_weaker() {
 
     let hits = registry.search("compress", 5);
 
-    assert!(
-        hits.len() >= 2,
-        "expected both tools to match, got {}",
-        hits.len()
-    );
+    assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].tool_id, "strong");
-    assert_eq!(hits[1].tool_id, "weak");
-    assert!(hits[0].score > hits[1].score);
 }
 
 #[test]
@@ -266,6 +267,7 @@ fn search_respects_top_k_bound() {
             id: format!("tool_{i}"),
             name: format!("tool_{i}"),
             description: "shared keyword shrubbery".into(),
+            searchable_description: None,
             input_schema: empty_schema(),
             output_schema: empty_schema(),
         });
@@ -281,12 +283,13 @@ fn search_respects_top_k_bound() {
 }
 
 #[test]
-fn search_matches_output_schema_description() {
+fn search_does_not_match_output_schema_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "weather".into(),
         name: "weather".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: json!({
             "properties": {
@@ -300,17 +303,17 @@ fn search_matches_output_schema_description() {
 
     let hits = registry.search("ambient temperature reading", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "weather");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
-fn search_matches_nested_object_description() {
+fn search_does_not_match_nested_object_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "deploy".into(),
         name: "deploy".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "config": {
@@ -334,17 +337,17 @@ fn search_matches_nested_object_description() {
 
     let hits = registry.search("datacenter location identifier", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "deploy");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
-fn search_matches_array_items_description() {
+fn search_does_not_match_array_items_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "batch".into(),
         name: "batch".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "items": {
@@ -366,17 +369,17 @@ fn search_matches_array_items_description() {
 
     let hits = registry.search("unique product identifier", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "batch");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
-fn search_matches_enum_value() {
+fn search_does_not_match_enum_value() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "convert".into(),
         name: "convert".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "format": {
@@ -390,17 +393,17 @@ fn search_matches_enum_value() {
 
     let hits = registry.search("toml", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "convert");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
-fn search_matches_input_param_description() {
+fn search_does_not_match_input_param_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "fetch".into(),
         name: "fetch".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "url": {
@@ -414,17 +417,17 @@ fn search_matches_input_param_description() {
 
     let hits = registry.search("remote http target", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "fetch");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
-fn search_matches_input_param_name() {
+fn search_does_not_match_input_param_name() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "fetch".into(),
         name: "fetch".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: json!({
             "properties": {
                 "endpoint": {}
@@ -435,8 +438,7 @@ fn search_matches_input_param_name() {
 
     let hits = registry.search("endpoint", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "fetch");
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }
 
 #[test]
@@ -446,6 +448,7 @@ fn search_matches_tool_description() {
         id: "diff".into(),
         name: "diff".into(),
         description: "compute the unified textual difference between two files".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -458,12 +461,30 @@ fn search_matches_tool_description() {
 }
 
 #[test]
+fn searchable_description_replaces_tool_description_but_keeps_name() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "billing".into(),
+        name: "billing_helper".into(),
+        description: "orchestrate zeppelin manifests".into(),
+        searchable_description: Some("reconcile overdue invoices".into()),
+        input_schema: empty_schema(),
+        output_schema: empty_schema(),
+    });
+
+    assert_eq!(registry.search("overdue invoices", 5)[0].tool_id, "billing");
+    assert!(registry.search("zeppelin manifests", 5).is_empty());
+    assert_eq!(registry.search("billing", 5)[0].tool_id, "billing");
+}
+
+#[test]
 fn search_matches_tool_name() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "read_file".into(),
         name: "read_file".into(),
         description: String::new(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
@@ -487,6 +508,7 @@ fn tied_scores_are_ordered_by_tool_id() {
             id: id.into(),
             name: id.into(),
             description: "send a notification message to a channel".into(),
+            searchable_description: None,
             input_schema: empty_schema(),
             output_schema: empty_schema(),
         });
@@ -512,6 +534,7 @@ fn tied_scores_keep_top_k_membership_stable() {
             id: id.into(),
             name: id.into(),
             description: "send a notification message to a channel".into(),
+            searchable_description: None,
             input_schema: empty_schema(),
             output_schema: empty_schema(),
         });

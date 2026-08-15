@@ -56,6 +56,7 @@ fn lookup_tool(id: &str) -> Tool {
         id: id.into(),
         name: id.into(),
         description: "lookup".into(),
+        searchable_description: None,
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     }

@@ -1877,6 +1877,7 @@ mod tests {
                 id: id.into(),
                 name: id.into(),
                 description: "endpoint auth test".into(),
+                searchable_description: None,
                 input_schema: serde_json::json!({}),
                 output_schema: serde_json::json!({}),
             });
@@ -1941,6 +1942,7 @@ mod tests {
             id: format!("tool-{index}"),
             name: format!("tool-{index}"),
             description: format!("endpoint tool {index}"),
+            searchable_description: None,
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
         }

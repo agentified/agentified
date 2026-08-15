@@ -18,6 +18,8 @@
 
 `ratel-ai-core` is Ratel's Rust retrieval engine. Register tool, skill, or fact metadata once, then rank the catalog for each agent turn. Tools and skills are *pulled* on relevance; facts are constant grounding content the higher layers *push* into the context, always-on or retrieval-gated. BM25 is the model-free default; semantic and hybrid retrieval use either an in-process model or a configured OpenAI-compatible embedding endpoint. The retrieval engine and cache stay in-process, with no vector database or Ratel service to deploy.
 
+Every catalog entry can set `searchable_description` independently of its model-facing description or payload. When unset, retrieval uses `description`; when set, it replaces only that component while name and skill/fact tags remain searchable. Tool schemas are model-facing and are not indexed.
+
 This crate owns retrieval and its local trace stream. Tool execution, MCP connections, and authentication integrations live in the SDK and local distribution.
 
 ## Install
@@ -43,6 +45,7 @@ fn main() {
             id: id.into(),
             name: id.into(),
             description: description.into(),
+            searchable_description: None,
             input_schema: Default::default(),
             output_schema: Default::default(),
         });

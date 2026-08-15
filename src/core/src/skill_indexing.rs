@@ -4,9 +4,9 @@ use crate::skill::Skill;
 /// Flatten a skill into the text the BM25 index scores against.
 ///
 /// Mirrors [`crate::indexing::searchable_text`] for tools: the name is pushed
-/// both whole and identifier-split, then the description and each tag. Tags are
-/// author-declared labels and task phrases ("frontend", "login form") so a terse
-/// intent prompt matches the skill; like all indexed text they are tokenized at
+/// both whole and identifier-split, then the effective searchable description
+/// and each tag. Tags are author-declared labels and task phrases ("frontend",
+/// "login form") so a terse intent prompt matches the skill; like all indexed text they are tokenized at
 /// index *and* query time (lowercased, stemmed, stop-words removed), not matched
 /// verbatim. The `body` is intentionally excluded — it is the dispatch payload,
 /// not a ranking signal (a 15 KB body would otherwise drown the description's
@@ -18,8 +18,12 @@ pub(crate) fn searchable_text(skill: &Skill) -> String {
     if !skill.name.is_empty() {
         push_identifier(&skill.name, &mut tokens);
     }
-    if !skill.description.is_empty() {
-        tokens.push(skill.description.clone());
+    let description = skill
+        .searchable_description
+        .as_deref()
+        .unwrap_or(&skill.description);
+    if !description.is_empty() {
+        tokens.push(description.to_string());
     }
     for tag in &skill.tags {
         if !tag.is_empty() {
@@ -39,6 +43,7 @@ mod tests {
             id: "frontend-slides".into(),
             name: "frontend-slides".into(),
             description: "Build animation-rich HTML presentations".into(),
+            searchable_description: None,
             tags: vec![
                 "frontend".into(),
                 "presentations".into(),
@@ -85,6 +90,7 @@ mod tests {
             id: "code_review".into(),
             name: "code_review".into(),
             description: String::new(),
+            searchable_description: None,
             tags: vec![],
             tools: vec![],
             metadata: HashMap::new(),

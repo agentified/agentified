@@ -47,8 +47,8 @@ skill-search tool.
 
 ### Skill data model
 
-`Skill` is `{ id, name, description, tags, tools, metadata, body }` (this is also the wire
-projection the catalog contract syncs, [ADR-0003](0003-catalog-source-interface.md)):
+`Skill` is `{ id, name, description, searchable_description?, tags, tools, metadata, body }`.
+Catalog protocol v1 keeps its frozen shape; v2 adds the optional override:
 
 - **`tags`**: indexed. Author labels and task phrases ("frontend", "login form") folded into
   the BM25 text so a terse intent prompt matches.
@@ -56,8 +56,9 @@ projection the catalog contract syncs, [ADR-0003](0003-catalog-source-interface.
 - **`metadata`** (`map<string, string[]>`): free-form, not indexed; context for higher layers
   (e.g. `{"stacks": ["react"]}` for the push-path ranker).
 
-Ranking runs over `name`, `description`, `tags`. `body`, `tools`, and `metadata` are not
-indexed. All beyond `{id, name, description}` is optional at the loader boundary.
+Ranking runs over `name`, the effective searchable description, and `tags` per ADR-0021. `body`,
+`tools`, and `metadata` are not indexed. All beyond `{id, name, description}` is optional at the
+loader boundary.
 
 ### Two surfacing mechanisms
 
