@@ -17,6 +17,17 @@ import {
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_CATALOG_CONTENT_HASH,
+  RATEL_CATALOG_DEFINITION,
+  RATEL_CATALOG_DESCRIPTION,
+  RATEL_CATALOG_ID,
+  RATEL_CATALOG_INPUT_SCHEMA,
+  RATEL_CATALOG_KIND,
+  RATEL_CATALOG_NAME,
+  RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  RATEL_CATALOG_TAGS,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
   RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -155,10 +166,21 @@ const ATTR_KEY: Record<string, string> = {
   ratel_upstream_transport: RATEL_UPSTREAM_TRANSPORT,
   ratel_upstream_tool_count: RATEL_UPSTREAM_TOOL_COUNT,
   ratel_auth_outcome: RATEL_AUTH_OUTCOME,
+  ratel_catalog_content_hash: RATEL_CATALOG_CONTENT_HASH,
+  ratel_catalog_description: RATEL_CATALOG_DESCRIPTION,
+  ratel_catalog_id: RATEL_CATALOG_ID,
+  ratel_catalog_input_schema: RATEL_CATALOG_INPUT_SCHEMA,
+  ratel_catalog_kind: RATEL_CATALOG_KIND,
+  ratel_catalog_name: RATEL_CATALOG_NAME,
+  ratel_catalog_output_schema: RATEL_CATALOG_OUTPUT_SCHEMA,
+  ratel_catalog_searchable_description: RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  ratel_catalog_searchable_description_overridden: RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  ratel_catalog_tags: RATEL_CATALOG_TAGS,
 };
 
 // Logical event id -> the event-name constant under test.
 const EVENT_NAME: Record<string, string> = {
+  ratel_catalog_definition: RATEL_CATALOG_DEFINITION,
   ratel_experiment_comparison: RATEL_EXPERIMENT_COMPARISON,
   ratel_experiment_drop: RATEL_EXPERIMENT_DROP,
   ratel_experiment_fallback: RATEL_EXPERIMENT_FALLBACK,
@@ -188,6 +210,7 @@ interface Fixture {
   expect_name: string;
   expect_attributes: Record<string, unknown>;
   expect_events?: ExpectedEvent[];
+  dedupe_catalog_definitions?: boolean;
 }
 
 interface FixtureFile {
@@ -216,10 +239,16 @@ async function emit(fixture: Fixture): Promise<{
   logs.setGlobalLoggerProvider(loggerProvider);
   const logger = logs.getLogger("conformance");
   const span = tracer.startSpan(SPAN_NAME[fixture.span]);
+  const seenDefinitions = new Set<string>();
   for (const [field, value] of Object.entries(fixture.set)) {
     span.setAttribute(ATTR_KEY[field], value as string | number);
   }
   for (const event of fixture.emit_events ?? []) {
+    if (fixture.dedupe_catalog_definitions && event.event === "ratel_catalog_definition") {
+      const key = `${event.attributes.ratel_catalog_id}\0${event.attributes.ratel_catalog_content_hash}`;
+      if (seenDefinitions.has(key)) continue;
+      seenDefinitions.add(key);
+    }
     const attributes = Object.fromEntries(
       Object.entries(event.attributes).map(([field, value]) => [ATTR_KEY[field], value]),
     ) as LogAttributes;

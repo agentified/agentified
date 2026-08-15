@@ -16,6 +16,17 @@ import {
   Origin,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_CATALOG_CONTENT_HASH,
+  RATEL_CATALOG_DEFINITION,
+  RATEL_CATALOG_DESCRIPTION,
+  RATEL_CATALOG_ID,
+  RATEL_CATALOG_INPUT_SCHEMA,
+  RATEL_CATALOG_KIND,
+  RATEL_CATALOG_NAME,
+  RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  RATEL_CATALOG_TAGS,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
   RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -121,6 +132,7 @@ describe("ratel telemetry vocabulary", () => {
   });
 
   it("names the EventRecords per the pin", () => {
+    expect(RATEL_CATALOG_DEFINITION).toBe("ratel.catalog.definition");
     expect(RATEL_EXPERIMENT_RESULTS).toBe("ratel.experiment.results");
     expect(RATEL_EXPERIMENT_COMPARISON).toBe("ratel.experiment.comparison");
     expect(RATEL_EXPERIMENT_SKIP).toBe("ratel.experiment.skip");
@@ -131,6 +143,32 @@ describe("ratel telemetry vocabulary", () => {
     expect(RATEL_SEARCH_RESULTS).toBe("ratel.search.results");
     expect(RATEL_TOOL_EXECUTION_DETAILS).toBe("ratel.tool.execution.details");
     expect(GEN_AI_INFERENCE_DETAILS).toBe("gen_ai.client.inference.operation.details");
+  });
+
+  it("pins the catalog definition attribute vocabulary", () => {
+    expect([
+      RATEL_CATALOG_KIND,
+      RATEL_CATALOG_ID,
+      RATEL_CATALOG_NAME,
+      RATEL_CATALOG_DESCRIPTION,
+      RATEL_CATALOG_TAGS,
+      RATEL_CATALOG_INPUT_SCHEMA,
+      RATEL_CATALOG_OUTPUT_SCHEMA,
+      RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+      RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+      RATEL_CATALOG_CONTENT_HASH,
+    ]).toEqual([
+      "ratel.catalog.kind",
+      "ratel.catalog.id",
+      "ratel.catalog.name",
+      "ratel.catalog.description",
+      "ratel.catalog.tags",
+      "ratel.catalog.input_schema",
+      "ratel.catalog.output_schema",
+      "ratel.catalog.searchable_description",
+      "ratel.catalog.searchable_description_overridden",
+      "ratel.catalog.content_hash",
+    ]);
   });
 
   it("models tool invocation as the gen_ai execute_tool operation, not ratel.invoke", () => {

@@ -58,6 +58,9 @@ RATEL_SEARCH_RESULTS: Final = "ratel.search.results"
 #: ratel.tool.execution.details — Opt-In structured tool arguments/result event.
 RATEL_TOOL_EXECUTION_DETAILS: Final = "ratel.tool.execution.details"
 
+#: ratel.catalog.definition — Opt-In complete catalog definition event.
+RATEL_CATALOG_DEFINITION: Final = "ratel.catalog.definition"
+
 #: ratel.experiment.results — ranked measurement for one experiment arm.
 RATEL_EXPERIMENT_RESULTS: Final = "ratel.experiment.results"
 
@@ -88,6 +91,29 @@ RATEL_ORIGIN: Final = "ratel.origin"
 
 #: ratel.event.id — runtime-event/OTel deduplication and join key.
 RATEL_EVENT_ID: Final = "ratel.event.id"
+
+#: ratel.catalog.kind — "tool", "skill", or "fact".
+RATEL_CATALOG_KIND: Final = "ratel.catalog.kind"
+#: ratel.catalog.id — stable catalog entry id.
+RATEL_CATALOG_ID: Final = "ratel.catalog.id"
+#: ratel.catalog.name — model-facing catalog entry name.
+RATEL_CATALOG_NAME: Final = "ratel.catalog.name"
+#: ratel.catalog.description — model-facing catalog entry description.
+RATEL_CATALOG_DESCRIPTION: Final = "ratel.catalog.description"
+#: ratel.catalog.tags — search tags; empty for tools.
+RATEL_CATALOG_TAGS: Final = "ratel.catalog.tags"
+#: ratel.catalog.input_schema — canonical JSON tool input schema.
+RATEL_CATALOG_INPUT_SCHEMA: Final = "ratel.catalog.input_schema"
+#: ratel.catalog.output_schema — canonical JSON tool output schema.
+RATEL_CATALOG_OUTPUT_SCHEMA: Final = "ratel.catalog.output_schema"
+#: ratel.catalog.searchable_description — effective searchable description.
+RATEL_CATALOG_SEARCHABLE_DESCRIPTION: Final = "ratel.catalog.searchable_description"
+#: whether the effective searchable description came from an explicit override.
+RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: Final = (
+    "ratel.catalog.searchable_description_overridden"
+)
+#: ratel.catalog.content_hash — canonical definition SHA-256.
+RATEL_CATALOG_CONTENT_HASH: Final = "ratel.catalog.content_hash"
 
 #: ratel.search.target — "tool", "skill", or "fact" (see SearchTarget).
 RATEL_SEARCH_TARGET: Final = "ratel.search.target"
@@ -416,6 +442,17 @@ __all__ = [
     "GEN_AI_TOOL_NAME",
     "RATEL_AUTH_FLOW",
     "RATEL_AUTH_OUTCOME",
+    "RATEL_CATALOG_CONTENT_HASH",
+    "RATEL_CATALOG_DEFINITION",
+    "RATEL_CATALOG_DESCRIPTION",
+    "RATEL_CATALOG_ID",
+    "RATEL_CATALOG_INPUT_SCHEMA",
+    "RATEL_CATALOG_KIND",
+    "RATEL_CATALOG_NAME",
+    "RATEL_CATALOG_OUTPUT_SCHEMA",
+    "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
+    "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
+    "RATEL_CATALOG_TAGS",
     "RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER",
     "RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS",
     "RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K",

@@ -49,7 +49,8 @@ integration's overlay lands on that emitter's own spans rather than on this one.
 reports what is emitted; closing the drift is a follow-up on the emit side, not a docs edit.
 
 The emitted content half rides the Logs data model as `ratel.search.results` and
-`ratel.tool.execution.details`; both are off by default. Retrieval experiments emit seven more
+`ratel.tool.execution.details`; changed catalog definitions use `ratel.catalog.definition` with
+session-local content-hash deduplication. All three are off by default. Retrieval experiments emit seven more
 EventRecords (`results`, `comparison`, `skip`, `fallback`, `drop`, `invocation`, `outcome`).
 Their result ids and scores are measurements; only per-item `ratel.experiment.result_attrs` follows
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` / `setContentCapture()`. Every name is under

@@ -21,6 +21,10 @@ Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the core stream i
 public subscription seam and may be published as a direct product-facts lane. OTel remains a
 separate, unchanged observability projection.
 
+Amended 2026-08-15 to allow catalog definitions on an explicit, content-gated OTel Logs
+EventRecord. Catalog churn remains local-only, and ADR-0020's frozen product-facts vocabulary is
+unchanged.
+
 ## Context
 
 Two telemetry projections exist for different consumers. A core-owned runtime stream feeds the
@@ -84,7 +88,8 @@ make Ratel Cloud an island.
   inference messages ride the standard `gen_ai.client.inference.operation.details` EventRecord;
   tool arguments/results ride `gen_ai.tool.call.*` span attributes in span modes and the
   structured `ratel.tool.execution.details` EventRecord in event modes; search text follows the
-  same split. These are Events in the Logs data model, not SpanEvents.
+  same split. Changed tool, skill, and fact definitions ride `ratel.catalog.definition` in event
+  modes. These are Events in the Logs data model, not SpanEvents.
 - **Ratel Cloud ingests stock OTLP** (`http/protobuf` + `Bearer`). No custom wire format or
   auth: a customer who already runs OTel dual-exports to Ratel by adding a second exporter.
 - **Three thin vocabulary helpers**, with stock OTel transport: `ratel-ai-telemetry`
@@ -114,6 +119,10 @@ facts publisher, but explicitly does not converge or rebase the OTel producer on
   vocabulary we design and version, with the same care as the local event schema.
 - Cross-language reuse is built in: TS- and Python-emitted remote spans and EventRecords share
   one contract, while their local events continue to share the core-owned schema.
+- Catalog-definition export is an explicit carve-out from the earlier local-only boundary. It is
+  default-off because descriptions and schemas are content; a session emits one record per
+  distinct definition hash. Internal `index_churn` / `skill_churn` observations remain local, and
+  definitions are not added to ADR-0020's direct product-facts lane.
 - Rejected: a bespoke unified observability schema and per-language clients (duplicates a ratified
   standard; the pre-compaction 0013 built exactly this and it was deleted unpublished);
   inference-message content on span attributes (attribute limits reject unbounded text);

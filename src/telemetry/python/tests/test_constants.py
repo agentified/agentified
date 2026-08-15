@@ -14,6 +14,17 @@ from ratel_ai_telemetry import (
     GEN_AI_TOOL_NAME,
     RATEL_AUTH_FLOW,
     RATEL_AUTH_OUTCOME,
+    RATEL_CATALOG_CONTENT_HASH,
+    RATEL_CATALOG_DEFINITION,
+    RATEL_CATALOG_DESCRIPTION,
+    RATEL_CATALOG_ID,
+    RATEL_CATALOG_INPUT_SCHEMA,
+    RATEL_CATALOG_KIND,
+    RATEL_CATALOG_NAME,
+    RATEL_CATALOG_OUTPUT_SCHEMA,
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+    RATEL_CATALOG_TAGS,
     RATEL_EVENT_ID,
     RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
     RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
@@ -116,6 +127,7 @@ def test_names_the_runtime_event_join_key() -> None:
 
 
 def test_names_the_event_records_per_the_pin() -> None:
+    assert RATEL_CATALOG_DEFINITION == "ratel.catalog.definition"
     assert RATEL_EXPERIMENT_RESULTS == "ratel.experiment.results"
     assert RATEL_EXPERIMENT_COMPARISON == "ratel.experiment.comparison"
     assert RATEL_EXPERIMENT_SKIP == "ratel.experiment.skip"
@@ -126,6 +138,32 @@ def test_names_the_event_records_per_the_pin() -> None:
     assert RATEL_SEARCH_RESULTS == "ratel.search.results"
     assert RATEL_TOOL_EXECUTION_DETAILS == "ratel.tool.execution.details"
     assert GEN_AI_INFERENCE_DETAILS == "gen_ai.client.inference.operation.details"
+
+
+def test_catalog_definition_attribute_vocabulary() -> None:
+    assert [
+        RATEL_CATALOG_KIND,
+        RATEL_CATALOG_ID,
+        RATEL_CATALOG_NAME,
+        RATEL_CATALOG_DESCRIPTION,
+        RATEL_CATALOG_TAGS,
+        RATEL_CATALOG_INPUT_SCHEMA,
+        RATEL_CATALOG_OUTPUT_SCHEMA,
+        RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+        RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+        RATEL_CATALOG_CONTENT_HASH,
+    ] == [
+        "ratel.catalog.kind",
+        "ratel.catalog.id",
+        "ratel.catalog.name",
+        "ratel.catalog.description",
+        "ratel.catalog.tags",
+        "ratel.catalog.input_schema",
+        "ratel.catalog.output_schema",
+        "ratel.catalog.searchable_description",
+        "ratel.catalog.searchable_description_overridden",
+        "ratel.catalog.content_hash",
+    ]
 
 
 def test_tool_invocation_is_gen_ai_execute_tool_not_ratel_invoke() -> None:

@@ -588,6 +588,125 @@
           }
         }
       ]
+    },
+    {
+      "name": "catalog definition EventRecords cover every kind and deduplicate id plus hash",
+      "span": "ratel_search",
+      "set": {
+        "ratel_search_target": "tool",
+        "ratel_search_top_k": 1,
+        "ratel_search_hit_count": 0,
+        "ratel_origin": "direct"
+      },
+      "dedupe_catalog_definitions": true,
+      "emit_events": [
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "tool",
+            "ratel_catalog_id": "read_file",
+            "ratel_catalog_name": "read_file",
+            "ratel_catalog_description": "Read files",
+            "ratel_catalog_tags": [],
+            "ratel_catalog_input_schema": "{\"type\":\"object\"}",
+            "ratel_catalog_output_schema": "{\"type\":\"string\"}",
+            "ratel_catalog_searchable_description": "open documents",
+            "ratel_catalog_searchable_description_overridden": true,
+            "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "tool",
+            "ratel_catalog_id": "read_file",
+            "ratel_catalog_name": "read_file",
+            "ratel_catalog_description": "Read files",
+            "ratel_catalog_tags": [],
+            "ratel_catalog_input_schema": "{\"type\":\"object\"}",
+            "ratel_catalog_output_schema": "{\"type\":\"string\"}",
+            "ratel_catalog_searchable_description": "open documents",
+            "ratel_catalog_searchable_description_overridden": true,
+            "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "skill",
+            "ratel_catalog_id": "review",
+            "ratel_catalog_name": "review_code",
+            "ratel_catalog_description": "Review source",
+            "ratel_catalog_tags": ["quality"],
+            "ratel_catalog_searchable_description": "Review source",
+            "ratel_catalog_searchable_description_overridden": false,
+            "ratel_catalog_content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "fact",
+            "ratel_catalog_id": "address",
+            "ratel_catalog_name": "shop_address",
+            "ratel_catalog_description": "Where the shop is",
+            "ratel_catalog_tags": ["location"],
+            "ratel_catalog_searchable_description": "Where the shop is",
+            "ratel_catalog_searchable_description_overridden": false,
+            "ratel_catalog_content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        }
+      ],
+      "expect_name": "ratel.search",
+      "expect_attributes": {
+        "ratel.search.target": "tool",
+        "ratel.search.top_k": 1,
+        "ratel.search.hit_count": 0,
+        "ratel.origin": "direct"
+      },
+      "expect_events": [
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "tool",
+            "ratel.catalog.id": "read_file",
+            "ratel.catalog.name": "read_file",
+            "ratel.catalog.description": "Read files",
+            "ratel.catalog.tags": [],
+            "ratel.catalog.input_schema": "{\"type\":\"object\"}",
+            "ratel.catalog.output_schema": "{\"type\":\"string\"}",
+            "ratel.catalog.searchable_description": "open documents",
+            "ratel.catalog.searchable_description_overridden": true,
+            "ratel.catalog.content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "skill",
+            "ratel.catalog.id": "review",
+            "ratel.catalog.name": "review_code",
+            "ratel.catalog.description": "Review source",
+            "ratel.catalog.tags": ["quality"],
+            "ratel.catalog.searchable_description": "Review source",
+            "ratel.catalog.searchable_description_overridden": false,
+            "ratel.catalog.content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "fact",
+            "ratel.catalog.id": "address",
+            "ratel.catalog.name": "shop_address",
+            "ratel.catalog.description": "Where the shop is",
+            "ratel.catalog.tags": ["location"],
+            "ratel.catalog.searchable_description": "Where the shop is",
+            "ratel.catalog.searchable_description_overridden": false,
+            "ratel.catalog.content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        }
+      ]
     }
   ]
 }

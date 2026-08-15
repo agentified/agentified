@@ -46,6 +46,8 @@ pub const RATEL_AUTH_FLOW: &str = "ratel.auth.flow";
 pub const RATEL_SEARCH_RESULTS: &str = "ratel.search.results";
 /// `ratel.tool.execution.details` — Opt-In structured tool arguments/result event.
 pub const RATEL_TOOL_EXECUTION_DETAILS: &str = "ratel.tool.execution.details";
+/// `ratel.catalog.definition` — Opt-In complete catalog definition event.
+pub const RATEL_CATALOG_DEFINITION: &str = "ratel.catalog.definition";
 /// `ratel.experiment.results` — ranked measurement for one experiment arm.
 pub const RATEL_EXPERIMENT_RESULTS: &str = "ratel.experiment.results";
 /// `ratel.experiment.comparison` — one shadow-vs-served comparison.
@@ -67,6 +69,27 @@ pub const GEN_AI_INFERENCE_DETAILS: &str = "gen_ai.client.inference.operation.de
 
 /// `ratel.event.id` — runtime-event/OTel deduplication and join key.
 pub const RATEL_EVENT_ID: &str = "ratel.event.id";
+/// `ratel.catalog.kind` — `tool`, `skill`, or `fact`.
+pub const RATEL_CATALOG_KIND: &str = "ratel.catalog.kind";
+/// `ratel.catalog.id` — stable catalog entry id.
+pub const RATEL_CATALOG_ID: &str = "ratel.catalog.id";
+/// `ratel.catalog.name` — model-facing catalog entry name.
+pub const RATEL_CATALOG_NAME: &str = "ratel.catalog.name";
+/// `ratel.catalog.description` — model-facing catalog entry description.
+pub const RATEL_CATALOG_DESCRIPTION: &str = "ratel.catalog.description";
+/// `ratel.catalog.tags` — search tags; empty for tools.
+pub const RATEL_CATALOG_TAGS: &str = "ratel.catalog.tags";
+/// `ratel.catalog.input_schema` — canonical JSON tool input schema.
+pub const RATEL_CATALOG_INPUT_SCHEMA: &str = "ratel.catalog.input_schema";
+/// `ratel.catalog.output_schema` — canonical JSON tool output schema.
+pub const RATEL_CATALOG_OUTPUT_SCHEMA: &str = "ratel.catalog.output_schema";
+/// `ratel.catalog.searchable_description` — effective searchable description.
+pub const RATEL_CATALOG_SEARCHABLE_DESCRIPTION: &str = "ratel.catalog.searchable_description";
+/// `ratel.catalog.searchable_description_overridden` — whether an override is set.
+pub const RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: &str =
+    "ratel.catalog.searchable_description_overridden";
+/// `ratel.catalog.content_hash` — canonical definition SHA-256.
+pub const RATEL_CATALOG_CONTENT_HASH: &str = "ratel.catalog.content_hash";
 /// `ratel.origin` — direct library call vs agent-synthesized (shared attribute).
 pub const RATEL_ORIGIN: &str = "ratel.origin";
 /// `ratel.search.target` — `tool`, `skill`, or `fact` (see [`SearchTarget`]).
@@ -618,6 +641,7 @@ mod tests {
 
     #[test]
     fn event_record_names_match_the_pin() {
+        assert_eq!(RATEL_CATALOG_DEFINITION, "ratel.catalog.definition");
         assert_eq!(RATEL_EXPERIMENT_RESULTS, "ratel.experiment.results");
         assert_eq!(RATEL_EXPERIMENT_COMPARISON, "ratel.experiment.comparison");
         assert_eq!(RATEL_EXPERIMENT_SKIP, "ratel.experiment.skip");
@@ -630,6 +654,36 @@ mod tests {
         assert_eq!(
             GEN_AI_INFERENCE_DETAILS,
             "gen_ai.client.inference.operation.details"
+        );
+    }
+
+    #[test]
+    fn catalog_definition_attribute_vocabulary_matches_the_pin() {
+        assert_eq!(
+            [
+                RATEL_CATALOG_KIND,
+                RATEL_CATALOG_ID,
+                RATEL_CATALOG_NAME,
+                RATEL_CATALOG_DESCRIPTION,
+                RATEL_CATALOG_TAGS,
+                RATEL_CATALOG_INPUT_SCHEMA,
+                RATEL_CATALOG_OUTPUT_SCHEMA,
+                RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+                RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+                RATEL_CATALOG_CONTENT_HASH,
+            ],
+            [
+                "ratel.catalog.kind",
+                "ratel.catalog.id",
+                "ratel.catalog.name",
+                "ratel.catalog.description",
+                "ratel.catalog.tags",
+                "ratel.catalog.input_schema",
+                "ratel.catalog.output_schema",
+                "ratel.catalog.searchable_description",
+                "ratel.catalog.searchable_description_overridden",
+                "ratel.catalog.content_hash",
+            ]
         );
     }
 

@@ -160,8 +160,8 @@ content-bearing helper honors both, so a mode is truthful (no mode silently drop
   `ratel.tool.execution.details` event carrying structured `gen_ai.tool.call.arguments` and, on
   success, `gen_ai.tool.call.result`, plus `gen_ai.operation.name = execute_tool` and
   `gen_ai.tool.name`; search text on a `ratel.search.results` event carrying
-  `ratel.search.query`. The search event carries only the query — hit ids/scores/BM25 timing live
-  on the local trace stream, not the OTLP glue.
+  `ratel.search.query`; changed definitions on `ratel.catalog.definition`. The search event carries
+  only the query — hit ids/scores/BM25 timing live on the local trace stream, not the OTLP glue.
 
 `gen_ai.output.messages` is reserved for model-generated outputs; every output message requires
 `finish_reason`. A tool execution result is therefore never encoded as an output message.
@@ -247,6 +247,30 @@ per the two-channel table in § Tier 1 content.
 | `ratel.upstream.transport` | string | `stdio \| http \| sse \| ...` |
 | `ratel.upstream.tool_count` | int | tools ingested |
 
+### `ratel.catalog.definition`: opt-in catalog definitions
+
+Registering or replacing a tool, skill, or fact emits this Logs EventRecord under the event
+content channel. Emission is session-local and change-sensitive: a byte-identical canonical
+definition hash is suppressed, while a changed definition emits again.
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `ratel.catalog.kind` | string | `tool \| skill \| fact` |
+| `ratel.catalog.id` | string | catalog identity and dedup key |
+| `ratel.catalog.name` | string | display name |
+| `ratel.catalog.description` | string | authored description |
+| `ratel.catalog.tags` | string[] | empty when no tags were supplied |
+| `ratel.catalog.input_schema` | string | canonical JSON; tool definitions only |
+| `ratel.catalog.output_schema` | string | canonical JSON; tool definitions only |
+| `ratel.catalog.searchable_description` | string | effective search text after fallback |
+| `ratel.catalog.searchable_description_overridden` | boolean | true when an explicit override supplied the effective text |
+| `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
+
+The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
+searchable description, and the override flag. It is a deduplication token, not a redaction:
+the event remains content and is off in `NO_CONTENT` and `SPAN_ONLY` modes. Catalog-definition
+events are not part of ADR-0020's frozen remotely publishable runtime vocabulary.
+
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 
 | Attribute | Type | Notes |
@@ -319,6 +343,8 @@ both span and log-record processors to deliver the complete experiment signal.
 
 `index_churn` / `skill_churn` are internal catalog-maintenance events with no consumer in this
 mapping source. They stay **local-only** (the ADR-0007 JSONL stream) and are not expressed in `ratel.*`.
+Their definition payloads are separately eligible for the opt-in `ratel.catalog.definition`
+EventRecord above; this does not make the churn observations remote.
 
 ---
 
