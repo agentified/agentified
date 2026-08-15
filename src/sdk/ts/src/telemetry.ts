@@ -275,7 +275,9 @@ function sortJson(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        // Code-unit order, never localeCompare: the hash must match the Rust core
+        // (serde_json byte order) and Python (code-point order) on any host locale.
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([key, item]) => [key, sortJson(item)]),
     );
   }

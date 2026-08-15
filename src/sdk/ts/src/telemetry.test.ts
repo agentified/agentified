@@ -188,6 +188,26 @@ describe("execute_tool span", () => {
     );
   });
 
+  it("hashes mixed-case schema keys identically to the Rust core and Python", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+    await catalog.register({
+      id: "mixed_case",
+      name: "mixed_case",
+      description: "Mixed-case schema keys.",
+      inputSchema: { properties: { B: { type: "string" }, a: { type: "string" } } },
+      outputSchema: { properties: { ok: { type: "string" } } },
+      execute: async () => ({ ok: "ok" }),
+    });
+
+    const [event] = logEventsNamed("ratel.catalog.definition");
+    // Pinned via the Python twin's canonicalization, which the Rust core reproduces
+    // byte-identically; byte order puts "B" before "a", locale collation does not.
+    expect(event?.attributes["ratel.catalog.content_hash"]).toBe(
+      "03542abe36f96c27db84a086337f7b66737c2480848193fde046e770b63231b8",
+    );
+  });
+
   it("under SPAN_AND_EVENT captures content on both the span and the event", async () => {
     process.env[CAPTURE_ENV] = "SPAN_AND_EVENT";
     const catalog = new ToolCatalog();
