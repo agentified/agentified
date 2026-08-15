@@ -1,0 +1,1216 @@
+{
+  "note": "Conformance vectors for the Ratel catalog-source contract, v2. Every catalog-source implementation and SDK loader MUST reproduce these ETags and If-None-Match outcomes. `catalogs` are source-side inputs; `canonical` pins the single unset representation; `etag` pins the frozen ETag + resolved id-set for a scope, including searchableDescription set/edit/clear; `equalEtags`/`distinctEtags` pin canonicalization invariants; `inm` pins the conditional-GET matcher; `wire` pins the secrets-never-sync rule. Regenerate the ETag `expect` blocks with `node verify.mjs --update`.",
+  "catalogs": {
+    "basic": {
+      "global": [
+        {
+          "id": "b-skill",
+          "name": "beta-tool",
+          "description": "Second tool.",
+          "tags": [
+            "z"
+          ],
+          "tools": [],
+          "metadata": {
+            "cat": [
+              "b"
+            ],
+            "area": [
+              "core"
+            ]
+          },
+          "body": "# Beta\n"
+        },
+        {
+          "id": "a-skill",
+          "name": "alpha-tool",
+          "description": "First tool.",
+          "tags": [
+            "x",
+            "y"
+          ],
+          "tools": [
+            "t1"
+          ],
+          "metadata": {
+            "cat": [
+              "a"
+            ]
+          },
+          "body": "# Alpha\n"
+        }
+      ]
+    },
+    "basic-reordered": {
+      "global": [
+        {
+          "body": "# Alpha\n",
+          "name": "alpha-tool",
+          "tools": [
+            "t1"
+          ],
+          "id": "a-skill",
+          "metadata": {
+            "cat": [
+              "a"
+            ]
+          },
+          "tags": [
+            "x",
+            "y"
+          ],
+          "description": "First tool."
+        },
+        {
+          "metadata": {
+            "area": [
+              "core"
+            ],
+            "cat": [
+              "b"
+            ]
+          },
+          "id": "b-skill",
+          "name": "beta-tool",
+          "description": "Second tool.",
+          "body": "# Beta\n",
+          "tags": [
+            "z"
+          ],
+          "tools": []
+        }
+      ]
+    },
+    "field-noise": {
+      "global": [
+        {
+          "id": "a-skill",
+          "name": "alpha-tool",
+          "description": "First tool.",
+          "tags": [
+            "x",
+            "y"
+          ],
+          "tools": [
+            "t1"
+          ],
+          "metadata": {
+            "cat": [
+              "a"
+            ]
+          },
+          "body": "# Alpha\n",
+          "createdAt": "2026-01-01T00:00:00Z",
+          "updatedAt": "2026-07-05T09:00:00Z",
+          "version": 7,
+          "status": "published",
+          "extra": "ignored"
+        },
+        {
+          "id": "b-skill",
+          "name": "beta-tool",
+          "description": "Second tool.",
+          "tags": [
+            "z"
+          ],
+          "tools": [],
+          "metadata": {
+            "cat": [
+              "b"
+            ],
+            "area": [
+              "core"
+            ]
+          },
+          "body": "# Beta\n",
+          "createdAt": "2025-12-31T23:59:59Z",
+          "version": 1,
+          "status": "draft"
+        }
+      ]
+    },
+    "tags-reordered": {
+      "global": [
+        {
+          "id": "b-skill",
+          "name": "beta-tool",
+          "description": "Second tool.",
+          "tags": [
+            "z"
+          ],
+          "tools": [],
+          "metadata": {
+            "cat": [
+              "b"
+            ],
+            "area": [
+              "core"
+            ]
+          },
+          "body": "# Beta\n"
+        },
+        {
+          "id": "a-skill",
+          "name": "alpha-tool",
+          "description": "First tool.",
+          "tags": [
+            "y",
+            "x"
+          ],
+          "tools": [
+            "t1"
+          ],
+          "metadata": {
+            "cat": [
+              "a"
+            ]
+          },
+          "body": "# Alpha\n"
+        }
+      ]
+    },
+    "unicode": {
+      "global": [
+        {
+          "id": "u1",
+          "name": "cafe-menu",
+          "description": "Fetch a café's ☕ menu 😀",
+          "tags": [
+            "食",
+            "x"
+          ],
+          "tools": [],
+          "metadata": {
+            "región": [
+              "MX"
+            ],
+            "área": [
+              "café"
+            ]
+          },
+          "body": "Line 1\nLíne 2\n"
+        }
+      ]
+    },
+    "empty": {
+      "global": []
+    },
+    "searchable-unset-omitted": {
+      "global": [
+        {
+          "id": "search",
+          "name": "search-web",
+          "description": "Search the web.",
+          "tags": [
+            "web"
+          ],
+          "tools": [
+            "http"
+          ],
+          "metadata": {},
+          "body": "Search instructions.\n"
+        }
+      ]
+    },
+    "searchable-set": {
+      "global": [
+        {
+          "id": "search",
+          "name": "search-web",
+          "description": "Search the web.",
+          "searchableDescription": "Find current public webpages.",
+          "tags": [
+            "web"
+          ],
+          "tools": [
+            "http"
+          ],
+          "metadata": {},
+          "body": "Search instructions.\n"
+        }
+      ]
+    },
+    "searchable-edited": {
+      "global": [
+        {
+          "id": "search",
+          "name": "search-web",
+          "description": "Search the web.",
+          "searchableDescription": "Research authoritative websites.",
+          "tags": [
+            "web"
+          ],
+          "tools": [
+            "http"
+          ],
+          "metadata": {},
+          "body": "Search instructions.\n"
+        }
+      ]
+    },
+    "searchable-cleared-null": {
+      "global": [
+        {
+          "id": "search",
+          "name": "search-web",
+          "description": "Search the web.",
+          "searchableDescription": null,
+          "tags": [
+            "web"
+          ],
+          "tools": [
+            "http"
+          ],
+          "metadata": {},
+          "body": "Search instructions.\n"
+        }
+      ]
+    },
+    "scoped": {
+      "global": [
+        {
+          "id": "g-search",
+          "name": "search-web",
+          "description": "Search the web.",
+          "tags": [
+            "web"
+          ],
+          "tools": [
+            "http"
+          ],
+          "metadata": {},
+          "body": "global search\n"
+        },
+        {
+          "id": "g-email",
+          "name": "send-email",
+          "description": "Send an email.",
+          "tags": [
+            "mail"
+          ],
+          "tools": [
+            "smtp"
+          ],
+          "metadata": {},
+          "body": "global email\n"
+        }
+      ],
+      "subjects": {
+        "alice": [
+          {
+            "id": "g-search",
+            "name": "search-web",
+            "description": "Search the web (Alice's tuned copy).",
+            "tags": [
+              "web"
+            ],
+            "tools": [
+              "http"
+            ],
+            "metadata": {},
+            "body": "alice search\n"
+          },
+          {
+            "id": "a-files",
+            "name": "list-files",
+            "description": "List files.",
+            "tags": [
+              "fs"
+            ],
+            "tools": [
+              "fs"
+            ],
+            "metadata": {},
+            "body": "alice files\n"
+          }
+        ],
+        "bob": []
+      }
+    }
+  },
+  "etag": [
+    {
+      "name": "basic",
+      "catalog": "basic",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "a-skill",
+          "b-skill"
+        ],
+        "etag": "\"64da56a51908a782765a369c081865a579b68a2736a1800f0b870852fd52f71a\""
+      }
+    },
+    {
+      "name": "basic-reordered",
+      "catalog": "basic-reordered",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "a-skill",
+          "b-skill"
+        ],
+        "etag": "\"64da56a51908a782765a369c081865a579b68a2736a1800f0b870852fd52f71a\""
+      }
+    },
+    {
+      "name": "field-noise",
+      "catalog": "field-noise",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "a-skill",
+          "b-skill"
+        ],
+        "etag": "\"64da56a51908a782765a369c081865a579b68a2736a1800f0b870852fd52f71a\""
+      }
+    },
+    {
+      "name": "tags-reordered",
+      "catalog": "tags-reordered",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "a-skill",
+          "b-skill"
+        ],
+        "etag": "\"73e6d9c5bed8e1616c6d9f6967da7ec95cfc5cab7b5bd0ed831e72e1608771fa\""
+      }
+    },
+    {
+      "name": "unicode",
+      "catalog": "unicode",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "u1"
+        ],
+        "etag": "\"60d5c957f143bc23a2818443adb527653dd194419349ec9c5c7a81323c958ab9\""
+      }
+    },
+    {
+      "name": "empty",
+      "catalog": "empty",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [],
+        "etag": "\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\""
+      }
+    },
+    {
+      "name": "scoped-global",
+      "catalog": "scoped",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "g-email",
+          "g-search"
+        ],
+        "etag": "\"571e46ce5684986337ed5a67aee0303be6836f8ab651385e9436794f55ccdcb2\""
+      }
+    },
+    {
+      "name": "scoped-alice",
+      "catalog": "scoped",
+      "scope": "alice",
+      "expect": {
+        "resolvedIds": [
+          "a-files",
+          "g-email",
+          "g-search"
+        ],
+        "etag": "\"00cb011e853187105380656801c0b4d24fdbce54b9c40a25db5318c08f98f959\""
+      }
+    },
+    {
+      "name": "scoped-bob",
+      "catalog": "scoped",
+      "scope": "bob",
+      "expect": {
+        "resolvedIds": [
+          "g-email",
+          "g-search"
+        ],
+        "etag": "\"571e46ce5684986337ed5a67aee0303be6836f8ab651385e9436794f55ccdcb2\""
+      }
+    },
+    {
+      "name": "scoped-unknown",
+      "catalog": "scoped",
+      "scope": "carol",
+      "expect": {
+        "resolvedIds": [
+          "g-email",
+          "g-search"
+        ],
+        "etag": "\"571e46ce5684986337ed5a67aee0303be6836f8ab651385e9436794f55ccdcb2\""
+      }
+    },
+    {
+      "name": "searchable-unset-omitted",
+      "catalog": "searchable-unset-omitted",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "search"
+        ],
+        "etag": "\"9ca887946cc9dd57b2692eb17e2a1d04dcbaba201775f49ef99d9331d39b7cee\""
+      }
+    },
+    {
+      "name": "searchable-set",
+      "catalog": "searchable-set",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "search"
+        ],
+        "etag": "\"b93717cfe814b241a40d70af4a0256f601916a54c42f130d2964525d03523333\""
+      }
+    },
+    {
+      "name": "searchable-edited",
+      "catalog": "searchable-edited",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "search"
+        ],
+        "etag": "\"bdb0f05d465285de353dbabcf7700a635b01cf7ed60a366d68443edeeb70b3d7\""
+      }
+    },
+    {
+      "name": "searchable-cleared-null",
+      "catalog": "searchable-cleared-null",
+      "scope": null,
+      "expect": {
+        "resolvedIds": [
+          "search"
+        ],
+        "etag": "\"9ca887946cc9dd57b2692eb17e2a1d04dcbaba201775f49ef99d9331d39b7cee\""
+      }
+    }
+  ],
+  "equalEtags": [
+    [
+      "basic",
+      "basic-reordered",
+      "field-noise"
+    ],
+    [
+      "scoped-global",
+      "scoped-bob",
+      "scoped-unknown"
+    ],
+    [
+      "searchable-unset-omitted",
+      "searchable-cleared-null"
+    ]
+  ],
+  "distinctEtags": [
+    [
+      "basic",
+      "tags-reordered",
+      "unicode",
+      "empty",
+      "scoped-global",
+      "scoped-alice"
+    ],
+    [
+      "searchable-set",
+      "searchable-edited",
+      "searchable-cleared-null"
+    ]
+  ],
+  "inm": [
+    {
+      "name": "exact-match",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "self"
+      },
+      "expect": 304
+    },
+    {
+      "name": "weak-prefix",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "weakSelf"
+      },
+      "expect": 304
+    },
+    {
+      "name": "star",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "star"
+      },
+      "expect": 304
+    },
+    {
+      "name": "comma-list-hit",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "listWithSelf"
+      },
+      "expect": 304
+    },
+    {
+      "name": "comma-list-miss",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "listMiss"
+      },
+      "expect": 200
+    },
+    {
+      "name": "absent",
+      "current": "basic",
+      "ifNoneMatch": {
+        "kind": "absent"
+      },
+      "expect": 200
+    },
+    {
+      "name": "cross-scope-miss",
+      "current": "scoped-alice",
+      "of": "scoped-global",
+      "ifNoneMatch": {
+        "kind": "other"
+      },
+      "expect": 200
+    }
+  ],
+  "wire": {
+    "skillFields": [
+      "id",
+      "name",
+      "description",
+      "searchableDescription",
+      "tags",
+      "tools",
+      "metadata",
+      "body"
+    ],
+    "forbiddenFieldSubstrings": [
+      "token",
+      "secret",
+      "password",
+      "apikey",
+      "api_key",
+      "credential",
+      "bearer",
+      "authorization",
+      "privatekey",
+      "private_key"
+    ],
+    "note": "Secrets never appear on the wire. A conforming projection emits exactly `skillFields`; any field whose lowercased name contains one of `forbiddenFieldSubstrings` MUST NOT appear in a v2 payload. Implementations assert this structurally (a test fails if such a field enters a wire shape)."
+  },
+  "canonical": [
+    {
+      "name": "searchable-description-omitted",
+      "skill": {
+        "id": "search",
+        "name": "search-web",
+        "description": "Search the web.",
+        "tags": [
+          "web"
+        ],
+        "tools": [
+          "http"
+        ],
+        "metadata": {},
+        "body": "Search instructions.\n"
+      },
+      "expect": "{\"id\":\"search\",\"name\":\"search-web\",\"description\":\"Search the web.\",\"searchableDescription\":null,\"tags\":[\"web\"],\"tools\":[\"http\"],\"metadata\":{},\"body\":\"Search instructions.\\n\"}"
+    },
+    {
+      "name": "searchable-description-null",
+      "skill": {
+        "id": "search",
+        "name": "search-web",
+        "description": "Search the web.",
+        "searchableDescription": null,
+        "tags": [
+          "web"
+        ],
+        "tools": [
+          "http"
+        ],
+        "metadata": {},
+        "body": "Search instructions.\n"
+      },
+      "expect": "{\"id\":\"search\",\"name\":\"search-web\",\"description\":\"Search the web.\",\"searchableDescription\":null,\"tags\":[\"web\"],\"tools\":[\"http\"],\"metadata\":{},\"body\":\"Search instructions.\\n\"}"
+    },
+    {
+      "name": "searchable-description-set",
+      "skill": {
+        "id": "search",
+        "name": "search-web",
+        "description": "Search the web.",
+        "searchableDescription": "Find current public webpages.",
+        "tags": [
+          "web"
+        ],
+        "tools": [
+          "http"
+        ],
+        "metadata": {},
+        "body": "Search instructions.\n"
+      },
+      "expect": "{\"id\":\"search\",\"name\":\"search-web\",\"description\":\"Search the web.\",\"searchableDescription\":\"Find current public webpages.\",\"tags\":[\"web\"],\"tools\":[\"http\"],\"metadata\":{},\"body\":\"Search instructions.\\n\"}"
+    }
+  ],
+  "graph": {
+    "note": "Conformance fixtures for the intent-graph read model (ADR-0014, schema/intent-graph.schema.json). Unlike the catalog vectors these pin STRUCTURE, not ETags: the graph is not a synced wire artifact in v2. Both producers — the in-process local learner and the Ratel Cloud builder — MUST emit graphs that validate, and every consumer MUST reject the `invalid` set.",
+    "consumerRules": [
+      "An edge naming a capability absent from the consumer's registry MUST be dropped, never ranked — the catalog may have changed since the graph was grown.",
+      "`centroid` MAY be absent; a consumer without an embedder matches lexically over `members`, and one with an embedder MAY derive a centroid from `members`.",
+      "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
+      "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
+      "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores."
+    ],
+    "valid": [
+      {
+        "name": "dense",
+        "why": "Full graph from a semantic/hybrid learner: centroid present, several members, two weighted tool edges.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "lexical-no-centroid",
+        "why": "A lexically-clustered producer (the Bm25 tier, or Ratel Cloud's Jaccard clusterer) emits no centroid. `members` is the match key, so the graph is still fully usable — a consumer with an embedder may derive a centroid from the members.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "support-one",
+        "why": "A cluster seeded by a single confirmed observation. Valid, and the consumer scales its ranking arm down accordingly rather than refusing the row.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_seed",
+              "label": "rotate the signing key",
+              "terms": [
+                "rotate",
+                "signing",
+                "key"
+              ],
+              "members": [
+                "how do I rotate the signing key"
+              ],
+              "support": 1,
+              "tools": {
+                "vault_rotate": 1
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-edges",
+        "why": "Edge maps may be empty — a cluster can exist with no surviving capability edges after decay. It contributes no ranking arm.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {},
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "skill-edges",
+        "why": "Skills are ranked by the same mechanism as tools, via the skill registry's own arm.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {},
+              "skills": {
+                "ci-triage": 1
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "unknown-capability-id",
+        "why": "A graph may name a capability the consumer does not have — the catalog changed after the graph was grown. This is VALID on the wire; the consumer drops the id at rank time (see consumerRules), it is not a format error.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "since_deleted_tool": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "extra-fields",
+        "why": "Producers may carry additional fields; a conforming consumer ignores them.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ],
+              "provenance": "ratel-cloud"
+            }
+          ],
+          "generator": "ratel-cloud@2026-07"
+        }
+      },
+      {
+        "name": "dense-with-model",
+        "why": "A dense graph declares the embedding model its centroids were built with, so a consumer can detect a model swap instead of cosine-ing across vector spaces.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "model": "hf:BAAI/bge-small-en-v2.5",
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "centroid": [
+                0.8,
+                0.577,
+                0.161
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "with-rev",
+        "why": "A graph carries an OPTIONAL monotonic write counter. It is metadata for the caller's storage layer (save-when-changed, stale-base detection) and never affects ranking; a consumer accepts it and otherwise ignores it.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "rev": 42,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "rev-negative",
+        "because": "`rev`, when present, is a non-negative integer — it only ever counts up.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "rev": -1,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "unknown-version",
+        "because": "`v` must be 1; a consumer rejects an unknown version rather than degrading.",
+        "doc": {
+          "v": 2,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "missing-members",
+        "because": "`members` is the match key — without it the row can never be matched.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-members",
+        "because": "`members` requires at least one entry.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "support-zero",
+        "because": "`support` counts confirmed observations and is at least 1; a row with none should not have been emitted.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 0,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "negative-edge-weight",
+        "because": "Edge weights are positive invocation counts; zero or negative is meaningless and would invert the arm's order.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": -0.5
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-centroid",
+        "because": "When present, a centroid must have at least one dimension.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {},
+              "centroid": []
+            }
+          ]
+        }
+      },
+      {
+        "name": "duplicate-intent-id",
+        "because": "Ids name a row and must be unique within the graph.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            },
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci",
+                "pipeline",
+                "fail"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass",
+                "is the build green"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 0.8,
+                "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

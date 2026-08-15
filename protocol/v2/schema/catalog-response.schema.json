@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratel.sh/protocol/v2/catalog-response.schema.json",
+  "title": "CatalogResponse",
+  "description": "The 200 body of GET /v2/catalog.",
+  "type": "object",
+  "required": ["catalogVersion", "skills"],
+  "additionalProperties": true,
+  "properties": {
+    "catalogVersion": { "type": "string", "description": "the current ETag's opaque hex; the strong ETag header is this value wrapped in double quotes" },
+    "skills": { "type": "array", "items": { "$ref": "catalog-skill.schema.json" }, "description": "the resolved published set for the request's scope, sorted by id" }
+  }
+}
