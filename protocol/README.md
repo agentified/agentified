@@ -13,11 +13,15 @@ loader and source implementations live outside `protocol/`.
 
 ## Layout
 
-- `v1/` — the current major version of the contract: auth, catalog pull-sync, the wire
-  shapes, the error model, and the versioning rules, plus its JSON Schemas (`v1/schema/`) and
-  executable conformance vectors (`v1/conformance/`). It also publishes the `IntentGraph`
-  usage-ranking shape — a producer contract shared by the local learner and Ratel Cloud, not
-  a synced endpoint ([ADR-0014](../docs/adr/0014-adaptive-usage-ranking.md)).
+- `v1/` — the frozen original contract: auth, catalog pull-sync, seven-field skill wire/ETag
+  projection, error model, and intent-graph producer shape. It remains available unchanged.
+- `v2/` — the current major version: v1 plus optional `searchableDescription` and its
+  eight-field ETag projection with a canonical `null` unset representation. It includes its
+  own schemas and executable conformance vectors.
+
+Both versions publish the `IntentGraph` usage-ranking shape — a producer contract shared by
+the local learner and Ratel Cloud, not a synced endpoint
+([ADR-0014](../docs/adr/0014-adaptive-usage-ranking.md)).
 
 ## Versioning
 
