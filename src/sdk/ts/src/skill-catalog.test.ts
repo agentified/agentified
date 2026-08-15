@@ -39,6 +39,19 @@ describe("SkillCatalog", () => {
     expect(hits[0].score).toBeGreaterThan(0);
   });
 
+  it("ranks a skill by searchableDescription instead of its description", async () => {
+    const catalog = new SkillCatalog();
+    await catalog.register({
+      id: "skill",
+      name: "skill",
+      description: "composedonlyterm",
+      searchableDescription: "overrideonlyterm",
+    });
+
+    expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.skillId)).toEqual(["skill"]);
+    expect(catalog.search("composedonlyterm", 5)).toEqual([]);
+  });
+
   it("registers an iterable of skills as one batch", async () => {
     const catalog = new SkillCatalog();
     await catalog.register([

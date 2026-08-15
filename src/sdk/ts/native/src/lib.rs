@@ -1003,11 +1003,13 @@ pub struct Tool {
     pub name: String,
     /// What the tool does and when to use it — the main ranking signal.
     pub description: String,
-    /// JSON Schema of the arguments. Property names and their `description`s
-    /// (nested included) are indexed for ranking.
+    /// Optional replacement for the description component used by retrieval.
+    /// The tool name stays indexed; schemas are never indexed.
+    pub searchable_description: Option<String>,
+    /// JSON Schema of the arguments. Stored for invocation, not indexed.
     #[napi(ts_type = "import('json-schema').JSONSchema7")]
     pub input_schema: Value,
-    /// JSON Schema of the result; indexed the same way as `inputSchema`.
+    /// JSON Schema of the result. Stored for invocation, not indexed.
     #[napi(ts_type = "import('json-schema').JSONSchema7")]
     pub output_schema: Value,
 }
@@ -1297,7 +1299,7 @@ impl ToolRegistry {
             id: tool.id,
             name: tool.name,
             description: tool.description,
-            searchable_description: None,
+            searchable_description: tool.searchable_description,
             input_schema: tool.input_schema,
             output_schema: tool.output_schema,
         });
@@ -1313,7 +1315,7 @@ impl ToolRegistry {
                 id: tool.id,
                 name: tool.name,
                 description: tool.description,
-                searchable_description: None,
+                searchable_description: tool.searchable_description,
                 input_schema: tool.input_schema,
                 output_schema: tool.output_schema,
             });
@@ -1834,6 +1836,9 @@ pub struct Fact {
     pub name: String,
     /// What the fact is about — the main ranking signal (not the content itself).
     pub description: String,
+    /// Optional replacement for the description component used by retrieval.
+    /// The fact name and tags stay indexed.
+    pub searchable_description: Option<String>,
     /// Author-declared labels and task phrases; indexed for ranking. Optional
     /// (defaults to `[]`).
     pub tags: Option<Vec<String>>,
@@ -1872,7 +1877,7 @@ fn core_fact(fact: Fact) -> napi::Result<core::Fact> {
         id: fact.id,
         name: fact.name,
         description: fact.description,
-        searchable_description: None,
+        searchable_description: fact.searchable_description,
         tags: fact.tags.unwrap_or_default(),
         metadata: fact.metadata.unwrap_or_default(),
         body: fact.body.unwrap_or_default(),
@@ -2106,6 +2111,9 @@ pub struct Skill {
     pub name: String,
     /// What the skill covers and when to reach for it — the main ranking signal.
     pub description: String,
+    /// Optional replacement for the description component used by retrieval.
+    /// The skill name and tags stay indexed.
+    pub searchable_description: Option<String>,
     /// Author-declared labels and task phrases ("frontend", "login form");
     /// indexed for ranking. Optional (defaults to `[]`) — a minimal
     /// `Skill(id, name, description)` is valid, in parity with the Python SDK.
@@ -2207,7 +2215,7 @@ impl SkillRegistry {
             id: skill.id,
             name: skill.name,
             description: skill.description,
-            searchable_description: None,
+            searchable_description: skill.searchable_description,
             tags: skill.tags.unwrap_or_default(),
             tools: skill.tools.unwrap_or_default(),
             metadata: skill.metadata.unwrap_or_default(),
@@ -2225,7 +2233,7 @@ impl SkillRegistry {
                 id: skill.id,
                 name: skill.name,
                 description: skill.description,
-                searchable_description: None,
+                searchable_description: skill.searchable_description,
                 tags: skill.tags.unwrap_or_default(),
                 tools: skill.tools.unwrap_or_default(),
                 metadata: skill.metadata.unwrap_or_default(),
@@ -2250,7 +2258,7 @@ impl SkillRegistry {
                     id: skill.id,
                     name: skill.name,
                     description: skill.description,
-                    searchable_description: None,
+                    searchable_description: skill.searchable_description,
                     tags: skill.tags.unwrap_or_default(),
                     tools: skill.tools.unwrap_or_default(),
                     metadata: skill.metadata.unwrap_or_default(),

@@ -46,6 +46,19 @@ describe("FactCatalog", () => {
     expect(hits[0].factId).toBe("cancellation");
   });
 
+  it("ranks a fact by searchableDescription instead of its description", async () => {
+    const catalog = new FactCatalog();
+    await catalog.register({
+      id: "fact",
+      name: "fact",
+      description: "composedonlyterm",
+      searchableDescription: "overrideonlyterm",
+    });
+
+    expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.factId)).toEqual(["fact"]);
+    expect(catalog.search("composedonlyterm", 5)).toEqual([]);
+  });
+
   it("pinned() returns only always facts in registration order", async () => {
     const catalog = new FactCatalog();
     await catalog.register([

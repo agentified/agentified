@@ -1,3 +1,4 @@
+import { type Fact, FactCatalog, FactRegistry } from "./experimental.js";
 import {
   DimensionMismatchError,
   EmbedderError,
@@ -54,6 +55,7 @@ async function registerShapes(): Promise<void> {
     id: "read",
     name: "read",
     description: "Read a file",
+    searchableDescription: "filesystem content retrieval",
     inputSchema: {},
     outputSchema: {},
   });
@@ -62,7 +64,12 @@ async function registerShapes(): Promise<void> {
   ]);
 
   const skills = new SkillRegistry();
-  await skills.register({ id: "deploy", name: "deploy", description: "Deploy an app" });
+  await skills.register({
+    id: "deploy",
+    name: "deploy",
+    description: "Deploy an app",
+    searchableDescription: "production release",
+  });
   await skills.register([
     { id: "lint", name: "lint", description: "Lint the code" } satisfies Skill,
   ]);
@@ -72,6 +79,7 @@ async function registerShapes(): Promise<void> {
     id: "read_file",
     name: "read_file",
     description: "Read a file",
+    searchableDescription: "filesystem content retrieval",
     inputSchema: {},
     outputSchema: {},
     execute: async () => ({}),
@@ -88,8 +96,28 @@ async function registerShapes(): Promise<void> {
   ]);
 
   const skillCatalog = new SkillCatalog();
-  await skillCatalog.register({ id: "deploy", name: "deploy", description: "Deploy an app" });
+  await skillCatalog.register({
+    id: "deploy",
+    name: "deploy",
+    description: "Deploy an app",
+    searchableDescription: "production release",
+  });
   await skillCatalog.register([{ id: "lint", name: "lint", description: "Lint the code" }]);
+
+  const facts = new FactRegistry();
+  await facts.register({
+    id: "hours",
+    name: "hours",
+    description: "Opening hours",
+    searchableDescription: "business schedule",
+  } satisfies Fact);
+  const factCatalog = new FactCatalog();
+  await factCatalog.register({
+    id: "address",
+    name: "address",
+    description: "Shop location",
+    searchableDescription: "street directions",
+  });
 }
 void registerShapes;
 
