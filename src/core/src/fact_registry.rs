@@ -107,6 +107,11 @@ impl FactRegistry {
     /// holds a duplicate.
     pub fn register(&mut self, fact: Fact) {
         let fact_id = fact.id.clone();
+        let definition = TraceEvent::catalog_definition_for_fact(&fact);
+        let definition_changed = self.facts.get(&fact_id).is_none_or(|existing| {
+            TraceEvent::catalog_definition_for_fact(existing).catalog_definition_hash()
+                != definition.catalog_definition_hash()
+        });
         if self.facts.insert(fact_id.clone(), fact).is_some() {
             // Replaced an existing id: drop its stale embedding.
             self.dense.invalidate(&fact_id);
@@ -117,6 +122,9 @@ impl FactRegistry {
             kind: ChurnKind::Add,
             fact_id,
         });
+        if definition_changed {
+            self.sink.record(definition);
+        }
     }
 
     /// Number of registered facts (distinct ids).

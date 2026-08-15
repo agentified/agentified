@@ -486,6 +486,11 @@ impl ToolRegistry {
     /// ```
     pub fn register(&mut self, tool: Tool) {
         let tool_id = tool.id.clone();
+        let definition = TraceEvent::catalog_definition_for_tool(&tool);
+        let definition_changed = self.tools.get(&tool_id).is_none_or(|existing| {
+            TraceEvent::catalog_definition_for_tool(existing).catalog_definition_hash()
+                != definition.catalog_definition_hash()
+        });
         // Add or replace, the corpus changed either way: the prebuilt BM25
         // index no longer matches it.
         self.bm25.invalidate();
@@ -497,6 +502,9 @@ impl ToolRegistry {
             kind: ChurnKind::Add,
             tool_id,
         });
+        if definition_changed {
+            self.sink.record(definition);
+        }
     }
 
     /// Number of registered tools (distinct ids).
@@ -1161,6 +1169,66 @@ mod tests {
         // No embedder override, no model load — pure lexical.
         let hits = reg.search("read a file", 5);
         assert_eq!(hits.first().map(|h| h.tool_id.as_str()), Some("read_file"));
+    }
+
+    #[test]
+    fn register_emits_one_definition_for_identical_tool_content() {
+        let sink = Arc::new(MemorySink::new("definition-session"));
+        let mut reg = ToolRegistry::with_trace_sink(sink.clone());
+        let mut registered = tool("read_file", "read a file");
+        registered.searchable_description = Some("open local documents".into());
+        registered.input_schema = serde_json::json!({"type": "object"});
+        registered.output_schema = serde_json::json!({"type": "string"});
+
+        reg.register(registered);
+        let mut identical = tool("read_file", "read a file");
+        identical.searchable_description = Some("open local documents".into());
+        identical.input_schema = serde_json::json!({"type": "object"});
+        identical.output_schema = serde_json::json!({"type": "string"});
+        reg.register(identical);
+
+        let definitions: Vec<_> = sink
+            .drain()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                TraceEvent::CatalogDefinition {
+                    kind,
+                    id,
+                    name,
+                    description,
+                    tags,
+                    input_schema,
+                    output_schema,
+                    searchable_description,
+                    searchable_description_overridden,
+                    content_hash,
+                } => Some((
+                    kind,
+                    id,
+                    name,
+                    description,
+                    tags,
+                    input_schema,
+                    output_schema,
+                    searchable_description,
+                    searchable_description_overridden,
+                    content_hash,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(definitions.len(), 1);
+        let definition = &definitions[0];
+        assert_eq!(definition.0, crate::trace::CatalogKind::Tool);
+        assert_eq!(definition.1, "read_file");
+        assert_eq!(definition.2, "read_file");
+        assert_eq!(definition.3, "read a file");
+        assert!(definition.4.is_empty());
+        assert_eq!(definition.5, Some(serde_json::json!({"type": "object"})));
+        assert_eq!(definition.6, Some(serde_json::json!({"type": "string"})));
+        assert_eq!(definition.7, "open local documents");
+        assert!(definition.8);
+        assert_eq!(definition.9.len(), 64);
     }
 
     #[test]

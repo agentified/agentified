@@ -350,6 +350,11 @@ impl SkillRegistry {
     /// cached embedding; the corpus never holds a duplicate.
     pub fn register(&mut self, skill: Skill) {
         let skill_id = skill.id.clone();
+        let definition = TraceEvent::catalog_definition_for_skill(&skill);
+        let definition_changed = self.skills.get(&skill_id).is_none_or(|existing| {
+            TraceEvent::catalog_definition_for_skill(existing).catalog_definition_hash()
+                != definition.catalog_definition_hash()
+        });
         // Add or replace, the corpus changed either way: the prebuilt BM25
         // index no longer matches it.
         self.bm25.invalidate();
@@ -361,6 +366,9 @@ impl SkillRegistry {
             kind: ChurnKind::Add,
             skill_id,
         });
+        if definition_changed {
+            self.sink.record(definition);
+        }
     }
 
     /// Replace the entire corpus with `skills`: ids absent from the batch are
@@ -443,6 +451,11 @@ impl SkillRegistry {
         }
 
         for (id, skill) in &next {
+            let definition = TraceEvent::catalog_definition_for_skill(skill);
+            let definition_changed = self.skills.get(id).is_none_or(|existing| {
+                TraceEvent::catalog_definition_for_skill(existing).catalog_definition_hash()
+                    != definition.catalog_definition_hash()
+            });
             match self.skills.get(id) {
                 Some(current) if current == skill => {
                     outcome.unchanged += 1;
@@ -464,6 +477,9 @@ impl SkillRegistry {
                 kind: ChurnKind::Add,
                 skill_id: id.clone(),
             });
+            if definition_changed {
+                self.sink.record(definition);
+            }
         }
 
         if indexed_text_changed {

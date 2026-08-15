@@ -1,8 +1,9 @@
 use std::sync::{Arc, Condvar, Mutex, RwLock, mpsc};
 
 use ratel_ai_core::{
-    ChurnKind, FanoutSink, FnSink, IntentGraph, JsonlSink, MemorySink, NoopSink, Origin, Tool,
-    ToolRegistry, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink, UsageLearner,
+    CatalogKind, ChurnKind, Fact, FactRegistry, FanoutSink, FnSink, IntentGraph, JsonlSink,
+    MemorySink, NoopSink, Origin, PinMode, Skill, SkillRegistry, Tool, ToolRegistry, TraceEnvelope,
+    TraceEvent, TraceEventContext, TraceSink, UsageLearner,
 };
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -76,7 +77,7 @@ fn register_emits_index_churn_add() {
     registry.register(lookup_tool("alpha"));
 
     let events = sink.snapshot();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
     let env: &TraceEnvelope = &events[0];
     assert_eq!(env.session_id, "session-1");
     assert_eq!(env.source_id, "ratel");
@@ -90,6 +91,128 @@ fn register_emits_index_churn_add() {
         }
         other => panic!("expected IndexChurn, got {other:?}"),
     }
+}
+
+#[test]
+fn registration_emits_complete_catalog_definitions_for_every_kind() {
+    let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
+    let mut tools = ToolRegistry::with_trace_sink(sink.clone());
+    let mut tool = lookup_tool("read");
+    tool.name = "read_records".into();
+    tool.description = "Read records".into();
+    tool.searchable_description = Some("find archive".into());
+    tool.input_schema = json!({
+        "type": "object",
+        "properties": { "path": { "type": "string" } }
+    });
+    tool.output_schema = json!({ "type": "string" });
+    tools.register(tool);
+
+    let mut skills = SkillRegistry::with_trace_sink(sink.clone());
+    skills.register(Skill {
+        id: "review".into(),
+        name: "review_code".into(),
+        description: "Review source".into(),
+        searchable_description: None,
+        tags: vec!["quality".into()],
+        tools: vec!["read".into()],
+        metadata: Default::default(),
+        body: "private instructions".into(),
+    });
+
+    let mut facts = FactRegistry::with_trace_sink(sink.clone());
+    facts.register(Fact {
+        id: "address".into(),
+        name: "shop_address".into(),
+        description: "Where the shop is".into(),
+        searchable_description: None,
+        tags: vec!["location".into()],
+        metadata: Default::default(),
+        body: "private address".into(),
+        pin: PinMode::Always,
+    });
+
+    let definitions: Vec<_> = sink
+        .snapshot()
+        .into_iter()
+        .filter_map(|envelope| match envelope.event {
+            TraceEvent::CatalogDefinition {
+                kind,
+                id,
+                name,
+                description,
+                tags,
+                input_schema,
+                output_schema,
+                searchable_description,
+                searchable_description_overridden,
+                content_hash,
+            } => Some((
+                kind,
+                id,
+                name,
+                description,
+                tags,
+                input_schema,
+                output_schema,
+                searchable_description,
+                searchable_description_overridden,
+                content_hash,
+            )),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(definitions.len(), 3);
+    assert_eq!(definitions[0].0, CatalogKind::Tool);
+    assert_eq!(definitions[0].1, "read");
+    assert_eq!(definitions[0].2, "read_records");
+    assert_eq!(definitions[0].3, "Read records");
+    assert!(definitions[0].4.is_empty());
+    assert_eq!(
+        definitions[0].5,
+        Some(json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } }
+        }))
+    );
+    assert_eq!(definitions[0].6, Some(json!({ "type": "string" })));
+    assert_eq!(definitions[0].7, "find archive");
+    assert!(definitions[0].8);
+    assert_eq!(
+        definitions[0].9,
+        "b114cd9a32169e1b0f05b4cf993ef7babc63c27e4944af3dbf7ec984ca507e4f"
+    );
+
+    assert_eq!(definitions[1].0, CatalogKind::Skill);
+    assert_eq!(definitions[1].1, "review");
+    assert_eq!(definitions[1].4, vec!["quality"]);
+    assert_eq!(definitions[1].5, None);
+    assert_eq!(definitions[1].6, None);
+    assert_eq!(definitions[1].7, "Review source");
+    assert!(!definitions[1].8);
+
+    assert_eq!(definitions[2].0, CatalogKind::Fact);
+    assert_eq!(definitions[2].1, "address");
+    assert_eq!(definitions[2].4, vec!["location"]);
+    assert_eq!(definitions[2].7, "Where the shop is");
+    assert!(!definitions[2].8);
+}
+
+#[test]
+fn byte_identical_registration_emits_no_duplicate_definition() {
+    let sink = Arc::new(MemorySink::new("session-1"));
+    let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+
+    registry.register(lookup_tool("read"));
+    registry.register(lookup_tool("read"));
+
+    let definitions = sink
+        .snapshot()
+        .into_iter()
+        .filter(|envelope| matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+        .count();
+    assert_eq!(definitions, 1);
 }
 
 #[test]
@@ -598,10 +721,14 @@ fn fn_sink_composes_as_a_registry_sink() {
     registry.register(lookup_tool("alpha"));
 
     let lines = lines.lock().unwrap();
-    assert_eq!(lines.len(), 1);
+    // Registration emits index_churn followed by the catalog_definition record.
+    assert_eq!(lines.len(), 2);
     let env: Value = serde_json::from_str(&lines[0]).unwrap();
     assert_eq!(env["session_id"], "session-fn-3");
     assert_eq!(env["type"], "index_churn");
+    let definition: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(definition["session_id"], "session-fn-3");
+    assert_eq!(definition["type"], "catalog_definition");
 }
 
 #[test]
