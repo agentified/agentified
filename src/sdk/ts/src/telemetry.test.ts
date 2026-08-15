@@ -133,6 +133,59 @@ describe("execute_tool span", () => {
     expect(attrs(span)["gen_ai.tool.call.arguments"]).toBeUndefined();
     expect(attrs(span)["gen_ai.tool.call.result"]).toBeUndefined();
     expect(logEventsNamed("ratel.tool.execution.details")).toHaveLength(0);
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+  });
+
+  it("emits gated tool, skill, and fact definitions once per unchanged content hash", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const tools = new ToolCatalog();
+    const skills = new SkillCatalog();
+    const facts = new FactCatalog();
+
+    await tools.register(readFile);
+    await tools.register(readFile);
+    const review = {
+      id: "review",
+      name: "review_code",
+      description: "Review source",
+      tags: ["quality"],
+    };
+    await skills.register(review);
+    await facts.register({
+      id: "address",
+      name: "shop_address",
+      description: "Where the shop is",
+      tags: ["location"],
+    });
+    await skills.replaceAll([review]);
+    await skills.replaceAll([{ ...review, description: "Review changed source" }]);
+
+    const events = logEventsNamed("ratel.catalog.definition");
+    expect(events).toHaveLength(4);
+    expect(events.map((event) => event.attributes["ratel.catalog.kind"])).toEqual([
+      "tool",
+      "skill",
+      "fact",
+      "skill",
+    ]);
+    expect(events[0]?.attributes).toEqual({
+      "ratel.catalog.kind": "tool",
+      "ratel.catalog.id": "read_file",
+      "ratel.catalog.name": "read_file",
+      "ratel.catalog.description": "Read a file from local disk and return its textual contents.",
+      "ratel.catalog.tags": [],
+      "ratel.catalog.input_schema": '{"properties":{"path":{"type":"string"}}}',
+      "ratel.catalog.output_schema": '{"properties":{"contents":{"type":"string"}}}',
+      "ratel.catalog.searchable_description":
+        "Read a file from local disk and return its textual contents.",
+      "ratel.catalog.searchable_description_overridden": false,
+      "ratel.catalog.content_hash":
+        "a6135789c27ce3a9cb35a0ca2303133e20d29bd17aad90ebebe2b99fb4fcd0eb",
+    });
+    expect(events[3]?.attributes["ratel.catalog.id"]).toBe("review");
+    expect(events[3]?.attributes["ratel.catalog.content_hash"]).not.toBe(
+      events[1]?.attributes["ratel.catalog.content_hash"],
+    );
   });
 
   it("under SPAN_AND_EVENT captures content on both the span and the event", async () => {

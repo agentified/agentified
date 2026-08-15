@@ -18,6 +18,7 @@ off).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
@@ -26,6 +27,7 @@ from typing import Any, TypedDict, TypeVar
 from .runtime_events import new_runtime_event_id
 
 try:
+    import ratel_ai_telemetry as _telemetry_vocabulary
     from opentelemetry import _logs as _otel_logs
     from opentelemetry import trace as _otel_trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
@@ -55,6 +57,46 @@ try:
         AuthOutcome,
         ContentCapture,
         content_capture_mode,
+    )
+
+    # Compatibility with telemetry helpers released before the catalog
+    # definition vocabulary; the SDK and helper ship on separate trains.
+    RATEL_CATALOG_CONTENT_HASH: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_CONTENT_HASH", "ratel.catalog.content_hash"
+    )
+    RATEL_CATALOG_DEFINITION: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_DEFINITION", "ratel.catalog.definition"
+    )
+    RATEL_CATALOG_DESCRIPTION: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_DESCRIPTION", "ratel.catalog.description"
+    )
+    RATEL_CATALOG_ID: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_ID", "ratel.catalog.id"
+    )
+    RATEL_CATALOG_INPUT_SCHEMA: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_INPUT_SCHEMA", "ratel.catalog.input_schema"
+    )
+    RATEL_CATALOG_KIND: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_KIND", "ratel.catalog.kind"
+    )
+    RATEL_CATALOG_NAME: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_NAME", "ratel.catalog.name"
+    )
+    RATEL_CATALOG_OUTPUT_SCHEMA: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_OUTPUT_SCHEMA", "ratel.catalog.output_schema"
+    )
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION: str = getattr(
+        _telemetry_vocabulary,
+        "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
+        "ratel.catalog.searchable_description",
+    )
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: str = getattr(
+        _telemetry_vocabulary,
+        "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
+        "ratel.catalog.searchable_description_overridden",
+    )
+    RATEL_CATALOG_TAGS: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_TAGS", "ratel.catalog.tags"
     )
 
     RATEL_EVENT_ID: str
@@ -89,6 +131,57 @@ class RuntimeEventProjection(TypedDict, total=False):
     invocation_id: str
     trace_id: str
     span_id: str
+
+
+def record_catalog_definitions(
+    kind: str,
+    definitions: Sequence[Any],
+    emitted_hashes: dict[str, str],
+) -> None:
+    """Project changed catalog definitions into the opt-in Logs channel."""
+    if not _ENABLED or not _capture_content_on_event():
+        return
+    for definition in definitions:
+        tags = list(getattr(definition, "tags", []))
+        override = getattr(definition, "searchable_description", None)
+        searchable_description = (
+            definition.description if override is None else override
+        )
+        input_schema = getattr(definition, "input_schema", None) if kind == "tool" else None
+        output_schema = getattr(definition, "output_schema", None) if kind == "tool" else None
+        content = {
+            "kind": kind,
+            "id": definition.id,
+            "name": definition.name,
+            "description": definition.description,
+            "tags": tags,
+            "input_schema": input_schema,
+            "output_schema": output_schema,
+            "searchable_description": searchable_description,
+            "searchable_description_overridden": override is not None,
+        }
+        content_hash = hashlib.sha256(_canonical_json(content).encode()).hexdigest()
+        if emitted_hashes.get(definition.id) == content_hash:
+            continue
+        attributes: dict[str, Any] = {
+            RATEL_CATALOG_KIND: kind,
+            RATEL_CATALOG_ID: definition.id,
+            RATEL_CATALOG_NAME: definition.name,
+            RATEL_CATALOG_DESCRIPTION: definition.description,
+            RATEL_CATALOG_TAGS: tags,
+            RATEL_CATALOG_SEARCHABLE_DESCRIPTION: searchable_description,
+            RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: override is not None,
+            RATEL_CATALOG_CONTENT_HASH: content_hash,
+        }
+        if kind == "tool":
+            attributes[RATEL_CATALOG_INPUT_SCHEMA] = _canonical_json(input_schema)
+            attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = _canonical_json(output_schema)
+        _logger().emit(event_name=RATEL_CATALOG_DEFINITION, attributes=attributes)
+        emitted_hashes[definition.id] = content_hash
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _tracer() -> Any:

@@ -48,7 +48,12 @@ from .grounding import (
     assert_message_sequence,
     plan_injection,
 )
-from .telemetry import SEARCH_TARGET_FACT, trace_search, trace_search_async
+from .telemetry import (
+    SEARCH_TARGET_FACT,
+    record_catalog_definitions,
+    trace_search,
+    trace_search_async,
+)
 
 __all__ = ["ExperimentalWarning", "Fact", "FactCatalog", "FactHit", "FactRegistry", "Pin"]
 
@@ -247,6 +252,7 @@ class FactRegistry:
         # so a forgotten `await register(...)` is caught at the next dense search.
         self._undriven_builds = 0
         self._dense_tasks: set[asyncio.Task[Any]] = set()
+        self._emitted_definition_hashes: dict[str, str] = {}
 
     @overload
     def register(self, item: Fact) -> Awaitable[None]: ...
@@ -447,6 +453,7 @@ class FactRegistry:
                     for fact in facts
                 ]
             )
+            record_catalog_definitions("fact", facts, self._emitted_definition_hashes)
 
     def _raise_if_busy(self) -> None:
         if self._dense_pending:

@@ -16,6 +16,7 @@
  * capture gate's span-attribute and Logs EventRecord channels (default off), per ADR-0007.
  */
 
+import { createHash } from "node:crypto";
 import {
   context,
   type Context as OtelContext,
@@ -38,6 +39,17 @@ import {
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_CATALOG_CONTENT_HASH,
+  RATEL_CATALOG_DEFINITION,
+  RATEL_CATALOG_DESCRIPTION,
+  RATEL_CATALOG_ID,
+  RATEL_CATALOG_INPUT_SCHEMA,
+  RATEL_CATALOG_KIND,
+  RATEL_CATALOG_NAME,
+  RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  RATEL_CATALOG_TAGS,
   RATEL_EVENT_ID,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
@@ -179,6 +191,95 @@ export interface RuntimeEventProjection {
   invocationId?: string;
   traceId?: string;
   spanId?: string;
+}
+
+/** @internal Definition fields shared by tool, skill, and fact registrations. */
+export interface CatalogDefinitionInput {
+  id: string;
+  name: string;
+  description: string;
+  searchableDescription?: string;
+  tags?: string[];
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+}
+
+/**
+ * Project changed catalog definitions into the opt-in Logs channel.
+ * `emittedHashes` scopes deduplication to one registry/session.
+ * @internal
+ */
+export function recordCatalogDefinitions(
+  kind: "tool" | "skill" | "fact",
+  definitions: readonly CatalogDefinitionInput[],
+  emittedHashes: Map<string, string>,
+): void {
+  if (!captureContentOnEvent()) return;
+  for (const definition of definitions) {
+    const attributes = catalogDefinitionAttributes(kind, definition);
+    const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
+    if (emittedHashes.get(definition.id) === contentHash) continue;
+    getLogger().emit({
+      eventName: RATEL_CATALOG_DEFINITION,
+      attributes,
+    });
+    emittedHashes.set(definition.id, contentHash);
+  }
+}
+
+function catalogDefinitionAttributes(
+  kind: "tool" | "skill" | "fact",
+  definition: CatalogDefinitionInput,
+): Record<string, AnyValue> {
+  const tags = definition.tags ?? [];
+  const searchableDescription = definition.searchableDescription ?? definition.description;
+  const searchableDescriptionOverridden = definition.searchableDescription !== undefined;
+  const inputSchema = kind === "tool" ? definition.inputSchema : null;
+  const outputSchema = kind === "tool" ? definition.outputSchema : null;
+  const content = {
+    kind,
+    id: definition.id,
+    name: definition.name,
+    description: definition.description,
+    tags,
+    input_schema: inputSchema,
+    output_schema: outputSchema,
+    searchable_description: searchableDescription,
+    searchable_description_overridden: searchableDescriptionOverridden,
+  };
+  const contentHash = createHash("sha256").update(canonicalJson(content), "utf8").digest("hex");
+  return {
+    [RATEL_CATALOG_KIND]: kind,
+    [RATEL_CATALOG_ID]: definition.id,
+    [RATEL_CATALOG_NAME]: definition.name,
+    [RATEL_CATALOG_DESCRIPTION]: definition.description,
+    [RATEL_CATALOG_TAGS]: tags,
+    ...(kind === "tool"
+      ? {
+          [RATEL_CATALOG_INPUT_SCHEMA]: canonicalJson(inputSchema),
+          [RATEL_CATALOG_OUTPUT_SCHEMA]: canonicalJson(outputSchema),
+        }
+      : {}),
+    [RATEL_CATALOG_SEARCHABLE_DESCRIPTION]: searchableDescription,
+    [RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN]: searchableDescriptionOverridden,
+    [RATEL_CATALOG_CONTENT_HASH]: contentHash,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, sortJson(item)]),
+    );
+  }
+  return value;
 }
 
 function eventProjection(span: Span, invocationId?: string): RuntimeEventProjection {

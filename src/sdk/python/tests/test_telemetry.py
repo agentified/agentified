@@ -41,6 +41,7 @@ from ratel_ai import (  # noqa: E402
     TraceSinkConfig,
     configure_telemetry,
 )
+from ratel_ai.experimental import Fact, FactCatalog  # noqa: E402
 
 CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
 
@@ -170,6 +171,80 @@ async def test_content_not_captured_by_default(exporter: Any) -> None:
     assert "gen_ai.tool.call.arguments" not in attrs
     assert "gen_ai.tool.call.result" not in attrs
     assert _log_events_named("ratel.tool.execution.details") == []
+    assert _log_events_named("ratel.catalog.definition") == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_are_gated_complete_and_deduplicated(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    tools = ToolCatalog()
+    skills = SkillCatalog()
+    facts = FactCatalog()
+
+    await tools.register(_read_file())
+    await tools.register(_read_file())
+    review = Skill(
+        id="review",
+        name="review_code",
+        description="Review source",
+        tags=["quality"],
+    )
+    await skills.register(review)
+    await facts.register(
+        Fact(
+            id="address",
+            name="shop_address",
+            description="Where the shop is",
+            tags=["location"],
+        )
+    )
+    await skills.replace_all([review])
+    await skills.replace_all(
+        [
+            Skill(
+                id="review",
+                name="review_code",
+                description="Review changed source",
+                tags=["quality"],
+            )
+        ]
+    )
+
+    events = _log_events_named("ratel.catalog.definition")
+    assert len(events) == 4
+    assert [event.attributes["ratel.catalog.kind"] for event in events] == [
+        "tool",
+        "skill",
+        "fact",
+        "skill",
+    ]
+    assert dict(events[0].attributes or {}) == {
+        "ratel.catalog.kind": "tool",
+        "ratel.catalog.id": "read_file",
+        "ratel.catalog.name": "read_file",
+        "ratel.catalog.description": (
+            "Read a file from local disk and return its textual contents."
+        ),
+        "ratel.catalog.tags": (),
+        "ratel.catalog.input_schema": '{"properties":{"path":{"type":"string"}}}',
+        "ratel.catalog.output_schema": (
+            '{"properties":{"contents":{"type":"string"}}}'
+        ),
+        "ratel.catalog.searchable_description": (
+            "Read a file from local disk and return its textual contents."
+        ),
+        "ratel.catalog.searchable_description_overridden": False,
+        "ratel.catalog.content_hash": (
+            "a6135789c27ce3a9cb35a0ca2303133e20d29bd17aad90ebebe2b99fb4fcd0eb"
+        ),
+    }
+    assert events[3].attributes["ratel.catalog.id"] == "review"
+    assert (
+        events[3].attributes["ratel.catalog.content_hash"]
+        != events[1].attributes["ratel.catalog.content_hash"]
+    )
 
 
 @pytest.mark.asyncio

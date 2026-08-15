@@ -39,6 +39,7 @@ from .embedding_artifact import (
 from .telemetry import (
     SEARCH_TARGET_SKILL,
     RuntimeEventProjection,
+    record_catalog_definitions,
     trace_search,
     trace_search_async,
     trace_skill_load,
@@ -241,6 +242,7 @@ class SkillRegistry:
         # a forgotten `await register(...)` is caught at the next dense search.
         self._undriven_builds = 0
         self._dense_tasks: set[asyncio.Task[Any]] = set()
+        self._emitted_definition_hashes: dict[str, str] = {}
 
     @overload
     def register(self, item: Skill) -> Awaitable[None]: ...
@@ -627,6 +629,7 @@ class SkillRegistry:
                     for skill in skills
                 ]
             )
+            record_catalog_definitions("skill", skills, self._emitted_definition_hashes)
 
     def _replace_all_items(self, skills: Iterable[Skill]) -> ReplaceOutcome:
         """Swap the corpus without embedding — the metadata half of `replace_all`."""
@@ -648,6 +651,7 @@ class SkillRegistry:
                     for skill in skills
                 ]
             )
+            record_catalog_definitions("skill", skills, self._emitted_definition_hashes)
         return ReplaceOutcome(added, removed, updated, unchanged)
 
     def _outcome_tracked(self, outcome: ReplaceOutcome, has_items: bool) -> PendingReplace:

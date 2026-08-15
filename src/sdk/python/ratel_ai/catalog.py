@@ -31,6 +31,7 @@ from .runtime_events import new_runtime_event_id
 from .telemetry import (
     SEARCH_TARGET_TOOL,
     RuntimeEventProjection,
+    record_catalog_definitions,
     trace_execute_tool,
     trace_search,
     trace_search_async,
@@ -413,6 +414,7 @@ class ToolRegistry:
         # search_async), so it needs no lock.
         self._undriven_builds = 0
         self._dense_tasks: set[asyncio.Task[Any]] = set()
+        self._emitted_definition_hashes: dict[str, str] = {}
 
     @overload
     def register(self, item: Tool) -> Awaitable[None]: ...
@@ -840,6 +842,7 @@ class ToolRegistry:
                     for tool in tools
                 ]
             )
+            record_catalog_definitions("tool", tools, self._emitted_definition_hashes)
 
     def _raise_if_busy(self) -> None:
         if self._dense_pending:
