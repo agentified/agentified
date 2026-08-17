@@ -93,8 +93,11 @@ async def main() -> None:
         intents = json.loads(graph.to_json())["intents"]
         obs = sum(it["support"] for it in intents)
         seeded = sum(it.get("seeded_support", 0) for it in intents)
+        # Quoted separately: a nested f-string carrying backslash escapes needs
+        # PEP 701 (3.12+), and this example declares `requires-python = ">=3.10"`.
+        label = f'"{LIVE_QUERY}"'
         print(
-            f"  {origin:<8} search  {f'\"{LIVE_QUERY}\"':<30} gh_run_list   "
+            f"  {origin:<8} search  {label:<30} gh_run_list   "
             f"obs={obs:<3} from_baseline={seeded}"
         )
 
