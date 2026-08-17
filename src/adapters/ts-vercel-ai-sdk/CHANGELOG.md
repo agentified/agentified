@@ -6,11 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.4.0-rc.2] - 2026-08-07
+## [0.4.0-rc.2] - 2026-08-17
+
+### Fixed
+
+- The published `@ratel-ai/sdk` peer is now the floor range `>=0.11.0 <1.0.0` instead of a caret of the in-repo SDK version.
 
 ### Changed
 
-- Re-cut of `0.4.0-rc.1` on top of `@ratel-ai/sdk@0.7.1-rc.0` and `@ratel-ai/telemetry@0.3.0-rc.1`, which carry the 0.7.0 core (cached BM25 index, adaptive usage ranking). No adapter API or behaviour change from rc.1; the earlier tarball predates that core and is not an ancestor of this one.
+- Re-cut of `0.4.0-rc.1` against `@ratel-ai/sdk@0.11.0` and `@ratel-ai/telemetry@0.4.0`.
 
 ## [0.4.0-rc.1] - 2026-07-30
 
@@ -35,7 +39,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- `RatelOtelIntegration`, an `ai@7` telemetry integration, at the new `@ratel-ai/vercel-ai-sdk/otel` entrypoint. It embeds `@ai-sdk/otel`'s `OpenTelemetry` emitter as a private delegate and stamps Ratel's `ratel.origin` overlay on every span through that emitter's `enrichSpan` hook, so hosts get the AI SDK's standard `gen_ai.*` spans plus the `ratel.*` overlay. It only *creates* spans, onto a provider the host owns — it never registers a provider and never exports, so any processor already on that provider (Langfuse, a generic OTLP exporter, anything else) receives them. Its options are `@ai-sdk/otel`'s `OpenTelemetryOptions` plus `origin`, which picks the `ratel.origin` value and defaults to `agent` — right for the tool-loop spans an agent synthesizes, wrong for host-driven `embed` / `embedMany` / `rerank`, so the value is the host's to set. An `enrichSpan` of the host's own is called too and its attributes merged *under* Ratel's: every host attribute lands except `ratel.origin` itself, which the overlay keeps. A host hook that throws costs the host its own attributes for that span and nothing more — the emitter's own guard discards the whole return value, so the integration guards the host call separately to keep `ratel.origin` unconditional. `Origin` is re-exported from the entrypoint, since `@ratel-ai/telemetry` is the adapter's dependency rather than the host's. Register exactly one emitting integration: this one, Langfuse's, and the bare `OpenTelemetry` all embed the same emitter, so two would duplicate every `gen_ai.*` span. On `ai@5`/`ai@6` there is no integration seam — pass `experimental_telemetry: { isEnabled: true }` per call instead.
+- `RatelOtelIntegration`, an `ai@7` telemetry integration, at the new `@ratel-ai/vercel-ai-sdk/otel` entrypoint. It embeds `@ai-sdk/otel`'s `OpenTelemetry` emitter as a private delegate and stamps Ratel's `ratel.origin` overlay on every span through that emitter's `enrichSpan` hook, so hosts get the AI SDK's standard `gen_ai.*` spans plus the `ratel.*` overlay. It only _creates_ spans, onto a provider the host owns — it never registers a provider and never exports, so any processor already on that provider (Langfuse, a generic OTLP exporter, anything else) receives them. Its options are `@ai-sdk/otel`'s `OpenTelemetryOptions` plus `origin`, which picks the `ratel.origin` value and defaults to `agent` — right for the tool-loop spans an agent synthesizes, wrong for host-driven `embed` / `embedMany` / `rerank`, so the value is the host's to set. An `enrichSpan` of the host's own is called too and its attributes merged _under_ Ratel's: every host attribute lands except `ratel.origin` itself, which the overlay keeps. A host hook that throws costs the host its own attributes for that span and nothing more — the emitter's own guard discards the whole return value, so the integration guards the host call separately to keep `ratel.origin` unconditional. `Origin` is re-exported from the entrypoint, since `@ratel-ai/telemetry` is the adapter's dependency rather than the host's. Register exactly one emitting integration: this one, Langfuse's, and the bare `OpenTelemetry` all embed the same emitter, so two would duplicate every `gen_ai.*` span. On `ai@5`/`ai@6` there is no integration seam — pass `experimental_telemetry: { isEnabled: true }` per call instead.
 - `@ai-sdk/otel` and `@opentelemetry/api` as **optional** peers, needed only by `./otel`. Optional and off-root are both load-bearing, not stylistic: `@ai-sdk/otel` depends on an exact `ai@7`, so a required peer or a root re-export drags a second `ai` into an `ai@5`/`ai@6` host's type graph, where the two copies redeclare `AI_SDK_DEFAULT_PROVIDER` and break the host's build (TS2403) without it ever importing the integration. The compat matrix now asserts a packed consumer resolves no `@ai-sdk/otel`; its v7 rows typecheck `RatelOtelIntegration` against the real `ai@7` `Telemetry` interface and then actually import and construct it.
 
 ### Changed
