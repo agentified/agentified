@@ -6,21 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.3.0-rc.1] - 2026-08-17
-
-### Fixed
-
-- The published `@ratel-ai/sdk` peer is now the floor range `>=0.11.0 <1.0.0` instead of a caret of the in-repo SDK version.
-
-### Changed
-
-- Re-cut of `0.3.0-rc.0` against `@ratel-ai/sdk@0.11.0` and `@ratel-ai/telemetry@0.4.0`.
-
-## [0.3.0-rc.0] - 2026-07-30
+## [0.3.0] - 2026-08-17
 
 ### Added
 
 - `@ratel-ai/mastra/observability` now exports `experimentalRatelSpanOutputProcessor()`, which copies the active retrieval experiment's five controlled baggage fields onto Mastra's private spans for exact cross-stream joins while preserving Mastra's independent telemetry pipeline.
+
+### Fixed
+
+- The published `@ratel-ai/sdk` peer is now the floor range `>=0.11.0 <1.0.0` instead of a caret of the in-repo SDK version.
 
 ## [0.2.0] - 2026-07-28
 
