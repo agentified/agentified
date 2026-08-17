@@ -107,7 +107,8 @@ export const UNITS = {
     },
   },
   // Framework adapters: npm-only, pure-language packages that peer-depend on
-  // @ratel-ai/sdk via `workspace:^` (rewritten to a concrete range at pack time).
+  // @ratel-ai/sdk via `workspace:^` (rewritten at pack time to
+  // SDK_ADAPTER_PEER_RANGE — a 0.x caret would pin the minor).
   // Each ships independently on its own tag prefix.
   "vercel-ai-sdk": {
     tagPrefix: "vercel-ai-sdk-v",
@@ -136,6 +137,14 @@ export const UNITS = {
 };
 
 export const UNIT_IDS = Object.keys(UNITS);
+
+// Floor of the published `@ratel-ai/sdk` peer on both adapters. Source manifests
+// stay `workspace:^`; pin-adapter-sdk-peer.mjs rewrites this range at publish.
+// 0.9.1 because vercel shipped code needs ExperimentalPassthroughToolExposure,
+// which first shipped in SDK 0.9.1. Never lower it; bump it to the SDK the
+// adapters are built against when cutting an adapter release (ADR-0020).
+export const SDK_ADAPTER_PEER_FLOOR = "0.9.1";
+export const SDK_ADAPTER_PEER_RANGE = `>=${SDK_ADAPTER_PEER_FLOOR} <1.0.0`;
 
 // Accepted release version: semver with an optional `-rc.N` pre-release.
 export const SEMVER = /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/;

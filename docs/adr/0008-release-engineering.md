@@ -13,6 +13,9 @@ ADR-0016 (per-package versions and releases, 2026-07-04), and ADR-0018 (defer th
 Amended 2026-07-26 to drop the `telemetry-ts-otlp` unit with the `@ratel-ai/telemetry-otlp`
 package, to record the `mastra` adapter unit, and to generalize the cross-unit publish order
 (it binds `sdk-ts` too, not only the adapters) with its PyPI pre-release caveat.
+Amended 2026-08-14 to record that adapter SDK peers publish as the ADR-0020 floor range
+(not `^<in-repo SDK>`), that both adapters runtime-depend on telemetry, and that only the
+telemetry pin still has an npm-view publish-order guard.
 
 ## Context
 
@@ -57,18 +60,21 @@ automatically, so a range naming a version the registry does not have is an `ETA
 install time and not a warning — for a runtime dependency and a peer alike. npm versions are
 immutable, so publishing out of order ships a permanently uninstallable release. The order is
 `telemetry-ts` → `sdk-ts` → {`vercel-ai-sdk`, `mastra`}: `sdk-ts` takes `@ratel-ai/telemetry`
-as a runtime dependency, and both adapters peer on `@ratel-ai/sdk` (`vercel-ai-sdk` also
-depends on `@ratel-ai/telemetry` at runtime). Each of the three dependent publish jobs
-verifies its pinned range resolves on npm and fails before publishing; nothing downstream
-catches it, since the preflight `npm publish --dry-run` packs locally, `tag-version-check`
-inspects only the tagged unit, and `verify-install` runs after the publish is already
-immutable. PyPI adds a stricter case: `ratel-ai` floors `ratel-ai-telemetry>=0.1.3`, and under
+as a runtime dependency, and both adapters peer on `@ratel-ai/sdk` **and** depend on
+`@ratel-ai/telemetry` at runtime. Adapter SDK peers are rewritten to the floor range in
+[ADR-0020](0020-adapter-sdk-peer-floor.md), which does **not** name the
+in-repo SDK version — there is no SDK `npm view` on the adapter publish jobs. Telemetry pins
+stay `'^' +` the in-repo telemetry version; those jobs still `npm view` the pinned telemetry
+range and fail before publishing. Nothing downstream catches a missing telemetry: the
+preflight `npm publish --dry-run` packs locally, `tag-version-check` inspects only the tagged
+unit, and `verify-install` runs after the publish is already immutable. PyPI adds a stricter
+case: `ratel-ai` floors `ratel-ai-telemetry>=0.1.3`, and under
 PEP 440 that does not admit `0.1.3rc1` even with `--pre`, so an RC of `sdk-py` requires
 telemetry-py at GA rather than at a matching RC.
 
 The `vercel-ai-sdk` framework adapter is an independent, pure-TypeScript unit. Its release
-changes only the adapter version, while both workspace specifiers are replaced with the
-compatible published ranges.
+changes only the adapter version, while the SDK peer is rewritten to the ADR-0020 floor range
+and the telemetry runtime dep is rewritten to `'^' +` the in-repo telemetry version.
 It publishes over OIDC from `release.yml`'s `publish-vercel-ai-sdk` job. That job publishes the
 package directory, not a `pnpm pack` tarball, so the substitution is explicit pin steps in the
 job rather than something the pack step does for free. Only the first publish went through
