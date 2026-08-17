@@ -24,8 +24,8 @@ test("writes the floor range over the SDK peer and dev, leaving every other dep 
     );
     pinAdapterSdkPeerFile(file);
     const written = JSON.parse(readFileSync(file, "utf8"));
-    assert.equal(written.peerDependencies["@ratel-ai/sdk"], ">=0.9.1 <1.0.0");
-    assert.equal(written.devDependencies["@ratel-ai/sdk"], ">=0.9.1 <1.0.0");
+    assert.equal(written.peerDependencies["@ratel-ai/sdk"], ">=0.11.0 <1.0.0");
+    assert.equal(written.devDependencies["@ratel-ai/sdk"], ">=0.11.0 <1.0.0");
     assert.equal(written.dependencies["@ratel-ai/telemetry"], "workspace:^");
     assert.equal(written.peerDependencies["@mastra/core"], ">=1.11.0 <2");
   } finally {
