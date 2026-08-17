@@ -184,7 +184,7 @@ or a content-bearing Logs EventRecord under `ratel.*`.
 
 | Attribute | Type | On | Values |
 |---|---|---|---|
-| `ratel.origin` | enum | search, invoke, and third-party `gen_ai.*` spans a framework adapter overlays | `direct \| agent` |
+| `ratel.origin` | enum | search, invoke, and third-party `gen_ai.*` spans a framework adapter overlays | `direct \| agent \| baseline` |
 
 On Ratel's own spans the emitter knows which case it is. On the overlay case it cannot: a
 framework adapter (`@ratel-ai/vercel-ai-sdk/otel`) stamps `ratel.origin` onto `gen_ai.*` spans
@@ -201,7 +201,7 @@ the direct ones by passing a second, `direct`-configured instance on those calls
 | `ratel.search.top_k` | int | requested result count |
 | `ratel.search.hit_count` | int | results returned |
 | `ratel.search.query` | string | **content, gated** like message content; may hold user/agent text |
-| `ratel.origin` | enum | `direct \| agent` |
+| `ratel.origin` | enum | `direct \| agent \| baseline` |
 
 The search text rides an Opt-In Logs EventRecord **`ratel.search.results`** (as
 `ratel.search.query`), gated under the event channel. The span's non-content fields carry counts;
@@ -221,7 +221,7 @@ already understands it) enriched with `ratel.*`:
 | `gen_ai.tool.call.id` | string | when available |
 | `ratel.tool.args_size_bytes` | int | argument payload size (from `invoke_start`) |
 | `ratel.upstream.server` | string | upstream MCP server backing the tool, when the invoke proxies one |
-| `ratel.origin` | enum | `direct \| agent` |
+| `ratel.origin` | enum | `direct \| agent \| baseline` |
 
 Span duration is the invoke latency; failure sets span status `ERROR`. Tool arguments/results are Opt-In
 content: on the span attributes `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` under the

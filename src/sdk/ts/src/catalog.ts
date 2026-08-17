@@ -81,6 +81,10 @@ export type ToolDefinition = Tool;
  *   {@link ToolCatalog.drainTraceEvents}. `sessionId` is stamped on each envelope.
  * - `"jsonl"` — append one JSON envelope per line to the file at `path`
  *   (parent directories are created). `sessionId` is stamped on each envelope.
+ * - `"callback"` — hand each envelope to `onEvent` as a JSON line, for hosts
+ *   whose destination the SDK cannot own (a process-per-request server writing
+ *   to a database, say). The line is the same wire form `"jsonl"` would have
+ *   written, bar the per-record `ts` and `event_id`.
  */
 export type TraceSinkConfig =
   | {
@@ -100,16 +104,110 @@ export type TraceSinkConfig =
       sessionId: string;
       /** File to append to; parent directories are created. */
       path: string;
+    }
+  | {
+      /** Hand each envelope to {@link onEvent} instead of writing it. */
+      kind: "callback";
+      /**
+       * Session id stamped on every envelope — a **default, not an identity**.
+       * Replay pairs searches with invokes *per session*, so a host that
+       * reassembles turns from its own storage should restamp each line with an
+       * id unique to each concurrent turn before building a graph.
+       */
+      sessionId: string;
+      /**
+       * Receives one JSON envelope per event — the same wire form a `"jsonl"`
+       * line carries, field for field, differing only in the per-record `ts`
+       * and `event_id` every envelope-aware sink mints for itself, neither of
+       * which replay reads. So lines collected across processes can be joined
+       * with newlines and passed straight to
+       * {@link ToolCatalog.experimentalBuildIntentGraph}.
+       *
+       * **Delivered asynchronously.** Recording queues the line and returns;
+       * the callback runs on a later turn of the event loop, with no ordering
+       * guarantee against your own microtasks or `setImmediate`. Do not assert
+       * on what it has received in the same tick that recorded it, and flush
+       * before a process exits if you need the tail of a capture.
+       *
+       * **Lossy by design.** Per ADR-0007 a trace sink may drop events under
+       * backpressure but must never block the agent loop, so a queue that
+       * cannot keep up drops silently. Treat a capture window as best-effort
+       * rather than exact, and keep this cheap — enqueue, don't await.
+       */
+      onEvent: (line: string) => void;
     };
 
 /**
  * Who initiated a search: `"direct"` for host code calling the SDK itself
  * (pre-fetch helpers, benchmarks), `"agent"` for a call the model synthesized
- * through the capability tools (`search_capabilities`). Recorded on trace
+ * through the capability tools (`search_capabilities`), `"baseline"` for a
+ * query recorded while Ratel was observing but not serving retrieval — the
+ * agent chose from its own full tool list and the host captured the turn's text
+ * so the invocations that follow can be attributed to it. Recorded on trace
  * events and the `ratel.origin` span attribute so consumers can separate the
- * two paths.
+ * paths.
  */
-export type SearchOrigin = "direct" | "agent";
+export type SearchOrigin = "direct" | "agent" | "baseline";
+
+/**
+ * Which searches open an observation window when learning.
+ *
+ * - `"any"` (the default) — every search in the stream.
+ * - `"baseline"` — only turns recorded with
+ *   {@link ToolCatalog.experimentalBaselineTurn}, so Ratel's own searches
+ *   during a capture period do not become clusters.
+ * - `"agent"` — only searches the model made through the capability tools,
+ *   for rebuilding a graph from a period when Ratel was already serving.
+ *
+ * `"direct"` is a valid {@link SearchOrigin} but not a filter: learning only
+ * from searches your own code made means learning from your plumbing.
+ */
+export type OriginFilterOption = "any" | "agent" | "baseline";
+
+/**
+ * Whether what is learned is marked as coming from a seeding pass. `"seeded"`
+ * records it on each cluster's provenance count; `"live"` (the default) does
+ * not. Never affects ranking.
+ */
+export type ProvenanceOption = "live" | "seeded";
+
+/**
+ * How a trace stream is turned into observations — the same three knobs for
+ * live learning ({@link ToolCatalog.experimentalEnableAdaptiveRanking}) and
+ * offline construction ({@link ToolCatalog.experimentalBuildIntentGraph}),
+ * so what counts as evidence does not depend on which path produced the graph.
+ * Every field defaults to reproducing live behavior.
+ *
+ * Declared here rather than re-exported from the native binding, whose
+ * generated fields are plain `string`: these values are a closed set, so a typo
+ * should be a compile error rather than a runtime one. The native still
+ * validates, for callers without types.
+ */
+export interface ObservationPolicyOptions {
+  /** Which searches open an observation window. Default `"any"`. */
+  origins?: OriginFilterOption;
+  /** Whether learning is marked as seeded. Default `"live"`. */
+  provenance?: ProvenanceOption;
+}
+
+/**
+ * One baseline turn being assembled — the query, plus the capabilities the
+ * agent chose after it. Created by
+ * {@link ToolCatalog.experimentalBaselineTurn}.
+ *
+ * Buffered: nothing reaches the trace log until {@link record}, so a turn that
+ * fails your quality gate can simply be dropped. Recording twice throws, as
+ * does adding to a turn already recorded — both are the same mistake, evidence
+ * counted more than once.
+ */
+export interface BaselineTurn {
+  /** Attribute a tool invocation to this turn. Chainable. */
+  invoked(toolId: string): BaselineTurn;
+  /** Attribute a skill load to this turn. Chainable. */
+  invokedSkill(skillId: string): BaselineTurn;
+  /** Write the turn to the trace log. Throws if called twice. */
+  record(): void;
+}
 
 /**
  * Retrieval engine for {@link ToolCatalog.search} (and the skill catalog's
@@ -473,7 +571,10 @@ export class ToolCatalog {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.registry.experimentalEnableAdaptiveRanking(graph, options);
   }
@@ -485,6 +586,135 @@ export class ToolCatalog {
    */
   async experimentalRebuildIntentGraph(): Promise<void> {
     await this.registry.experimentalRebuildIntentGraph();
+  }
+
+  /**
+   * Begin recording a turn observed while Ratel is **not** serving retrieval —
+   * the collection half of baseline seeding.
+   *
+   * Name the turn's query, then name what the agent chose after it:
+   *
+   * ```ts
+   * catalog.experimentalBaselineTurn("why is the build broken")
+   *   .invoked("gh_run_list")
+   *   .record();
+   * ```
+   *
+   * Nothing reaches the trace log until {@link BaselineTurn.record}, so the
+   * turn is also where your own quality gate goes — a turn you would not want
+   * the graph to learn from is simply never recorded.
+   *
+   * Sugar over {@link recordEvent}: it writes one `search` event with origin
+   * `"baseline"` followed by one event per invocation, which is the adjacency
+   * the graph builder pairs on. The raw shapes are easy to get wrong.
+   */
+  experimentalBaselineTurn(query: string): BaselineTurn {
+    const events: object[] = [
+      {
+        type: "search",
+        query,
+        origin: "baseline",
+        top_k: 0,
+        hits: [],
+        stages: [],
+        took_ms: 0,
+      },
+    ];
+    let recorded = false;
+    const stillOpen = () => {
+      if (recorded) throw new Error("this baseline turn was already recorded");
+    };
+    const turn: BaselineTurn = {
+      invoked: (toolId) => {
+        stillOpen();
+        events.push({ type: "invoke_start", tool_id: toolId, args_size_bytes: 0 });
+        return turn;
+      },
+      invokedSkill: (skillId) => {
+        stillOpen();
+        events.push({ type: "skill_invoke", skill_id: skillId, took_ms: 0 });
+        return turn;
+      },
+      record: () => {
+        stillOpen();
+        recorded = true;
+        for (const event of events) this.recordEvent(event);
+      },
+    };
+    return turn;
+  }
+
+  /**
+   * Record a complete baseline turn in one call — the same evidence
+   * {@link experimentalBaselineTurn} collects, for hosts that cannot hold a
+   * turn open while it happens.
+   *
+   * ```ts
+   * catalog.experimentalRecordBaselineTurn({
+   *   query: "why is the build broken",
+   *   invoked: ["gh_run_list"],
+   * });
+   * ```
+   *
+   * Use this when the query and the invocations arrive separately — a
+   * process-per-request server, where the search and the invocation that
+   * follows are different requests on possibly different machines. Reassemble
+   * the turn from your own storage, then hand it over whole.
+   *
+   * Two reasons to prefer it over the builder in that setting, beyond
+   * ergonomics:
+   *
+   * - **It cannot interleave.** The builder lets you `await` between
+   *   `invoked()` calls, so two turns recorded concurrently can interleave
+   *   their events in one sink and break the search-then-invoke adjacency the
+   *   graph pairs on. This emits its events back to back.
+   * - **One turn stays one observation.** Splitting a search with three
+   *   invocations into three recorded turns counts the query three times, which
+   *   inflates the support that scales the boost and gates the flip.
+   *
+   * Nothing is buffered, so the quality gate is simply whether you call it:
+   * a turn you would not want the graph to learn from is never recorded.
+   */
+  experimentalRecordBaselineTurn(turn: {
+    /** The turn's query — what the agent was answering when it chose. */
+    query: string;
+    /** Tool ids the agent invoked on this turn. */
+    invoked?: readonly string[];
+    /** Skill ids the agent loaded on this turn. */
+    invokedSkills?: readonly string[];
+  }): void {
+    // Deliberately not shared with `experimentalBaselineTurn`: that path emits
+    // invocations in call order, which a `{invoked, invokedSkills}` object
+    // cannot express for a turn mixing the two. Delegating either way would
+    // reorder events on a path that already ships. `adaptive-ranking.test.ts`
+    // holds the two in parity instead.
+    this.recordEvent({
+      type: "search",
+      query: turn.query,
+      origin: "baseline",
+      top_k: 0,
+      hits: [],
+      stages: [],
+      took_ms: 0,
+    });
+    for (const toolId of turn.invoked ?? []) {
+      this.recordEvent({ type: "invoke_start", tool_id: toolId, args_size_bytes: 0 });
+    }
+    for (const skillId of turn.invokedSkills ?? []) {
+      this.recordEvent({ type: "skill_invoke", skill_id: skillId, took_ms: 0 });
+    }
+  }
+
+  /**
+   * Build an {@link IntentGraph} from a JSONL trace log. See
+   * {@link ToolRegistry.experimentalBuildIntentGraph} — the returned graph
+   * is detached, and one call covers both the tool and skill catalogs.
+   */
+  async experimentalBuildIntentGraph(
+    jsonl: string,
+    options: ObservationPolicyOptions = {},
+  ): Promise<IntentGraph> {
+    return this.registry.experimentalBuildIntentGraph(jsonl, options);
   }
 
   /** Whether adaptive usage ranking is active, inactive, or paused by a model

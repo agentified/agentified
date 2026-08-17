@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-17
+
+### Added
+
+- `experimentalRecordBaselineTurn({ query, invoked, invokedSkills })` records a whole baseline turn in one call, for hosts that cannot hold a turn open while it happens — a process-per-request server where the search and the invocation that follows are different requests, on possibly different machines. Reassemble the turn from your own storage, then hand it over whole. Beyond ergonomics: the chained `experimentalBaselineTurn` builder lets you `await` between `invoked()` calls, so concurrent turns can interleave their events in one sink and break the search-then-invoke adjacency the graph pairs on, and splitting one search with three invocations into three recorded turns counts the query three times — inflating the support that scales the boost and gates the flip. The builder is unchanged.
+- A `"callback"` trace sink: `{ kind: "callback", sessionId, onEvent }` hands each envelope to `onEvent` as a JSON line rather than writing it, for hosts whose destination the SDK cannot own. Each line is the same wire form `"jsonl"` would have written, field for field, bar the per-record `ts` and `event_id` every envelope-aware sink mints for itself (neither of which replay reads), so lines collected across processes can be joined with newlines and passed straight to `experimentalBuildIntentGraph`. Delivery is **asynchronous** — recording queues the line and returns, and the callback runs on a later turn of the event loop with no ordering guarantee against your own microtasks — and **lossy** under backpressure, per ADR-0007. `sessionId` is a default rather than an identity: replay pairs searches with invokes per session, so a host reassembling turns should restamp each line with an id unique to each concurrent turn.
+- Building a graph from a log now defaults to seeding — `origins: baseline`, `provenance: seeded` — since that is what an offline build is. The common call passes nothing. Enabling live learning still defaults to `any` / `live`; changing that would alter existing behavior. Pass `origins: agent`, `provenance: live` to re-derive a graph from a period when Ratel was already serving.
+- `origins` accepts `any` / `agent` / `baseline`. `direct` is a valid search origin but not a filter — learning only from searches your own code made means learning from your plumbing.
+- Policy options are now a closed set of literal types (`OriginFilterOption`, `ProvenanceOption`) declared by the SDK rather than the native binding's generated `string` fields, so `{ origins: "baselien" }` is a compile error with completion on the legal values. Runtime validation is unchanged for callers without types.
+- `experimentalEnableAdaptiveRanking` accepts the same `origins` / `provenance` options as `experimentalBuildIntentGraph`, so what counts as evidence no longer depends on which path produced the graph. Defaults are unchanged, and the policy survives a `setTraceSink`.
+- `experimentalBuildIntentGraph(jsonl, options?)` on `ToolCatalog` / `ToolRegistry` builds an intent graph from a JSONL trace log, and `experimentalBaselineTurn(query)` records a turn observed while Ratel serves no retrieval — name the query, name what the agent invoked, `record()`. The turn is buffered, so a turn that fails your own quality gate is never written. Together they are the seed-first path: capture what an agent invokes on its own, build a graph offline, inspect it, then enable ranking. Every distinct query is embedded up front so clusters form densely; the returned graph is detached, so enabling stays explicit. Policy options (`origins` / `provenance`) default to live behavior and reject unknown values.
+- `"baseline"` is now a valid `SearchOrigin`, for recording a query while Ratel observes but does not serve retrieval. Unknown origin strings still degrade to `"direct"` rather than failing a search.
+
+### Changed
+
+- Corrected the account of session ids carried in the shipped JSDoc. Recording a turn whole emits its search and its invoke adjacently, and replay tracks one pending query per session in log order, so a shared session id pairs correctly. A per-turn id is what protects you once lines from several producers are merged without preserving each turn's adjacency, not something the pairing depends on in the first place.
+- Internal: every path that installs a trace sink now shares one learner-wrapping helper, so a new install site cannot forget that adaptive ranking learns by decorating the sink.
+
 ## [0.10.0] - 2026-08-15
 
 ### Added

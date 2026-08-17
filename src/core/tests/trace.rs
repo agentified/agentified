@@ -1,7 +1,7 @@
 use std::sync::{Arc, Condvar, Mutex, RwLock, mpsc};
 
 use ratel_ai_core::{
-    ChurnKind, FanoutSink, IntentGraph, JsonlSink, MemorySink, NoopSink, Origin, Tool,
+    ChurnKind, FanoutSink, FnSink, IntentGraph, JsonlSink, MemorySink, NoopSink, Origin, Tool,
     ToolRegistry, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink, UsageLearner,
 };
 use serde_json::{Value, json};
@@ -505,6 +505,104 @@ fn jsonl_sink_creates_parent_directory() {
     assert!(path.exists());
 }
 
+/// Lines collected from an [`FnSink`], shared with the closure that fills them.
+type CollectedLines = Arc<Mutex<Vec<String>>>;
+
+/// An [`FnSink`] that appends every line it is handed, for the tests below.
+/// Returned as `dyn TraceSink` so callers can pass it straight to
+/// `with_trace_sink` without naming the closure type.
+fn collecting_sink(session_id: &str) -> (Arc<dyn TraceSink>, CollectedLines) {
+    let lines: CollectedLines = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let lines = lines.clone();
+        Arc::new(FnSink::new(session_id, move |line: &str| {
+            lines.lock().expect("lines poisoned").push(line.to_string());
+        }))
+    };
+    (sink, lines)
+}
+
+#[test]
+fn fn_sink_hands_one_line_per_event() {
+    let (sink, lines) = collecting_sink("session-fn-1");
+    sink.record(TraceEvent::AuthNeeds {
+        upstream: "github".into(),
+    });
+    sink.record(TraceEvent::AuthRefresh {
+        upstream: "github".into(),
+        ok: true,
+    });
+
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 2);
+
+    let first: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(first["v"], 2);
+    assert_eq!(first["session_id"], "session-fn-1");
+    assert_eq!(first["type"], "auth_needs");
+    assert_eq!(first["upstream"], "github");
+    assert!(first["ts"].as_u64().unwrap() > 0);
+    assert!(
+        !first["event_id"].as_str().unwrap().is_empty(),
+        "envelope v2 stamps a per-event id, same as every other envelope-aware sink"
+    );
+
+    let second: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(second["type"], "auth_refresh");
+    assert_eq!(second["ok"], true);
+}
+
+/// The contract a host reassembling turns depends on: what the callback hands
+/// out is what `JsonlSink` would have written, so `lines.join("\n")` is a valid
+/// input to `build_intent_graph` with no re-derivation.
+///
+/// Two fields legitimately differ, both of them per-record identity rather than
+/// content: `ts` is sampled at wrap time, and `event_id` is a fresh ULID minted
+/// per event (envelope v2). Neither is read by replay, so normalizing them is
+/// what "the same line" means here — every other field must match exactly.
+#[test]
+fn fn_sink_lines_match_jsonl_modulo_per_record_identity() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("trace.jsonl");
+    let event = || TraceEvent::Search {
+        query: "why is the build broken".into(),
+        origin: Origin::Baseline,
+        top_k: 0,
+        hits: Vec::new(),
+        stages: Vec::new(),
+        took_ms: 0,
+    };
+
+    let jsonl = JsonlSink::new("session-fn-2", &path).expect("open sink");
+    jsonl.record(event());
+    drop(jsonl);
+
+    let (sink, lines) = collecting_sink("session-fn-2");
+    sink.record(event());
+
+    let from_file = std::fs::read_to_string(&path).unwrap();
+    let mut expected: Value = serde_json::from_str(from_file.lines().next().unwrap()).unwrap();
+    let mut actual: Value = serde_json::from_str(&lines.lock().unwrap()[0]).unwrap();
+    for field in ["ts", "event_id"] {
+        expected[field] = Value::Null;
+        actual[field] = Value::Null;
+    }
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn fn_sink_composes_as_a_registry_sink() {
+    let (sink, lines) = collecting_sink("session-fn-3");
+    let mut registry = ToolRegistry::with_trace_sink(sink);
+    registry.register(lookup_tool("alpha"));
+
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    let env: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(env["session_id"], "session-fn-3");
+    assert_eq!(env["type"], "index_churn");
+}
+
 #[test]
 fn trace_event_round_trips_through_json() {
     let originals = vec![
@@ -596,5 +694,54 @@ fn trace_event_round_trips_through_json() {
         let serialized = serde_json::to_string(&original).expect("serialize");
         let back: TraceEvent = serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(back, original);
+    }
+}
+
+#[test]
+fn a_usage_boost_written_before_dropped_existed_still_replays() {
+    // Logs outlive builds: an envelope recorded by an older core has no
+    // `dropped` field, and refusing to parse it would make the trace log
+    // unreplayable across an upgrade (ADR-0007 additive-field rule).
+    let line = r#"{"v":1,"ts":1,"session_id":"s","type":"usage_boost",
+        "intent":"intent_0","similarity":0.9,"support":3,"promoted":2}"#;
+    let env: ratel_ai_core::TraceEnvelope = serde_json::from_str(line).expect("older line parses");
+    match env.event {
+        ratel_ai_core::TraceEvent::UsageBoost {
+            promoted, dropped, ..
+        } => {
+            assert_eq!(promoted, 2);
+            assert_eq!(dropped, 0, "absent means none were dropped");
+        }
+        other => panic!("expected UsageBoost, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_baseline_origin_round_trips_through_the_wire_form() {
+    // Baseline capture records the turn's query while Ratel serves nothing, so
+    // the origin has to survive the JSONL round trip that offline graph
+    // construction reads back.
+    let sink = Arc::new(MemorySink::new("session-baseline"));
+    let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+    registry.register(lookup_tool("alpha"));
+
+    let _ = registry.search_with_origin("lookup", 3, Origin::Baseline);
+
+    let envelope = sink
+        .snapshot()
+        .into_iter()
+        .find(|e| matches!(e.event, TraceEvent::Search { .. }))
+        .expect("expected a search event");
+
+    let json = serde_json::to_string(&envelope).expect("serializes");
+    assert!(
+        json.contains(r#""origin":"baseline""#),
+        "wire value must be `baseline`, got {json}"
+    );
+
+    let back: ratel_ai_core::TraceEnvelope = serde_json::from_str(&json).expect("parses");
+    match back.event {
+        TraceEvent::Search { origin, .. } => assert_eq!(origin, Origin::Baseline),
+        other => panic!("expected Search, got {other:?}"),
     }
 }

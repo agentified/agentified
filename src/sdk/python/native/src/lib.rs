@@ -21,6 +21,85 @@ use ratel_ai_core::{
 };
 use serde_json::Value;
 
+/// Map a `SearchOrigin` wire string to its core variant.
+///
+/// **One function, called from every site.** Each search entry point used to
+/// inline this `match`, which meant a new `Origin` variant was silently
+/// swallowed by the `_ =>` fallback at whichever sites nobody remembered to
+/// update — a wrong-but-plausible `direct` rather than a compile error. Adding
+/// a variant is still not a compile error here (unknown strings must stay
+/// tolerated, since `search_with_origin` is infallible), so the guard is
+/// `every_origin_wire_value_maps_to_its_own_variant` below, not the match.
+fn parse_origin(s: &str) -> Origin {
+    match s {
+        "agent" => Origin::Agent,
+        "baseline" => Origin::Baseline,
+        _ => Origin::Direct,
+    }
+}
+
+/// Resolve the observation-policy strings, **rejecting** unknown values.
+///
+/// Deliberately stricter than [`parse_origin`], which tolerates an unknown wire
+/// string so version skew cannot fail an infallible search. A policy is a
+/// deliberate configuration a caller typed: silently reading `"seedd"` as
+/// `"live"` would produce a graph with no provenance and no error.
+/// Defaults differ per entry point: building from a log IS a seeding pass, so
+/// it defaults to `baseline` + `seeded`; enabling live learning keeps `any` +
+/// `live`, which is what it has always done.
+fn parse_policy(
+    origins: Option<&str>,
+    provenance: Option<&str>,
+    default_origins: core::OriginFilter,
+    default_provenance: core::Provenance,
+) -> PyResult<core::ObservationPolicy> {
+    let mut policy = core::ObservationPolicy::default()
+        .with_origins(default_origins)
+        .with_provenance(default_provenance);
+    if let Some(o) = origins {
+        policy = policy.with_origins(match o {
+            "any" => core::OriginFilter::Any,
+            "agent" => core::OriginFilter::Exactly(Origin::Agent),
+            "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown origins {other:?}: expected any | agent | baseline"
+                )));
+            }
+        });
+    }
+    if let Some(p) = provenance {
+        policy = policy.with_provenance(match p {
+            "live" => core::Provenance::Live,
+            "seeded" => core::Provenance::Seeded,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown provenance {other:?}: expected live | seeded"
+                )));
+            }
+        });
+    }
+    Ok(policy)
+}
+
+/// Parse a JSONL trace log into envelopes.
+///
+/// Blank lines are skipped — common and harmless. A malformed line is an error
+/// naming its line number rather than a silent skip: a log is the only record of
+/// a baseline capture, and quietly dropping part of it would produce a thinner
+/// graph with nothing to explain why.
+fn parse_trace_log(jsonl: &str) -> PyResult<Vec<core::TraceEnvelope>> {
+    jsonl
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, line)| {
+            serde_json::from_str::<core::TraceEnvelope>(line)
+                .map_err(|e| PyValueError::new_err(format!("trace log line {}: {e}", i + 1)))
+        })
+        .collect()
+}
+
 type ToolBatchItem = (String, String, String, Py<PyAny>, Py<PyAny>);
 type SkillBatchItem = (
     String,
@@ -589,22 +668,32 @@ fn map_adaptive_status(
 }
 
 /// Decorate `sink` with a [`UsageLearner`] when adaptive ranking is on, so the
-/// graph keeps growing across a sink change. Without this, `set_trace_sink`
-/// would quietly stop learning.
+/// graph keeps growing across a sink change, under `policy`. Without this,
+/// `set_trace_sink` would quietly stop learning — or resume it at the default
+/// policy, silently dropping a configured one.
 fn wrap_learner(
     sink: Arc<dyn core::TraceSink>,
     graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    policy: core::ObservationPolicy,
 ) -> Arc<dyn core::TraceSink> {
     match graph {
-        Some(graph) => Arc::new(UsageLearner::new(graph.clone(), sink)),
+        Some(graph) => Arc::new(UsageLearner::with_policy(graph.clone(), sink, policy)),
         None => sink,
     }
 }
 
+/// The sink a registry should actually be holding, given its base sink, whether
+/// a graph is attached, and whether the runtime-events stream is live.
+///
+/// **Every path that installs a sink goes through here** — the two decorations
+/// compose in a fixed order (learner outermost, fan-out beneath it, base sink
+/// innermost) and reconstructing that at each call site is how one of them
+/// silently goes missing.
 fn active_trace_sink(
     base_sink: &Arc<dyn core::TraceSink>,
     graph: Option<&Arc<RwLock<core::IntentGraph>>>,
     event_stream: &Option<EventStream>,
+    policy: core::ObservationPolicy,
 ) -> Arc<dyn core::TraceSink> {
     let sink: Arc<dyn core::TraceSink> = match event_stream {
         Some(stream) => Arc::new(RuntimeEventSink {
@@ -613,7 +702,7 @@ fn active_trace_sink(
         }),
         None => base_sink.clone(),
     };
-    wrap_learner(sink, graph)
+    wrap_learner(sink, graph, policy)
 }
 
 /// A shared usage-ranking intent graph (ADR-0014): clusters of past queries,
@@ -712,6 +801,10 @@ pub struct ToolRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
     event_stream: Option<EventStream>,
 }
 
@@ -759,6 +852,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
             event_stream: None,
         })
     }
@@ -839,10 +933,7 @@ impl ToolRegistry {
         origin: String,
         context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SearchHit>> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         let hits = self
             .inner
             .search_with_method_and_context(
@@ -879,10 +970,7 @@ impl ToolRegistry {
         method: String,
         context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SearchHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -953,6 +1041,34 @@ impl ToolRegistry {
             .map_err(map_embedder_err)
     }
 
+    /// Build an intent graph from a JSONL trace log, returning its wire form.
+    ///
+    /// Embeds every distinct query so clusters form densely — the same tier the
+    /// live path uses. Releases the GIL for the embedding pass. The returned
+    /// graph is NOT attached to this registry; enabling adaptive ranking stays a
+    /// separate, explicit call.
+    #[pyo3(signature = (jsonl, origins=None, provenance=None))]
+    fn _build_intent_graph(
+        &self,
+        py: Python<'_>,
+        jsonl: &str,
+        origins: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<String> {
+        // Policy errors surface before the embedding pass, so a typo fails fast.
+        let policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Exactly(Origin::Baseline),
+            core::Provenance::Seeded,
+        )?;
+        let envelopes = parse_trace_log(jsonl)?;
+        let graph = py
+            .allow_threads(|| self.inner.build_intent_graph(envelopes, policy))
+            .map_err(map_embedder_err)?;
+        serde_json::to_string(&graph).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// `(status, built, active, dim_mismatch)` — whether adaptive usage ranking
     /// is contributing, paused by a model change, or off.
     fn adaptive_ranking_status(&self) -> (String, Option<String>, Option<String>, Option<bool>) {
@@ -1006,7 +1122,12 @@ impl ToolRegistry {
             queue_capacity,
             batch_size,
         )?;
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         self.inner.set_trace_sink(sink);
         Ok(subscription)
     }
@@ -1027,8 +1148,12 @@ impl ToolRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -1037,8 +1162,12 @@ impl ToolRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -1049,8 +1178,12 @@ impl ToolRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -1072,18 +1205,36 @@ impl ToolRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
+    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        origins: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<()> {
+        self.usage_policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Any,
+            core::Provenance::Live,
+        )?;
         let handle = graph.inner.clone();
-        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            Some(&handle),
+            &self.event_stream,
+            self.usage_policy,
+        );
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
     }
 
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
-        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream, self.usage_policy);
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(None);
         self.graph = None;
@@ -1118,6 +1269,10 @@ pub struct SkillRegistry {
     /// Retained so `set_trace_sink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
     event_stream: Option<EventStream>,
 }
 
@@ -1162,6 +1317,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
             event_stream: None,
         })
     }
@@ -1264,10 +1420,7 @@ impl SkillRegistry {
         origin: String,
         context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SkillHit>> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         let hits = self
             .inner
             .search_with_method_and_context(
@@ -1300,10 +1453,7 @@ impl SkillRegistry {
         method: String,
         context: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<SkillHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method = method
             .parse::<core::SearchMethod>()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1421,7 +1571,12 @@ impl SkillRegistry {
             queue_capacity,
             batch_size,
         )?;
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         self.inner.set_trace_sink(sink);
         Ok(subscription)
     }
@@ -1439,8 +1594,12 @@ impl SkillRegistry {
             "noop" => {
                 self.memory_sink = None;
                 self.base_sink = Arc::new(NoopSink);
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "memory" => {
@@ -1449,8 +1608,12 @@ impl SkillRegistry {
                 let sink = Arc::new(MemorySink::new(session_id));
                 self.memory_sink = Some(sink.clone());
                 self.base_sink = sink;
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             "jsonl" => {
@@ -1461,8 +1624,12 @@ impl SkillRegistry {
                     .map_err(|e| PyValueError::new_err(format!("open jsonl sink: {e}")))?;
                 self.memory_sink = None;
                 self.base_sink = Arc::new(sink);
-                let sink =
-                    active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+                let sink = active_trace_sink(
+                    &self.base_sink,
+                    self.graph.as_ref(),
+                    &self.event_stream,
+                    self.usage_policy,
+                );
                 self.inner.set_trace_sink(sink);
             }
             other => {
@@ -1484,18 +1651,36 @@ impl SkillRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) {
+    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        origins: Option<&str>,
+        provenance: Option<&str>,
+    ) -> PyResult<()> {
+        self.usage_policy = parse_policy(
+            origins,
+            provenance,
+            core::OriginFilter::Any,
+            core::Provenance::Live,
+        )?;
         let handle = graph.inner.clone();
-        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            Some(&handle),
+            &self.event_stream,
+            self.usage_policy,
+        );
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
     }
 
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
-        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream, self.usage_policy);
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(None);
         self.graph = None;
@@ -1643,10 +1828,7 @@ impl FactRegistry {
     /// BM25 search tagged with who initiated it — see
     /// [`ToolRegistry::search_with_origin`].
     fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<FactHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .search_with_origin(&query, top_k as usize, parsed)
             .into_iter()

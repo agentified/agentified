@@ -279,6 +279,115 @@ fn a_miss_is_recorded_so_staleness_is_observable() {
     assert_eq!(usage_events(&sink), vec![(None, 0, 0)]);
 }
 
+/// `(intent, support, promoted, dropped)` — the full `UsageBoost` shape, so the
+/// two ways a search ends up with no arm can be told apart.
+fn usage_boosts(sink: &MemorySink) -> Vec<(Option<String>, u32, u32, u32)> {
+    sink.snapshot()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            TraceEvent::UsageBoost {
+                intent,
+                support,
+                promoted,
+                dropped,
+                ..
+            } => Some((intent, support, promoted, dropped)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A cluster covering build/CI questions whose every remembered tool has since
+/// left the catalog.
+fn fully_ghosted_graph() -> IntentGraph {
+    let json = json!({
+        "v": 1, "built_from_ts": 1u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 9,
+            "tools": { "since_deleted_tool": 0.9, "also_deleted": 0.1 }, "skills": {}
+        }]
+    })
+    .to_string();
+    IntentGraph::from_json(&json).expect("valid graph")
+}
+
+#[test]
+fn a_cluster_whose_every_edge_is_unregistered_reports_a_match_with_zero_promoted() {
+    // Catalog drift and a coverage miss are different problems with different
+    // fixes, and before `dropped` they emitted byte-identical events: a reader
+    // watching miss rate would re-derive a graph that was never the issue.
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(fully_ghosted_graph().into())));
+
+    r.search("why is the build broken", 5);
+
+    assert_eq!(
+        usage_boosts(&sink),
+        vec![(Some("intent_0".to_string()), 9, 0, 2)],
+        "the cluster matched and contributed nothing; both its edges were dropped"
+    );
+}
+
+#[test]
+fn a_partially_ghosted_cluster_reports_the_dropped_count_beside_the_promoted_one() {
+    let json = json!({
+        "v": 1, "built_from_ts": 1u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 9,
+            "tools": { "since_deleted_tool": 0.9, "gh_run_list": 0.1 }, "skills": {}
+        }]
+    })
+    .to_string();
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&json).unwrap().into(),
+    )));
+
+    r.search("why is the build broken", 5);
+
+    assert_eq!(
+        usage_boosts(&sink),
+        vec![(Some("intent_0".to_string()), 9, 1, 1)],
+        "one edge still ranks, one is gone — drift is visible while the arm works"
+    );
+}
+
+#[test]
+fn a_genuine_miss_reports_no_intent_and_no_dropped_edges() {
+    // The counterpart to the two above: nothing matched, so nothing was
+    // dropped. `dropped: 0` with `intent: None` is a coverage miss.
+    let sink = Arc::new(MemorySink::new("s"));
+    let mut r = registry();
+    r.set_trace_sink(sink.clone());
+    r.set_intent_graph(Some(Arc::new(graph(9).into())));
+
+    r.search("rotate the signing key", 5);
+
+    assert_eq!(usage_boosts(&sink), vec![(None, 0, 0, 0)]);
+}
+
+#[test]
+fn a_fully_ghosted_cluster_ranks_identically_to_no_graph() {
+    // Reporting drift must not change what the search returns.
+    let mut plain = registry();
+    let baseline = plain.search("why is the build broken", 5);
+
+    plain.set_intent_graph(Some(Arc::new(fully_ghosted_graph().into())));
+    let ghosted = plain.search("why is the build broken", 5);
+
+    assert_eq!(ids(&baseline), ids(&ghosted));
+    assert!(
+        ghosted.iter().all(|h| !h.fused),
+        "no arm reached the fusion, so scores stay raw"
+    );
+}
+
 #[test]
 fn a_boosted_search_reports_its_usage_and_fusion_stages() {
     let sink = Arc::new(MemorySink::new("s"));
@@ -603,4 +712,150 @@ fn a_missed_query_stays_unfused_even_with_a_graph() {
         hits.iter().all(|h| !h.fused),
         "no cluster matched → not fused"
     );
+}
+
+// ---- seeded_support is provenance, never a ranking input -------------------
+
+#[test]
+fn seeded_support_never_changes_ranking() {
+    // The whole point of the field is that it records WHERE evidence came from
+    // without changing what that evidence does. If it ever reached the arm
+    // weight, every producer — including Ratel Cloud — would have to get it
+    // exactly right or silently move a customer's rankings.
+    let plain = json!({
+        "v": 1, "built_from_ts": 1_753_000_000_000u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 3,
+            "tools": { "gh_run_list": 0.8 }, "skills": {}
+        }]
+    })
+    .to_string();
+    let seeded = json!({
+        "v": 1, "built_from_ts": 1_753_000_000_000u64,
+        "intents": [{
+            "id": "intent_0", "label": "l", "terms": [],
+            "members": ["why is the build broken"], "support": 3,
+            "seeded_support": 3,
+            "tools": { "gh_run_list": 0.8 }, "skills": {}
+        }]
+    })
+    .to_string();
+
+    let mut a = registry();
+    a.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&plain).unwrap().into(),
+    )));
+    let mut b = registry();
+    b.set_intent_graph(Some(Arc::new(
+        IntentGraph::from_json(&seeded).unwrap().into(),
+    )));
+
+    let from_live = a.search("why is the build broken", 5);
+    let from_seeded = b.search("why is the build broken", 5);
+
+    assert_eq!(ids(&from_live), ids(&from_seeded));
+    for (l, s) in from_live.iter().zip(from_seeded.iter()) {
+        assert_eq!(l.score, s.score, "arm weight must not see provenance");
+        assert_eq!(l.rank, s.rank);
+        assert_eq!(l.fused, s.fused);
+    }
+}
+
+// ---- the seed-first path, end to end ---------------------------------------
+
+/// The full integration a customer runs: capture a baseline to a JSONL log
+/// while Ratel serves nothing, build a graph from that log, attach it, and rank
+/// better than the cold catalog did — with no live learning in between.
+#[test]
+fn a_graph_seeded_from_a_baseline_log_ranks_better_once_attached() {
+    use ratel_ai_core::{JsonlSink, ObservationPolicy, Origin, OriginFilter, Provenance};
+    use std::io::{BufRead, BufReader};
+
+    let dir = std::env::temp_dir().join(format!("ratel-seed-{}", std::process::id()));
+    let log_path = dir.join("trace.jsonl");
+    let _ = std::fs::remove_file(&log_path);
+
+    // ---- Phase A: collect. Ratel records; it does not rank. ----------------
+    {
+        let mut capture = registry();
+        capture.set_trace_sink(Arc::new(
+            JsonlSink::new("session-1", &log_path).expect("open log"),
+        ));
+        // No graph attached: no arm, no embedder, no search on the turn path.
+        assert_eq!(
+            capture.adaptive_ranking_status(),
+            ratel_ai_core::AdaptiveRankingStatus::Inactive
+        );
+
+        // Three turns where people ask about builds and reach for gh_run_list,
+        // choosing from their own full tool list.
+        for turn in [
+            "why is the build broken",
+            "is the build broken again",
+            "the build broken on main",
+        ] {
+            capture.record_event(TraceEvent::Search {
+                query: turn.into(),
+                origin: Origin::Baseline,
+                top_k: 0,
+                hits: Vec::new(),
+                stages: Vec::new(),
+                took_ms: 0,
+            });
+            capture.record_event(TraceEvent::InvokeStart {
+                tool_id: "gh_run_list".into(),
+                args_size_bytes: 0,
+            });
+        }
+    }
+
+    // The log is a plain JSONL file the customer owns.
+    let envelopes: Vec<ratel_ai_core::TraceEnvelope> =
+        BufReader::new(std::fs::File::open(&log_path).expect("read log"))
+            .lines()
+            .map(|l| serde_json::from_str(&l.expect("line")).expect("envelope"))
+            .collect();
+    assert_eq!(envelopes.len(), 6, "three turns, two events each");
+
+    // ---- Phase B: build, offline. -----------------------------------------
+    let mut serving = registry();
+    let cold = serving.search("why is the build broken", 5);
+    assert_eq!(
+        cold.first().map(|h| h.tool_id.as_str()),
+        Some("docker_build"),
+        "cold, the token 'build' wins"
+    );
+
+    let graph = serving
+        .build_intent_graph(
+            envelopes,
+            ObservationPolicy::default()
+                .with_origins(OriginFilter::Exactly(Origin::Baseline))
+                .with_provenance(Provenance::Seeded),
+        )
+        .expect("build from the log");
+
+    // ---- Phase C: inspect before switching anything on. --------------------
+    assert_eq!(graph.len(), 1, "one intent behind those three turns");
+    assert_eq!(graph.intents[0].support, 3);
+    assert_eq!(
+        graph.intents[0].seeded_support, 3,
+        "all of it from baseline"
+    );
+    assert_eq!(graph.intents[0].tools.get("gh_run_list"), Some(&3.0));
+
+    // ---- Phase D: attach, and rank better. ---------------------------------
+    serving.set_intent_graph(Some(Arc::new(graph.into())));
+    let warm = serving.search("why is the build broken", 5);
+
+    let order = ids(&warm);
+    let gh = order.iter().position(|id| *id == "gh_run_list");
+    let docker = order.iter().position(|id| *id == "docker_build");
+    assert!(
+        gh < docker,
+        "the seeded graph should outrank the lexical decoy, got {order:?}"
+    );
+
+    let _ = std::fs::remove_file(&log_path);
 }

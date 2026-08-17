@@ -161,10 +161,11 @@ impl EnvelopeFactory {
 /// hot path — see ADR-0007 for the query-log reliability profile (lossy on
 /// backpressure is fine, blocking the agent loop is not).
 ///
-/// Four implementations ship with the crate: [`NoopSink`] (discard — the
+/// Five implementations ship with the crate: [`NoopSink`] (discard — the
 /// registries' default), [`FanoutSink`] (bounded asynchronous subscribers),
-/// [`MemorySink`] (unbounded in-memory buffer for tests and introspection), and
-/// [`JsonlSink`] (append-to-file local persistence).
+/// [`MemorySink`] (unbounded in-memory buffer for tests and introspection),
+/// [`JsonlSink`] (append-to-file local persistence), and [`FnSink`] (hands each
+/// envelope line to a closure, for hosts this crate cannot write to itself).
 pub trait TraceSink: Send + Sync {
     /// Record one event. Called synchronously on the hot path, so it must be
     /// cheap and non-blocking; on failure, drop the event rather than
@@ -549,6 +550,76 @@ impl TraceSink for JsonlSink {
             let _ = writeln!(guard, "{line}");
             let _ = guard.flush();
         }
+    }
+}
+
+/// A sink that hands each enveloped event to a closure, for hosts whose trace
+/// destination this crate cannot own — a process-per-request server writing to
+/// a database, a language binding forwarding to its runtime, anything
+/// distributed enough that a local file is the wrong answer.
+///
+/// The closure receives the **serialized envelope line** — the same wire form
+/// [`JsonlSink`] would have written for the same event, session, and source,
+/// field for field, differing only in the two per-record identity fields every
+/// envelope-aware sink mints for itself (`ts`, sampled at wrap time, and
+/// `event_id`, a fresh ULID). Replay reads neither. That identity is the point:
+/// a host can collect lines from many processes, join them with newlines, and
+/// feed the result straight back to
+/// [`crate::ToolRegistry::build_intent_graph`] without re-deriving the wire
+/// form. It also keeps language bindings trivial — they forward a string
+/// rather than re-modelling [`TraceEnvelope`].
+///
+/// The session id stamped here is a **default, not an identity**: a host that
+/// reassembles a turn from its own storage generally knows a better one (per
+/// turn, or per client/actor/workspace unit) and may restamp the line before
+/// persisting it. Replay tracks one pending query per session in log order, so
+/// a shared id is only a problem once lines from several producers are merged
+/// without preserving each turn's search-then-invoke adjacency.
+///
+/// Best-effort like every sink: a serialization failure drops the event. A
+/// closure that panics is the host's bug and unwinds normally — keep it cheap
+/// and non-blocking, per [`TraceSink::record`].
+pub struct FnSink<F: Fn(&str) + Send + Sync> {
+    factory: EnvelopeFactory,
+    emit: F,
+}
+
+impl<F: Fn(&str) + Send + Sync> FnSink<F> {
+    /// A sink whose envelopes are stamped with `session_id` and a source
+    /// defaulting to `OTEL_SERVICE_NAME` (falling back to `ratel`), handed to
+    /// `emit` as JSON lines.
+    pub fn new(session_id: impl Into<String>, emit: F) -> Self {
+        Self::with_source(session_id, default_source_id(), emit)
+    }
+
+    /// A sink with explicit stable `source_id` identity.
+    pub fn with_source(
+        session_id: impl Into<String>,
+        source_id: impl Into<String>,
+        emit: F,
+    ) -> Self {
+        Self {
+            factory: EnvelopeFactory::new(session_id, source_id),
+            emit,
+        }
+    }
+}
+
+impl<F: Fn(&str) + Send + Sync> TraceSink for FnSink<F> {
+    fn record(&self, event: TraceEvent) {
+        self.record_with_context(event, TraceEventContext::default());
+    }
+
+    fn record_with_context(&self, event: TraceEvent, context: TraceEventContext) {
+        let envelope = self.factory.wrap(event, context);
+        self.record_envelope(envelope);
+    }
+
+    fn record_envelope(&self, envelope: TraceEnvelope) {
+        let Ok(line) = serde_json::to_string(&envelope) else {
+            return;
+        };
+        (self.emit)(&line);
     }
 }
 

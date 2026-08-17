@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
+### Added
+
+- `Origin::Baseline` (`baseline`) mirrors the new local-trace origin. `ratel.origin` now takes `direct | agent | baseline`.
+
+### Changed
+
+- **BREAKING:** `Origin` is now `#[non_exhaustive]`, matching `ratel-ai-core`'s.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

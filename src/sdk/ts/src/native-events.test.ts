@@ -180,6 +180,58 @@ describe("native runtime event bridge", () => {
     );
   });
 
+  // The runtime-events stream and the callback trace sink were built
+  // independently, and each install site rebuilds the whole sink stack. A
+  // callback sink installed after subscribing must therefore re-apply the
+  // fan-out *and* the learner — dropping either is silent, since the sink that
+  // replaced them still works for its own purpose.
+  it.each([
+    {
+      kind: "tool",
+      create: () => new ToolRegistry(),
+      invoke: { type: "invoke_start", tool_id: "read_file", args_size_bytes: 0 },
+      invokeType: "invoke_start",
+    },
+    {
+      kind: "skill",
+      create: () => new SkillRegistry(),
+      invoke: { type: "skill_invoke", skill_id: "api-design", took_ms: 0 },
+      invokeType: "skill_invoke",
+    },
+  ])("keeps the event stream and usage learning alive across $kind setTraceSinkCallback", async ({
+    create,
+    invoke,
+    invokeType,
+  }) => {
+    const registry = create();
+    const graph = new IntentGraph();
+    registry.enableAdaptiveRanking(graph);
+    const streamed: Array<Record<string, unknown>> = [];
+    const subscription = registry.subscribeTraceEvents(
+      (batch: Array<Record<string, unknown>>) => streamed.push(...batch),
+      { sessionId: "session-callback-stream" },
+    );
+
+    const lines: string[] = [];
+    registry.setTraceSinkCallback("session-callback-sink", (line: string) => lines.push(line));
+
+    registry.search("read file", 1);
+    registry.recordEvent(invoke);
+    await subscription.flush();
+    // Callback delivery is asynchronous (ADR-0007); give it a turn to land.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The learner still sees the search-then-invoke pair.
+    expect(graph.clusterCount).toBe(1);
+    // The fan-out still feeds subscribers.
+    expect(streamed.map((event) => event.type)).toEqual(expect.arrayContaining([invokeType]));
+    // And the callback itself is the base sink.
+    expect(lines.map((line) => JSON.parse(line).type)).toEqual(
+      expect.arrayContaining([invokeType]),
+    );
+    subscription.unsubscribe();
+  });
+
   it("keeps the base sink synchronous and independently stamped after subscribing", () => {
     const registry = new ToolRegistry();
     registry.setTraceSink({ kind: "memory", sessionId: "base-session" });

@@ -5,9 +5,14 @@ Project documentation that doesn't belong in a code folder.
 ## Layout
 
 ```
-adr/       Architecture decision records
-assets/    Images and other static assets
+adr/                              Architecture decision records
+assets/                           Images and other static assets
+baseline-capture-distributed.md   Collecting seeding evidence from a multi-instance host
 ```
+
+## Guides
+
+[Baseline capture in a distributed host](baseline-capture-distributed.md) — how to collect the evidence for [ADR-0014](adr/0014-adaptive-usage-ranking.md) when the search and the invocation that follows land in different processes. The single-process path is [`examples/configurable-adaptive-ranking-ts`](../examples/configurable-adaptive-ranking-ts/README.md).
 
 ## `adr/` — Architecture decision records
 

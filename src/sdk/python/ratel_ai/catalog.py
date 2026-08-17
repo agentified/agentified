@@ -14,8 +14,9 @@ import json
 import threading
 import time
 import warnings
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Literal, TypedDict, TypeVar, Union, overload
 
 from ._native import IntentGraph as IntentGraph  # re-exported for `ratel_ai.IntentGraph`
@@ -43,14 +44,40 @@ May be sync or async (tool inputs are heterogeneous across the catalog);
 """
 
 SearchOrigin = str
-"""Who initiated a search: ``"direct"`` (host code, the default) or ``"agent"``
-(a model calling a capability tool). Labels the emitted trace event only —
-ranking is unaffected.
+"""Who initiated a search: ``"direct"`` (host code, the default), ``"agent"``
+(a model calling a capability tool), or ``"baseline"`` (a query recorded while
+Ratel was observing but not serving retrieval, so the invocations that follow
+can be attributed to it). Labels the emitted trace event only — ranking is
+unaffected.
 """
 
 SearchMethod = str
 """Retrieval engine: ``"bm25"`` (lexical, model-free, the default),
 ``"semantic"`` (dense embeddings) or ``"hybrid"`` (both, fused).
+"""
+
+OriginFilterOption = Literal["any", "agent", "baseline"]
+"""Which searches open an observation window when learning.
+
+- ``"any"`` (the default) — every search in the stream.
+- ``"baseline"`` — only turns recorded with ``experimental_baseline_turn``, so
+  Ratel's own searches during a capture period do not become clusters.
+- ``"agent"`` — only searches the model made through the capability tools, for
+  rebuilding a graph from a period when Ratel was already serving.
+
+``"direct"`` is a valid ``SearchOrigin`` but not a filter: learning only from
+searches your own code made means learning from your plumbing.
+"""
+
+ProvenanceOption = Literal["live", "seeded"]
+"""Whether what is learned is marked as coming from a seeding pass.
+
+``"seeded"`` records it on each cluster's provenance count; ``"live"`` (the
+default) does not. Never affects ranking.
+
+These three are closed sets rather than plain ``str`` so a typo is caught by a
+type checker instead of at runtime. The native still validates, for callers
+without types.
 """
 
 
@@ -608,6 +635,8 @@ class ToolRegistry:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
+        origins: OriginFilterOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -641,7 +670,7 @@ class ToolRegistry:
             self._warn_on_model_mismatch = warn_on_model_mismatch
             self._rebuild_on_model_change = rebuild_on_model_change
             self._adaptive_warned = False
-            self._native.enable_adaptive_ranking(graph)
+            self._native.enable_adaptive_ranking(graph, origins, provenance)
         self._maybe_warn_model_mismatch()
 
     def experimental_disable_adaptive_ranking(self) -> None:
@@ -675,6 +704,47 @@ class ToolRegistry:
         await self._run_dense(self._native._rebuild_intent_graph)
         self._adaptive_warned = False
         self._maybe_warn_model_mismatch()
+
+    async def experimental_build_intent_graph(
+        self,
+        jsonl: str,
+        *,
+        origins: OriginFilterOption | None = None,
+        provenance: ProvenanceOption | None = None,
+    ) -> IntentGraph:
+        """Build an IntentGraph from a JSONL trace log — offline baseline seeding.
+
+        Every distinct query is embedded up front, so clusters form at the dense
+        tier exactly as the live path would grow them. A model-free replay would
+        cluster on word overlap instead, and ``experimental_rebuild_intent_graph``
+        cannot repair that later: it replaces centroids without revisiting
+        cluster boundaries.
+
+        The returned graph is **detached** — pass it to
+        ``experimental_enable_adaptive_ranking`` once you decide it is ready. One
+        call covers both catalogs, so do not run it again on the skill registry.
+
+        Args:
+            jsonl: the trace log, exactly as the ``jsonl`` sink writes it. Blank
+                lines are skipped; a malformed line raises, naming its line number.
+            origins: which searches count. Defaults to ``baseline`` here, since
+                building from a log is seeding; pass ``agent`` to re-derive a
+                graph from a period when Ratel was serving, or ``any`` for a log
+                you know holds only one kind.
+            provenance: defaults to ``seeded`` here, since building from a log is
+                a seeding pass. Pass ``live`` when re-deriving a graph that was
+                grown from live traffic.
+
+        Raises:
+            ValueError: an unknown policy value, or a malformed log line.
+            EmbedderError: the queries could not be embedded.
+        """
+        json = await self._run_dense(
+            lambda: self._native._build_intent_graph(
+                jsonl, origins, provenance
+            )
+        )
+        return IntentGraph.from_json(json)
 
     @property
     def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:
@@ -771,6 +841,76 @@ class ToolRegistry:
     def _raise_if_busy(self) -> None:
         if self._dense_pending:
             raise RuntimeError(_REGISTRY_BUSY)
+
+
+class BaselineTurn:
+    """One baseline turn being assembled — the query, plus what the agent chose.
+
+    Created by :meth:`ToolCatalog.experimental_baseline_turn`, not directly.
+
+    Buffered: nothing reaches the trace log until :meth:`record`, so a turn that
+    fails your quality gate can simply be dropped. Recording twice raises, as
+    does adding to a turn already recorded — both are the same mistake, evidence
+    counted more than once.
+    """
+
+    def __init__(self, catalog: ToolCatalog, query: str) -> None:
+        """Open a turn for ``query``; use `ToolCatalog.experimental_baseline_turn`."""
+        self._catalog = catalog
+        self._recorded = False
+        self._events: list[dict[str, Any]] = [
+            {
+                "type": "search",
+                "query": query,
+                "origin": "baseline",
+                "top_k": 0,
+                "hits": [],
+                "stages": [],
+                "took_ms": 0,
+            }
+        ]
+
+    def _still_open(self) -> None:
+        if self._recorded:
+            raise RuntimeError("this baseline turn was already recorded")
+
+    def invoked(self, tool_id: str) -> BaselineTurn:
+        """Attribute a tool invocation to this turn. Chainable."""
+        self._still_open()
+        self._events.append(
+            {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
+        )
+        return self
+
+    def invoked_skill(self, skill_id: str) -> BaselineTurn:
+        """Attribute a skill load to this turn. Chainable."""
+        self._still_open()
+        self._events.append({"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0})
+        return self
+
+    def record(self) -> None:
+        """Write the turn to the trace log. Raises if called twice."""
+        self._still_open()
+        self._recorded = True
+        for event in self._events:
+            self._catalog.record_event(event)
+
+    def __enter__(self) -> BaselineTurn:
+        """Enter the turn; the block names what the agent invoked."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Record the turn on a clean exit; discard it if the block raised."""
+        # A raising turn is exactly the turn you would not want the graph to
+        # learn from, so the block failing discards it rather than recording a
+        # half-finished one.
+        if exc_type is None:
+            self.record()
 
 
 class ToolCatalog:
@@ -1010,6 +1150,8 @@ class ToolCatalog:
         *,
         warn_on_model_mismatch: bool = True,
         rebuild_on_model_change: bool = False,
+        origins: OriginFilterOption | None = None,
+        provenance: ProvenanceOption | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -1032,11 +1174,102 @@ class ToolCatalog:
             graph,
             warn_on_model_mismatch=warn_on_model_mismatch,
             rebuild_on_model_change=rebuild_on_model_change,
+            origins=origins,
+            provenance=provenance,
         )
 
     async def experimental_rebuild_intent_graph(self) -> None:
         """Re-embed the graph's members under the current model; preserves learning."""
         await self._registry.experimental_rebuild_intent_graph()
+
+    def experimental_baseline_turn(self, query: str) -> BaselineTurn:
+        """Begin recording a turn observed while Ratel is *not* serving retrieval.
+
+        Name the turn's query, then name what the agent chose after it::
+
+            catalog.experimental_baseline_turn("why is the build broken").invoked(
+                "gh_run_list"
+            ).record()
+
+        Nothing reaches the trace log until :meth:`BaselineTurn.record`, so the
+        turn is also where your own quality gate goes — a turn you would not
+        want the graph to learn from is simply never recorded. Also usable as a
+        context manager, which records on a clean exit and discards on an
+        exception.
+
+        Sugar over :meth:`record_event`: it writes one ``search`` event with
+        origin ``"baseline"`` followed by one event per invocation, which is the
+        adjacency the graph builder pairs on.
+        """
+        return BaselineTurn(self, query)
+
+    def experimental_record_baseline_turn(
+        self,
+        query: str,
+        invoked: Sequence[str] | None = None,
+        invoked_skills: Sequence[str] | None = None,
+    ) -> None:
+        """Record a complete baseline turn in one call.
+
+        The same evidence :meth:`experimental_baseline_turn` collects, for hosts
+        that cannot hold a turn open while it happens::
+
+            catalog.experimental_record_baseline_turn(
+                query="why is the build broken", invoked=["gh_run_list"]
+            )
+
+        Use this when the query and the invocations arrive separately — a
+        process-per-request server, where the search and the invocation that
+        follows are different requests on possibly different machines.
+        Reassemble the turn from your own storage, then hand it over whole.
+
+        One turn stays one observation. Splitting a search with three
+        invocations into three recorded turns counts the query three times,
+        which inflates the support that scales the boost and gates the flip.
+
+        Nothing is buffered, so the quality gate is simply whether you call it:
+        a turn you would not want the graph to learn from is never recorded.
+        """
+        # Deliberately not shared with `experimental_baseline_turn`: that path
+        # emits invocations in call order, which separate `invoked` and
+        # `invoked_skills` sequences cannot express for a turn mixing the two.
+        # `test_recording_a_whole_turn_matches_the_chained_builder` holds the
+        # two in parity instead.
+        self.record_event(
+            {
+                "type": "search",
+                "query": query,
+                "origin": "baseline",
+                "top_k": 0,
+                "hits": [],
+                "stages": [],
+                "took_ms": 0,
+            }
+        )
+        for tool_id in invoked or ():
+            self.record_event(
+                {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
+            )
+        for skill_id in invoked_skills or ():
+            self.record_event(
+                {"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0}
+            )
+
+    async def experimental_build_intent_graph(
+        self,
+        jsonl: str,
+        *,
+        origins: OriginFilterOption | None = None,
+        provenance: ProvenanceOption | None = None,
+    ) -> IntentGraph:
+        """Build an IntentGraph from a JSONL trace log; returns a detached graph.
+
+        See `ToolRegistry.experimental_build_intent_graph`. One call covers
+        both the tool and skill catalogs.
+        """
+        return await self._registry.experimental_build_intent_graph(
+            jsonl, origins=origins, provenance=provenance
+        )
 
     @property
     def experimental_adaptive_ranking_status(self) -> AdaptiveRankingStatus:

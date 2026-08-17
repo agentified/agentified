@@ -1,0 +1,12 @@
+[project]
+name = "ratel-example-configurable-adaptive-ranking"
+version = "0.0.0"
+description = "Seed an intent graph from a baseline capture, then switch Ratel on"
+requires-python = ">=3.10"
+dependencies = [
+    "ratel-ai",
+]
+
+[tool.uv.sources]
+# Use the local SDK from this monorepo rather than PyPI.
+ratel-ai = { path = "../../src/sdk/python" }

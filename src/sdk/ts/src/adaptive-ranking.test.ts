@@ -8,6 +8,7 @@ import {
   SkillRegistry,
   ToolCatalog,
   ToolRegistry,
+  type TraceSinkConfig,
 } from "./index.js";
 
 /**
@@ -15,8 +16,8 @@ import {
  * broken" hits `docker_build` on the token *build*, while the tool people
  * actually reach for is `gh_run_list`.
  */
-async function buildCatalog(): Promise<ToolCatalog> {
-  const catalog = new ToolCatalog();
+async function buildCatalog(trace?: TraceSinkConfig): Promise<ToolCatalog> {
+  const catalog = new ToolCatalog(trace ? { trace } : {});
   await catalog.register([
     {
       id: "docker_build",
@@ -512,5 +513,416 @@ describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
 
     await catalog.searchAsync("why is the build broken", 5, "direct", "semantic");
     expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+  });
+});
+
+describe("baseline seeding", () => {
+  /** Capture three build/CI turns to a JSONL log with Ratel serving nothing. */
+  async function captureBaseline(): Promise<{ catalog: ToolCatalog; logPath: string }> {
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-seed-`)}/trace.jsonl`;
+    const catalog = new ToolCatalog({
+      trace: { kind: "jsonl", sessionId: "session-1", path: logPath },
+    });
+    await catalog.register([
+      {
+        id: "docker_build",
+        name: "docker_build",
+        description: "Build a Docker image from a Dockerfile",
+        inputSchema: {},
+        outputSchema: {},
+        execute: async () => "built",
+      },
+      {
+        id: "gh_run_list",
+        name: "gh_run_list",
+        description: "List CI workflow runs and whether the build passed",
+        inputSchema: {},
+        outputSchema: {},
+        execute: async () => "listed",
+      },
+    ]);
+
+    for (const turn of [
+      "why is the build broken",
+      "is the build broken again",
+      "the build broken on main",
+    ]) {
+      catalog.experimentalBaselineTurn(turn).invoked("gh_run_list").record();
+    }
+    return { catalog, logPath };
+  }
+
+  it("writes nothing until the turn is recorded", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    const turn = catalog.experimentalBaselineTurn("why is the build broken");
+    turn.invoked("gh_run_list");
+    expect(catalog.drainTraceEvents()).toHaveLength(0);
+
+    turn.record();
+    // The quality gate is "call record, or don't" — a dropped turn leaves no trace.
+    const types = catalog.drainTraceEvents().map((e) => (e as { type: string }).type);
+    expect(types).toEqual(["search", "invoke_start"]);
+  });
+
+  it("attributes several invocations to one turn", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    catalog
+      .experimentalBaselineTurn("why is the build broken")
+      .invoked("gh_run_list")
+      .invokedSkill("triage")
+      .record();
+
+    const events = catalog.drainTraceEvents() as { type: string }[];
+    expect(events.map((e) => e.type)).toEqual(["search", "invoke_start", "skill_invoke"]);
+  });
+
+  it("refuses to record the same turn twice", async () => {
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    const turn = catalog.experimentalBaselineTurn("why is the build broken");
+    turn.record();
+    expect(() => turn.record()).toThrow(/already recorded/);
+    expect(() => turn.invoked("gh_run_list")).toThrow(/already recorded/);
+  });
+
+  it("builds a graph from a log the agent produced without Ratel ranking", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    // Nothing was attached during capture, so ranking never changed.
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("inactive");
+
+    const graph = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "baseline",
+      provenance: "seeded",
+    });
+
+    expect(graph.clusterCount).toBe(1);
+    const parsed = JSON.parse(graph.toJson());
+    expect(parsed.intents[0].support).toBe(3);
+    expect(parsed.intents[0].seeded_support).toBe(3);
+    expect(parsed.intents[0].tools.gh_run_list).toBe(3);
+  });
+
+  it("returns a detached graph so enabling stays an explicit act", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    const graph = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "baseline",
+    });
+    expect(graph.clusterCount).toBe(1);
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("inactive");
+
+    catalog.experimentalEnableAdaptiveRanking(graph);
+    expect(catalog.experimentalAdaptiveRankingStatus.status).toBe("active");
+  });
+
+  it("ignores searches the policy does not accept", async () => {
+    const { catalog, logPath } = await captureBaseline();
+    // Default policy accepts every origin; a baseline-only one still sees these.
+    const seeded = await catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
+      origins: "agent",
+    });
+    expect(seeded.clusterCount).toBe(0);
+  });
+
+  it("rejects an unknown policy value instead of silently defaulting", async () => {
+    const { logPath } = await captureBaseline();
+    const catalog = new ToolCatalog();
+    await expect(
+      catalog.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"), {
+        provenance: "seedd",
+      }),
+    ).rejects.toThrow(/unknown provenance/);
+  });
+
+  it("names the line number of a malformed log entry", async () => {
+    // A truncated tail is the realistic case (a crash mid-write). Failing loudly
+    // beats silently dropping it: the log is the only record of a capture, and a
+    // thinner graph with no explanation is worse than an error you can act on.
+    const good =
+      '{"v":1,"ts":1,"session_id":"s","type":"search","query":"q",' +
+      '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
+    const catalog = new ToolCatalog();
+    await expect(
+      catalog.experimentalBuildIntentGraph(`${good}\n{"v":1,"ts":2,"sess`),
+    ).rejects.toThrow(/line 2/);
+  });
+
+  it("skips blank lines rather than failing on them", async () => {
+    const good =
+      '{"v":1,"ts":1,"session_id":"s","type":"search","query":"q",' +
+      '"origin":"baseline","top_k":0,"hits":[],"stages":[],"took_ms":0}';
+    const catalog = new ToolCatalog();
+    const graph = await catalog.experimentalBuildIntentGraph(`\n${good}\n\n`);
+    // The search was never acted on, so it teaches nothing — but parsing worked.
+    expect(graph.clusterCount).toBe(0);
+  });
+});
+
+describe("policy on the live path", () => {
+  it("can be restricted by origin", async () => {
+    const catalog = await buildCatalog();
+    const graph = new IntentGraph();
+    catalog.experimentalEnableAdaptiveRanking(graph, { origins: "baseline" });
+
+    catalog.search("why is the build broken", 5); // origin "direct"
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(0);
+
+    catalog.experimentalBaselineTurn("why is the build broken").invoked("gh_run_list").record();
+    expect(graph.clusterCount).toBe(1);
+  });
+
+  it("rejects an unknown value rather than defaulting", async () => {
+    const catalog = await buildCatalog();
+    expect(() =>
+      // @ts-expect-error the runtime guard still has to hold for untyped callers
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { origins: "nope" }),
+    ).toThrow(/unknown origins/);
+  });
+
+  it("keeps the policy when the trace sink changes", async () => {
+    // Changing the sink rebuilds the learner that decorates it. Rebuilding at
+    // the default would silently drop a configured policy.
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "gh_run_list",
+      name: "gh_run_list",
+      description: "List CI workflow runs and whether the build passed",
+      inputSchema: {},
+      outputSchema: {},
+    });
+    const graph = new IntentGraph();
+    registry.experimentalEnableAdaptiveRanking(graph, { origins: "baseline" });
+
+    registry.setTraceSink({ kind: "memory", sessionId: "after" });
+
+    registry.search("why is the build broken", 5); // "direct" — filtered out
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(graph.clusterCount).toBe(0);
+  });
+});
+
+describe("distributed capture", () => {
+  /** The two tools `buildCatalog` registers, for a catalog with a callback sink. */
+  async function callbackCatalog(
+    sessionId = "session-1",
+  ): Promise<{ catalog: ToolCatalog; lines: string[] }> {
+    const lines: string[] = [];
+    const catalog = await buildCatalog({
+      kind: "callback",
+      sessionId,
+      onEvent: (line) => lines.push(line),
+    });
+    return { catalog, lines };
+  }
+
+  /**
+   * Let queued callback deliveries run. A `ThreadsafeFunction` schedules onto
+   * the event loop rather than calling inline, so nothing has arrived until the
+   * recording tick yields.
+   */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  /**
+   * Envelopes minus the fields each sink mints for itself — `ts` is sampled per
+   * record, and `event_id` / `invocation_id` are fresh ULIDs the envelope
+   * factory generates per sink (envelope v2). None ever match across two
+   * sinks, and replay reads none of them. Every other field is the contract a
+   * distributed host rests on, and is compared exactly.
+   */
+  function withoutPerRecordIdentity(lines: string[]): unknown[] {
+    return lines.map((line) => {
+      const {
+        ts: _ts,
+        event_id: _eventId,
+        invocation_id: _invocationId,
+        ...rest
+      } = JSON.parse(line);
+      return rest;
+    });
+  }
+
+  it("hands out the same lines a jsonl sink would have written", async () => {
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-cb-`)}/trace.jsonl`;
+    const toFile = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
+    toFile.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+    });
+
+    const { catalog, lines } = await callbackCatalog();
+    catalog.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+    });
+
+    await flush();
+    // The contract a distributed host rests on: collect lines from anywhere,
+    // join them, and the result is a log `experimentalBuildIntentGraph` reads.
+    expect(withoutPerRecordIdentity(lines)).toEqual(
+      withoutPerRecordIdentity(readFileSync(logPath, "utf8").trimEnd().split("\n")),
+    );
+  });
+
+  it("records the same events as the chained builder", async () => {
+    // The two paths construct their event shapes independently — neither calls
+    // the other, so that they agree is a test, not a guarantee.
+    const viaBuilder = await buildCatalog({ kind: "memory", sessionId: "s" });
+    viaBuilder.drainTraceEvents();
+    viaBuilder
+      .experimentalBaselineTurn("why is the build broken")
+      .invoked("gh_run_list")
+      .invoked("docker_build")
+      .record();
+
+    const viaObject = await buildCatalog({ kind: "memory", sessionId: "s" });
+    viaObject.drainTraceEvents();
+    viaObject.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list", "docker_build"],
+    });
+
+    // Drop the per-record identity fields: `ts` is sampled per record, and
+    // `event_id` / `invocation_id` are freshly minted ULIDs (envelope v2). None
+    // are read by replay; the event shape either side builds is the contract.
+    const strip = (events: unknown[]) =>
+      events.map((e) => {
+        const {
+          ts: _ts,
+          event_id: _eventId,
+          invocation_id: _invocationId,
+          ...rest
+        } = e as { ts: number; event_id: string; invocation_id?: string };
+        return rest;
+      });
+    expect(strip(viaObject.drainTraceEvents())).toEqual(strip(viaBuilder.drainTraceEvents()));
+  });
+
+  it("pairs correctly when overlapping turns share one session id", async () => {
+    // Recording a turn whole emits its search and its invoke back to back, and
+    // replay tracks a pending query per session in log order. So a shared id is
+    // safe as long as that adjacency survives — a per-turn id matters only once
+    // lines from several producers are merged out of order. Pinned because the
+    // docs make this claim.
+    const lines: string[] = [];
+    for (const [query, toolId] of [
+      ["why is the build broken", "gh_run_list"],
+      ["rotate the signing key", "vault_rotate"],
+    ] as const) {
+      const recorder = new ToolCatalog({
+        trace: { kind: "callback", sessionId: "shared", onEvent: (l) => lines.push(l) },
+      });
+      recorder.experimentalRecordBaselineTurn({ query, invoked: [toolId] });
+    }
+    await flush();
+
+    const serving = await buildCatalog();
+    const graph = await serving.experimentalBuildIntentGraph(lines.join("\n"));
+    const wire = JSON.parse(graph.toJson()) as {
+      intents: { members: string[]; tools: Record<string, unknown> }[];
+    };
+
+    // Each query keeps its own tool: no edge crossed between the two turns.
+    for (const intent of wire.intents) {
+      const expected = intent.members.some((m) => m.includes("build"))
+        ? "gh_run_list"
+        : "vault_rotate";
+      expect(Object.keys(intent.tools)).toEqual([expected]);
+    }
+    expect(wire.intents).toHaveLength(2);
+  });
+
+  it("records skills on a turn alongside tools", async () => {
+    // `invokedSkills` is the half of the API the parity test above does not
+    // reach, since that one compares an all-tools turn.
+    const catalog = await buildCatalog({ kind: "memory", sessionId: "s" });
+    catalog.drainTraceEvents(); // discard the registration churn
+    catalog.experimentalRecordBaselineTurn({
+      query: "why is the build broken",
+      invoked: ["gh_run_list"],
+      invokedSkills: ["triage"],
+    });
+
+    expect(catalog.drainTraceEvents()).toEqual([
+      expect.objectContaining({
+        type: "search",
+        query: "why is the build broken",
+        origin: "baseline",
+      }),
+      expect.objectContaining({ type: "invoke_start", tool_id: "gh_run_list" }),
+      expect.objectContaining({ type: "skill_invoke", skill_id: "triage" }),
+    ]);
+  });
+
+  it("builds the same graph from collected lines as from a file", async () => {
+    const turns = [
+      "why is the build broken",
+      "is the build broken again",
+      "the build broken on main",
+    ];
+
+    const logPath = `${mkdtempSync(`${tmpdir()}/ratel-cb-`)}/trace.jsonl`;
+    const toFile = await buildCatalog({ kind: "jsonl", sessionId: "session-1", path: logPath });
+    for (const query of turns) {
+      toFile.experimentalRecordBaselineTurn({ query, invoked: ["gh_run_list"] });
+    }
+
+    const { catalog, lines } = await callbackCatalog();
+    for (const query of turns) {
+      catalog.experimentalRecordBaselineTurn({ query, invoked: ["gh_run_list"] });
+    }
+    await flush();
+
+    const fromFile = await toFile.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
+    const fromLines = await catalog.experimentalBuildIntentGraph(lines.join("\n"));
+
+    expect(fromLines.clusterCount).toBe(fromFile.clusterCount);
+    expect(fromLines.clusterCount).toBe(1);
+  });
+
+  it("keeps learning when the callback sink is set after enabling ranking", async () => {
+    // `setTraceSinkCallback` must re-wrap in the learner exactly as
+    // `setTraceSink` does; skipping it would silently stop learning.
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "gh_run_list",
+      name: "gh_run_list",
+      description: "List CI workflow runs and whether the build passed",
+      inputSchema: {},
+      outputSchema: {},
+    });
+    const graph = new IntentGraph();
+    registry.experimentalEnableAdaptiveRanking(graph);
+
+    const lines: string[] = [];
+    registry.setTraceSink({
+      kind: "callback",
+      sessionId: "after",
+      onEvent: (line) => lines.push(line),
+    });
+
+    registry.searchWithOrigin("why is the build broken", 5, "agent");
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    await flush();
+    expect(graph.clusterCount).toBe(1);
+    expect(lines.length).toBeGreaterThan(0);
+  });
+
+  it("stops draining once a callback sink replaces a memory sink", async () => {
+    // A callback sink is not drainable; leaving the old memory handle in place
+    // would keep serving a buffer nothing writes to any more.
+    const registry = new ToolRegistry();
+    registry.setTraceSink({ kind: "memory", sessionId: "s" });
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+    expect(registry.drainTraceEvents()).toHaveLength(1);
+
+    const lines: string[] = [];
+    registry.setTraceSink({ kind: "callback", sessionId: "s", onEvent: (l) => lines.push(l) });
+    registry.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    await flush();
+    expect(registry.drainTraceEvents()).toHaveLength(0);
+    expect(lines).toHaveLength(1);
   });
 });

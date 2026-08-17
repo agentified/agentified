@@ -15,6 +15,11 @@ Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the sink is now a
 subscription seam. The learner remains an internal consumer and cannot be replaced by attaching
 another subscriber.
 
+Amended 2026-08-17: a graph may be **seeded offline from a captured baseline** before ranking is
+switched on — see [Seeding from a baseline capture](#seeding-from-a-baseline-capture). Online
+learning remains how ranking learns while serving; the "no build step" claim below is narrowed
+to the serving path, not the bootstrap.
+
 ## Context
 
 Every ranker in the engine scores **text similarity only** — BM25 over the flattened
@@ -49,7 +54,11 @@ a `label`, `terms`, `support`, and `tools` / `skills` edge maps.
   update. Invocations are the only point at which information the ranker does not already
   hold enters the system.
 - **Online.** Clusters are created and grow as queries arrive; a cluster may boost from
-  its first confirmed pair. There is no build step.
+  its first confirmed pair. There is no build step **on the serving path** — nothing has to
+  be rebuilt for a query's evidence to reach ranking. A graph may still be *seeded* once,
+  offline, before serving begins (see [Seeding from a baseline
+  capture](#seeding-from-a-baseline-capture)); that is a bootstrap, not a build the serving
+  path waits on.
 - **The learner clusters at whatever tier the registry runs.** A `TraceEvent::Search`
   carries the query text, not its embedding, so the sink alone could only cluster on
   words. But a semantic/hybrid registry has *already embedded the query* for its own
@@ -212,6 +221,71 @@ silently disable learning. The public queue and callback machinery stays outside
 so stalled subscribers cannot block it. Adaptive ranking remains experimental; its decoration
 may be simplified if that is required to keep fan-out robust.
 
+### Seeding from a baseline capture
+
+Online learning has two cold-start problems, both of which this ADR states elsewhere and
+neither of which the ramp addresses. A fresh deployment has no evidence, so it gets no boost
+until pairs accumulate. And once Ratel *is* ranking, what the agent invokes is partly Ratel's
+own doing — the feedback loop under Consequences. Both are the same shape: the cleanest
+evidence available is what an agent invoked while Ratel was **not** in the retrieval path, and
+until now there was no way to record it.
+
+**A host may capture turns while Ratel serves nothing, build a graph from that log offline,
+inspect it, and only then enable ranking.**
+
+- **A fourth origin, `Origin::Baseline`.** Ratel's own search path never produces it. The host
+  names the turn's query text — a run where nobody searches has no query, and a graph is keyed
+  on query text — and Ratel is a recorder for the duration.
+- **The turn is the unit, and it is buffered.** Nothing reaches the log until `record()`, so
+  declining to call it is how a host drops a turn it would not want learned from. One turn
+  stays **one** observation, holding the line the `CreditSlot` bullet draws: a search with
+  three invocations recorded as three turns would count the query three times and defeat the
+  ramp.
+- **Building embeds every distinct query up front**, so clusters form at the **dense** tier —
+  the tier the live path would have grown them at. A model-free replay clusters lexically, and
+  `rebuild_intent_graph` cannot repair that later: it replaces centroids without revisiting
+  cluster boundaries. Getting the tier right is therefore a property of the build, not
+  something a caller can fix afterwards.
+- **The pairing rule exists once.** The live learner and the offline replay share one
+  `classify` step. They differ only in where pending state lives — a per-session learner holds
+  a slot, a replay holds a map keyed by `session_id` — because a log interleaves sessions by
+  construction and a single slot would cross-pair them. Replay walks the log in **its own
+  order, never re-sorted**: file order is arrival order, and sorting by `ts` would produce a
+  graph the live path could not have grown, since cluster membership depends on which clusters
+  existed when each query arrived. `ts` stamps observations; it does not order them.
+- **Equivalence is asserted by test, not by this document** — a graph built from a log *is*
+  the graph live learning would have grown from the same events. It diverges in exactly one
+  place, and that divergence is also pinned: interleaved sessions asking identical text, where
+  the live path's single global credit slot under-counts (the trade the `CreditSlot` bullet
+  accepts) and replay, knowing the session, does not.
+- **Policy is a closed set, and applies to both paths.** `origins` (`any` | `agent` |
+  `baseline`) selects which searches may open an observation window; `provenance` (`live` |
+  `seeded`) selects whether what is learned is marked as seeded. What counts as evidence must
+  not depend on which path produced the graph, so both take the same policy. Building defaults
+  to `baseline`/`seeded` — that is what an offline build *is* — while enabling live learning
+  keeps `any`/`live`, so existing behavior is unchanged. `direct` is a valid search origin but
+  deliberately **not** a filter: learning only from searches your own plumbing made is
+  learning from your plumbing.
+- **A rejected search is ignored, not cleared.** One of Ratel's own internal searches landing
+  between a captured query and its invocations must not discard the turn's evidence.
+- **Provenance is recorded, and is inert.** `seeded_support` on a cluster counts how many of
+  its `support` observations came from a seeding pass. It is `protocol/v1`-additive, omitted
+  when zero, and **ranking must not read it**: two graphs differing only here rank identically
+  and compare equal. Its use is operational — after the flip, `support` grows while
+  `seeded_support` stays put, so the gap says how much still rests on the baseline.
+- **Building never enables ranking.** The returned graph is detached; attaching stays an
+  explicit call. Inspecting before the flip is the whole point of seeding first, so the API
+  must not make enabling the default outcome of building.
+- **The destination may belong to the host.** A single process holding the turn open is the
+  wrong model for a process-per-request server across N instances, which is the first real
+  deployment this targets: the search and the invocation that follows are different requests,
+  on possibly different machines. Two seams follow, both specified in
+  [ADR-0007](0007-telemetry-two-streams.md) — a closure sink (`FnSink`, the SDKs' `"callback"`)
+  so the host writes envelopes to storage it already runs, and a **whole-turn** recording call
+  for a turn the host reassembled itself. The whole-turn call is not mere ergonomics: the
+  chained builder permits an `await` between invocations, so concurrent turns can interleave
+  their events in one sink and break the search-then-invoke adjacency the pairing depends on.
+
 ### What is open source
 
 The **format** is specified in [`protocol/v1`](../../protocol/v1/README.md) beside
@@ -241,7 +315,22 @@ LLM-extracted intents populate the same `members` field.
 - `members` holds raw query text. Whatever persists it must match the `0600` treatment
   `JsonlSink` already applies.
 - A feedback loop is inherent — boosting used capabilities makes them more used. `W < 1`
-  and the support ramp bound it; they do not remove it.
+  and the support ramp bound it; they do not remove it. Seeding from a baseline gives the
+  loop a starting point Ratel had no hand in, which bounds where it *begins*; it does not
+  bound where it goes.
+- **Every invocation is evidence, and seeding assumes it is good evidence.** Nothing in a
+  trace says whether a turn went well — a trace records which capability was called, never
+  whether calling it was right — so nothing is filtered, and the quality gate is the host's:
+  seed from an agent you already trust. The exposure is bounded by the same property that
+  makes edge decay pointless (see Rejected): edge weights set only *order* within a cluster,
+  so one wrong invocation of a capability the base ranker already favours is close to free —
+  and, symmetrically, more good data does not dislodge it.
+- **Readiness is measured by coverage, not by cluster count.** Clusters, observations, and
+  support all rise whether or not the graph generalises; only held-out queries that match a
+  cluster say it does. The threshold behind the support ramp is not exposed, so a caller
+  currently hardcodes it — a first-class readiness surface is still owed.
+- **Rebuilding is O(whole log).** Fine as a nightly or one-time seed, wasteful per turn. The
+  offline path is a bootstrap and a repair path, not a serving-time operation.
 - **Clusters fade and evict, but `support` only rises.** A topic that falls out of use
   loses arm weight through the recency multiplier and, past the eviction floor, is dropped
   (see Decision). `support` itself is a pure count that never decreases, so it records
@@ -278,9 +367,13 @@ LLM-extracted intents populate the same `members` field.
 - **Tool↔tool co-usage** (the brief's "co-usage"): a different signal from the intent→tool
   edges the impression/click pairing yields. Possible fourth arm later; not carried by
   this decision.
-- **Batch rebuild**: reproducible and able to sweep thresholds corpus-wide, but a query's
-  evidence would not affect ranking until the next build. Immediacy was ratified over
-  determinism; replay preserves the batch path where it is needed.
+- **Batch rebuild _as the serving model_**: reproducible and able to sweep thresholds
+  corpus-wide, but a query's evidence would not affect ranking until the next build.
+  Immediacy was ratified over determinism. This rejection is about what serving *waits on*
+  and still stands. The offline build added by the 2026-08-17 amendment is the batch path
+  this entry pointed at ("replay preserves the batch path where it is needed"), scoped to a
+  bootstrap and a repair path: it runs before ranking is enabled, or out of band, and no
+  search ever blocks on it.
 - **Shipping the graph down the catalog loader seam** (the brief's "no new machinery"): no
   `RATEL_URL` or `CatalogSource` exists in `src/` — the seam is specified, not built.
   Revisit when PSKS-5 lands.

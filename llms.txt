@@ -160,6 +160,37 @@ log-record processor. Ratel registers neither. See
 the [SDK guide](https://github.com/ratel-ai/ratel/blob/main/src/sdk/ts/README.md#retrieval-experiments-experimental),
 and the [telemetry scenario](https://github.com/ratel-ai/ratel/blob/main/src/telemetry/README.md#retrieval-experiment-telemetry).
 
+### Seeding adaptive ranking: experimental, and the distributed seam is TypeScript-only
+
+Adaptive usage ranking learns from what the agent invokes after a search
+([ADR-0014](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0014-adaptive-usage-ranking.md)).
+Both SDKs can also **seed** it before switching it on: record turns while Ratel serves no
+retrieval (`experimentalBaselineTurn` / `experimental_baseline_turn`, or the whole-turn
+`experimentalRecordBaselineTurn` / `experimental_record_baseline_turn`), build a graph from that
+log offline (`experimentalBuildIntentGraph` / `experimental_build_intent_graph`), inspect it, then
+enable ranking. Every entry point carries the `experimental` prefix — there is no stable alias.
+
+Two things not to invent:
+
+- **The `"callback"` trace sink is TypeScript-only.** `{ kind: "callback", sessionId, onEvent }`
+  hands each envelope to a closure, for a process-per-request host whose destination the SDK
+  cannot own. Python has no equivalent and deliberately will not get one — calling into Python
+  from the sink means taking the GIL on the hot path, which
+  [ADR-0007](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0007-telemetry-two-streams.md)
+  rules out. A per-request Python host uses the `memory` sink plus `drain_trace_events()` per
+  request and gets the same graph. Python's sink kinds are `noop` / `memory` / `jsonl` only —
+  a `TraceSinkConfig(kind="callback")` raises `ValueError: unknown trace sink kind: callback`.
+- **Building a graph does not enable ranking.** The returned graph is detached; enabling is a
+  separate, explicit call. That is the point of seeding — you inspect first.
+
+Recording is buffered, so nothing is written until `record()` — that gate is how a host drops a
+turn it would not want learned from. Nothing in a trace says whether a turn went well, so nothing
+is filtered: seed from an agent you already trust. Judge readiness by **coverage** (held-out
+queries that match a cluster), not by cluster count. The distributed walkthrough is
+[docs/baseline-capture-distributed.md](https://github.com/ratel-ai/ratel/blob/main/docs/baseline-capture-distributed.md);
+runnable demos are `examples/configurable-adaptive-ranking-ts` (phases A–E) and
+`examples/configurable-adaptive-ranking-python` (A–D).
+
 ### `replace` vs `suggest` mode
 
 Tool injection runs in two modes ([ADR-0004](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0004-retrieval-and-tool-selection.md)):
@@ -176,6 +207,7 @@ If you're not sure which one your user wants, default to `replace` — it's the 
 - [ADR-0006 — Native FFI bindings](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0006-native-ffi-bindings.md): Why the SDKs ship pre-built natives (NAPI-RS / PyO3).
 - [ADR-0011 — Selectable retrieval methods](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0011-selectable-retrieval-methods.md): BM25 (default), semantic, and hybrid ranking, chosen per catalog or per call.
 - [ADR-0012 — Configurable embedding models](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0012-configurable-embedding-models.md): Dense embeddings use a configurable in-process HuggingFace/local model, Ollama, or OpenAI-compatible endpoint.
+- [ADR-0014 — Adaptive usage ranking](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0014-adaptive-usage-ranking.md): A third RRF arm learned online from search-then-invoke pairs, plus the offline path that seeds it from a captured baseline before ranking is switched on.
 - [ADR-0019 — Retrieval experiments](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0019-retrieval-experiments.md): The TypeScript-only experimental surface for deterministic assignment, bounded shadow evaluation, lifecycle, comparison, and OpenTelemetry semantics.
 
 ## Examples

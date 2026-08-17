@@ -389,6 +389,7 @@ def test_event_record_names_are_unique() -> None:
 def test_origin_maps_to_wire_strings() -> None:
     assert Origin.DIRECT == "direct"
     assert Origin.AGENT == "agent"
+    assert Origin.BASELINE == "baseline"
 
 
 def test_search_target_maps_to_wire_strings() -> None:
