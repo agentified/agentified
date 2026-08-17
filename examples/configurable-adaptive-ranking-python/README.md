@@ -26,23 +26,27 @@ Expected output — the graph matures as turns are captured, then the flip:
 query: "why is the build broken"
   cold (BM25 only) : docker_build > gh_run_list
 
-A. collecting — scoring after each turn against held-out: "is the build broken today", "rotate the key", "read the file", "is CI green on my branch"
+A. collect — scoring after each turn against held-out: "is the build broken today", "rotate the key", "read the file", "is CI green on my branch"
 
-  turn  1  gh_run_list   clusters=1 support=1/3       obs=1  from_baseline=1 coverage=1/4
-  turn  2  gh_run_list   clusters=1 support=2/3       obs=2  from_baseline=2 coverage=1/4
-  turn  3  gh_run_list   clusters=1 support=3 (full)  obs=3  from_baseline=3 coverage=1/4
-  turn  4  vault_rotate  clusters=2 support=1/3       obs=4  from_baseline=4 coverage=2/4
-  turn  5  gh_run_list   clusters=2 support=4 (full)  obs=5  from_baseline=5 coverage=2/4
-  turn  6  vault_rotate  clusters=2 support=2/3       obs=6  from_baseline=6 coverage=2/4
-  turn  7  read_file     clusters=3 support=1/3       obs=7  from_baseline=7 coverage=3/4
-  turn  8  vault_rotate  clusters=3 support=3 (full)  obs=8  from_baseline=8 coverage=3/4
-  turn  9  read_file     clusters=3 support=2/3       obs=9  from_baseline=9 coverage=3/4
-  turn 10  gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10 coverage=3/4
+  turn  1  "why is the build broken"      gh_run_list   clusters=1 support=1/3       obs=1  from_baseline=1 coverage=1/4
+  turn  2  "is the build broken again"    gh_run_list   clusters=1 support=2/3       obs=2  from_baseline=2 coverage=1/4
+  turn  3  "the build broken on main"     gh_run_list   clusters=1 support=3 (full)  obs=3  from_baseline=3 coverage=1/4
+  turn  4  "rotate the signing key"       vault_rotate  clusters=2 support=1/3       obs=4  from_baseline=4 coverage=2/4
+  turn  5  "the build is broken"          gh_run_list   clusters=2 support=4 (full)  obs=5  from_baseline=5 coverage=2/4
+  turn  6  "rotate signing key now"       vault_rotate  clusters=2 support=2/3       obs=6  from_baseline=6 coverage=2/4
+  turn  7  "read a file from disk"        read_file     clusters=3 support=1/3       obs=7  from_baseline=7 coverage=3/4
+  turn  8  "rotate the signing key again" vault_rotate  clusters=3 support=3 (full)  obs=8  from_baseline=8 coverage=3/4
+  turn  9  "read the file from disk"      read_file     clusters=3 support=2/3       obs=9  from_baseline=9 coverage=3/4
+  turn 10  "build broken after merge"     gh_run_list   clusters=3 support=5 (full)  obs=10 from_baseline=10 coverage=3/4
 
   log -> /tmp/ratel-baseline-XXXX/trace.jsonl
 
-intent graph
-  schema v1   rev 10   clusters 3   built 2026-08-05 12:00:00Z
+B. build — 3 clusters from the log, detached (ranking still off)
+
+C. inspect
+
+intent graph  
+  schema v1   rev 10   clusters 3   built 2026-08-17 12:00:00Z
   model  BAAI/bge-small-en-v1.5
 
 ┌ intent_0  the build is broken
@@ -57,7 +61,7 @@ intent graph
 │   * the build is broken
 │     build broken after merge
 │ centroid  384 dims
-└ last seen 2026-08-05 12:00:00Z
+└ last seen 2026-08-17 12:00:00Z
 
 ┌ intent_1  rotate the signing key
 │ support   ████████████ 3  (full weight, 3 from a capture)
@@ -69,7 +73,7 @@ intent graph
 │     rotate signing key now
 │     rotate the signing key again
 │ centroid  384 dims
-└ last seen 2026-08-05 12:00:00Z
+└ last seen 2026-08-17 12:00:00Z
 
 ┌ intent_2  read a file from disk
 │ support   ████████···· 2  (67% of full weight, 2 from a capture)
@@ -80,11 +84,14 @@ intent graph
 │   * read a file from disk
 │     read the file from disk
 │ centroid  384 dims
-└ last seen 2026-08-05 12:00:00Z
+└ last seen 2026-08-17 12:00:00Z
 
 * = cluster label (the most central member)
 
-C. after seeding : gh_run_list > docker_build
+D. serve — after seeding : gh_run_list > docker_build
+   live learning, from agent searches only
+     direct   search  "is the build broken today"    gh_run_list   obs=10  from_baseline=10
+     agent    search  "is the build broken today"    gh_run_list   obs=11  from_baseline=10
 ```
 
 BM25 ranks `docker_build` first for *"why is the build broken"* on the token *build*. Ten turns across three intents say people reach for `gh_run_list` on build questions, and the seeded graph closes the gap — with no live learning in between.
@@ -114,7 +121,7 @@ Two rules:
 - **The turn is the unit.** Nothing reaches the log until `record()`, so skipping it is how you drop a turn you would not want the graph to learn from. Success is not observable from a trace, so that gate is yours — seed from an agent you already trust.
 - **One query, N invocations.** Everything named on a turn attributes to its query; the graph counts one observation and one edge per capability.
 
-### B. Initialize
+### B. Build
 
 ```python
 # Both knobs default to seeding, so the common call passes nothing.

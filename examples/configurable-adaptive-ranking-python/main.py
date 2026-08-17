@@ -17,7 +17,6 @@ LIVE_QUERY = "is the build broken today"
 SUPPORT_FULL = 3
 
 
-
 @dataclass(frozen=True)
 class Readiness:
     clusters: int
@@ -60,10 +59,10 @@ async def main() -> None:
     print(f'query: "{QUERY}"')
     print(f"  cold (BM25 only) : {' > '.join(top_ids(capture, QUERY))}")
 
-    print("OFFLINE MODE")
+    held_out = ", ".join(f'"{q}"' for q in HELD_OUT)
+    print(f"\nA. collect — scoring after each turn against held-out: {held_out}\n")
 
     for i, (turn, invoked) in enumerate(BASELINE_TURNS, start=1):
-
         capture.experimental_baseline_turn(turn).invoked(invoked).record()
 
         graph = await serving.experimental_build_intent_graph(log_path.read_text())
@@ -79,14 +78,21 @@ async def main() -> None:
             f"coverage={r.coverage_hits}/{r.coverage_probed}"
         )
 
+    print(f"\n  log -> {log_path}")
 
     graph = await serving.experimental_build_intent_graph(log_path.read_text())
+    print(
+        f"\nB. build — {graph.cluster_count} clusters from the log, "
+        "detached (ranking still off)"
+    )
+
+    print("\nC. inspect")
     show(json.loads(graph.to_json()))
 
     serving.experimental_enable_adaptive_ranking(graph, origins="agent")
-    print(f"\nC. after seeding : {' > '.join(top_ids(serving, QUERY))}")
+    print(f"\nD. serve — after seeding : {' > '.join(top_ids(serving, QUERY))}")
 
-    print("\nONLINE MODE (learning from agent searches only)")
+    print("   live learning, from agent searches only")
     for origin in ("direct", "agent"):
         serving.search(LIVE_QUERY, 5, origin=origin)
         await serving.invoke("gh_run_list", {})
@@ -97,10 +103,9 @@ async def main() -> None:
         # PEP 701 (3.12+), and this example declares `requires-python = ">=3.10"`.
         label = f'"{LIVE_QUERY}"'
         print(
-            f"  {origin:<8} search  {label:<30} gh_run_list   "
+            f"     {origin:<8} search  {label:<30} gh_run_list   "
             f"obs={obs:<3} from_baseline={seeded}"
         )
-
 
 
 if __name__ == "__main__":

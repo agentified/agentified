@@ -48,7 +48,9 @@ const serving = await buildCatalog();
 console.log(`query: "${QUERY}"`);
 console.log(`  cold (BM25 only) : ${topIds(capture, QUERY).join(" > ")}`);
 
-console.log("OFFLINE MODE");
+console.log(
+  `\nA. collect — scoring after each turn against held-out: ${HELD_OUT.map((q) => `"${q}"`).join(", ")}\n`,
+);
 
 for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
   capture.experimentalBaselineTurn(turn).invoked(invoked).record();
@@ -68,18 +70,23 @@ for (const [i, [turn, invoked]] of BASELINE_TURNS.entries()) {
 console.log(`\n  log -> ${logPath}`);
 
 const graph = await serving.experimentalBuildIntentGraph(readFileSync(logPath, "utf8"));
+console.log(
+  `\nB. build — ${graph.clusterCount} clusters from the log, detached (ranking still off)`,
+);
+
+console.log("\nC. inspect");
 show(JSON.parse(graph.toJson()));
 
 serving.experimentalEnableAdaptiveRanking(graph, { origins: "agent" });
 
-// Snapshot what seeding alone achieved. ONLINE MODE below keeps learning into
-// this same graph, so reading either the graph or `serving` after that point
-// answers a different question than phase B did.
+// Snapshot what seeding alone achieved. The live-learning lines below keep
+// learning into this same graph, so reading either the graph or `serving` after
+// that point answers a different question than phase B did.
 const seededOrder = topIds(serving, QUERY).join(" > ");
 const seededClusters = graph.clusterCount;
-console.log(`\nC. after seeding : ${seededOrder}`);
+console.log(`\nD. serve — after seeding : ${seededOrder}`);
 
-console.log("\nONLINE MODE (learning from agent searches only)");
+console.log("   live learning, from agent searches only");
 for (const origin of ["direct", "agent"] as const) {
   serving.search(LIVE_QUERY, 5, origin);
   await serving.invoke("gh_run_list", {});
@@ -89,7 +96,7 @@ for (const origin of ["direct", "agent"] as const) {
   const obs = intents.reduce((n, it) => n + it.support, 0);
   const seeded = intents.reduce((n, it) => n + (it.seeded_support ?? 0), 0);
   console.log(
-    `  ${origin.padEnd(8)} search  ${`"${LIVE_QUERY}"`.padEnd(30)} gh_run_list   ` +
+    `     ${origin.padEnd(8)} search  ${`"${LIVE_QUERY}"`.padEnd(30)} gh_run_list   ` +
       `obs=${String(obs).padEnd(3)} fromBaseline=${seeded}`,
   );
 }
