@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-17
+
 ### Added
 
 - `experimental_record_baseline_turn(query, invoked=..., invoked_skills=...)` records a whole baseline turn in one call, for hosts that cannot hold a turn open while it happens — a process-per-request server where the search and the invocation that follows are different requests, on possibly different machines. Reassemble the turn from your own storage, then hand it over whole. One turn stays one observation: splitting a search with three invocations into three recorded turns counts the query three times, inflating the support that scales the boost and gates the flip. The chained `experimental_baseline_turn` builder is unchanged.
