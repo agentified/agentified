@@ -253,8 +253,11 @@ per the two-channel table in § Tier 1 content.
 ### `ratel.catalog.definition`: experimental opt-in catalog definitions
 
 Registering or replacing a tool, skill, or fact emits this Logs EventRecord under the event
-content channel only when `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Emission is session-local and change-sensitive: a byte-identical canonical
-definition hash is suppressed, while a changed definition emits again.
+content channel only when `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Emission is
+session-local and change-sensitive: a byte-identical canonical definition hash is suppressed,
+while a changed definition emits again. When a runtime first opts into Cloud-owned definitions,
+it re-emits its unchanged definitions with `ratel.catalog.use_cloud_definitions=true` so adoption
+can be observed.
 
 | Attribute | Type | Notes |
 |---|---|---|
@@ -268,6 +271,7 @@ definition hash is suppressed, while a changed definition emits again.
 | `ratel.catalog.schema_omitted` | boolean | true when an oversized tool schema attribute was omitted |
 | `ratel.catalog.searchable_description` | string | effective search text after fallback |
 | `ratel.catalog.searchable_description_overridden` | boolean | true when an explicit override supplied the effective text |
+| `ratel.catalog.use_cloud_definitions` | boolean | optional; true when the emitting runtime opted into Cloud-owned definitions |
 | `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
 
 The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
@@ -280,7 +284,8 @@ definition. A definition containing an integral numeric value outside
 later safe edits remain eligible for emission. This is a deduplication token, not a redaction: the
 OTel event remains content and is off unless both the experimental gate and an EventRecord content
 mode are enabled. Independently, ADR-0020's runtime vocabulary includes a `catalog_definition`
-event behind an explicit experimental SDK option.
+event behind an explicit experimental SDK option. The attach-mode attribute is not part of the
+content hash; ownership changes re-emit the same content hash.
 
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 

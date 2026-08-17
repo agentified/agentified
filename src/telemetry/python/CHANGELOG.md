@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `RATEL_CATALOG_USE_CLOUD_DEFINITIONS` for definition events emitted by runtimes using Cloud-owned definitions.
+
 ## [0.4.0] - 2026-08-17
 
 ### Added

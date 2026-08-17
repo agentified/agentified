@@ -118,6 +118,8 @@ RATEL_CATALOG_SEARCHABLE_DESCRIPTION: Final = "ratel.catalog.searchable_descript
 RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: Final = (
     "ratel.catalog.searchable_description_overridden"
 )
+#: runtime opted into Cloud-owned catalog definitions.
+RATEL_CATALOG_USE_CLOUD_DEFINITIONS: Final = "ratel.catalog.use_cloud_definitions"
 #: ratel.catalog.content_hash — canonical definition SHA-256.
 RATEL_CATALOG_CONTENT_HASH: Final = "ratel.catalog.content_hash"
 
@@ -458,6 +460,7 @@ __all__ = [
     "RATEL_CATALOG_SCHEMA_OMITTED",
     "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
     "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
+    "RATEL_CATALOG_USE_CLOUD_DEFINITIONS",
     "RATEL_CATALOG_TAGS",
     "RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER",
     "RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS",

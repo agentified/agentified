@@ -139,6 +139,8 @@ export const RATEL_CATALOG_SEARCHABLE_DESCRIPTION = "ratel.catalog.searchable_de
 /** Whether the effective searchable description came from an explicit override. */
 export const RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN =
   "ratel.catalog.searchable_description_overridden";
+/** `ratel.catalog.use_cloud_definitions` — runtime opted into Cloud-owned definitions. */
+export const RATEL_CATALOG_USE_CLOUD_DEFINITIONS = "ratel.catalog.use_cloud_definitions";
 /** `ratel.catalog.content_hash` — canonical definition SHA-256. */
 export const RATEL_CATALOG_CONTENT_HASH = "ratel.catalog.content_hash";
 
