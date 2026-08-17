@@ -21,6 +21,7 @@ import {
   ContentCapture,
   clearContentCapture,
   type ExecutableTool,
+  ratel,
   SkillCatalog,
   setContentCapture,
   ToolCatalog,
@@ -269,6 +270,45 @@ describe("execute_tool span", () => {
     await catalog.register(readFile);
 
     expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+  });
+
+  it("re-emits definitions with the Cloud ownership flag when the runtime opts in", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const runtime = ratel();
+    await runtime.tools.register(readFile);
+    await runtime.skills.register({
+      id: "review",
+      name: "review_code",
+      description: "Review source",
+      body: "# Review",
+    });
+    await runtime.facts.register({
+      id: "address",
+      name: "shop_address",
+      description: "Where the shop is",
+    });
+
+    await runtime.catalog.applyCloudDefinitions([]);
+
+    const events = logEventsNamed("ratel.catalog.definition");
+    expect(events).toHaveLength(6);
+    expect(
+      events.slice(0, 3).map((event) => event.attributes["ratel.catalog.use_cloud_definitions"]),
+    ).toEqual([undefined, undefined, undefined]);
+    expect(
+      events.slice(3).map((event) => ({
+        kind: event.attributes["ratel.catalog.kind"],
+        useCloudDefinitions: event.attributes["ratel.catalog.use_cloud_definitions"],
+      })),
+    ).toEqual([
+      { kind: "tool", useCloudDefinitions: true },
+      { kind: "skill", useCloudDefinitions: true },
+      { kind: "fact", useCloudDefinitions: true },
+    ]);
+    expect(events.slice(3).map((event) => event.attributes["ratel.catalog.content_hash"])).toEqual(
+      events.slice(0, 3).map((event) => event.attributes["ratel.catalog.content_hash"]),
+    );
   });
 
   it("hashes mixed-case schema keys identically to the Rust core and Python", async () => {

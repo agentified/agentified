@@ -130,10 +130,26 @@ export interface CatalogSnapshot {
   readonly skills: readonly SkillDefinition[];
 }
 
+/** One operator-authored retrieval-description override from Ratel Cloud. */
+export interface CloudDefinitionOverride {
+  /** Catalog containing the entry. */
+  readonly kind: "tool" | "skill" | "fact";
+  /** Stable local catalog entry id. */
+  readonly entryId: string;
+  /** Cloud-authored replacement for the description component used by retrieval. */
+  readonly searchableDescription: string;
+}
+
 /** Public catalog-state seam. */
 export interface RuntimeCatalog {
   /** Return a current, serializable full replacement snapshot. */
   snapshot(): CatalogSnapshot;
+}
+
+/** Runtime catalog implemented by current SDK runtimes for Cloud attach. */
+export interface CloudDefinitionsRuntimeCatalog extends RuntimeCatalog {
+  /** Apply the latest complete Cloud override set to live local registrations. */
+  applyCloudDefinitions(overrides: readonly CloudDefinitionOverride[]): Promise<void>;
 }
 
 /** Asynchronous, fail-open consumer of one public event batch. */

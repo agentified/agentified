@@ -8,6 +8,7 @@ import type {
   SearchOrigin,
   TraceSinkConfig,
 } from "./catalog.js";
+import { withCloudDefinition } from "./cloud-definitions.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -77,7 +78,10 @@ export interface SkillCatalogOptions {
  */
 export class SkillCatalog {
   private readonly registry: SkillRegistry;
+  private readonly localSkills = new Map<string, Skill>();
   private readonly skills = new Map<string, Skill>();
+  private cloudSearchableDescriptions = new Map<string, string>();
+  private readonly warnedCloudShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -115,7 +119,29 @@ export class SkillCatalog {
    */
   async register(skills: Skill | readonly Skill[]): Promise<void> {
     const batch = Array.isArray(skills) ? skills : [skills];
+    await this.registerEffective(
+      batch.map((skill) => this.applyCloudDefinition(skill)),
+      batch,
+    );
+  }
+
+  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
+  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.cloudSearchableDescriptions = new Map(overrides);
+    this.registry.setUseCloudDefinitions();
+    await this.replaceAllEffective(
+      [...this.localSkills.values()].map((skill) => this.applyCloudDefinition(skill)),
+    );
+  }
+
+  private async registerEffective(
+    batch: readonly Skill[],
+    localBatch?: readonly Skill[],
+  ): Promise<void> {
     this.registry.registerItems(batch);
+    if (localBatch) {
+      for (const skill of localBatch) this.localSkills.set(skill.id, skill);
+    }
     for (const skill of batch) {
       this.skills.set(skill.id, skill);
     }
@@ -158,7 +184,25 @@ export class SkillCatalog {
    *   rejection.
    */
   replaceAll(skills: readonly Skill[]): PendingReplace {
+    const localIds = new Set(skills.map((skill) => skill.id));
+    for (const warnedId of this.warnedCloudShadowIds) {
+      if (!localIds.has(warnedId)) this.warnedCloudShadowIds.delete(warnedId);
+    }
+    return this.replaceAllEffective(
+      skills.map((skill) => this.applyCloudDefinition(skill)),
+      skills,
+    );
+  }
+
+  private replaceAllEffective(
+    skills: readonly Skill[],
+    localSkills?: readonly Skill[],
+  ): PendingReplace {
     const outcome = this.registry.replaceAllItems(skills);
+    if (localSkills) {
+      this.localSkills.clear();
+      for (const skill of localSkills) this.localSkills.set(skill.id, skill);
+    }
     this.skills.clear();
     for (const skill of skills) {
       this.skills.set(skill.id, skill);
@@ -167,6 +211,15 @@ export class SkillCatalog {
     // phase still reports what the (already committed) swap changed.
     const embedded = this.ensureDenseReady().then(() => outcome);
     return Object.assign(embedded, outcome);
+  }
+
+  private applyCloudDefinition(skill: Skill): Skill {
+    return withCloudDefinition(
+      "skill",
+      skill,
+      this.cloudSearchableDescriptions,
+      this.warnedCloudShadowIds,
+    );
   }
 
   private async ensureDenseReady(): Promise<void> {

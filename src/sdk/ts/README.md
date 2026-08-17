@@ -21,6 +21,35 @@ Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` f
 
 Every tool, skill, and fact accepts an optional experimental `experimentalSearchableDescription`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
 
+## Cloud-owned Retrieval descriptions
+
+Registration always owns the complete local definition and syncs that definition up through
+`ratel.catalog.definition` telemetry. Cloud changes apply down only when the runtime explicitly
+opts in at attach time:
+
+```ts
+import { ratel } from "@ratel-ai/sdk";
+import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
+
+const runtime = ratel();
+await runtime.tools.register(localTools);
+
+const attachment = ratelCloud.attach(runtime, { useCloudDefinitions: true });
+await attachment.flush(); // includes the initial override pull
+```
+
+With `useCloudDefinitions` omitted or false, local `searchableDescription` values remain
+authoritative and Cloud does not pull or apply overrides. With it enabled, attach pulls
+`GET /v1/runtime-catalog/overrides`, conditionally refreshes with the response ETag, and applies
+the complete overlay to live tools, skills, and facts. Removing a Cloud override restores the
+latest local value. If both sides define a Retrieval description for one entry, Cloud wins while
+attached and the SDK warns once for that continuous shadowing period; clearing and later
+reapplying the Cloud override starts a new period.
+
+The model-facing description, schemas, bodies, tags, and executors always remain local. Definition
+events emitted after opt-in carry `ratel.catalog.use_cloud_definitions=true`, including one
+re-emission of otherwise unchanged definitions so Cloud can observe adoption.
+
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
 For semantic or hybrid retrieval, `register()` folds embedding in: it accepts one tool or a whole array and embeds on a libuv worker, so model loading, HTTP, and inference never block Node's event loop — and embedding errors surface right at `register()`:

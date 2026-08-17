@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type ExecutableTool,
   GET_SKILL_CONTENT_ID,
@@ -33,6 +33,129 @@ const native = (id: string, description: string): ExecutableTool => ({
 const CAPABILITY_IDS = [SEARCH_CAPABILITIES_ID, INVOKE_TOOL_ID, GET_SKILL_CONTENT_ID];
 
 describe("ratel() standalone core", () => {
+  it("keeps local retrieval descriptions when Cloud definitions are not enabled", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      searchableDescription: "localcanaryterm",
+    });
+
+    expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+  });
+
+  it("applies Cloud retrieval descriptions without changing local definitions", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      searchableDescription: "localcanaryterm",
+    });
+
+    await r.catalog.applyCloudDefinitions([
+      { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    ]);
+
+    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("localcanaryterm", 5)).toEqual([]);
+    expect(r.tools.get("deploy")?.description).toBe("Deploy an application.");
+  });
+
+  it("restores the local retrieval description when Cloud removes an override", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      searchableDescription: "localcanaryterm",
+    });
+    await r.catalog.applyCloudDefinitions([
+      { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    ]);
+
+    await r.catalog.applyCloudDefinitions([]);
+
+    expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+  });
+
+  it("applies Cloud retrieval descriptions to skills registered after attach", async () => {
+    const r = ratel();
+    await r.catalog.applyCloudDefinitions([
+      { kind: "skill", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    ]);
+
+    await r.skills.register({
+      id: "deploy",
+      name: "deploy",
+      description: "Deploy an application.",
+      searchableDescription: "localcanaryterm",
+      body: "# Deploy",
+    });
+
+    expect(r.skills.search("cloudrollbackterm", 5).map((hit) => hit.skillId)).toEqual(["deploy"]);
+    expect(r.skills.search("localcanaryterm", 5)).toEqual([]);
+  });
+
+  it("applies Cloud retrieval descriptions to facts without eagerly creating the catalog", async () => {
+    const r = ratel();
+    await r.catalog.applyCloudDefinitions([
+      { kind: "fact", entryId: "address", searchableDescription: "cloudlocationterm" },
+    ]);
+
+    await r.facts.register({
+      id: "address",
+      name: "address",
+      description: "Where the shop is.",
+      searchableDescription: "localaddressterm",
+    });
+
+    expect(r.facts.search("cloudlocationterm", 5).map((hit) => hit.factId)).toEqual(["address"]);
+    expect(r.facts.search("localaddressterm", 5)).toEqual([]);
+  });
+
+  it("warns once per continuous period that Cloud shadows a local retrieval description", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = ratel();
+      await r.tools.register({
+        ...native("deploy", "Deploy an application."),
+        searchableDescription: "localcanaryterm",
+      });
+      const override = {
+        kind: "tool" as const,
+        entryId: "deploy",
+        searchableDescription: "cloudrollbackterm",
+      };
+
+      await r.catalog.applyCloudDefinitions([override]);
+      await r.catalog.applyCloudDefinitions([override]);
+      await r.catalog.applyCloudDefinitions([]);
+      await r.catalog.applyCloudDefinitions([override]);
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(
+        'ratel: Cloud retrieval description for tool "deploy" shadows the local searchableDescription while useCloudDefinitions is enabled',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn when a Cloud override has no matching explicit local value", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = ratel();
+      await r.tools.register(native("deploy", "Deploy an application."));
+
+      await r.catalog.applyCloudDefinitions([
+        { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+        { kind: "tool", entryId: "unknown", searchableDescription: "cloudunknownterm" },
+      ]);
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("r.tools is a handle over the one shared catalog", async () => {
     const r = ratel();
     await r.tools.register(

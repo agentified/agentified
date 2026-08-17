@@ -118,6 +118,8 @@ export { ratel } from "./ratel.js";
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type {
   CatalogSnapshot,
+  CloudDefinitionOverride,
+  CloudDefinitionsRuntimeCatalog,
   RuntimeCatalog,
   RuntimeEvent,
   RuntimeEventHandler,

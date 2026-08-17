@@ -2,6 +2,7 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
+import { withCloudDefinition } from "./cloud-definitions.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -356,7 +357,10 @@ export class ToolCatalog {
   private readonly registry: ToolRegistry;
   private readonly executors = new Map<string, Executor>();
   private readonly inputValidators = new Map<string, InputValidator>();
+  private readonly localTools = new Map<string, ExecutableTool>();
   private readonly tools = new Map<string, Tool>();
+  private cloudSearchableDescriptions = new Map<string, string>();
+  private readonly warnedCloudShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -402,9 +406,31 @@ export class ToolCatalog {
         throw new Error(`tool ${tool.id} has no execute handler`);
       }
     }
+    await this.registerEffective(
+      batch.map((tool) => this.applyCloudDefinition(tool)),
+      batch,
+    );
+  }
+
+  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
+  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.cloudSearchableDescriptions = new Map(overrides);
+    this.registry.setUseCloudDefinitions();
+    await this.registerEffective(
+      [...this.localTools.values()].map((tool) => this.applyCloudDefinition(tool)),
+    );
+  }
+
+  private async registerEffective(
+    batch: readonly ExecutableTool[],
+    localBatch?: readonly ExecutableTool[],
+  ): Promise<void> {
     this.registry.registerItems(
       batch.map(({ execute: _execute, validateInput: _validateInput, ...metadata }) => metadata),
     );
+    if (localBatch) {
+      for (const tool of localBatch) this.localTools.set(tool.id, tool);
+    }
     for (const tool of batch) {
       const { execute, validateInput, ...metadata } = tool;
       this.executors.set(tool.id, execute);
@@ -416,6 +442,15 @@ export class ToolCatalog {
       this.tools.set(tool.id, metadata);
     }
     await this.ensureDenseReady();
+  }
+
+  private applyCloudDefinition(tool: ExecutableTool): ExecutableTool {
+    return withCloudDefinition(
+      "tool",
+      tool,
+      this.cloudSearchableDescriptions,
+      this.warnedCloudShadowIds,
+    );
   }
 
   private async ensureDenseReady(): Promise<void> {

@@ -2,8 +2,10 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import { withCloudDefinition } from "./cloud-definitions.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
+  assertValidFact,
   FACT_ID_PATTERN,
   type Fact,
   type GroundingItem,
@@ -52,7 +54,10 @@ export interface FactCatalogOptions {
  */
 export class FactCatalog {
   private readonly registry: FactRegistry;
+  private readonly localFacts = new Map<string, Fact>();
   private readonly facts = new Map<string, Fact>();
+  private cloudSearchableDescriptions = new Map<string, string>();
+  private readonly warnedCloudShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly factsTopK?: number;
   // Session bookkeeping for the freshness gate: the body this catalog last
@@ -101,14 +106,51 @@ export class FactCatalog {
    */
   async register(facts: Fact | readonly Fact[]): Promise<void> {
     const batch = Array.isArray(facts) ? facts : [facts];
+    for (const fact of batch) assertValidFact(fact);
+    await this.registerEffective(
+      batch.map((fact) => this.applyCloudDefinition(fact)),
+      batch,
+    );
+  }
+
+  /** @internal Configure Cloud definitions before the first local registration. */
+  setCloudDefinitions(overrides: ReadonlyMap<string, string>): void {
+    this.cloudSearchableDescriptions = new Map(overrides);
+    this.registry.setUseCloudDefinitions();
+  }
+
+  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
+  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.setCloudDefinitions(overrides);
+    await this.registerEffective(
+      [...this.localFacts.values()].map((fact) => this.applyCloudDefinition(fact)),
+    );
+  }
+
+  private async registerEffective(
+    batch: readonly Fact[],
+    localBatch?: readonly Fact[],
+  ): Promise<void> {
     // Validation lives in `registerItems` (the registry is public too), which
     // checks the whole batch before indexing any of it — so the local map below
     // can only ever see facts the registry accepted.
     this.registry.registerItems(batch);
+    if (localBatch) {
+      for (const fact of localBatch) this.localFacts.set(fact.id, fact);
+    }
     for (const fact of batch) {
       this.facts.set(fact.id, fact);
     }
     await this.registry.buildDense();
+  }
+
+  private applyCloudDefinition(fact: Fact): Fact {
+    return withCloudDefinition(
+      "fact",
+      fact,
+      this.cloudSearchableDescriptions,
+      this.warnedCloudShadowIds,
+    );
   }
 
   /**

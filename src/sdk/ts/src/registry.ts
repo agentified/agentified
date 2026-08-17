@@ -51,6 +51,7 @@ export class ToolRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useCloudDefinitions = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -93,7 +94,12 @@ export class ToolRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes);
+    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
+  }
+
+  /** @internal Mark subsequent definition events as Cloud-owned. */
+  setUseCloudDefinitions(): void {
+    this.useCloudDefinitions = true;
   }
 
   /**
@@ -391,6 +397,7 @@ export class SkillRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useCloudDefinitions = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -426,7 +433,12 @@ export class SkillRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
+    recordCatalogDefinitions(
+      "skill",
+      items,
+      this.emittedDefinitionHashes,
+      this.useCloudDefinitions,
+    );
   }
 
   /**
@@ -442,8 +454,18 @@ export class SkillRegistry {
   replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
     assertNotArtifactBusy(this);
     const outcome = this.native.replaceAll([...items]);
-    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
+    recordCatalogDefinitions(
+      "skill",
+      items,
+      this.emittedDefinitionHashes,
+      this.useCloudDefinitions,
+    );
     return outcome;
+  }
+
+  /** @internal Mark subsequent definition events as Cloud-owned. */
+  setUseCloudDefinitions(): void {
+    this.useCloudDefinitions = true;
   }
 
   /**
@@ -685,6 +707,7 @@ export class FactRegistry {
   private readonly native: NativeFactRegistry;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useCloudDefinitions = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -724,7 +747,12 @@ export class FactRegistry {
     const items = Array.isArray(item) ? item : [item];
     for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes);
+    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
+  }
+
+  /** @internal Mark subsequent definition events as Cloud-owned. */
+  setUseCloudDefinitions(): void {
+    this.useCloudDefinitions = true;
   }
 
   /**

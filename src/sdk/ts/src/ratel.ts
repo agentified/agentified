@@ -23,7 +23,12 @@ import type { ExperimentalEmbeddingArtifact } from "./embedding-artifact.js";
 import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
-import { type RuntimeCatalog, RuntimeEvents, type RuntimeEventsOptions } from "./runtime-events.js";
+import {
+  type CloudDefinitionOverride,
+  type CloudDefinitionsRuntimeCatalog,
+  RuntimeEvents,
+  type RuntimeEventsOptions,
+} from "./runtime-events.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 
@@ -263,7 +268,7 @@ export interface AdaptedBase<TTool, TMessage> {
   /** Merged runtime-event stream shared by every view of this core. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: RuntimeCatalog;
+  readonly catalog: CloudDefinitionsRuntimeCatalog;
   /**
    * The model-facing toolset in the framework's shape: this view's passthroughs
    * plus the three capability tools run through the adapter's `expose` codec.
@@ -330,7 +335,7 @@ export interface Ratel {
   /** Merged runtime-event stream shared by tools, skills, and SDK-owned facts. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: RuntimeCatalog;
+  readonly catalog: CloudDefinitionsRuntimeCatalog;
   /**
    * The three capability tools (`search_capabilities`, `invoke_tool`,
    * `get_skill_content`) in native shape, for framework-free hosts. All three
@@ -448,12 +453,30 @@ export function ratel(config: RatelConfig = {}): Ratel {
     experimentalEmbeddingArtifact: embeddingArtifact,
   });
   const events = new RuntimeEvents([catalog, skills], config.events);
-  const runtimeCatalog: RuntimeCatalog = {
+  let factsCatalog: FactCatalog | undefined;
+  let cloudFactDefinitions = new Map<string, string>();
+  let useCloudDefinitions = false;
+  const runtimeCatalog: CloudDefinitionsRuntimeCatalog = {
     snapshot: () => ({
       source_id: events.sourceId,
       tools: catalog.snapshot(),
       skills: skills.snapshot(),
     }),
+    applyCloudDefinitions: async (overrides: readonly CloudDefinitionOverride[]) => {
+      useCloudDefinitions = true;
+      const byKind = (kind: CloudDefinitionOverride["kind"]): Map<string, string> =>
+        new Map(
+          overrides
+            .filter((override) => override.kind === kind)
+            .map((override) => [override.entryId, override.searchableDescription]),
+        );
+      cloudFactDefinitions = byKind("fact");
+      await Promise.all([
+        catalog.applyCloudDefinitions(byKind("tool")),
+        skills.applyCloudDefinitions(byKind("skill")),
+        factsCatalog?.applyCloudDefinitions(cloudFactDefinitions),
+      ]);
+    },
   };
   // The fact catalog owns the grounding freshness state (its injected-body map),
   // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:
@@ -462,14 +485,16 @@ export function ratel(config: RatelConfig = {}): Ratel {
   // majority of hosts that never touch facts. First access to `r.facts` (or to
   // `ground`/`groundSnapshot`, which go through it) creates the single shared
   // instance; nothing on the stable path (`recall`, `modelTools`) touches it.
-  let factsCatalog: FactCatalog | undefined;
   const facts = (): FactCatalog => {
-    factsCatalog ??= new FactCatalog({
-      method: config.method,
-      embedding: config.embedding,
-      trace: config.trace,
-      factsTopK: config.factsTopK,
-    });
+    if (factsCatalog === undefined) {
+      factsCatalog = new FactCatalog({
+        method: config.method,
+        embedding: config.embedding,
+        trace: config.trace,
+        factsTopK: config.factsTopK,
+      });
+      if (useCloudDefinitions) factsCatalog.setCloudDefinitions(cloudFactDefinitions);
+    }
     return factsCatalog;
   };
   // Framework-shaped passthrough values stay in their originating views, but

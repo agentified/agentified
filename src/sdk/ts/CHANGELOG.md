@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - `experimentalSearchableDescription` on tool, skill, and fact registrations, and on `CatalogRegistration` (ADR-0021): an override for the description component BM25 and embeddings actually rank, so retrieval text can be tuned without changing the `description` the model reads or the `body` it receives. Names stay indexed, skill and fact tags stay indexed, and for a tool the override additionally opts that entry out of schema indexing — `inputSchema` / `outputSchema` stay model-facing but stop contributing tokens. Leave it out and nothing changes: tools still rank description plus schema tokens, skills and facts still rank their authored description. Optional everywhere it appears, so existing registrations compile and rank exactly as before. Experimental, so it may change or be removed without a major-version bump.
 
+- Opt-in Cloud-owned Retrieval descriptions through runtime attach: the runtime catalog applies complete overlays without losing local definitions, restores local values on clear, and warns when Cloud shadows an explicit local value.
+
 ## [0.11.0] - 2026-08-17
 
 ### Added
