@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Removed
+
+- Removed `Confirmation` from `ObservationPolicy`. It selected whether an `invoke_start` or an `invoke_end` closed an observation, framed as filtering wrong tool choices — but a trace records which tool was called, never whether calling it was right. Filtering on completion is leaky in both directions: a wrong tool that ran fine is kept, a right one that failed on its arguments is dropped. The choice is the only signal, so there is nothing to configure.
+
+### Added
+
+- `FnSink`: a `TraceSink` that hands each envelope to a closure as a JSON line, for hosts whose trace destination this crate cannot own — a process-per-request server writing to a database, a language binding forwarding to its runtime. The line is the same wire form `JsonlSink` writes for the same event, session, and source — field for field, bar the per-record `ts` and `event_id` every envelope-aware sink mints for itself, neither of which replay reads — so lines collected across processes can be joined with newlines and passed straight back to `build_intent_graph` with no re-derivation. The session id is a default rather than an identity: replay pairs searches with invokes per session, so a host reassembling turns from its own storage should restamp each line with an id unique to each concurrent turn.
+- `ObservationPolicy` now drives one shared `classify` step used by both the live learner and trace-log initialization, so the pairing rule — which event opens an observation window, which confirms one — exists once rather than in two implementations that could drift.
+- `Origin::Baseline` (wire value `baseline`): a query recorded while Ratel was observing but not serving retrieval — the agent chose from its own full tool list and the host captured the turn's text so the invocations that follow can be attributed to it. Ratel's own search path never produces it.
+- `ToolRegistry::build_intent_graph` builds a graph by stepping through a trace log — the offline half of baseline seeding. Every distinct query is embedded up front so clusters form at the **dense** tier, exactly as the live path would; a model-free replay clusters lexically and a later `rebuild_intent_graph` cannot undo that, since it replaces centroids without revisiting cluster boundaries. Pairing is per session over the log's own order (never re-sorted — `ts` stamps observations, it does not order them), so interleaved sessions sharing one graph cannot cross-pair. One call populates both `tools` and `skills` edges. Returns a detached graph; attaching stays an explicit `set_intent_graph` call.
+- `ObservationPolicy` on `UsageLearner`, via `with_policy` — which search origins open an observation window (`OriginFilter`), whether a tool confirms on the attempt or on completion (`Confirmation`), and whether what is learned is marked as seeded (`Provenance`). `Default` reproduces existing behavior exactly and `UsageLearner::new` delegates to it, so nothing changes unless a policy is passed. A rejected search is *ignored*, not cleared, so an unrelated internal search between a captured query and its invokes cannot discard the turn's evidence.
+- `seeded_support` on `Intent` (`protocol/v1`): how many of a cluster's `support` observations came from a seeding pass rather than live traffic. Provenance only — nothing reads it during ranking, and two graphs differing only here rank identically and compare equal. Bumped in lockstep with `support`, so one fanned-out question stays one observation. Omitted from the wire form when zero, so a live-only graph serializes byte-identically to one produced before the field existed; a value exceeding `support` is rejected on load.
+- `dropped` on the `usage_boost` trace event: how many capability ids a matched cluster remembers that the registry no longer defines, so they were filtered out of the arm. Previously a cluster whose every edge had left the catalog emitted an event byte-identical to a query that matched nothing — the two are different problems (catalog drift vs a coverage gap) with different fixes, and `intent: Some(_)` with `promoted: 0` and `dropped > 0` now tells them apart. Ranking is unchanged: dropping ids the agent cannot invoke is still correct, and only an armed outcome reaches the fusion. Older log lines without the field replay as `dropped: 0`.
+
+### Fixed
+
+- Trace-log initialization under-counted `support` when two sessions asked the same question with their events interleaved — the second session's edge landed but its observation did not. The credit mark is a single slot on the graph keyed by query text, which is enough for the live path (two learners sharing one graph need somewhere common to agree, and identical text from concurrent sessions is rare there) but not for a replay, where sessions interleave by construction and popular questions repeat verbatim. Replay now tracks the mark per session, which it can do exactly because it knows the session id.
+
+### Changed
+
+- **BREAKING:** `Origin` is now `#[non_exhaustive]`. Downstream `match`es over it must include a `_ =>` arm; in return, future origins are non-breaking. Constructing existing variants is unaffected, as are the serde wire form and in-crate matches.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added

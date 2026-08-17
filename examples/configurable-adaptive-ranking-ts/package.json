@@ -1,0 +1,18 @@
+{
+  "name": "@ratel-ai/example-configurable-adaptive-ranking",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "pnpm -F @ratel-ai/sdk build && tsx src/index.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@ratel-ai/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  }
+}

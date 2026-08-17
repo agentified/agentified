@@ -66,6 +66,11 @@ const MAX_TERMS: usize = 5;
 
 const MS_PER_DAY: f64 = 86_400_000.0;
 
+/// `skip_serializing_if` predicate for count fields that default to zero.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// A cluster keeps full weight for this long after its last use, then decays.
 /// Recent work should not be discounted at all; only topics that have genuinely
 /// gone quiet fade (ADR-0014, blocker #3).
@@ -106,6 +111,32 @@ pub(crate) fn usage_weight(support: u32) -> f32 {
     USAGE_WEIGHT * ramp
 }
 
+/// One confirmed observation to fold into a graph — a query, and the capability
+/// invoked after it.
+///
+/// A struct rather than positional arguments because the two booleans read
+/// identically at a call site and mean very different things: one is "this
+/// search was acted on", the other is "this evidence came from a seeding pass".
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Observation<'a> {
+    /// The query text the invocation is attributed to — the cluster match key.
+    pub query: &'a str,
+    /// Which edge map the invoked capability belongs to.
+    pub kind: Capability,
+    /// The capability that was invoked.
+    pub capability_id: &'a str,
+    /// When it happened, epoch-millis. Records how current the graph is and
+    /// drives recency; never affects ranking order directly.
+    pub ts_ms: u64,
+    /// Whether this is the search's **first** confirming invoke — the only kind
+    /// that raises `support`. Later invokes of the same question add edges only.
+    pub first_confirmation: bool,
+    /// Whether this came from a seeding pass (a baseline capture or a replay)
+    /// rather than live serving traffic. Recorded on
+    /// [`Intent::seeded_support`]; never reaches ranking.
+    pub seeded: bool,
+}
+
 /// Which edge map of a cluster to rank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Capability {
@@ -136,6 +167,134 @@ pub(crate) struct UsageArm {
     pub weight: f32,
     /// Capability ids, best-first. Already filtered to ids the registry knows.
     pub ids: Vec<String>,
+    /// How many of the cluster's ids were dropped because the registry no
+    /// longer defines them. Never reaches the fusion — it is carried so
+    /// `TraceEvent::UsageBoost` can report catalog drift.
+    pub dropped: u32,
+}
+
+/// What a query's usage lookup produced.
+///
+/// Distinguishes the two ways a search ends up with no arm, which a bare
+/// `Option<UsageArm>` collapsed into one. Both leave ranking untouched, but they
+/// are different problems: [`Self::NoMatch`] means the graph does not cover the
+/// question, while [`Self::AllFiltered`] means it does and the *catalog* has
+/// moved out from under it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ArmOutcome {
+    /// No cluster cleared the match threshold.
+    NoMatch,
+    /// A cluster matched, but every capability it remembers of this kind names
+    /// an id the registry does not define.
+    AllFiltered {
+        /// The cluster that matched.
+        intent_id: String,
+        /// How well it matched.
+        similarity: f32,
+        /// Its observation count.
+        support: u32,
+        /// How many ids were dropped — all of them, by definition.
+        dropped: u32,
+    },
+    /// A cluster matched and contributed ids to the fusion.
+    Armed(UsageArm),
+}
+
+impl ArmOutcome {
+    /// The arm, if one was produced — the view the fusion path takes, and the
+    /// reason adding the outcome distinction leaves ranking bit-identical.
+    pub(crate) fn into_arm(self) -> Option<UsageArm> {
+        match self {
+            ArmOutcome::Armed(arm) => Some(arm),
+            _ => None,
+        }
+    }
+
+    /// `(intent, similarity, support, promoted, dropped)` for
+    /// [`crate::TraceEvent::UsageBoost`].
+    pub(crate) fn describe(&self) -> (Option<String>, f64, u32, u32, u32) {
+        match self {
+            ArmOutcome::NoMatch => (None, 0.0, 0, 0, 0),
+            ArmOutcome::AllFiltered {
+                intent_id,
+                similarity,
+                support,
+                dropped,
+            } => (
+                Some(intent_id.clone()),
+                *similarity as f64,
+                *support,
+                0,
+                *dropped,
+            ),
+            ArmOutcome::Armed(a) => (
+                Some(a.intent_id.clone()),
+                a.similarity as f64,
+                a.support,
+                a.ids.len() as u32,
+                a.dropped,
+            ),
+        }
+    }
+
+    /// Prefer an armed outcome, then a drift report, then a plain miss — used
+    /// where a dense attempt falls through to a lexical one and only the more
+    /// informative of the two failures is worth reporting.
+    fn or_else(self, next: impl FnOnce() -> ArmOutcome) -> ArmOutcome {
+        match self {
+            ArmOutcome::Armed(_) => self,
+            _ => match next() {
+                ArmOutcome::NoMatch => self,
+                other => other,
+            },
+        }
+    }
+}
+
+/// Sugar for the many tests that predate [`Observation`] and mean "a live
+/// observation" — the default provenance. Keeps those call sites reading as the
+/// behaviour they assert rather than as struct literals.
+#[cfg(test)]
+impl IntentGraph {
+    fn observe_live(
+        &mut self,
+        query: &str,
+        kind: Capability,
+        capability_id: &str,
+        ts_ms: u64,
+        first_confirmation: bool,
+    ) {
+        self.observe(Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms,
+            first_confirmation,
+            seeded: false,
+        });
+    }
+}
+
+/// `Option`-shaped sugar for the tests that predate the outcome distinction.
+/// They assert on *whether an arm reached the fusion*, which is exactly what
+/// these expose; the `NoMatch`/`AllFiltered` split is asserted separately.
+#[cfg(test)]
+impl ArmOutcome {
+    fn expect(self, msg: &str) -> UsageArm {
+        self.into_arm().expect(msg)
+    }
+
+    fn unwrap(self) -> UsageArm {
+        self.into_arm().expect("expected an arm")
+    }
+
+    fn is_none(&self) -> bool {
+        !matches!(self, ArmOutcome::Armed(_))
+    }
+
+    fn is_some(&self) -> bool {
+        matches!(self, ArmOutcome::Armed(_))
+    }
 }
 
 impl UsageArm {
@@ -310,6 +469,20 @@ pub struct Intent {
     pub centroid: Option<Vec<f32>>,
     /// Confirmed search-then-invoke observations behind this cluster.
     pub support: u32,
+    /// How many of [`Self::support`] came from a **seeding** pass — a baseline
+    /// capture or a trace replay — rather than from live serving traffic.
+    ///
+    /// Provenance only: nothing reads it during ranking, and two graphs
+    /// differing only here rank identically and compare equal. It exists so a
+    /// caller can see how much of a cluster's confidence rests on seeded
+    /// evidence, and discount it if the seed turns out to have taught something
+    /// wrong.
+    ///
+    /// Invariant: `seeded_support <= support`, enforced on load. Omitted from
+    /// the wire form when zero, so a live-only graph serializes byte-identically
+    /// to one produced before this field existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub seeded_support: u32,
     /// Epoch-millis of this cluster's most recent observation. Drives the
     /// recency factor and eviction; `0` (default) means "as old as the graph".
     #[serde(default)]
@@ -374,18 +547,24 @@ impl Intent {
     }
 
     /// The cluster's capabilities of `kind`, best-first, dropping any id the
-    /// registry does not currently define. Ordered `(weight desc, id asc)` —
-    /// the same total order the rankers use, so the arm is deterministic.
-    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> Vec<String> {
-        let mut ranked: Vec<(String, f32)> = self
-            .edges(kind)
+    /// registry does not currently define, plus **how many were dropped**.
+    /// Ordered `(weight desc, id asc)` — the same total order the rankers use,
+    /// so the arm is deterministic.
+    ///
+    /// The drop count is returned rather than discarded because an arm that
+    /// loses every id is indistinguishable, from the outside, from a cluster
+    /// that never matched — see [`ArmOutcome`].
+    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> (Vec<String>, u32) {
+        let edges = self.edges(kind);
+        let mut ranked: Vec<(String, f32)> = edges
             .iter()
             .filter(|(id, _)| known(id.as_str()))
             .map(|(id, w)| (id.clone(), *w))
             .collect();
+        let dropped = (edges.len() - ranked.len()) as u32;
         let len = ranked.len();
         sort_and_truncate(&mut ranked, len);
-        ranked.into_iter().map(|(id, _)| id).collect()
+        (ranked.into_iter().map(|(id, _)| id).collect(), dropped)
     }
 
     /// Fold `vector` into this cluster's centroid as a running mean over its
@@ -650,6 +829,15 @@ impl IntentGraph {
                     it.id
                 )));
             }
+            // `seeded_support` counts a subset of `support`, so no producer can
+            // emit a larger value. Equality is legal and is the normal state
+            // right after a seeding pass.
+            if it.seeded_support > it.support {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} has seeded_support {} exceeding support {}",
+                    it.id, it.seeded_support, it.support
+                )));
+            }
             if it
                 .tools
                 .values()
@@ -739,19 +927,20 @@ impl IntentGraph {
     /// `ts_ms` records how current the graph is; it never affects ranking.
     /// Traces are loosely ordered (ADR-0007), so a late-arriving older event
     /// leaves the recorded high-water mark alone.
-    /// `first_confirmation` distinguishes *this search was acted on* from
-    /// *another capability was used for the same search*. Both add an edge; only
-    /// the former is an observation, so only the former raises `support`. The
-    /// caller owns that distinction because it is the one holding the pending
-    /// search — see [`crate::UsageLearner`].
-    pub(crate) fn observe(
-        &mut self,
-        query: &str,
-        kind: Capability,
-        capability_id: &str,
-        ts_ms: u64,
-        first_confirmation: bool,
-    ) {
+    /// [`Observation::first_confirmation`] distinguishes *this search was acted
+    /// on* from *another capability was used for the same search*. Both add an
+    /// edge; only the former is an observation, so only the former raises
+    /// `support`. The caller owns that distinction because it is the one holding
+    /// the pending search — see [`crate::UsageLearner`].
+    pub(crate) fn observe(&mut self, obs: Observation<'_>) {
+        let Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms,
+            first_confirmation,
+            seeded,
+        } = obs;
         // A query vector is available only when the search path was
         // semantic/hybrid AND the slot still belongs to this query.
         let stashed = self.pending.vector_for(query);
@@ -789,6 +978,7 @@ impl IntentGraph {
                     members: Vec::new(),
                     centroid: None,
                     support: 0,
+                    seeded_support: 0,
                     last_ts: 0,
                     tools: BTreeMap::new(),
                     skills: BTreeMap::new(),
@@ -822,6 +1012,13 @@ impl IntentGraph {
             // would contribute a weightless arm.
             if first_confirmation || it.support == 0 {
                 it.support = it.support.saturating_add(1);
+                // In lockstep with `support`, never per edge — one fanned-out
+                // question adds two edges but is one observation, and bumping
+                // per edge would break `seeded_support <= support` on the very
+                // first fanned-out baseline turn.
+                if seeded {
+                    it.seeded_support = it.seeded_support.saturating_add(1);
+                }
             }
             it.last_ts = it.last_ts.max(ts_ms);
             let edges = match kind {
@@ -1155,7 +1352,7 @@ impl IntentGraph {
         query_vec: Option<&[f32]>,
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         match query_vec {
             Some(v) if self.has_centroids() => self
                 .arm_dense(v, kind, known)
@@ -1181,8 +1378,8 @@ impl IntentGraph {
         query_vec: &[f32],
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
-        let best = self
+    ) -> ArmOutcome {
+        let Some(best) = self
             .intents
             .iter()
             .filter_map(|it| {
@@ -1193,7 +1390,10 @@ impl IntentGraph {
                 Some((it, cosine(query_vec, c)))
             })
             .filter(|(_, sim)| *sim >= TAU_COSINE)
-            .max_by(pick_best)?;
+            .max_by(pick_best)
+        else {
+            return ArmOutcome::NoMatch;
+        };
         arm_from(best.0, best.1, self.built_from_ts, kind, known)
     }
 
@@ -1212,7 +1412,7 @@ impl IntentGraph {
         query: &str,
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         self.arm_lexical_matching(query, kind, known, false)
     }
 
@@ -1228,18 +1428,21 @@ impl IntentGraph {
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
         centroidless_only: bool,
-    ) -> Option<UsageArm> {
+    ) -> ArmOutcome {
         let q: std::collections::HashSet<String> = tokenize(query).into_iter().collect();
         if q.is_empty() {
-            return None;
+            return ArmOutcome::NoMatch;
         }
-        let best = self
+        let Some(best) = self
             .intents
             .iter()
             .filter(|it| !centroidless_only || it.centroid.is_none())
             .map(|it| (it, it.lexical_score(&q)))
             .filter(|(_, score)| *score >= TAU_LEXICAL)
-            .max_by(pick_best)?;
+            .max_by(pick_best)
+        else {
+            return ArmOutcome::NoMatch;
+        };
         arm_from(best.0, best.1, self.built_from_ts, kind, known)
     }
 }
@@ -1259,18 +1462,33 @@ fn arm_from(
     now_ts: u64,
     kind: Capability,
     known: &dyn Fn(&str) -> bool,
-) -> Option<UsageArm> {
-    let ids = intent.ranked(kind, known);
+) -> ArmOutcome {
+    let (ids, dropped) = intent.ranked(kind, known);
     if ids.is_empty() {
-        return None; // matched, but nothing it remembers still exists
+        // Matched, but nothing it remembers of this kind still exists. Two very
+        // different reasons: the catalog dropped every id it knew (`dropped >
+        // 0` — drift, worth reporting), or the cluster simply holds no edges of
+        // this kind at all, which a tools-only cluster asked for skills does
+        // legitimately and is not drift.
+        return if dropped > 0 {
+            ArmOutcome::AllFiltered {
+                intent_id: intent.id.clone(),
+                similarity,
+                support: intent.support,
+                dropped,
+            }
+        } else {
+            ArmOutcome::NoMatch
+        };
     }
     let weight = usage_weight(intent.support) * recency_factor(now_ts, intent.last_ts);
-    Some(UsageArm {
+    ArmOutcome::Armed(UsageArm {
         intent_id: intent.id.clone(),
         similarity,
         support: intent.support,
         weight,
         ids,
+        dropped,
     })
 }
 
@@ -1334,6 +1552,7 @@ mod tests {
             members: members.iter().map(|m| m.to_string()).collect(),
             centroid: None,
             support: 5,
+            seeded_support: 0,
             last_ts: 0,
             tools: tools.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: BTreeMap::new(),
@@ -1517,17 +1736,169 @@ mod tests {
         ));
     }
 
+    // ---- seeded_support: baseline provenance -------------------------------
+
+    #[test]
+    fn a_seeded_observation_records_provenance_beside_support() {
+        let mut g = IntentGraph::empty();
+        g.observe(Observation {
+            query: "why is the build broken",
+            kind: Capability::Tool,
+            capability_id: "gh_run_list",
+            ts_ms: T0,
+            first_confirmation: true,
+            seeded: true,
+        });
+        assert_eq!(g.intents[0].support, 1);
+        assert_eq!(g.intents[0].seeded_support, 1);
+    }
+
+    #[test]
+    fn a_live_observation_leaves_seeded_support_alone() {
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        assert_eq!(g.intents[0].support, 1);
+        assert_eq!(g.intents[0].seeded_support, 0);
+    }
+
+    #[test]
+    fn a_seeded_observation_that_adds_only_an_edge_does_not_bump_seeded_support() {
+        // The `search_capabilities` fan-out shape: one question, two edges, one
+        // observation. Bumping seeded_support per EDGE rather than per
+        // observation would break `seeded_support <= support` on the very first
+        // fanned-out baseline turn.
+        let mut g = IntentGraph::empty();
+        let obs = |id, first| Observation {
+            query: "why is the build broken",
+            kind: Capability::Tool,
+            capability_id: id,
+            ts_ms: T0,
+            first_confirmation: first,
+            seeded: true,
+        };
+        g.observe(obs("gh_run_list", true));
+        g.observe(obs("gh_run_view", false));
+
+        assert_eq!(g.intents[0].tools.len(), 2, "two capabilities were used");
+        assert_eq!(g.intents[0].support, 1, "but one question was asked");
+        assert_eq!(g.intents[0].seeded_support, 1, "and it was one seeded turn");
+    }
+
+    #[test]
+    fn seeded_and_live_observations_accumulate_in_the_same_cluster() {
+        // The post-flip state: a seeded base that live traffic builds on. The
+        // gap between the two counts is how much of the cluster's confidence
+        // came from the baseline.
+        let mut g = IntentGraph::empty();
+        g.observe(Observation {
+            query: "why is the build broken",
+            kind: Capability::Tool,
+            capability_id: "gh_run_list",
+            ts_ms: T0,
+            first_confirmation: true,
+            seeded: true,
+        });
+        g.observe_live(
+            "why is the build broken",
+            Capability::Tool,
+            "gh_run_list",
+            T0,
+            true,
+        );
+
+        assert_eq!(g.intents[0].support, 2);
+        assert_eq!(g.intents[0].seeded_support, 1);
+    }
+
+    #[test]
+    fn a_graph_with_no_seeded_observations_serializes_without_the_field() {
+        // Zero-skip keeps a live-only graph byte-identical to one produced
+        // before the field existed, so existing wire fixtures do not move.
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(
+            !json.contains("seeded_support"),
+            "absent means zero; got {json}"
+        );
+    }
+
+    #[test]
+    fn seeded_support_round_trips_through_the_wire_form() {
+        let mut g = IntentGraph::empty();
+        g.observe(Observation {
+            query: "why is the build broken",
+            kind: Capability::Tool,
+            capability_id: "t",
+            ts_ms: T0,
+            first_confirmation: true,
+            seeded: true,
+        });
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains(r#""seeded_support":1"#), "got {json}");
+        let back = IntentGraph::from_json(&json).unwrap();
+        assert_eq!(back.intents[0].seeded_support, 1);
+    }
+
+    #[test]
+    fn a_graph_without_seeded_support_loads_as_zero() {
+        let json = r#"{"v":1,"built_from_ts":1,
+            "intents":[{"id":"i0","label":"l","members":["q"],"support":2,
+            "tools":{"t":1.0},"skills":{}}]}"#;
+        let g = IntentGraph::from_json(json).expect("valid graph");
+        assert_eq!(g.intents[0].seeded_support, 0);
+    }
+
+    #[test]
+    fn a_graph_whose_seeded_support_exceeds_its_support_is_rejected() {
+        // seeded_support counts a SUBSET of support; no producer can emit a
+        // larger value, so accepting one would mean trusting a broken producer.
+        let json = r#"{"v":1,"built_from_ts":1,
+            "intents":[{"id":"i0","label":"l","members":["q"],"support":2,
+            "seeded_support":3,"tools":{"t":1.0},"skills":{}}]}"#;
+        assert!(matches!(
+            IntentGraph::from_json(json),
+            Err(IntentGraphError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn seeded_support_equal_to_support_is_the_normal_post_seeding_state() {
+        let json = r#"{"v":1,"built_from_ts":1,
+            "intents":[{"id":"i0","label":"l","members":["q"],"support":4,
+            "seeded_support":4,"tools":{"t":1.0},"skills":{}}]}"#;
+        assert!(IntentGraph::from_json(json).is_ok());
+    }
+
+    #[test]
+    fn two_graphs_differing_only_in_seeded_support_compare_equal() {
+        // Identity is the evidence — members, centroid, support, edges.
+        // Provenance is not evidence: a re-seeded graph must compare equal to an
+        // equivalent live one, or round-trip and rebuild assertions start
+        // failing for a field that cannot affect retrieval.
+        let live = r#"{"v":1,"built_from_ts":1,
+            "intents":[{"id":"i0","label":"l","members":["q"],"support":2,
+            "tools":{"t":1.0},"skills":{}}]}"#;
+        let seeded = r#"{"v":1,"built_from_ts":1,
+            "intents":[{"id":"i0","label":"l","members":["q"],"support":2,
+            "seeded_support":2,"tools":{"t":1.0},"skills":{}}]}"#;
+        assert_eq!(
+            IntentGraph::from_json(live).unwrap(),
+            IntentGraph::from_json(seeded).unwrap()
+        );
+    }
+
     // ---- rev: the persistence write-counter --------------------------------
 
     #[test]
     fn observe_bumps_rev_once_per_mutation() {
         let mut g = IntentGraph::empty();
         assert_eq!(g.rev(), 0, "an empty graph has written nothing");
-        g.observe("build broken", Capability::Tool, "a", T0, true);
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
         assert_eq!(g.rev(), 1);
         // A second observe on the same search adds an edge — a real change even
         // though it seeds no new member — so it must still count as one write.
-        g.observe("build broken", Capability::Tool, "b", T0, false);
+        g.observe_live("build broken", Capability::Tool, "b", T0, false);
         assert_eq!(g.rev(), 2);
     }
 
@@ -1537,7 +1908,7 @@ mod tests {
         // changing anything, so the write-counter must not move. Guards against a
         // "bump unconditionally" regression.
         let mut g = IntentGraph::empty();
-        g.observe("   ", Capability::Tool, "a", T0, true);
+        g.observe_live("   ", Capability::Tool, "a", T0, true);
         assert_eq!(g.len(), 0);
         assert_eq!(g.rev(), 0);
     }
@@ -1545,8 +1916,8 @@ mod tests {
     #[test]
     fn rev_survives_a_round_trip() {
         let mut g = IntentGraph::empty();
-        g.observe("build broken", Capability::Tool, "a", T0, true);
-        g.observe("rotate the signing key", Capability::Tool, "b", T0, true);
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
+        g.observe_live("rotate the signing key", Capability::Tool, "b", T0, true);
         let before = g.rev();
         assert_eq!(before, 2);
         let back = IntentGraph::from_json(&serde_json::to_string(&g).unwrap()).unwrap();
@@ -1562,7 +1933,7 @@ mod tests {
             "tools":{"t":1.0},"skills":{}}]}"#;
         let mut g = IntentGraph::from_json(json).expect("valid graph");
         assert_eq!(g.rev(), 0);
-        g.observe("something new", Capability::Tool, "t", T0, true);
+        g.observe_live("something new", Capability::Tool, "t", T0, true);
         assert_eq!(g.rev(), 1);
     }
 
@@ -1583,11 +1954,11 @@ mod tests {
     fn an_empty_graph_contributes_no_arm() {
         let g = IntentGraph::empty();
         assert!(g.is_empty());
-        assert_eq!(
-            g.arm_lexical("anything", Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm_lexical("anything", Capability::Tool, &all_known)
+                .is_none()
         );
-        assert_eq!(g.arm_dense(&[1.0], Capability::Tool, &all_known), None);
+        assert!(g.arm_dense(&[1.0], Capability::Tool, &all_known).is_none());
     }
 
     // ---- dense matching ----------------------------------------------------
@@ -1616,7 +1987,10 @@ mod tests {
         it.centroid = Some(vec![1.0, 0.0]);
         let g = graph(vec![it]);
         // Orthogonal query: cosine 0, far below TAU_COSINE.
-        assert_eq!(g.arm_dense(&[0.0, 1.0], Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_dense(&[0.0, 1.0], Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1625,7 +1999,10 @@ mod tests {
         let mut it = intent("i0", &["q"], &[("t", 1.0)]);
         it.centroid = Some(vec![1.0, 0.0, 0.0]);
         let g = graph(vec![it]);
-        assert_eq!(g.arm_dense(&[1.0, 0.0], Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_dense(&[1.0, 0.0], Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1667,16 +2044,19 @@ mod tests {
             &["why is the build broken"],
             &[("gh_run_list", 1.0)],
         )]);
-        assert_eq!(
-            g.arm_lexical("did CI pass", Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm_lexical("did CI pass", Capability::Tool, &all_known)
+                .is_none()
         );
     }
 
     #[test]
     fn lexical_match_ignores_stopwords_only_queries() {
         let g = graph(vec![intent("i0", &["build"], &[("t", 1.0)])]);
-        assert_eq!(g.arm_lexical("is the", Capability::Tool, &all_known), None);
+        assert!(
+            g.arm_lexical("is the", Capability::Tool, &all_known)
+                .is_none()
+        );
     }
 
     // ---- edge filtering ----------------------------------------------------
@@ -1701,9 +2081,31 @@ mod tests {
     #[test]
     fn a_match_whose_every_edge_is_gone_yields_no_arm() {
         let g = graph(vec![intent("i0", &["build broken"], &[("gone", 1.0)])]);
+        let outcome = g.arm_lexical("build broken", Capability::Tool, &|_| false);
+        assert!(outcome.is_none(), "nothing reaches the fusion");
+        // ...but the cluster DID match, and saying so is the whole point: a
+        // caller that only saw "no arm" would read catalog drift as a coverage
+        // gap and re-derive a graph that was never the problem.
         assert_eq!(
-            g.arm_lexical("build broken", Capability::Tool, &|_| false),
-            None
+            outcome,
+            ArmOutcome::AllFiltered {
+                intent_id: "i0".into(),
+                similarity: 1.0,
+                support: 5,
+                dropped: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_cluster_with_no_edges_of_the_asked_kind_is_a_plain_miss() {
+        // A tools-only cluster asked for skills has nothing to drop — that is
+        // not drift, and reporting it as such would cry wolf on every mixed
+        // graph.
+        let g = graph(vec![intent("i0", &["build broken"], &[("a_tool", 1.0)])]);
+        assert_eq!(
+            g.arm_lexical("build broken", Capability::Skill, &all_known),
+            ArmOutcome::NoMatch
         );
     }
 
@@ -1772,7 +2174,7 @@ mod tests {
     #[test]
     fn the_first_observation_seeds_a_cluster() {
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
@@ -1791,14 +2193,14 @@ mod tests {
     #[test]
     fn a_similar_query_joins_the_existing_cluster() {
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
             T0,
             true,
         );
-        g.observe(
+        g.observe_live(
             "is the build broken now",
             Capability::Tool,
             "gh_run_list",
@@ -1814,14 +2216,14 @@ mod tests {
     #[test]
     fn a_dissimilar_query_seeds_its_own_cluster() {
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
             T0,
             true,
         );
-        g.observe(
+        g.observe_live(
             "rotate the signing key",
             Capability::Tool,
             "vault_rotate",
@@ -1840,7 +2242,7 @@ mod tests {
         // bag and make the cluster match ever more loosely.
         let mut g = IntentGraph::empty();
         for _ in 0..3 {
-            g.observe(
+            g.observe_live(
                 "why is the build broken",
                 Capability::Tool,
                 "gh_run_list",
@@ -1860,14 +2262,14 @@ mod tests {
         // The whole feature in one assertion: observe, then match a query that
         // was never observed verbatim.
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
             T0,
             true,
         );
-        g.observe(
+        g.observe_live(
             "is the build broken again",
             Capability::Tool,
             "gh_run_list",
@@ -1898,16 +2300,16 @@ mod tests {
         // rejects both: a false merge degrades ranking, a false split only misses
         // a boost. Bridging distant wording is the dense tier's job.
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
             T0,
             true,
         );
-        assert_eq!(
-            g.arm("is the build ok", None, Capability::Tool, &all_known),
-            None
+        assert!(
+            g.arm("is the build ok", None, Capability::Tool, &all_known)
+                .is_none()
         );
     }
 
@@ -1917,7 +2319,7 @@ mod tests {
         // graph has no centroids to compare it against. It must fall back to
         // lexical matching rather than silently returning nothing.
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
@@ -1938,7 +2340,7 @@ mod tests {
     fn edges_rank_by_how_often_a_capability_was_chosen() {
         let mut g = IntentGraph::empty();
         for _ in 0..3 {
-            g.observe(
+            g.observe_live(
                 "why is the build broken",
                 Capability::Tool,
                 "chosen_often",
@@ -1946,7 +2348,7 @@ mod tests {
                 true,
             );
         }
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "chosen_once",
@@ -1970,8 +2372,8 @@ mod tests {
         // Provenance only — it says how current the graph is. Traces are loosely
         // ordered (ADR-0007), so a late-arriving older event must not drag it back.
         let mut g = IntentGraph::empty();
-        g.observe("build broken", Capability::Tool, "a", T0 + 10, true);
-        g.observe("build broken", Capability::Tool, "b", T0, true);
+        g.observe_live("build broken", Capability::Tool, "a", T0 + 10, true);
+        g.observe_live("build broken", Capability::Tool, "b", T0, true);
         assert_eq!(g.built_from_ts, T0 + 10);
     }
 
@@ -1981,8 +2383,8 @@ mod tests {
         // matching a cluster that plainly covers it. Silent, and invisible to
         // every other test — so pin it directly.
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "t", T0, true);
-        g.observe("the pipeline is broken", Capability::Tool, "t", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("the pipeline is broken", Capability::Tool, "t", T0, true);
 
         let it = &g.intents[0];
         let fresh: std::collections::HashSet<String> =
@@ -2004,7 +2406,7 @@ mod tests {
         // The cache is skipped on the wire, so `from_json` must rebuild it —
         // otherwise a reloaded graph silently matches nothing.
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
@@ -2038,11 +2440,11 @@ mod tests {
         let build = |extra: usize| {
             let mut g = IntentGraph::empty();
             g.note_query_vector("build broken", &v1, "m");
-            g.observe("build broken", Capability::Tool, "a", T0, true);
+            g.observe_live("build broken", Capability::Tool, "a", T0, true);
             g.note_query_vector("build broken again", &v2, "m");
-            g.observe("build broken again", Capability::Tool, "b", T0, true);
+            g.observe_live("build broken again", Capability::Tool, "b", T0, true);
             for i in 0..extra {
-                g.observe(
+                g.observe_live(
                     "build broken again",
                     Capability::Tool,
                     &format!("x{i}"),
@@ -2070,7 +2472,7 @@ mod tests {
         // so it must still start at 1 — `protocol/v1` requires support >= 1, and
         // a zero-support cluster would contribute a weightless arm.
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "a", T0, false);
+        g.observe_live("why is the build broken", Capability::Tool, "a", T0, false);
         assert_eq!(g.intents[0].support, 1);
     }
 
@@ -2081,8 +2483,8 @@ mod tests {
         // The bug, minimally. Two unrelated asks sharing a single word were
         // exactly 50% "covered" by each other and merged.
         let mut g = IntentGraph::empty();
-        g.observe("deploy0 rollback3", Capability::Tool, "a", T0, true);
-        g.observe("deploy0 migrate5", Capability::Tool, "b", T0, true);
+        g.observe_live("deploy0 rollback3", Capability::Tool, "a", T0, true);
+        g.observe_live("deploy0 migrate5", Capability::Tool, "b", T0, true);
         assert_eq!(g.len(), 2, "one shared word is not the same question");
     }
 
@@ -2093,7 +2495,7 @@ mod tests {
         // vocabulary and swallowed anything, which grew it further.
         let mut g = IntentGraph::empty();
         for i in 0..30 {
-            g.observe(
+            g.observe_live(
                 &format!("build broken variant{i}"),
                 Capability::Tool,
                 "gh_run_list",
@@ -2107,7 +2509,7 @@ mod tests {
         // union — but no single member shares more than one of them. Scoring
         // against the union called it a perfect match; scoring against members
         // calls it 0.25.
-        g.observe("variant7 variant12", Capability::Tool, "vault", T0, true);
+        g.observe_live("variant7 variant12", Capability::Tool, "vault", T0, true);
         assert_eq!(
             g.len(),
             2,
@@ -2136,7 +2538,7 @@ mod tests {
                     WORDS[topic % 20],
                     WORDS[(topic + phrasing) % 20]
                 );
-                g.observe(&q, Capability::Tool, &format!("t{topic}"), T0, true);
+                g.observe_live(&q, Capability::Tool, &format!("t{topic}"), T0, true);
             }
         }
         assert!(
@@ -2155,10 +2557,10 @@ mod tests {
             "is the build broken again",
             "the build broken on main",
         ] {
-            g.observe(q, Capability::Tool, "gh_run_list", T0, true);
+            g.observe_live(q, Capability::Tool, "gh_run_list", T0, true);
         }
         for q in ["rotate the signing key", "rotate the signing key now"] {
-            g.observe(q, Capability::Tool, "vault_rotate", T0, true);
+            g.observe_live(q, Capability::Tool, "vault_rotate", T0, true);
         }
         assert_eq!(g.len(), 2, "two asks, however phrased");
         assert_eq!(g.intents[0].members.len(), 3);
@@ -2171,8 +2573,8 @@ mod tests {
     fn the_label_is_always_one_of_the_members() {
         // Counted from the data, so it cannot describe the cluster wrongly.
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "t", T0, true);
-        g.observe("is the build broken now", Capability::Tool, "t", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("is the build broken now", Capability::Tool, "t", T0, true);
 
         let it = &g.labeled()[0];
         assert!(
@@ -2185,9 +2587,9 @@ mod tests {
     #[test]
     fn terms_distinguish_a_cluster_from_its_neighbours() {
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "t", T0, true);
-        g.observe("the build is broken again", Capability::Tool, "t", T0, true);
-        g.observe("rotate the signing key", Capability::Tool, "v", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("the build is broken again", Capability::Tool, "t", T0, true);
+        g.observe_live("rotate the signing key", Capability::Tool, "v", T0, true);
 
         let build = &g.labeled()[0];
         assert!(
@@ -2205,14 +2607,14 @@ mod tests {
         // graph grows. This used to be computed inside `observe`, which made every
         // label describe a graph that no longer existed.
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "t", T0, true);
-        g.observe("the build broken again", Capability::Tool, "t", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("the build broken again", Capability::Tool, "t", T0, true);
         let alone = g.labeled()[0].terms.clone();
 
         // A second cluster that also uses "again" makes that term less
         // distinguishing for the first — which must be reflected even though the
         // first cluster was never touched again.
-        g.observe(
+        g.observe_live(
             "tail the service log again",
             Capability::Tool,
             "u",
@@ -2233,7 +2635,7 @@ mod tests {
         // Nothing writes `label` during learning; it is materialized on read, so
         // two graphs holding the same evidence are equal regardless.
         let mut g = IntentGraph::empty();
-        g.observe("why is the build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         assert!(
             g.intents[0].label.is_empty(),
             "not stored on the write path"
@@ -2244,21 +2646,21 @@ mod tests {
     #[test]
     fn a_stopword_only_query_teaches_nothing() {
         let mut g = IntentGraph::empty();
-        g.observe("is the", Capability::Tool, "t", T0, true);
+        g.observe_live("is the", Capability::Tool, "t", T0, true);
         assert!(g.is_empty());
     }
 
     #[test]
     fn tool_and_skill_observations_land_on_separate_edge_maps() {
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
             T0,
             true,
         );
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Skill,
             "ci-triage",
@@ -2274,7 +2676,7 @@ mod tests {
     #[test]
     fn a_learned_graph_round_trips_through_the_wire_form() {
         let mut g = IntentGraph::empty();
-        g.observe(
+        g.observe_live(
             "why is the build broken",
             Capability::Tool,
             "gh_run_list",
@@ -2356,7 +2758,7 @@ mod tests {
     fn observe_stamps_the_model_on_the_first_centroid() {
         let mut g = IntentGraph::empty();
         g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "model-a");
-        g.observe("build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("build broken", Capability::Tool, "t", T0, true);
         assert_eq!(g.model.as_deref(), Some("model-a"));
     }
 
@@ -2367,11 +2769,11 @@ mod tests {
         // two vector spaces.
         let mut g = IntentGraph::empty();
         g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "model-a");
-        g.observe("build broken", Capability::Tool, "t", T0, true);
+        g.observe_live("build broken", Capability::Tool, "t", T0, true);
         let frozen = g.intents[0].centroid.clone();
 
         g.note_query_vector("build broken again", &[0.0, 1.0, 0.0], "model-b");
-        g.observe("build broken again", Capability::Tool, "t", T0, true);
+        g.observe_live("build broken again", Capability::Tool, "t", T0, true);
 
         assert_eq!(
             g.intents[0].centroid, frozen,
@@ -2386,7 +2788,7 @@ mod tests {
     fn rebuild_centroids_re_embeds_members_and_restamps() {
         let mut g = IntentGraph::empty();
         g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "model-a");
-        g.observe("build broken", Capability::Tool, "gh_run_list", T0, true);
+        g.observe_live("build broken", Capability::Tool, "gh_run_list", T0, true);
         let rev_before = g.rev();
 
         // Members re-embedded under model-b (here, just different vectors).
@@ -2413,9 +2815,9 @@ mod tests {
         // position, or a survivor silently inherits the evicted cluster's vector
         // (and the fresh model stamp hides it).
         let mut g = IntentGraph::empty();
-        g.observe("alpha query", Capability::Tool, "a", T0, true);
-        g.observe("bravo query", Capability::Tool, "b", T0, true);
-        g.observe("charlie query", Capability::Tool, "c", T0, true);
+        g.observe_live("alpha query", Capability::Tool, "a", T0, true);
+        g.observe_live("bravo query", Capability::Tool, "b", T0, true);
+        g.observe_live("charlie query", Capability::Tool, "c", T0, true);
         assert_eq!(g.len(), 3, "three disjoint queries → three clusters");
         let id_a = g.intents[0].id.clone();
         let id_b = g.intents[1].id.clone();
@@ -2504,7 +2906,7 @@ mod tests {
     fn a_recent_cluster_keeps_full_weight_within_the_grace() {
         let mut g = IntentGraph::empty();
         for _ in 0..3 {
-            g.observe("why is the build broken", Capability::Tool, "t", T0, true);
+            g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         }
         // now == last_ts → Δt 0 → recency 1; support 3 → ramp 1.
         let arm = g
@@ -2522,10 +2924,10 @@ mod tests {
     fn a_stale_cluster_decays_after_the_grace() {
         let mut g = IntentGraph::empty();
         for _ in 0..3 {
-            g.observe("why is the build broken", Capability::Tool, "t", T0, true);
+            g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         }
         // Advance the graph's clock 200 days via a different topic.
-        g.observe(
+        g.observe_live(
             "rotate the signing key",
             Capability::Tool,
             "v",
@@ -2557,11 +2959,11 @@ mod tests {
     fn a_long_idle_cluster_is_evicted() {
         let mut g = IntentGraph::empty();
         for _ in 0..3 {
-            g.observe("why is the build broken", Capability::Tool, "t", T0, true);
+            g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         }
         assert_eq!(g.len(), 1);
         // ~2 years of other activity later: the build cluster is past the floor.
-        g.observe(
+        g.observe_live(
             "rotate the signing key",
             Capability::Tool,
             "v",
@@ -2589,7 +2991,7 @@ mod tests {
     fn members_are_capped_per_cluster() {
         let mut g = IntentGraph::empty();
         for i in 0..MEMBER_CAP + 20 {
-            g.observe(
+            g.observe_live(
                 &format!("build broken variant{i}"),
                 Capability::Tool,
                 "t",

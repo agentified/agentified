@@ -42,11 +42,12 @@
 //! [`IntentGraph::arm`] picks the tier from what the graph carries, so either
 //! kind works on every [`crate::SearchMethod`].
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::trace::{TraceEnvelope, TraceEvent, TraceEventContext, TraceSink};
-use crate::usage::{Capability, IntentGraph};
+use crate::trace::{Origin, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink};
+use crate::usage::{Capability, IntentGraph, Observation};
 
 /// The learner's most recent search — the query an invoke attributes to. Kept
 /// per-learner (not read from the shared graph) so a concurrent search from
@@ -56,6 +57,231 @@ use crate::usage::{Capability, IntentGraph};
 /// one fanned-out question once between them, not once each.
 struct Pending {
     query: String,
+}
+
+/// Which searches may open an observation window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum OriginFilter {
+    /// Pair an invoke with the most recent search of **any** origin.
+    #[default]
+    Any,
+    /// Pair only with searches carrying exactly this origin — the setting a
+    /// baseline capture uses, with [`crate::Origin::Baseline`].
+    ///
+    /// A search of any other origin is **ignored entirely**: it does not become
+    /// the pending query and it does not arm a support credit. Ignoring rather
+    /// than clearing is deliberate — one of Ratel's own internal searches
+    /// landing between a baseline query and its invokes must not discard the
+    /// turn's evidence.
+    Exactly(Origin),
+}
+
+/// Whether observations are recorded as seeded evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Provenance {
+    /// Live serving traffic — raises `support` only.
+    #[default]
+    Live,
+    /// A seeding pass (a baseline capture, or a replay of one) — additionally
+    /// raises [`crate::Intent::seeded_support`].
+    Seeded,
+}
+
+/// How a [`UsageLearner`] turns a trace stream into observations.
+///
+/// [`Default`] reproduces today's behavior exactly, field for field — pinned by
+/// `the_default_policy_reproduces_todays_pairing_exactly`. Build from it with
+/// the `with_*` setters:
+///
+/// ```
+/// use ratel_ai_core::{ObservationPolicy, Origin, OriginFilter, Provenance};
+///
+/// // A baseline capture: only observed queries teach, and everything learned
+/// // is marked as seeded.
+/// let seeding = ObservationPolicy::default()
+///     .with_origins(OriginFilter::Exactly(Origin::Baseline))
+///     .with_provenance(Provenance::Seeded);
+///
+/// assert_eq!(seeding.provenance, Provenance::Seeded);
+/// assert_eq!(ObservationPolicy::default().origins, OriginFilter::Any);
+/// ```
+///
+/// The struct is `#[non_exhaustive]`, which is what makes a future field
+/// additive rather than breaking — and is also why the setters exist rather
+/// than struct-literal syntax: a `#[non_exhaustive]` struct cannot be built
+/// with a struct expression outside its defining crate at all, `..Default`
+/// included. Fields stay public for reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ObservationPolicy {
+    /// Which searches open an observation window.
+    pub origins: OriginFilter,
+    /// Whether what is learned is marked as seeded.
+    pub provenance: Provenance,
+}
+
+impl ObservationPolicy {
+    /// Set which searches open an observation window.
+    pub fn with_origins(mut self, origins: OriginFilter) -> Self {
+        self.origins = origins;
+        self
+    }
+
+    /// Set whether what is learned is marked as seeded.
+    pub fn with_provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+}
+
+/// What one trace event means for learning, under a policy.
+///
+/// **The pairing rule, in one place.** The live path and the replay path differ
+/// in where they keep pending state — a per-session learner holds a `Mutex`
+/// slot, a replay holds a map keyed by `session_id` — but they must agree
+/// exactly on *which event does what*, or a graph built from a log stops
+/// matching the one live learning would have grown from the same events. Having
+/// written that match twice, a later change (a new confirming event, a pairing
+/// strategy) would have to land in both with nothing forcing the second.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Step<'a> {
+    /// This search opens an observation window for `query`.
+    Remember(&'a str),
+    /// This invocation closes one, confirming `capability_id` of `kind`.
+    Confirm(Capability, &'a str),
+    /// Not evidence — including a search the policy rejects, which is **ignored
+    /// rather than treated as a boundary**, so one of Ratel's own internal
+    /// searches landing mid-turn cannot discard the turn's evidence.
+    Ignore,
+}
+
+pub(crate) fn classify(event: &TraceEvent, policy: ObservationPolicy) -> Step<'_> {
+    match event {
+        // Both search kinds open a window: a capability search hits the tool and
+        // skill registries in turn with the same text.
+        TraceEvent::Search { query, origin, .. }
+        | TraceEvent::SkillSearch { query, origin, .. }
+            if accepts(policy, *origin) =>
+        {
+            Step::Remember(query)
+        }
+        // The invocation the agent CHOSE to make. A trace records which tool was
+        // called, never whether calling it was right, so completion is not a
+        // second signal: filtering on `invoke_end` would drop good choices that
+        // failed on their arguments while keeping wrong ones that ran fine.
+        TraceEvent::InvokeStart { tool_id, .. } => Step::Confirm(Capability::Tool, tool_id),
+        TraceEvent::SkillInvoke { skill_id, .. } => Step::Confirm(Capability::Skill, skill_id),
+        _ => Step::Ignore,
+    }
+}
+
+/// Replay a whole trace log into `graph`, pairing searches with invokes
+/// **per session** while walking the log in its own order.
+///
+/// Both halves of that are load-bearing:
+///
+/// - **Per-session pending state.** Sessions interleave in one log and share one
+///   graph; feeding them through a single pending slot would cross-pair one
+///   session's search with another's invoke and record edges nobody produced
+///   (the rule the module doc states for [`UsageLearner`] itself).
+/// - **Log order, never re-sorted.** `JsonlSink` appends, so file order *is*
+///   arrival order — what the live path saw. Sorting by `ts` would produce a
+///   graph the live path could not have grown, since cluster membership depends
+///   on which clusters existed when each query arrived. `ts` is used to *stamp*
+///   observations (so recency reflects when the work happened), never to order
+///   them.
+///
+/// `embeddings` maps query text to its vector. When present, an entry is stashed
+/// on the graph immediately before the observation that consumes it, so
+/// clustering happens at the **dense** tier — the same tier the live path uses,
+/// rather than the lexical fallback a model-free replay would fall back to. An
+/// absent entry simply clusters lexically.
+pub(crate) fn replay_log_into(
+    graph: &mut IntentGraph,
+    envelopes: &[TraceEnvelope],
+    policy: ObservationPolicy,
+    embeddings: &HashMap<String, Vec<f32>>,
+    fingerprint: Option<&str>,
+) {
+    // session id -> (the query its next invoke attributes to, already credited).
+    //
+    // The credit is tracked HERE rather than through [`IntentGraph::arm_credit`]
+    // / [`claim_credit`]. That slot is global and keyed by query text, which is
+    // enough live — two learners sharing one graph need somewhere common to
+    // agree, and identical text from two concurrent sessions is rare. In a
+    // replay it is not rare: sessions interleave by construction and popular
+    // questions repeat verbatim, so a shared slot loses the second session's
+    // observation every time. Replay knows the session, so it can be exact.
+    let mut pending: HashMap<&str, (&str, bool)> = HashMap::new();
+
+    for env in envelopes {
+        let session = env.session_id.as_str();
+        let (kind, capability_id) = match classify(&env.event, policy) {
+            Step::Remember(query) => {
+                // Re-arming with the same text is idempotent: a capability
+                // search fans one question to both catalogs, and both of those
+                // land before any invoke, so the turn still credits once.
+                pending.insert(session, (query, false));
+                continue;
+            }
+            Step::Confirm(kind, id) => (kind, id),
+            Step::Ignore => continue,
+        };
+
+        let Some(entry) = pending.get_mut(session) else {
+            continue; // an invoke with no accepted search before it proves nothing
+        };
+        let query = entry.0;
+        // The first confirming invoke of THIS session's question is what makes
+        // it an observation; later ones add edges for the same question.
+        let first_confirmation = !entry.1;
+        entry.1 = true;
+        // Stash this query's vector right before the observation reads it. The
+        // slot holds one entry, so with sessions interleaved anything set
+        // earlier may belong to another session's question.
+        if let (Some(vector), Some(fp)) = (embeddings.get(query), fingerprint) {
+            graph.note_query_vector(query, vector, fp);
+        }
+        graph.observe(Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms: env.ts,
+            first_confirmation,
+            seeded: policy.provenance == Provenance::Seeded,
+        });
+    }
+}
+
+/// Every distinct query a `policy`-accepted search carries, in first-appearance
+/// order — the texts a caller must embed for [`replay_log_into`] to cluster
+/// densely.
+pub(crate) fn queries_to_embed(
+    envelopes: &[TraceEnvelope],
+    policy: ObservationPolicy,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for env in envelopes {
+        if let TraceEvent::Search { query, origin, .. }
+        | TraceEvent::SkillSearch { query, origin, .. } = &env.event
+            && accepts(policy, *origin)
+            && seen.insert(query.as_str())
+        {
+            out.push(query.clone());
+        }
+    }
+    out
+}
+
+/// Whether a search of `origin` may open an observation window under `policy`.
+fn accepts(policy: ObservationPolicy, origin: Origin) -> bool {
+    match policy.origins {
+        OriginFilter::Any => true,
+        OriginFilter::Exactly(wanted) => origin == wanted,
+    }
 }
 
 /// A [`TraceSink`] decorator that grows an [`IntentGraph`] from the events
@@ -94,17 +320,36 @@ pub struct UsageLearner {
     graph: Arc<RwLock<IntentGraph>>,
     /// The session's most recent search, awaiting an invoke to confirm it.
     pending: Mutex<Option<Pending>>,
+    policy: ObservationPolicy,
 }
 
 impl UsageLearner {
-    /// Wrap `inner`, learning into `graph`. Pass [`crate::NoopSink`] for `inner`
-    /// when the only thing you want is the learning.
+    /// Wrap `inner`, learning into `graph` under [`ObservationPolicy::default`].
+    /// Pass [`crate::NoopSink`] for `inner` when the only thing you want is the
+    /// learning.
     pub fn new(graph: Arc<RwLock<IntentGraph>>, inner: Arc<dyn TraceSink>) -> Self {
+        Self::with_policy(graph, inner, ObservationPolicy::default())
+    }
+
+    /// Wrap `inner`, learning into `graph` under `policy` — the entry point a
+    /// baseline capture or a replay uses. [`Self::new`] is this at the default
+    /// policy.
+    pub fn with_policy(
+        graph: Arc<RwLock<IntentGraph>>,
+        inner: Arc<dyn TraceSink>,
+        policy: ObservationPolicy,
+    ) -> Self {
         Self {
             inner,
             graph,
             pending: Mutex::new(None),
+            policy,
         }
+    }
+
+    /// The policy in force.
+    pub fn policy(&self) -> ObservationPolicy {
+        self.policy
     }
 
     /// The graph this learner writes — hand it to a registry to read.
@@ -150,7 +395,14 @@ impl UsageLearner {
             // graph, is what makes it an observation; the rest add edges for the
             // same question without re-bumping support.
             let first_confirmation = graph.claim_credit(&query);
-            graph.observe(&query, kind, capability_id, ts_ms, first_confirmation);
+            graph.observe(Observation {
+                query: &query,
+                kind,
+                capability_id,
+                ts_ms,
+                first_confirmation,
+                seeded: self.policy.provenance == Provenance::Seeded,
+            });
         }
     }
 
@@ -174,20 +426,16 @@ impl UsageLearner {
     }
 
     /// The shared pairing step behind [`Self::replay`] and [`TraceSink::record`].
+    ///
+    /// A search the policy rejects falls through to `_ => {}` — **ignored, not
+    /// cleared**. Clearing would let one of Ratel's own internal searches,
+    /// landing between a captured query and its invokes, silently discard the
+    /// turn's evidence.
     fn learn_from(&self, event: &TraceEvent, ts_ms: u64) {
-        match event {
-            // Both search kinds set the pending query: a capability search hits
-            // the tool and skill registries in turn with the same text.
-            TraceEvent::Search { query, .. } | TraceEvent::SkillSearch { query, .. } => {
-                self.remember_query(query)
-            }
-            TraceEvent::InvokeStart { tool_id, .. } => {
-                self.confirm(Capability::Tool, tool_id, ts_ms)
-            }
-            TraceEvent::SkillInvoke { skill_id, .. } => {
-                self.confirm(Capability::Skill, skill_id, ts_ms)
-            }
-            _ => {}
+        match classify(event, self.policy) {
+            Step::Remember(query) => self.remember_query(query),
+            Step::Confirm(kind, capability_id) => self.confirm(kind, capability_id, ts_ms),
+            Step::Ignore => {}
         }
     }
 }
@@ -456,6 +704,224 @@ mod tests {
         let g = graph.read().unwrap();
         assert_eq!(g.intents[0].skills.get("ci-triage"), Some(&1.0));
         assert!(g.intents[0].tools.is_empty());
+    }
+
+    // ---- the shared pairing rule -------------------------------------------
+
+    #[test]
+    fn a_rejected_search_is_ignored_not_a_boundary() {
+        // The distinction the live and replay paths must agree on: `Ignore`
+        // leaves whatever window is open alone, so a stray internal search
+        // between a captured query and its invokes cannot discard the turn.
+        let policy =
+            ObservationPolicy::default().with_origins(OriginFilter::Exactly(Origin::Baseline));
+        assert_eq!(
+            classify(&search_from("q", Origin::Direct), policy),
+            Step::Ignore
+        );
+        assert_eq!(
+            classify(&search_from("q", Origin::Baseline), policy),
+            Step::Remember("q")
+        );
+    }
+
+    #[test]
+    fn only_the_attempt_confirms_an_observation() {
+        // A trace records which tool was called, never whether calling it was
+        // right. `invoke_end` is not a second, better signal — it filters on
+        // execution outcome, which is leaky in both directions: a wrong tool
+        // that ran fine is kept, a right one that failed on arguments is
+        // dropped. So the choice is the only signal, and there is nothing to
+        // configure.
+        let policy = ObservationPolicy::default();
+        assert_eq!(
+            classify(&invoke("t"), policy),
+            Step::Confirm(Capability::Tool, "t")
+        );
+        assert_eq!(classify(&invoke_end("t"), policy), Step::Ignore);
+        assert_eq!(classify(&invoke_error("t"), policy), Step::Ignore);
+    }
+
+    #[test]
+    fn an_unrelated_event_is_never_evidence() {
+        assert_eq!(
+            classify(
+                &TraceEvent::AuthNeeds {
+                    upstream: "gh".into()
+                },
+                ObservationPolicy::default()
+            ),
+            Step::Ignore
+        );
+    }
+
+    // ---- ObservationPolicy -------------------------------------------------
+
+    fn search_from(query: &str, origin: Origin) -> TraceEvent {
+        TraceEvent::Search {
+            query: query.into(),
+            origin,
+            top_k: 5,
+            hits: Vec::new(),
+            stages: Vec::new(),
+            took_ms: 0,
+        }
+    }
+
+    fn invoke_end(tool_id: &str) -> TraceEvent {
+        TraceEvent::InvokeEnd {
+            tool_id: tool_id.into(),
+            took_ms: 1,
+        }
+    }
+
+    fn invoke_error(tool_id: &str) -> TraceEvent {
+        TraceEvent::InvokeError {
+            tool_id: tool_id.into(),
+            took_ms: 1,
+            error: "bad args".into(),
+        }
+    }
+
+    fn policy_learner(policy: ObservationPolicy) -> (Arc<UsageLearner>, Arc<RwLock<IntentGraph>>) {
+        let graph = Arc::new(RwLock::new(IntentGraph::empty()));
+        let l = Arc::new(UsageLearner::with_policy(
+            graph.clone(),
+            Arc::new(NoopSink),
+            policy,
+        ));
+        (l, graph)
+    }
+
+    #[test]
+    fn the_default_policy_reproduces_todays_pairing_exactly() {
+        // The additive-evolution guarantee: `new` and `with_policy(default())`
+        // must be the same learner. Without this, every later policy field is a
+        // chance to silently move the default path.
+        let events = || {
+            vec![
+                search("why is the build broken"),
+                invoke("gh_run_list"),
+                invoke("gh_run_view"),
+                search("rotate the signing key"),
+                invoke("vault_rotate"),
+            ]
+        };
+
+        let (old, old_graph) = learner();
+        for e in events() {
+            old.record(e);
+        }
+
+        let (new, new_graph) = policy_learner(ObservationPolicy::default());
+        for e in events() {
+            new.record(e);
+        }
+
+        let old_g = old_graph.read().unwrap();
+        let new_g = new_graph.read().unwrap();
+        // Compare the LEARNING, not the graph wholesale: `built_from_ts` and
+        // `last_ts` are stamped from the wall clock, so two runs a millisecond
+        // apart differ there and nowhere else. `Intent`'s equality already
+        // excludes those, which is exactly the cut this assertion wants.
+        assert_eq!(old_g.intents, new_g.intents);
+        assert_eq!(old_g.rev(), new_g.rev());
+        for it in &new_g.intents {
+            assert_eq!(it.seeded_support, 0, "the default policy is live");
+        }
+    }
+
+    #[test]
+    fn only_the_required_origin_opens_an_observation_window() {
+        let (l, graph) = policy_learner(
+            ObservationPolicy::default().with_origins(OriginFilter::Exactly(Origin::Baseline)),
+        );
+
+        l.record(search_from("why is the build broken", Origin::Agent));
+        l.record(invoke("gh_run_list"));
+        assert!(
+            graph.read().unwrap().is_empty(),
+            "an agent search must not teach a baseline-only learner"
+        );
+
+        l.record(search_from("why is the build broken", Origin::Baseline));
+        l.record(invoke("gh_run_list"));
+        assert_eq!(graph.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_filtered_out_search_leaves_the_pending_query_intact() {
+        // The subtle one. A baseline capture runs Ratel's own searches too (a
+        // pre-fetch helper, a health check). If a filtered search CLEARED the
+        // pending query instead of being ignored, one stray internal search
+        // between the turn's query and its invokes would silently discard the
+        // turn's evidence.
+        let (l, graph) = policy_learner(
+            ObservationPolicy::default().with_origins(OriginFilter::Exactly(Origin::Baseline)),
+        );
+
+        l.record(search_from("why is the build broken", Origin::Baseline));
+        l.record(search_from("some internal probe", Origin::Direct));
+        l.record(invoke("gh_run_list"));
+
+        let g = graph.read().unwrap();
+        assert_eq!(g.len(), 1);
+        assert!(
+            g.intents[0]
+                .members
+                .contains(&"why is the build broken".to_string()),
+            "the baseline query still owns the invoke, got {:?}",
+            g.intents[0].members
+        );
+    }
+
+    #[test]
+    fn the_default_policy_still_pairs_on_the_attempt() {
+        // Choice is the relevance signal: which tool the agent reached for says
+        // what it thought fit, and a later argument error does not retract that.
+        let (l, graph) = learner();
+        l.record(search("why is the build broken"));
+        l.record(invoke("gh_run_list"));
+        assert_eq!(graph.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_seeded_policy_stamps_provenance_on_what_it_credits() {
+        let (l, graph) = policy_learner(
+            ObservationPolicy::default()
+                .with_origins(OriginFilter::Exactly(Origin::Baseline))
+                .with_provenance(Provenance::Seeded),
+        );
+
+        l.record(search_from("why is the build broken", Origin::Baseline));
+        l.record(invoke("gh_run_list"));
+        l.record(invoke("gh_run_view"));
+
+        let g = graph.read().unwrap();
+        assert_eq!(g.intents[0].support, 1, "one question");
+        assert_eq!(g.intents[0].seeded_support, 1, "and it was seeded");
+        assert_eq!(g.intents[0].tools.len(), 2, "two capabilities");
+    }
+
+    #[test]
+    fn a_skill_invoke_confirms_like_a_tool_invoke() {
+        let (l, graph) = policy_learner(ObservationPolicy::default());
+        l.record(TraceEvent::SkillSearch {
+            query: "why is the build broken".into(),
+            origin: Origin::Agent,
+            top_k: 5,
+            hits: Vec::new(),
+            stages: Vec::new(),
+            took_ms: 0,
+        });
+        l.record(TraceEvent::SkillInvoke {
+            skill_id: "ci-triage".into(),
+            took_ms: 1,
+        });
+        assert_eq!(
+            graph.read().unwrap().intents[0].skills.get("ci-triage"),
+            Some(&1.0)
+        );
     }
 
     #[test]

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `Origin.Baseline` / `BASELINE` (`baseline`) mirrors the new local-trace origin for queries observed while Ratel is not serving retrieval. `ratel.origin` now takes `direct | agent | baseline`.
+
 ## [0.3.1] - 2026-08-14
 
 ### Added

@@ -11,6 +11,7 @@ import json
 import os
 import warnings
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,13 +20,13 @@ from ratel_ai import ExecutableTool, IntentGraph, SkillCatalog, ToolCatalog, Tra
 from ratel_ai.skill_catalog import Skill
 
 
-async def build_catalog() -> ToolCatalog:
+async def build_catalog(trace: TraceSinkConfig | None = None) -> ToolCatalog:
     """A catalog where lexical retrieval is confidently wrong.
 
     "why is the build broken" hits `docker_build` on the token *build*, while
     the tool people actually reach for is `gh_run_list`.
     """
-    catalog = ToolCatalog()
+    catalog = ToolCatalog(trace=trace) if trace else ToolCatalog()
     await catalog.register(
         [
             ExecutableTool(
@@ -527,3 +528,307 @@ async def test_rebuild_on_model_change_recovers_without_a_manual_rebuild() -> No
 
     await catalog.search_async("why is the build broken", 5, method="semantic")
     assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+# ---- baseline seeding ------------------------------------------------------
+
+
+async def _capture_baseline(tmp_path: Path) -> tuple[ToolCatalog, str]:
+    """Three build/CI turns recorded to a JSONL log with Ratel serving nothing."""
+    log_path = str(tmp_path / "trace.jsonl")
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="jsonl", session_id="s1", path=log_path))
+    await catalog.register(
+        [
+            ExecutableTool(
+                id="docker_build",
+                name="docker_build",
+                description="Build a Docker image from a Dockerfile",
+                execute=lambda _args: "built",
+            ),
+            ExecutableTool(
+                id="gh_run_list",
+                name="gh_run_list",
+                description="List CI workflow runs and whether the build passed",
+                execute=lambda _args: "listed",
+            ),
+        ]
+    )
+    for turn in (
+        "why is the build broken",
+        "is the build broken again",
+        "the build broken on main",
+    ):
+        catalog.experimental_baseline_turn(turn).invoked("gh_run_list").record()
+    return catalog, log_path
+
+
+async def test_a_baseline_turn_writes_nothing_until_it_is_recorded() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    turn = catalog.experimental_baseline_turn("why is the build broken")
+    turn.invoked("gh_run_list")
+    assert catalog.drain_trace_events() == []
+
+    turn.record()
+    # The quality gate is "call record, or don't" — a dropped turn leaves no trace.
+    assert [e["type"] for e in catalog.drain_trace_events()] == ["search", "invoke_start"]
+
+
+async def test_a_baseline_turn_attributes_several_invocations() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    catalog.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).invoked_skill("triage").record()
+
+    types = [e["type"] for e in catalog.drain_trace_events()]
+    assert types == ["search", "invoke_start", "skill_invoke"]
+
+
+async def test_a_baseline_turn_refuses_to_be_recorded_twice() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    turn = catalog.experimental_baseline_turn("why is the build broken")
+    turn.record()
+    with pytest.raises(RuntimeError, match="already recorded"):
+        turn.record()
+    with pytest.raises(RuntimeError, match="already recorded"):
+        turn.invoked("gh_run_list")
+
+
+async def test_a_baseline_turn_used_as_a_context_manager() -> None:
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    with catalog.experimental_baseline_turn("why is the build broken") as turn:
+        turn.invoked("gh_run_list")
+    assert [e["type"] for e in catalog.drain_trace_events()] == ["search", "invoke_start"]
+
+    # A raising block is exactly the turn you would not want the graph to learn
+    # from, so it discards rather than recording a half-finished one.
+    with pytest.raises(ZeroDivisionError):
+        with catalog.experimental_baseline_turn("rotate the signing key") as turn:
+            turn.invoked("vault_rotate")
+            raise ZeroDivisionError
+    assert catalog.drain_trace_events() == []
+
+
+async def test_recording_a_whole_turn_matches_the_chained_builder() -> None:
+    """The two paths build their events independently, so agreement is a test."""
+    via_builder = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    via_builder.drain_trace_events()  # discard the registration churn
+    via_builder.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).invoked("docker_build").record()
+
+    via_object = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    via_object.drain_trace_events()
+    via_object.experimental_record_baseline_turn(
+        query="why is the build broken", invoked=["gh_run_list", "docker_build"]
+    )
+
+    # Drop the fields each sink mints for itself: `ts` is sampled per record and
+    # `event_id` / `invocation_id` are fresh ULIDs (envelope v2). Replay reads
+    # none of them; the event shape either path builds is what must agree.
+    per_record_identity = {"ts", "event_id", "invocation_id"}
+
+    def strip(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {k: v for k, v in e.items() if k not in per_record_identity} for e in events
+        ]
+
+    assert strip(via_object.drain_trace_events()) == strip(via_builder.drain_trace_events())
+
+
+async def test_recording_a_whole_turn_carries_skills() -> None:
+    """`invoked_skills` is the half the parity test above does not reach."""
+    catalog = await build_catalog(TraceSinkConfig(kind="memory", session_id="s"))
+    catalog.drain_trace_events()  # discard the registration churn
+    catalog.experimental_record_baseline_turn(
+        query="why is the build broken",
+        invoked=["gh_run_list"],
+        invoked_skills=["triage"],
+    )
+
+    events = catalog.drain_trace_events()
+    assert [e["type"] for e in events] == ["search", "invoke_start", "skill_invoke"]
+    assert events[0]["origin"] == "baseline"
+    assert events[1]["tool_id"] == "gh_run_list"
+    assert events[2]["skill_id"] == "triage"
+
+
+async def test_a_turn_reassembled_across_requests_builds_the_same_graph(
+    tmp_path: Path,
+) -> None:
+    """The distributed shape: drain per turn, keep the lines, build from them.
+
+    No single catalog sees a whole turn's worth of state — each is built,
+    recorded into and drained inside what would be one request handler.
+    """
+    turns = [
+        ("why is the build broken", "gh_run_list"),
+        ("is the build broken again", "gh_run_list"),
+        ("the build broken on main", "gh_run_list"),
+    ]
+
+    # Stands in for the durable store lines are collected into.
+    collected: list[str] = []
+    pending: dict[str, str] = {}
+
+    for index, (query, tool_id) in enumerate(turns):
+        turn_id = f"turn-{index + 1}"
+        pending[turn_id] = query  # the search request
+
+        # The invoke request, in a catalog of its own.
+        recorder = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id=turn_id))
+        recorder.experimental_record_baseline_turn(
+            query=pending.pop(turn_id), invoked=[tool_id]
+        )
+        collected.extend(json.dumps(e) for e in recorder.drain_trace_events())
+
+    serving = await build_catalog()
+    graph = await serving.experimental_build_intent_graph("\n".join(collected))
+    assert graph.cluster_count == 1
+
+
+async def test_builds_a_graph_from_a_log_captured_without_ratel_ranking(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    # Nothing was attached during capture, so ranking never changed.
+    assert catalog.experimental_adaptive_ranking_status == "inactive"
+
+    with open(log_path) as fh:
+        graph = await catalog.experimental_build_intent_graph(
+            fh.read(), origins="baseline", provenance="seeded"
+        )
+
+    assert graph.cluster_count == 1
+    parsed = json.loads(graph.to_json())
+    assert parsed["intents"][0]["support"] == 3
+    assert parsed["intents"][0]["seeded_support"] == 3
+    assert parsed["intents"][0]["tools"]["gh_run_list"] == 3
+
+
+async def test_initialization_returns_a_detached_graph(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    with open(log_path) as fh:
+        graph = await catalog.experimental_build_intent_graph(fh.read(), origins="baseline")
+
+    assert graph.cluster_count == 1
+    assert catalog.experimental_adaptive_ranking_status == "inactive"
+
+    catalog.experimental_enable_adaptive_ranking(graph)
+    assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+async def test_an_unknown_policy_value_is_rejected(tmp_path: Path) -> None:
+    catalog, log_path = await _capture_baseline(tmp_path)
+    with open(log_path) as fh:
+        log = fh.read()
+    with pytest.raises(ValueError, match="unknown provenance"):
+        await catalog.experimental_build_intent_graph(log, provenance="seedd")
+
+
+async def test_a_malformed_log_line_names_its_line_number() -> None:
+    catalog = ToolCatalog()
+    good = json.dumps(
+        {
+            "v": 1,
+            "ts": 1,
+            "session_id": "s",
+            "type": "search",
+            "query": "q",
+            "origin": "baseline",
+            "top_k": 0,
+            "hits": [],
+            "stages": [],
+            "took_ms": 0,
+        }
+    )
+    with pytest.raises(ValueError, match="line 2"):
+        await catalog.experimental_build_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')
+
+
+async def test_live_learning_can_be_restricted_by_origin() -> None:
+    catalog = await build_catalog()
+    graph = IntentGraph()
+    catalog.experimental_enable_adaptive_ranking(graph, origins="baseline")
+
+    catalog.search("why is the build broken", 5)  # origin "direct"
+    catalog.record_event(
+        {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
+    )
+    assert graph.cluster_count == 0
+
+    catalog.experimental_baseline_turn("why is the build broken").invoked(
+        "gh_run_list"
+    ).record()
+    assert graph.cluster_count == 1
+
+
+async def test_an_unknown_policy_value_is_rejected_when_enabling() -> None:
+    catalog = await build_catalog()
+    with pytest.raises(ValueError, match="unknown origins"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), origins="nope")  # type: ignore[arg-type]
+
+    # "direct" is a real origin but not a filter — learning only from searches
+    # your own code made means learning from your plumbing.
+    with pytest.raises(ValueError, match="unknown origins"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), origins="direct")  # type: ignore[arg-type]
+
+
+async def test_policy_values_are_a_closed_set() -> None:
+    # The three policy keywords are `Literal`s, so mypy rejects a typo in user
+    # code before it runs. This file is outside mypy's scope (it checks
+    # `ratel_ai`), so the `type: ignore` is just silencing the deliberate bad
+    # value — what it asserts is the RUNTIME half, which still has to reject for
+    # callers with no type checker at all.
+    catalog = await build_catalog()
+    for kwargs, message in (
+        ({"origins": "baselien"}, "unknown origins"),
+        ({"provenance": "seedd"}, "unknown provenance"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            catalog.experimental_enable_adaptive_ranking(IntentGraph(), **kwargs)  # type: ignore[arg-type]
+
+
+async def test_valid_policy_values_are_accepted() -> None:
+    catalog = await build_catalog()
+    catalog.experimental_enable_adaptive_ranking(
+        IntentGraph(), origins="baseline", provenance="seeded"
+    )
+    assert catalog.experimental_adaptive_ranking_status == "active"
+
+
+async def test_build_defaults_to_baseline_and_enable_defaults_to_any(tmp_path: Path) -> None:
+    # Asymmetric on purpose: building from a log means seeding, so it defaults
+    # to the origin a capture produces. Enabling keeps "any", which is what live
+    # learning has always done — changing it would alter existing behavior.
+    log_path = tmp_path / "t.jsonl"
+    catalog = ToolCatalog(
+        trace=TraceSinkConfig(kind="jsonl", session_id="s", path=str(log_path))
+    )
+    await catalog.register(
+        [ExecutableTool(id="t", name="t", description="a tool", execute=lambda _a: "")]
+    )
+    # One captured turn, and one plain search that is NOT a capture.
+    catalog.experimental_baseline_turn("why is the build broken").invoked("t").record()
+    catalog.search("something else entirely", 5)  # origin "direct"
+    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+
+    log = log_path.read_text()
+    default_build = await catalog.experimental_build_intent_graph(log)
+    assert default_build.cluster_count == 1, "only the captured turn counts"
+
+    everything = await catalog.experimental_build_intent_graph(log, origins="any")
+    assert everything.cluster_count == 2, "opting into any picks up the rest"
+
+    # provenance defaults the same way: an offline build is a seeding pass.
+    seeded = json.loads(default_build.to_json())["intents"][0]
+    assert seeded["support"] == seeded["seeded_support"] == 1
+
+    # Live learning still defaults to "live", so nothing is marked seeded.
+    live_graph = IntentGraph()
+    catalog.experimental_enable_adaptive_ranking(live_graph)
+    catalog.search("why is the build broken", 5)
+    catalog.record_event({"type": "invoke_start", "tool_id": "t", "args_size_bytes": 0})
+    live = json.loads(live_graph.to_json())["intents"][0]
+    assert live["support"] == 1
+    assert live.get("seeded_support", 0) == 0

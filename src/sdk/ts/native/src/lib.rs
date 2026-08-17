@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockWriteGuard};
 use std::thread;
 use std::time::Duration;
 
-use napi::bindgen_prelude::{AsyncTask, Buffer, Function};
+use napi::bindgen_prelude::{AsyncTask, Buffer, Function, Unknown};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Env, Status, Task};
 use ratel_ai_core as core;
@@ -28,6 +28,101 @@ type EventCallback = ThreadsafeFunction<Vec<Value>, (), Vec<Value>, Status, fals
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1_024;
 const DEFAULT_EVENT_BATCH_SIZE: usize = 64;
 const EVENT_BATCH_DELAY: Duration = Duration::from_millis(1);
+
+/// Map a `SearchOrigin` wire string to its core variant.
+///
+/// **One function, called from every site.** Each search entry point used to
+/// inline this `match`, which meant a new `Origin` variant was silently
+/// swallowed by the `_ =>` fallback at whichever sites nobody remembered to
+/// update — a wrong-but-plausible `direct` rather than a compile error. Adding
+/// a variant is still not a compile error here (unknown strings must stay
+/// tolerated, since `search_with_origin` is infallible), so the guard is
+/// `every_origin_wire_value_maps_to_its_own_variant` below, not the match.
+fn parse_origin(s: &str) -> Origin {
+    match s {
+        "agent" => Origin::Agent,
+        "baseline" => Origin::Baseline,
+        _ => Origin::Direct,
+    }
+}
+
+/// How a trace log is turned into an intent graph — the wire form of
+/// `ObservationPolicy`. Every field is optional and defaults to today's live
+/// behavior, so `{}` means "learn exactly as the live path does".
+#[napi(object)]
+pub struct ObservationPolicyOptions {
+    /// Which searches open an observation window: `"any"` (default), or one of
+    /// `"direct"` / `"agent"` / `"baseline"` to accept only that origin.
+    pub origins: Option<String>,
+    /// Whether learning is marked as seeded: `"live"` (default) or `"seeded"`.
+    pub provenance: Option<String>,
+}
+
+/// Resolve the policy options, **rejecting** unknown values.
+///
+/// Deliberately stricter than [`parse_origin`], which tolerates an unknown wire
+/// string so version skew cannot fail an infallible search. A policy is a
+/// deliberate configuration a caller typed: silently reading `"seedd"` as
+/// `"live"` would produce a graph with no provenance and no error, which is far
+/// worse than a rejected call.
+/// Defaults differ per entry point: building from a log IS a seeding pass, so
+/// it defaults to `baseline` + `seeded`; enabling live learning keeps `any` +
+/// `live`, which is what it has always done.
+fn parse_policy(
+    opts: Option<ObservationPolicyOptions>,
+    default_origins: core::OriginFilter,
+    default_provenance: core::Provenance,
+) -> napi::Result<core::ObservationPolicy> {
+    let mut policy = core::ObservationPolicy::default()
+        .with_origins(default_origins)
+        .with_provenance(default_provenance);
+    let Some(opts) = opts else {
+        return Ok(policy);
+    };
+    if let Some(o) = opts.origins.as_deref() {
+        policy = policy.with_origins(match o {
+            "any" => core::OriginFilter::Any,
+            "agent" => core::OriginFilter::Exactly(Origin::Agent),
+            "baseline" => core::OriginFilter::Exactly(Origin::Baseline),
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown origins {other:?}: expected any | agent | baseline"
+                )));
+            }
+        });
+    }
+    if let Some(p) = opts.provenance.as_deref() {
+        policy = policy.with_provenance(match p {
+            "live" => core::Provenance::Live,
+            "seeded" => core::Provenance::Seeded,
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown provenance {other:?}: expected live | seeded"
+                )));
+            }
+        });
+    }
+    Ok(policy)
+}
+
+/// Parse a JSONL trace log into envelopes.
+///
+/// Blank lines are skipped — they are common and harmless. A malformed line is
+/// an error naming its line number rather than a silent skip: a log is the only
+/// record of a baseline capture, and quietly dropping part of it would produce a
+/// thinner graph with nothing to explain why. A truncated final line (a crash
+/// mid-write) therefore surfaces, and the caller trims it.
+fn parse_trace_log(jsonl: &str) -> napi::Result<Vec<core::TraceEnvelope>> {
+    jsonl
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, line)| {
+            serde_json::from_str::<core::TraceEnvelope>(line)
+                .map_err(|e| napi::Error::from_reason(format!("trace log line {}: {e}", i + 1)))
+        })
+        .collect()
+}
 
 const REGISTRY_BUSY_MESSAGE: &str =
     "registry busy; await the active operation before registering more items";
@@ -500,6 +595,44 @@ pub struct SkillWarmArtifactTask {
     _permit: DenseOperationPermit,
 }
 
+/// Builds an intent graph from a trace log off the event loop — it embeds every
+/// distinct query, which is far too slow to run inline.
+pub struct BuildGraphTask {
+    inner: Arc<RwLock<core::ToolRegistry>>,
+    dense_gate: Arc<Mutex<()>>,
+    jsonl: String,
+    policy: core::ObservationPolicy,
+    _permit: DenseOperationPermit,
+}
+
+impl Task for BuildGraphTask {
+    /// The graph's `protocol/v1` JSON. Crossing the boundary as its wire form
+    /// rather than as an `IntentGraph` handle keeps the task's output a plain
+    /// value; the SDK facade rehydrates it, so callers still get the class.
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let envelopes = parse_trace_log(&self.jsonl)?;
+        let _dense = self
+            .dense_gate
+            .lock()
+            .map_err(|_| napi::Error::from_reason("dense operation mutex poisoned"))?;
+        let registry = self
+            .inner
+            .read()
+            .map_err(|_| napi::Error::from_reason("tool registry lock poisoned"))?;
+        let graph = registry
+            .build_intent_graph(envelopes, self.policy)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&graph).map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 impl Task for ToolEmbeddingTask {
     type Output = ();
     type JsValue = ();
@@ -579,10 +712,7 @@ impl Task for ToolSearchTask {
     type JsValue = Vec<SearchHit>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let parsed_origin = match self.origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(self.origin.as_str());
         let parsed_method: SearchMethod =
             self.method
                 .parse()
@@ -706,10 +836,7 @@ impl Task for SkillSearchTask {
     type JsValue = Vec<SkillHit>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let parsed_origin = match self.origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(self.origin.as_str());
         let parsed_method: SearchMethod =
             self.method
                 .parse()
@@ -795,20 +922,51 @@ fn build_trace_sink(config: TraceSinkConfig) -> napi::Result<BuiltTraceSink> {
     }
 }
 
+/// The trace-line callback JS supplies: one string argument and no error
+/// channel.
+///
+/// Both non-default const generics matter here.
+///
+/// `CalleeHandled = false`: left at its `true` default, napi generates the
+/// error-first `(err, line) => ...` convention — but a sink has no failure to
+/// report to JS (a drop is silent by design), so the leading argument would
+/// exist only to always be `null`, and the SDK's `onEvent(line)` would receive
+/// it as its first parameter.
+///
+/// `Weak = true`: a referenced threadsafe function keeps the event loop alive
+/// for as long as the sink exists, so a script that records a few turns and
+/// returns would never exit. Tracing must not decide a process's lifetime.
+type TraceLineCallback = ThreadsafeFunction<String, Unknown<'static>, String, Status, false, true>;
+
+/// Decorate `sink` with the usage learner when a graph is attached, under
+/// `policy`.
+///
+/// Adaptive ranking learns by wrapping the sink, so an install that forgot to
+/// re-wrap would leave ranking on while silently ending learning. Reached only
+/// through [`active_trace_sink`], which every install path goes through.
 fn wrap_learner(
     sink: Arc<dyn core::TraceSink>,
     graph: Option<&Arc<RwLock<core::IntentGraph>>>,
+    policy: core::ObservationPolicy,
 ) -> Arc<dyn core::TraceSink> {
     match graph {
-        Some(graph) => Arc::new(UsageLearner::new(graph.clone(), sink)),
+        Some(graph) => Arc::new(UsageLearner::with_policy(graph.clone(), sink, policy)),
         None => sink,
     }
 }
 
+/// The sink a registry should actually be holding, given its base sink, whether
+/// a graph is attached, and whether the runtime-events stream is live.
+///
+/// **Every path that installs a sink on either registry goes through here** —
+/// the two decorations compose in a fixed order (learner outermost, fan-out
+/// beneath it, base sink innermost) and reconstructing that at each call site is
+/// how one of them silently goes missing.
 fn active_trace_sink(
     base_sink: &Arc<dyn core::TraceSink>,
     graph: Option<&Arc<RwLock<core::IntentGraph>>>,
     event_stream: &Option<EventStream>,
+    policy: core::ObservationPolicy,
 ) -> Arc<dyn core::TraceSink> {
     let sink: Arc<dyn core::TraceSink> = match event_stream {
         Some(stream) => Arc::new(RuntimeEventSink {
@@ -817,7 +975,19 @@ fn active_trace_sink(
         }),
         None => base_sink.clone(),
     };
-    wrap_learner(sink, graph)
+    wrap_learner(sink, graph, policy)
+}
+
+/// Wrap a JS callback as a trace sink. Shared by both registries'
+/// `setTraceSinkCallback` so the two cannot drift in what they hand JS.
+fn callback_sink(session_id: String, callback: TraceLineCallback) -> Arc<dyn core::TraceSink> {
+    Arc::new(core::FnSink::new(session_id, move |line: &str| {
+        // Non-blocking: `record` runs on the hot path and ADR-0007 prefers a
+        // dropped event to a stalled agent loop. The returned status is
+        // deliberately ignored — a full queue is a drop, not an error to raise
+        // into whatever happened to be tracing.
+        let _ = callback.call(line.to_string(), ThreadsafeFunctionCallMode::NonBlocking);
+    }))
 }
 
 /// A tool's searchable metadata: what the registry indexes and what a search
@@ -1085,6 +1255,10 @@ pub struct ToolRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
     /// Created lazily by the private native subscription seam. The fan-out
     /// remains the registry's root sink while callbacks and base sinks change.
     event_stream: Option<EventStream>,
@@ -1108,6 +1282,7 @@ impl ToolRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
             event_stream: None,
         })
     }
@@ -1169,10 +1344,7 @@ impl ToolRegistry {
     /// identical to `search`.
     #[napi]
     pub fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SearchHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .read()
             .expect("tool registry lock poisoned")
@@ -1198,10 +1370,7 @@ impl ToolRegistry {
         method: String,
         context: Option<TraceEventContextConfig>,
     ) -> napi::Result<Vec<SearchHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method: SearchMethod =
             method
                 .parse()
@@ -1356,7 +1525,12 @@ impl ToolRegistry {
     ) -> napi::Result<NativeEventSubscription> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         let subscription = subscribe_event_callback(&mut self.event_stream, callback, config)?;
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         registry.set_trace_sink(sink);
         Ok(subscription)
     }
@@ -1371,10 +1545,63 @@ impl ToolRegistry {
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
+        // the sink outright would quietly stop learning.
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
+        Ok(())
+    }
+
+    /// Replace the trace sink with one that hands every event to `callback` as
+    /// a JSON line — the destination for hosts this crate cannot write to
+    /// itself, such as a process-per-request server persisting to a database.
+    ///
+    /// Each line is the same wire form the `"jsonl"` sink would have written,
+    /// field for field, differing only in the per-record `ts` and `event_id`
+    /// every envelope-aware sink mints for itself — neither of which replay
+    /// reads. So lines collected across processes can be joined with newlines
+    /// and fed straight back to `buildIntentGraph`.
+    ///
+    /// `sessionId` is stamped on every envelope, but it is a default rather
+    /// than an identity: replay pairs searches with invokes *per session*, so a
+    /// host reassembling turns should restamp each line with an id unique to
+    /// each concurrent turn.
+    ///
+    /// The callback runs in non-blocking mode — per ADR-0007 a sink may drop
+    /// events under backpressure but must never block the agent loop.
+    // `ts_args_type` because napi renders the `TraceLineCallback` alias by name
+    // into the `.d.cts` without emitting its definition, leaving a dangling
+    // type. Spelling the signature here also pins the public shape.
+    #[napi(ts_args_type = "sessionId: string, callback: (line: string) => void")]
+    pub fn set_trace_sink_callback(
+        &mut self,
+        session_id: String,
+        callback: TraceLineCallback,
+    ) -> napi::Result<()> {
+        let sink = callback_sink(session_id, callback);
+        // Same contract as `set_trace_sink`: retain the raw sink, then re-wrap
+        // in the learner when a graph is attached, or setting a sink after
+        // enabling adaptive ranking would quietly stop learning.
+        self.base_sink = sink.clone();
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(sink);
+        drop(registry);
+        // A callback sink is not drainable; drop any prior memory sink so
+        // `drainTraceEvents` cannot keep returning a stale buffer.
+        self.memory_sink = None;
         Ok(())
     }
 
@@ -1390,9 +1617,19 @@ impl ToolRegistry {
     /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
     /// BM25 score — only ordering is comparable, as with hybrid search.
     #[napi]
-    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+    pub fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<()> {
+        self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
-        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            Some(&handle),
+            &self.event_stream,
+            self.usage_policy,
+        );
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         registry.set_intent_graph(Some(handle.clone()));
@@ -1406,13 +1643,42 @@ impl ToolRegistry {
     /// resumes from what it already learned.
     #[napi]
     pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
-        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream, self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
+        self.usage_policy = core::ObservationPolicy::default();
         Ok(())
+    }
+
+    /// Build an intent graph from a JSONL trace log, returning its wire form.
+    ///
+    /// Embeds every distinct query so clusters form densely — the same tier the
+    /// live path uses. Runs off the event loop. Returns a graph that is **not**
+    /// attached to this registry; enabling adaptive ranking stays a separate,
+    /// explicit call.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn build_intent_graph(
+        &self,
+        jsonl: String,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<AsyncTask<BuildGraphTask>> {
+        // Policy errors are reported before the task is queued, so a typo in a
+        // config object fails immediately rather than after an embedding pass.
+        let policy = parse_policy(
+            options,
+            core::OriginFilter::Exactly(Origin::Baseline),
+            core::Provenance::Seeded,
+        )?;
+        Ok(AsyncTask::new(BuildGraphTask {
+            inner: self.inner.clone(),
+            dense_gate: self.dense_gate.clone(),
+            jsonl,
+            policy,
+            _permit: DenseOperationPermit::new(self.pending_dense.clone()),
+        }))
     }
 
     /// Re-embed the intent graph's members under the current model and replace
@@ -1900,6 +2166,10 @@ pub struct SkillRegistry {
     /// Retained so `setTraceSink` can re-wrap the new sink in a learner —
     /// otherwise changing sinks would silently switch learning off.
     graph: Option<Arc<RwLock<core::IntentGraph>>>,
+    /// The policy the attached learner runs under. Retained beside `graph` for
+    /// the same reason: a sink change re-wraps the learner, and rebuilding it at
+    /// the default would silently drop a configured policy.
+    usage_policy: core::ObservationPolicy,
     event_stream: Option<EventStream>,
 }
 
@@ -1919,6 +2189,7 @@ impl SkillRegistry {
             memory_sink: None,
             base_sink: Arc::new(NoopSink),
             graph: None,
+            usage_policy: core::ObservationPolicy::default(),
             event_stream: None,
         })
     }
@@ -2010,10 +2281,7 @@ impl SkillRegistry {
     /// BM25 search with an explicit origin — see `ToolRegistry.searchWithOrigin`.
     #[napi]
     pub fn search_with_origin(&self, query: String, top_k: u32, origin: String) -> Vec<SkillHit> {
-        let parsed = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed = parse_origin(origin.as_str());
         self.inner
             .read()
             .expect("skill registry lock poisoned")
@@ -2038,10 +2306,7 @@ impl SkillRegistry {
         method: String,
         context: Option<TraceEventContextConfig>,
     ) -> napi::Result<Vec<SkillHit>> {
-        let parsed_origin = match origin.as_str() {
-            "agent" => Origin::Agent,
-            _ => Origin::Direct,
-        };
+        let parsed_origin = parse_origin(origin.as_str());
         let parsed_method: SearchMethod =
             method
                 .parse()
@@ -2186,9 +2451,40 @@ impl SkillRegistry {
     ) -> napi::Result<NativeEventSubscription> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         let subscription = subscribe_event_callback(&mut self.event_stream, callback, config)?;
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         registry.set_trace_sink(sink);
         Ok(subscription)
+    }
+
+    /// Replace the trace sink with a JS callback — see
+    /// `ToolRegistry.setTraceSinkCallback`.
+    // `ts_args_type` because napi renders the `TraceLineCallback` alias by name
+    // into the `.d.cts` without emitting its definition, leaving a dangling
+    // type. Spelling the signature here also pins the public shape.
+    #[napi(ts_args_type = "sessionId: string, callback: (line: string) => void")]
+    pub fn set_trace_sink_callback(
+        &mut self,
+        session_id: String,
+        callback: TraceLineCallback,
+    ) -> napi::Result<()> {
+        let sink = callback_sink(session_id, callback);
+        self.base_sink = sink.clone();
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_trace_sink(sink);
+        drop(registry);
+        self.memory_sink = None;
+        Ok(())
     }
 
     /// Replace the trace sink — see `ToolRegistry.setTraceSink`.
@@ -2199,7 +2495,14 @@ impl SkillRegistry {
         // Retain the raw sink so enable/disable can re-wrap or restore it —
         // rebuilding from `memory_sink` alone would drop a jsonl sink to noop.
         self.base_sink = sink.clone();
-        let sink = active_trace_sink(&self.base_sink, self.graph.as_ref(), &self.event_stream);
+        // Re-wrap: adaptive ranking learns by decorating the sink, so replacing
+        // the sink outright would quietly stop learning.
+        let sink = active_trace_sink(
+            &self.base_sink,
+            self.graph.as_ref(),
+            &self.event_stream,
+            self.usage_policy,
+        );
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
@@ -2218,9 +2521,19 @@ impl SkillRegistry {
     /// graph attached `SearchHit.score` becomes a fusion score rather than a raw
     /// BM25 score — only ordering is comparable, as with hybrid search.
     #[napi]
-    pub fn enable_adaptive_ranking(&mut self, graph: &IntentGraph) -> napi::Result<()> {
+    pub fn enable_adaptive_ranking(
+        &mut self,
+        graph: &IntentGraph,
+        options: Option<ObservationPolicyOptions>,
+    ) -> napi::Result<()> {
+        self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
-        let sink = active_trace_sink(&self.base_sink, Some(&handle), &self.event_stream);
+        let sink = active_trace_sink(
+            &self.base_sink,
+            Some(&handle),
+            &self.event_stream,
+            self.usage_policy,
+        );
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         registry.set_intent_graph(Some(handle.clone()));
@@ -2234,12 +2547,13 @@ impl SkillRegistry {
     /// resumes from what it already learned.
     #[napi]
     pub fn disable_adaptive_ranking(&mut self) -> napi::Result<()> {
-        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream);
+        let sink = active_trace_sink(&self.base_sink, None, &self.event_stream, self.usage_policy);
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_trace_sink(sink);
         registry.set_intent_graph(None);
         drop(registry);
         self.graph = None;
+        self.usage_policy = core::ObservationPolicy::default();
         Ok(())
     }
 
@@ -2278,5 +2592,32 @@ impl SkillRegistry {
             .into_iter()
             .filter_map(|env| serde_json::to_value(&env).ok())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every documented `SearchOrigin` wire value must reach its own variant.
+    ///
+    /// This is the real guard behind `parse_origin`. The `_ => Origin::Direct`
+    /// fallback is deliberate — an unknown string from an older or newer SDK
+    /// must not fail an infallible search — but it also means a newly added
+    /// `Origin` variant would be silently mapped to `direct` with no compile
+    /// error anywhere. Asserting each value maps somewhere distinct turns that
+    /// silent degrade into a failing test.
+    #[test]
+    fn every_origin_wire_value_maps_to_its_own_variant() {
+        assert_eq!(parse_origin("direct"), Origin::Direct);
+        assert_eq!(parse_origin("agent"), Origin::Agent);
+        assert_eq!(parse_origin("baseline"), Origin::Baseline);
+    }
+
+    #[test]
+    fn an_unrecognized_origin_degrades_to_direct_rather_than_failing() {
+        // Version skew between the SDK and the native must not break search.
+        assert_eq!(parse_origin("from_the_future"), Origin::Direct);
+        assert_eq!(parse_origin(""), Origin::Direct);
     }
 }

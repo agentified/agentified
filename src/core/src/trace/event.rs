@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-/// Distinguishes a direct API call (pre-fetch helpers, library callers,
-/// benchmarks) from one the agent synthesized inside its loop (capability tool).
-/// Used to separate the two paths in trace consumers (rerankers train on agent
-/// calls, inspector shows both).
+/// Where a search came from. Trace consumers separate the paths: rerankers
+/// train on agent calls, the inspector shows all of them, and offline graph
+/// construction reads only the baseline ones.
+///
+/// **Non-exhaustive**, for the same reason [`TraceEvent`] is: the set of
+/// origins grows as Ratel learns to sit in more places, and a downstream
+/// `match` acquiring a `_ =>` arm once is cheaper than a breaking release per
+/// variant. Constructing existing variants is unaffected; only exhaustive
+/// matches need the arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Origin {
     /// A direct API call — SDK helpers, library callers, benchmarks. Wire
     /// value `direct`.
@@ -13,6 +19,15 @@ pub enum Origin {
     /// A call the agent synthesized inside its loop, via the capability
     /// tools. Wire value `agent`.
     Agent,
+    /// A query recorded while Ratel was **observing but not serving**: the host
+    /// captured the turn's text so the invocations that follow can be
+    /// attributed to it, while the agent chose from its own full tool list.
+    /// Wire value `baseline`.
+    ///
+    /// Ratel's own search path never produces this — it is written by a host
+    /// running a baseline capture, and it is what marks an observation as
+    /// unbiased evidence rather than something the ranker influenced.
+    Baseline,
 }
 
 /// How a registry corpus changed — carried by [`TraceEvent::IndexChurn`]
@@ -440,6 +455,13 @@ pub enum TraceEvent {
     /// ranked exactly as it would have with no graph at all. A rising share of
     /// misses means the graph no longer covers what is being asked — the cue to
     /// re-derive it.
+    ///
+    /// `intent: Some(_)` with `promoted: 0` and `dropped > 0` is a different
+    /// failure wearing similar clothes: the cluster matched, but every
+    /// capability it remembers has left the catalog, so it contributed nothing.
+    /// That is catalog drift, not a coverage gap, and re-deriving the graph
+    /// fixes it. Reading the two apart is what [`Self::UsageBoost::dropped`] is
+    /// for.
     UsageBoost {
         /// Id of the matched cluster; `None` when nothing cleared the match
         /// threshold.
@@ -455,6 +477,21 @@ pub enum TraceEvent {
         /// How many capability ids the arm contributed to the fusion. `0` on a
         /// miss.
         promoted: u32,
+        /// How many ids the matched cluster remembers that the registry no
+        /// longer defines, so they were dropped from the arm rather than
+        /// ranked. `0` on a miss — nothing matched, so nothing was dropped.
+        ///
+        /// Non-zero means the graph and the catalog have drifted apart. It says
+        /// nothing about ranking quality on its own: an id the agent cannot
+        /// invoke must never be returned, so dropping is correct. What it
+        /// buys is that the drop is *visible* instead of being folded into the
+        /// miss rate.
+        ///
+        /// `#[serde(default)]` so a log written before this field existed still
+        /// replays: an older `usage_boost` line reads as `0`, which is what it
+        /// meant.
+        #[serde(default)]
+        dropped: u32,
     },
     /// Emitted once when an in-process model's pooling could not be detected
     /// (no `1_Pooling/config.json`) and no override was given, so a mode was

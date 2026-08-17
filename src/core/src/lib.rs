@@ -39,7 +39,8 @@
 //! [`TraceSink`] — the local trace stream behind the inspector and usage
 //! reporting (ADR-0007). The default sink is [`NoopSink`] (discard);
 //! [`MemorySink`] buffers for tests and introspection, [`JsonlSink`] appends
-//! to a local file.
+//! to a local file, and [`FnSink`] hands each line to a closure for hosts
+//! whose destination this crate cannot own.
 //!
 //! # Example: register and search (BM25)
 //!
@@ -116,8 +117,8 @@ pub use tool::Tool;
 pub use tool_registry::{AdaptiveRankingStatus, SearchHit, ToolRegistry};
 pub use trace::{
     ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, FanoutSink, FanoutSubscription,
-    JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace, SearchStage, SkillHitTrace,
+    FnSink, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace, SearchStage, SkillHitTrace,
     TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
 };
 pub use usage::{Intent, IntentGraph, IntentGraphError};
-pub use usage_learner::UsageLearner;
+pub use usage_learner::{ObservationPolicy, OriginFilter, Provenance, UsageLearner};

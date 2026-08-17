@@ -14,7 +14,13 @@ import {
   type Tool,
 } from "../native/index.cjs";
 import { assertNotArtifactBusy } from "./artifact-source-warm.js";
-import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import type {
+  EmbeddingSpec,
+  ObservationPolicyOptions,
+  SearchMethod,
+  SearchOrigin,
+  TraceSinkConfig,
+} from "./catalog.js";
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
 import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
@@ -205,6 +211,12 @@ export class ToolRegistry {
 
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
+    // `"callback"` carries a function, which the native config object cannot,
+    // so it routes to its own binding rather than through `setTraceSink`.
+    if (config.kind === "callback") {
+      this.native.setTraceSinkCallback(config.sessionId, config.onEvent);
+      return;
+    }
     this.native.setTraceSink(config);
   }
 
@@ -236,12 +248,20 @@ export class ToolRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    this.native.enableAdaptiveRanking(graph);
+    // The same three knobs `experimentalBuildIntentGraph` takes, so what
+    // counts as evidence does not depend on which path produced the graph.
+    this.native.enableAdaptiveRanking(graph, {
+      origins: options.origins,
+      provenance: options.provenance,
+    });
     this.#maybeWarnModelMismatch();
   }
 
@@ -260,6 +280,41 @@ export class ToolRegistry {
     }
     this.#adaptiveWarned = false;
     this.#maybeWarnModelMismatch();
+  }
+
+  /**
+   * Build an {@link IntentGraph} from a JSONL trace log — the offline half of
+   * baseline seeding.
+   *
+   * Every distinct query is embedded up front, so clusters form at the dense
+   * tier exactly as the live path would grow them. A model-free replay would
+   * cluster on word overlap instead, and {@link experimentalRebuildIntentGraph}
+   * cannot repair that later: it replaces centroids without revisiting cluster
+   * boundaries.
+   *
+   * The returned graph is **detached** — pass it to
+   * {@link experimentalEnableAdaptiveRanking} once you have decided it is ready.
+   * One call covers both catalogs: a log carrying tool and skill events fills
+   * both edge maps, so do not run it again on the skill registry.
+   *
+   * @param jsonl - the trace log, exactly as `JsonlSink` writes it. Blank lines
+   *   are skipped; a malformed line throws, naming its line number.
+   * @param options - which searches count and how. Both default to seeding —
+   *   `origins: "baseline"`, `provenance: "seeded"` — since that is what
+   *   building from a log is. Pass `{ origins: "agent", provenance: "live" }`
+   *   to re-derive a graph from a period when Ratel was already serving.
+   */
+  async experimentalBuildIntentGraph(
+    jsonl: string,
+    options: ObservationPolicyOptions = {},
+  ): Promise<IntentGraph> {
+    let json: string;
+    try {
+      json = await this.native.buildIntentGraph(jsonl, options);
+    } catch (error) {
+      throw mapEmbedderError(error);
+    }
+    return IntentGraph.fromJson(json);
   }
 
   /**
@@ -479,6 +534,12 @@ export class SkillRegistry {
 
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
+    // `"callback"` carries a function, which the native config object cannot,
+    // so it routes to its own binding rather than through `setTraceSink`.
+    if (config.kind === "callback") {
+      this.native.setTraceSinkCallback(config.sessionId, config.onEvent);
+      return;
+    }
     this.native.setTraceSink(config);
   }
 
@@ -510,12 +571,20 @@ export class SkillRegistry {
    */
   experimentalEnableAdaptiveRanking(
     graph: IntentGraph,
-    options: { warnOnModelMismatch?: boolean; rebuildOnModelChange?: boolean } = {},
+    options: {
+      warnOnModelMismatch?: boolean;
+      rebuildOnModelChange?: boolean;
+    } & ObservationPolicyOptions = {},
   ): void {
     this.#warnOnModelMismatch = options.warnOnModelMismatch ?? true;
     this.#rebuildOnModelChange = options.rebuildOnModelChange ?? false;
     this.#adaptiveWarned = false;
-    this.native.enableAdaptiveRanking(graph);
+    // The same three knobs `experimentalBuildIntentGraph` takes, so what
+    // counts as evidence does not depend on which path produced the graph.
+    this.native.enableAdaptiveRanking(graph, {
+      origins: options.origins,
+      provenance: options.provenance,
+    });
     this.#maybeWarnModelMismatch();
   }
 

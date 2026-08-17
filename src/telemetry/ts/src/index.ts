@@ -337,13 +337,16 @@ export const GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages";
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a `ratel.*` span was a direct library call or synthesized by the agent
- * inside its loop. Carried by `ratel.origin`; mirrors the local trace `Origin`
- * (ADR-0007).
+ * Where a `ratel.*` span's search came from. Carried by `ratel.origin`; mirrors
+ * the local trace `Origin` (ADR-0007).
+ *
+ * `Baseline` marks a query recorded while Ratel was observing but not serving
+ * retrieval.
  */
 export const Origin = {
   Direct: "direct",
   Agent: "agent",
+  Baseline: "baseline",
 } as const;
 export type Origin = (typeof Origin)[keyof typeof Origin];
 

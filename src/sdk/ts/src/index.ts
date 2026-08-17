@@ -44,12 +44,16 @@ export {
   searchCapabilitiesTool,
 } from "./capabilities.js";
 export type {
+  BaselineTurn,
   EmbeddingModelConfig,
   EmbeddingSpec,
   ExecutableTool,
   Executor,
   InputValidationResult,
   InputValidator,
+  ObservationPolicyOptions,
+  OriginFilterOption,
+  ProvenanceOption,
   SearchMethod,
   SearchOrigin,
   ToolCatalogOptions,

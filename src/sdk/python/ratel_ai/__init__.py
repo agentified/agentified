@@ -31,6 +31,7 @@ from .capabilities import (
 )
 from .catalog import (
     AdaptiveRankingStatus,
+    BaselineTurn,
     EmbeddingModelConfig,
     EmbeddingSpec,
     EndpointEmbeddingConfig,
@@ -40,6 +41,8 @@ from .catalog import (
     IntentGraph,
     LocalEmbeddingConfig,
     OllamaEmbeddingConfig,
+    OriginFilterOption,
+    ProvenanceOption,
     SearchMethod,
     SearchOrigin,
     Tool,
@@ -119,6 +122,8 @@ __all__ = [
     "RUNTIME_EVENT_MAX_QUERY_BYTES",
     "RUNTIME_EVENT_TYPES",
     "SearchHit",
+    "OriginFilterOption",
+    "ProvenanceOption",
     "SearchMethod",
     "SearchOrigin",
     "Skill",
@@ -126,6 +131,7 @@ __all__ = [
     "SkillHit",
     "SkillRegistry",
     "Tool",
+    "BaselineTurn",
     "ToolCatalog",
     "ToolRegistry",
     "TraceSinkConfig",

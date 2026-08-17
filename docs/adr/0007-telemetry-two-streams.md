@@ -59,6 +59,18 @@ make Ratel Cloud an island.
   under `~/.ratel/telemetry/<project-slug>/`; the slug convention mirrors Claude Code's
   project directories and is owned by the consuming shell (today ratel-local), while the
   core sink accepts any path.
+- **The destination may belong to the host.** Beyond discard / in-memory / JSONL, core ships
+  `FnSink`, which hands each envelope to a closure as a JSON line, and the SDKs expose it as a
+  `"callback"` sink. A local file is the wrong answer for a process-per-request server on
+  ephemeral disk across N instances — the deployment shape that made this necessary — so the
+  host writes envelopes wherever it already has durable storage. The line is the same wire form
+  the JSONL sink writes — field for field, bar the per-record `ts` and `event_id` every
+  envelope-aware sink mints for itself — which keeps the wire form the single contract: lines
+  collected from anywhere can be joined and read back by any consumer of a JSONL log. This widens what
+  can observe the stream, not what the stream contains; the schema stays core-owned.
+  Query-log semantics are unchanged and now carry a second consequence — the binding delivers
+  to the callback asynchronously, so a host must flush before exit rather than assume the tail
+  of a capture arrived.
 
 ### OpenTelemetry path: pinned, two tiers
 

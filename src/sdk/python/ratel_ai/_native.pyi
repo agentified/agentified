@@ -169,9 +169,10 @@ class ToolRegistry:
     ) -> list[SearchHit]:
         """BM25 search tagged with who initiated it.
 
-        `origin` is "agent" (a model calling a capability tool) or anything
-        else → "direct" (host code). The origin only labels the emitted trace
-        event — ranking is identical to `search`.
+        `origin` is "agent" (a model calling a capability tool), "baseline" (a
+        query observed while Ratel served nothing), or anything else → "direct"
+        (host code). The origin only labels the emitted trace event — ranking is
+        identical to `search`.
         """
 
     def _search_with_method(
@@ -244,6 +245,18 @@ class ToolRegistry:
         jsonl path that cannot be opened.
         """
 
+    def _build_intent_graph(
+        self,
+        jsonl: str,
+        origins: str | None = None,
+        provenance: str | None = None,
+    ) -> str:
+        """Build an intent graph from a JSONL trace log; returns its wire JSON.
+
+        Embeds every distinct query so clusters form densely. Unknown policy
+        values and malformed log lines raise `ValueError`.
+        """
+
     def _rebuild_intent_graph(self) -> None:
         """Re-embed the intent graph's members under the current model (worker)."""
 
@@ -252,7 +265,12 @@ class ToolRegistry:
     ) -> tuple[str, str | None, str | None, bool | None]:
         """(status, built, active, dim_mismatch) — adaptive ranking model check."""
 
-    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+    def enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        origins: str | None = None,
+        provenance: str | None = None,
+    ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
         Wires both halves: this registry ranks against the graph, and its trace
@@ -470,7 +488,12 @@ class SkillRegistry:
     ) -> tuple[str, str | None, str | None, bool | None]:
         """(status, built, active, dim_mismatch) — adaptive ranking model check."""
 
-    def enable_adaptive_ranking(self, graph: IntentGraph) -> None:
+    def enable_adaptive_ranking(
+        self,
+        graph: IntentGraph,
+        origins: str | None = None,
+        provenance: str | None = None,
+    ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
         Wires both halves: this registry ranks against the graph, and its trace
