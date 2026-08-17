@@ -6,28 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-## [0.4.0-rc.2] - 2026-08-17
-
-### Fixed
-
-- The published `@ratel-ai/sdk` peer is now the floor range `>=0.11.0 <1.0.0` instead of a caret of the in-repo SDK version.
-
-### Changed
-
-- Re-cut of `0.4.0-rc.1` against `@ratel-ai/sdk@0.11.0` and `@ratel-ai/telemetry@0.4.0`.
-
-## [0.4.0-rc.1] - 2026-07-30
-
-### Fixed
-
-- Passthrough exposure of a class-backed tool no longer throws when a member other than `execute` reads private (`#`) instance state. The 0.4.0-rc.0 wrapper cloned the tool with `Object.create`, which carries the prototype but not the class's private-field brand, so an inherited getter, `needsApproval`, or `toModelOutput` invoked through the exposed tool raised `Cannot read private member`. Inherited accessors and methods now run against the original instance; own members stay carried by identity, so the frozen-tool contract and native member references are unchanged (correcting the rc.0 note that `this` remained intact).
-
-## [0.4.0-rc.0] - 2026-07-30
+## [0.4.0] - 2026-08-17
 
 ### Added
 
 - `RatelOtelIntegration` copies the active retrieval experiment's five-field baggage stamp onto every AI SDK `gen_ai.*` span, giving generic and vendor destinations the exact experiment/selection join plus arm, role, and unit context.
-- Client-executed passthrough tools now enter Ratel's `execute_tool` funnel through a descriptor-preserving exposure wrapper. Native lifecycle hooks, metadata, `this`, execution options, and scalar/promise/stream return shapes remain intact; provider/host-executed tools without `execute` remain unobservable.
+- Client-executed passthrough tools now enter Ratel's `execute_tool` funnel through a descriptor-preserving exposure wrapper. Native lifecycle hooks, metadata, execution options, and scalar/promise/stream return shapes remain intact; inherited accessors and methods run against the original instance, so a class-backed tool reading private (`#`) state works through the wrapper. Provider/host-executed tools without `execute` remain unobservable.
+
+### Fixed
+
+- The published `@ratel-ai/sdk` peer is now the floor range `>=0.11.0 <1.0.0` instead of a caret of the in-repo SDK version.
 
 ## [0.3.0] - 2026-07-28
 
