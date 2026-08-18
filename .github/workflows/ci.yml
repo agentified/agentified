@@ -492,6 +492,8 @@ jobs:
           node-version: '24'
       - name: Verify v1 conformance vectors
         run: node protocol/v1/conformance/verify.mjs
+      - name: Verify v2 conformance vectors
+        run: node protocol/v2/conformance/verify.mjs
 
   # Release-readiness matrix. Builds the REAL distributables (wheel, npm loader + native
   # binding, crate, sdist) from this PR, installs each into a clean environment, and runs
