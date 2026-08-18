@@ -131,10 +131,11 @@ jobs:
           tmp=$(mktemp -d)
           cd "$tmp"
           npm init -y >/dev/null
-          # npm installs the adapter's declared SDK peer. Do not force SDK
-          # `latest`: adapters and the SDK are independent release units.
+          # Co-install the current SDK on purpose: this proves the adapter's
+          # published peer range still admits the newest SDK, which is the drift ADR-0020 fixed.
           npm install --no-audit --no-fund \
             "@ratel-ai/vercel-ai-sdk@${{ steps.ver.outputs.adapter_spec }}" \
+            "@ratel-ai/sdk@latest" \
             "ai@^7.0.0"
           node --input-type=module <<'EOF'
           import { aiSdk } from "@ratel-ai/vercel-ai-sdk";
@@ -213,10 +214,11 @@ jobs:
           tmp=$(mktemp -d)
           cd "$tmp"
           npm init -y >/dev/null
-          # npm installs the adapter's declared SDK peer. Do not force SDK
-          # `latest`: adapters and the SDK are independent release units.
+          # Co-install the current SDK on purpose: this proves the adapter's
+          # published peer range still admits the newest SDK, which is the drift ADR-0020 fixed.
           npm install --no-audit --no-fund \
             "@ratel-ai/mastra@${{ steps.ver.outputs.adapter_spec }}" \
+            "@ratel-ai/sdk@latest" \
             "@mastra/core@^1.11.0" \
             "zod@^4.0.0"
           node --input-type=module <<'EOF'

@@ -20,9 +20,10 @@ test("main push path filtering checks out the repository first", () => {
 });
 
 for (const job of ["verify-vercel-ai-sdk", "verify-mastra"]) {
-  test(`${job} lets npm resolve the adapter's declared SDK peer`, () => {
+  test(`${job} co-installs @ratel-ai/sdk@latest without interpolating a specific SDK version`, () => {
     const body = jobBody(verifyInstallWorkflow, job);
 
+    assert.match(body, /"@ratel-ai\/sdk@latest"/);
     assert.doesNotMatch(body, /"@ratel-ai\/sdk@\$\{\{/);
   });
 }
@@ -57,6 +58,12 @@ test("ts path filter lists release.yml", () => {
   const ts = ciWorkflow.indexOf("\n            ts:");
   const next = ciWorkflow.indexOf("\n            python:", ts);
   assert.ok(ciWorkflow.slice(ts, next).includes("- '.github/workflows/release.yml'"));
+});
+
+test("ts path filter lists verify-install.yml", () => {
+  const ts = ciWorkflow.indexOf("\n            ts:");
+  const next = ciWorkflow.indexOf("\n            python:", ts);
+  assert.ok(ciWorkflow.slice(ts, next).includes("- '.github/workflows/verify-install.yml'"));
 });
 
 function jobBody(workflow, job) {
