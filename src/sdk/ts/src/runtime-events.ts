@@ -140,6 +140,60 @@ export interface CloudDefinitionOverride {
   readonly searchableDescription: string;
 }
 
+/** Successful payload from the runtime-catalog override endpoint. */
+export interface CloudDefinitionsOverlay {
+  /** Complete override set, sorted by the source's wire contract. */
+  readonly overrides: readonly CloudDefinitionOverride[];
+}
+
+/** Fresh complete overlay and its strong entity tag. */
+export interface CloudDefinitionsOverlayUpdated {
+  /** Successful conditional request. */
+  readonly status: 200;
+  /** Strong entity tag to send on the next refresh. */
+  readonly etag: string;
+  /** Complete overlay payload. */
+  readonly body: CloudDefinitionsOverlay;
+}
+
+/** Response indicating that the previously applied overlay is still current. */
+export interface CloudDefinitionsOverlayNotModified {
+  /** Not-modified conditional response. */
+  readonly status: 304;
+}
+
+/** Conditional overlay response surfaced by an injected Cloud client. */
+export type CloudDefinitionsOverlayResponse =
+  | CloudDefinitionsOverlayUpdated
+  | CloudDefinitionsOverlayNotModified;
+
+/** Pluggable boundary implemented by the Cloud SDK's runtime client. */
+export interface CloudDefinitionsOverlaySource {
+  /** Pull the overlay, conditionally when a previous strong entity tag is available. */
+  fetch(ifNoneMatch?: string): Promise<CloudDefinitionsOverlayResponse>;
+}
+
+/** Opt-in options for attaching Cloud-owned Retrieval descriptions. */
+export type CloudDefinitionsAttachOptions =
+  | {
+      /** Give Cloud ownership of Retrieval descriptions for covered entries. */
+      readonly useCloudDefinitions: true;
+      /** Source supplied by the attaching Cloud client. */
+      readonly source: CloudDefinitionsOverlaySource;
+    }
+  | {
+      /** Keep local Retrieval descriptions authoritative. */
+      readonly useCloudDefinitions?: false;
+      /** Ignored while Cloud ownership is disabled. */
+      readonly source?: CloudDefinitionsOverlaySource;
+    };
+
+/** Active Cloud-definition attachment. */
+export interface CloudDefinitionsAttachment {
+  /** Pull and apply a changed complete overlay; returns false for 304 or disabled attach. */
+  refresh(): Promise<boolean>;
+}
+
 /** Public catalog-state seam. */
 export interface RuntimeCatalog {
   /** Return a current, serializable full replacement snapshot. */
@@ -148,6 +202,10 @@ export interface RuntimeCatalog {
 
 /** Runtime catalog implemented by current SDK runtimes for Cloud attach. */
 export interface CloudDefinitionsRuntimeCatalog extends RuntimeCatalog {
+  /** Attach an injected Cloud overlay source and complete the initial pull. */
+  attachCloudDefinitions(
+    options: CloudDefinitionsAttachOptions,
+  ): Promise<CloudDefinitionsAttachment>;
   /** Apply the latest complete Cloud override set to live local registrations. */
   applyCloudDefinitions(overrides: readonly CloudDefinitionOverride[]): Promise<void>;
 }

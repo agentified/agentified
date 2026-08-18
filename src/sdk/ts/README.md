@@ -28,23 +28,27 @@ Registration always owns the complete local definition and syncs that definition
 opts in at attach time:
 
 ```ts
-import { ratel } from "@ratel-ai/sdk";
-import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
+import { ratel, type CloudDefinitionsOverlaySource } from "@ratel-ai/sdk";
 
 const runtime = ratel();
 await runtime.tools.register(localTools);
 
-const attachment = ratelCloud.attach(runtime, { useCloudDefinitions: true });
-await attachment.flush(); // includes the initial override pull
+export async function attachCloudDefinitions(source: CloudDefinitionsOverlaySource) {
+  return runtime.catalog.attachCloudDefinitions({ useCloudDefinitions: true, source });
+}
 ```
 
 With `useCloudDefinitions` omitted or false, local `searchableDescription` values remain
-authoritative and Cloud does not pull or apply overrides. With it enabled, attach pulls
-`GET /v1/runtime-catalog/overrides`, conditionally refreshes with the response ETag, and applies
-the complete overlay to live tools, skills, and facts. Removing a Cloud override restores the
-latest local value. If both sides define a Retrieval description for one entry, Cloud wins while
-attached and the SDK warns once for that continuous shadowing period; clearing and later
-reapplying the Cloud override starts a new period.
+authoritative and the source is not called. With it enabled, the attach promise includes the
+initial pull and applies the complete overlay to live tools, skills, and facts. Call the returned
+attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
+source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
+ETag. The Cloud SDK supplies the authenticated network source; this package owns only the typed
+attach-and-apply boundary.
+
+Removing a Cloud override restores the latest local value. If both sides define a Retrieval
+description for one entry, Cloud wins while attached and the SDK warns once for that continuous
+shadowing period; clearing and later reapplying the Cloud override starts a new period.
 
 The model-facing description, schemas, bodies, tags, and executors always remain local. Definition
 events emitted after opt-in carry `ratel.catalog.use_cloud_definitions=true`, including one

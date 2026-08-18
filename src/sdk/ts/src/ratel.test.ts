@@ -33,6 +33,85 @@ const native = (id: string, description: string): ExecutableTool => ({
 const CAPABILITY_IDS = [SEARCH_CAPABILITIES_ID, INVOKE_TOOL_ID, GET_SKILL_CONTENT_ID];
 
 describe("ratel() standalone core", () => {
+  it("attaches and refreshes Cloud retrieval descriptions through an injected source", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      searchableDescription: "localcanaryterm",
+    });
+    const requests: Array<string | undefined> = [];
+    const responses = [
+      {
+        status: 200 as const,
+        etag: '"overlay-1"',
+        body: {
+          overrides: [
+            {
+              kind: "tool" as const,
+              entryId: "deploy",
+              searchableDescription: "cloudrollbackterm",
+            },
+          ],
+        },
+      },
+      { status: 304 as const },
+      {
+        status: 200 as const,
+        etag: '"overlay-2"',
+        body: { overrides: [] },
+      },
+    ];
+    const attachment = await r.catalog.attachCloudDefinitions({
+      useCloudDefinitions: true,
+      source: {
+        fetch: async (ifNoneMatch) => {
+          requests.push(ifNoneMatch);
+          const response = responses.shift();
+          if (response === undefined) throw new Error("unexpected overlay fetch");
+          return response;
+        },
+      },
+    });
+
+    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("localcanaryterm", 5)).toEqual([]);
+
+    await attachment.refresh();
+    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+
+    await attachment.refresh();
+    expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+    expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-1"']);
+  });
+
+  it("does not pull or apply Cloud definitions without the opt-in flag", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      searchableDescription: "localcanaryterm",
+    });
+    const fetch = vi.fn(async () => ({
+      status: 200 as const,
+      etag: '"overlay-1"',
+      body: {
+        overrides: [
+          { kind: "tool" as const, entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+        ],
+      },
+    }));
+
+    const attachment = await r.catalog.attachCloudDefinitions({
+      useCloudDefinitions: false,
+      source: { fetch },
+    });
+    await attachment.refresh();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+  });
+
   it("keeps local retrieval descriptions when Cloud definitions are not enabled", async () => {
     const r = ratel();
     await r.tools.register({

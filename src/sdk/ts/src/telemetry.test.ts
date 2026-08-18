@@ -289,7 +289,16 @@ describe("execute_tool span", () => {
       description: "Where the shop is",
     });
 
-    await runtime.catalog.applyCloudDefinitions([]);
+    await runtime.catalog.attachCloudDefinitions({
+      useCloudDefinitions: true,
+      source: {
+        fetch: async () => ({
+          status: 200,
+          etag: '"empty-overlay"',
+          body: { overrides: [] },
+        }),
+      },
+    });
 
     const events = logEventsNamed("ratel.catalog.definition");
     expect(events).toHaveLength(6);

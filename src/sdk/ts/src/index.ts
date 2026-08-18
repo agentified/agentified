@@ -119,6 +119,13 @@ export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type {
   CatalogSnapshot,
   CloudDefinitionOverride,
+  CloudDefinitionsAttachment,
+  CloudDefinitionsAttachOptions,
+  CloudDefinitionsOverlay,
+  CloudDefinitionsOverlayNotModified,
+  CloudDefinitionsOverlayResponse,
+  CloudDefinitionsOverlaySource,
+  CloudDefinitionsOverlayUpdated,
   CloudDefinitionsRuntimeCatalog,
   RuntimeCatalog,
   RuntimeEvent,
