@@ -1,6 +1,18 @@
 interface SearchableDefinition {
   readonly id: string;
+  readonly description: string;
   readonly searchableDescription?: string;
+}
+
+/** @internal Whether two definitions produce the same retrieval-description component. */
+export function hasSameRetrievalDescription(
+  left: SearchableDefinition,
+  right: SearchableDefinition,
+): boolean {
+  return (
+    (left.searchableDescription ?? left.description) ===
+    (right.searchableDescription ?? right.description)
+  );
 }
 
 /** @internal Apply one Cloud retrieval description and diagnose local shadowing. */

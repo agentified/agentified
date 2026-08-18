@@ -39,6 +39,13 @@ describe("ratel() standalone core", () => {
       ...native("deploy", "Deploy an application."),
       searchableDescription: "localcanaryterm",
     });
+    await r.skills.register({
+      id: "deploy-skill",
+      name: "deploy-skill",
+      description: "Deploy an application.",
+      searchableDescription: "localskillterm",
+    });
+    const snapshotBeforeAttach = r.catalog.snapshot();
     const requests: Array<string | undefined> = [];
     const responses = [
       {
@@ -50,6 +57,11 @@ describe("ratel() standalone core", () => {
               kind: "tool" as const,
               entryId: "deploy",
               searchableDescription: "cloudrollbackterm",
+            },
+            {
+              kind: "skill" as const,
+              entryId: "deploy-skill",
+              searchableDescription: "cloudskillterm",
             },
           ],
         },
@@ -75,6 +87,10 @@ describe("ratel() standalone core", () => {
 
     expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
     expect(r.tools.search("localcanaryterm", 5)).toEqual([]);
+    expect(r.skills.search("cloudskillterm", 5).map((hit) => hit.skillId)).toEqual([
+      "deploy-skill",
+    ]);
+    expect(r.catalog.snapshot()).toEqual(snapshotBeforeAttach);
 
     await attachment.refresh();
     expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);

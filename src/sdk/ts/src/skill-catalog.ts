@@ -293,7 +293,7 @@ export class SkillCatalog {
 
   /** Complete, deterministic public skill definition set. */
   snapshot(): SkillDefinition[] {
-    return [...this.skills.values()]
+    return [...this.localSkills.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map(({ body: _body, ...skill }) => structuredClone(skill));
   }

@@ -2,7 +2,7 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
-import { withCloudDefinition } from "./cloud-definitions.js";
+import { hasSameRetrievalDescription, withCloudDefinition } from "./cloud-definitions.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -415,10 +415,13 @@ export class ToolCatalog {
   /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
   async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
     this.cloudSearchableDescriptions = new Map(overrides);
-    this.registry.setUseCloudDefinitions();
-    await this.registerEffective(
-      [...this.localTools.values()].map((tool) => this.applyCloudDefinition(tool)),
-    );
+    const effective = [...this.localTools.values()].map((tool) => this.applyCloudDefinition(tool));
+    this.registry.setUseCloudDefinitions(effective);
+    const changed = effective.filter((tool) => {
+      const current = this.tools.get(tool.id);
+      return current === undefined || !hasSameRetrievalDescription(current, tool);
+    });
+    if (changed.length > 0) await this.registerEffective(changed);
   }
 
   private async registerEffective(
@@ -523,9 +526,11 @@ export class ToolCatalog {
 
   /** Complete, deterministic, executor-free tool definition set. */
   snapshot(): ToolDefinition[] {
-    return [...this.tools.values()]
+    return [...this.localTools.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map((tool) => structuredClone(tool));
+      .map(({ execute: _execute, validateInput: _validateInput, ...tool }) =>
+        structuredClone(tool),
+      );
   }
 
   /** @internal Attach one public runtime-event subscriber. */

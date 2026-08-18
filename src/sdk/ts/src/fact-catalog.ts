@@ -2,7 +2,7 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { withCloudDefinition } from "./cloud-definitions.js";
+import { hasSameRetrievalDescription, withCloudDefinition } from "./cloud-definitions.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
   assertValidFact,
@@ -121,10 +121,14 @@ export class FactCatalog {
 
   /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
   async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
-    this.setCloudDefinitions(overrides);
-    await this.registerEffective(
-      [...this.localFacts.values()].map((fact) => this.applyCloudDefinition(fact)),
-    );
+    this.cloudSearchableDescriptions = new Map(overrides);
+    const effective = [...this.localFacts.values()].map((fact) => this.applyCloudDefinition(fact));
+    this.registry.setUseCloudDefinitions(effective);
+    const changed = effective.filter((fact) => {
+      const current = this.facts.get(fact.id);
+      return current === undefined || !hasSameRetrievalDescription(current, fact);
+    });
+    if (changed.length > 0) await this.registerEffective(changed);
   }
 
   private async registerEffective(

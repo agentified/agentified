@@ -43,8 +43,9 @@ authoritative and the source is not called. With it enabled, the attach promise 
 initial pull and applies the complete overlay to live tools, skills, and facts. Call the returned
 attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
 source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
-ETag. The Cloud SDK supplies the authenticated network source; this package owns only the typed
-attach-and-apply boundary.
+ETag. Applying an identical or empty overlay does not re-index unchanged entries. The Cloud SDK
+supplies the authenticated network source; this package owns only the typed attach-and-apply
+boundary.
 
 Removing a Cloud override restores the latest local value. If both sides define a Retrieval
 description for one entry, Cloud wins while attached and the SDK warns once for that continuous
@@ -452,7 +453,8 @@ const experiment = experimentalDefineExperiment(config, r.events);
 
 `catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
 consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
-recovery.
+recovery. It always contains the locally registered definitions, even while an opted-in Cloud
+overlay supplies the live Retrieval descriptions.
 
 ## Telemetry
 

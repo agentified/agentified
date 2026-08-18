@@ -97,9 +97,10 @@ export class ToolRegistry {
     recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned. */
-  setUseCloudDefinitions(): void {
+  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
+  setUseCloudDefinitions(items: readonly Tool[] = []): void {
     this.useCloudDefinitions = true;
+    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, true);
   }
 
   /**
@@ -463,9 +464,10 @@ export class SkillRegistry {
     return outcome;
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned. */
-  setUseCloudDefinitions(): void {
+  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
+  setUseCloudDefinitions(items: readonly Skill[] = []): void {
     this.useCloudDefinitions = true;
+    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes, true);
   }
 
   /**
@@ -750,9 +752,10 @@ export class FactRegistry {
     recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned. */
-  setUseCloudDefinitions(): void {
+  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
+  setUseCloudDefinitions(items: readonly Fact[] = []): void {
     this.useCloudDefinitions = true;
+    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, true);
   }
 
   /**
