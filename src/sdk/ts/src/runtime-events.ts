@@ -15,6 +15,7 @@ const REQUIRED_ENVELOPE_FIELDS = new Set([
 
 /** Frozen remotely publishable v1 event names from ADR-0020. */
 export const RUNTIME_EVENT_TYPES = [
+  "catalog_definition",
   "search",
   "skill_search",
   "gateway_search",

@@ -170,6 +170,45 @@ def test_matches_frozen_cross_language_event_vocabulary() -> None:
     }
 
 
+@pytest.mark.parametrize("capture_mode", ["NO_CONTENT", "SPAN_AND_EVENT"])
+async def test_publishes_catalog_definitions_independently_of_otel_capture_mode(
+    capture_mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", capture_mode)
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools])
+    received: list[dict[str, object]] = []
+    subscription = events.subscribe(lambda batch: received.extend(batch))
+
+    await tools.register(
+        ExecutableTool(
+            id="read_file",
+            name="read_file",
+            description="Read a file",
+            input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+            output_schema={"type": "object"},
+            execute=lambda _args: {"secret": "executor result"},
+        )
+    )
+    await subscription.flush()
+
+    definition = next(event for event in received if event["type"] == "catalog_definition")
+    expected = {
+        "kind": "tool",
+        "id": "read_file",
+        "name": "read_file",
+        "description": "Read a file",
+        "tags": [],
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+        "output_schema": {"type": "object"},
+        "searchable_description": "Read a file",
+        "searchable_description_overridden": False,
+    }
+    assert {key: definition[key] for key in expected} == expected
+    assert "execute" not in definition
+    subscription.unsubscribe()
+
+
 class TestDefaultSourceId:
     """The default source_id chain (ADR-0020): OTEL_SERVICE_NAME, then service.name in
     OTEL_RESOURCE_ATTRIBUTES, then the service name the telemetry helper recorded from a

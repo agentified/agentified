@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { context, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -13,6 +14,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import canonicalize from "canonicalize";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FactCatalog } from "./experimental.js";
 import {
@@ -35,6 +37,36 @@ let exporter: InMemorySpanExporter;
 let logExporter: InMemoryLogRecordExporter;
 
 const CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
+
+interface CatalogCanonicalizationFixture {
+  catalog_definition_canonicalization: {
+    algorithm: string;
+    vectors: Array<{
+      name: string;
+      input: {
+        kind: "tool";
+        id: string;
+        name: string;
+        description: string;
+        tags: string[];
+        input_schema: ExecutableTool["inputSchema"];
+        output_schema: ExecutableTool["outputSchema"];
+        searchable_description: string;
+        searchable_description_overridden: boolean;
+      };
+      canonical: string;
+      input_schema_canonical: string;
+      output_schema_canonical: string;
+      sha256: string;
+    }>;
+  };
+}
+
+const catalogCanonicalization = (
+  JSON.parse(
+    readFileSync(new URL("../../../telemetry/conformance/fixtures.json", import.meta.url), "utf8"),
+  ) as CatalogCanonicalizationFixture
+).catalog_definition_canonicalization;
 
 beforeEach(() => {
   // Fresh exporter + provider each test. Don't shut the provider down in teardown
@@ -206,6 +238,56 @@ describe("execute_tool span", () => {
     expect(event?.attributes["ratel.catalog.content_hash"]).toBe(
       "03542abe36f96c27db84a086337f7b66737c2480848193fde046e770b63231b8",
     );
+  });
+
+  it("matches shared RFC 8785 catalog-definition bytes, schema attributes, and hashes", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+
+    for (const vector of catalogCanonicalization.vectors) {
+      expect(canonicalize(vector.input), vector.name).toBe(vector.canonical);
+      await catalog.register({
+        id: vector.input.id,
+        name: vector.input.name,
+        description: vector.input.description,
+        inputSchema: vector.input.input_schema,
+        outputSchema: vector.input.output_schema,
+        ...(vector.input.searchable_description_overridden
+          ? { searchableDescription: vector.input.searchable_description }
+          : {}),
+        execute: () => undefined,
+      });
+    }
+
+    const events = logEventsNamed("ratel.catalog.definition");
+    expect(events).toHaveLength(catalogCanonicalization.vectors.length);
+    for (const [index, vector] of catalogCanonicalization.vectors.entries()) {
+      expect(events[index]?.attributes, vector.name).toMatchObject({
+        "ratel.catalog.input_schema": vector.input_schema_canonical,
+        "ratel.catalog.output_schema": vector.output_schema_canonical,
+        "ratel.catalog.content_hash": vector.sha256,
+      });
+    }
+  });
+
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])("rejects non-JSON schema number %s", async (number) => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+
+    await expect(
+      catalog.register({
+        id: "invalid-number",
+        name: "invalid-number",
+        description: "Invalid number",
+        inputSchema: { const: number },
+        outputSchema: {},
+        execute: () => undefined,
+      }),
+    ).rejects.toThrow();
   });
 
   it("under SPAN_AND_EVENT captures content on both the span and the event", async () => {

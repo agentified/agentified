@@ -24,6 +24,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
 from typing import Any, TypedDict, TypeVar
 
+import rfc8785
+
 from .runtime_events import new_runtime_event_id
 
 try:
@@ -181,7 +183,7 @@ def record_catalog_definitions(
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return rfc8785.dumps(value).decode("utf-8")
 
 
 def _tracer() -> Any:

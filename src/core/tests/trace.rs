@@ -8,6 +8,10 @@ use ratel_ai_core::{
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
+fn catalog_canonicalization_vectors() -> Value {
+    serde_json::from_str(include_str!("../../telemetry/conformance/fixtures.json")).unwrap()
+}
+
 struct BlockingSink {
     released: (Mutex<bool>, Condvar),
     started: Mutex<Option<mpsc::SyncSender<()>>>,
@@ -200,6 +204,51 @@ fn registration_emits_complete_catalog_definitions_for_every_kind() {
     assert_eq!(definitions[2].4, vec!["location"]);
     assert_eq!(definitions[2].7, "Where the shop is");
     assert!(!definitions[2].8);
+}
+
+#[test]
+fn catalog_definitions_match_shared_rfc8785_vectors() {
+    let fixtures = catalog_canonicalization_vectors();
+    let vectors = fixtures["catalog_definition_canonicalization"]["vectors"]
+        .as_array()
+        .unwrap();
+
+    for vector in vectors {
+        let input = &vector["input"];
+        let canonical = serde_json_canonicalizer::to_string(input).unwrap();
+        assert_eq!(canonical, vector["canonical"].as_str().unwrap());
+
+        let sink = Arc::new(MemorySink::with_source("jcs", "ratel"));
+        let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+        registry.register(Tool {
+            id: input["id"].as_str().unwrap().into(),
+            name: input["name"].as_str().unwrap().into(),
+            description: input["description"].as_str().unwrap().into(),
+            searchable_description: input["searchable_description_overridden"]
+                .as_bool()
+                .unwrap()
+                .then(|| input["searchable_description"].as_str().unwrap().into()),
+            input_schema: input["input_schema"].clone(),
+            output_schema: input["output_schema"].clone(),
+        });
+
+        let hash = sink
+            .drain()
+            .into_iter()
+            .find_map(|envelope| match envelope.event {
+                TraceEvent::CatalogDefinition { content_hash, .. } => Some(content_hash),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(hash, vector["sha256"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn catalog_definition_canonicalizer_rejects_non_json_numbers() {
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(serde_json_canonicalizer::to_vec(&number).is_err());
+    }
 }
 
 #[test]

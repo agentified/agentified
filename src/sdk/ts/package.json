@@ -87,6 +87,7 @@
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.220.0",
     "@ratel-ai/telemetry": "workspace:^",
-    "@types/json-schema": "^7.0.15"
+    "@types/json-schema": "^7.0.15",
+    "canonicalize": "^4.0.0"
   }
 }

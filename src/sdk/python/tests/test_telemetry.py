@@ -10,10 +10,12 @@ host deployment would wire it. These tests need the OpenTelemetry SDK
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 import pytest
+import rfc8785
 
 pytest.importorskip("opentelemetry.sdk.trace", reason="OpenTelemetry SDK not installed")
 pytest.importorskip("ratel_ai_telemetry", reason="ratel-ai telemetry vocabulary not installed")
@@ -245,6 +247,69 @@ async def test_catalog_definitions_are_gated_complete_and_deduplicated(
         events[3].attributes["ratel.catalog.content_hash"]
         != events[1].attributes["ratel.catalog.content_hash"]
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_match_shared_rfc8785_vectors(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    fixtures = json.loads(
+        (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
+    )
+    vectors = fixtures["catalog_definition_canonicalization"]["vectors"]
+    catalog = ToolCatalog()
+
+    for vector in vectors:
+        definition = vector["input"]
+        assert rfc8785.dumps(definition) == vector["canonical"].encode()
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema=definition["input_schema"],
+                output_schema=definition["output_schema"],
+                searchable_description=(
+                    definition["searchable_description"]
+                    if definition["searchable_description_overridden"]
+                    else None
+                ),
+                execute=lambda _args: None,
+            )
+        )
+
+    events = _log_events_named("ratel.catalog.definition")
+    assert len(events) == len(vectors)
+    for event, vector in zip(events, vectors):
+        assert event.attributes["ratel.catalog.input_schema"] == vector[
+            "input_schema_canonical"
+        ]
+        assert event.attributes["ratel.catalog.output_schema"] == vector[
+            "output_schema_canonical"
+        ]
+        assert event.attributes["ratel.catalog.content_hash"] == vector["sha256"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", [math.nan, math.inf, -math.inf])
+async def test_catalog_definitions_reject_non_json_numbers(
+    number: float, exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+
+    with pytest.raises((ValueError, TypeError, OverflowError)):
+        await catalog.register(
+            ExecutableTool(
+                id="invalid-number",
+                name="invalid-number",
+                description="Invalid number",
+                input_schema={"const": number},
+                output_schema={},
+                execute=lambda _args: None,
+            )
+        )
 
 
 @pytest.mark.asyncio

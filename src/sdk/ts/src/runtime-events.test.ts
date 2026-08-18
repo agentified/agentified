@@ -42,6 +42,7 @@ const conformance = JSON.parse(
 
 describe("public runtime events", () => {
   afterEach(() => {
+    delete process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT;
     logs.disable();
     trace.disable();
   });
@@ -251,6 +252,41 @@ describe("public runtime events", () => {
     expect(received.every((event) => event.source_id === "source-public")).toBe(true);
     expect(received.every((event) => /^[0-9A-HJKMNP-TV-Z]{26}$/.test(event.event_id))).toBe(true);
 
+    subscription.unsubscribe();
+  });
+
+  it.each([
+    "NO_CONTENT",
+    "SPAN_AND_EVENT",
+  ])("publishes catalog definitions independently of OTel capture mode %s", async (captureMode) => {
+    process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = captureMode;
+    const runtime = ratel();
+    const received: RuntimeEvent[] = [];
+    const subscription = runtime.events.subscribe((batch) => received.push(...batch));
+
+    await runtime.tools.register({
+      id: "read_file",
+      name: "read_file",
+      description: "Read a file",
+      inputSchema: { type: "object", properties: { path: { type: "string" } } },
+      outputSchema: { type: "object" },
+      execute: () => ({ secret: "executor result" }),
+    });
+    await subscription.flush();
+
+    const definition = received.find((event) => event.type === "catalog_definition");
+    expect(definition).toMatchObject({
+      kind: "tool",
+      id: "read_file",
+      name: "read_file",
+      description: "Read a file",
+      tags: [],
+      input_schema: { type: "object", properties: { path: { type: "string" } } },
+      output_schema: { type: "object" },
+      searchable_description: "Read a file",
+      searchable_description_overridden: false,
+    });
+    expect(definition).not.toHaveProperty("execute");
     subscription.unsubscribe();
   });
 

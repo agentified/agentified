@@ -9,6 +9,7 @@
     "otel_event_id_attribute": "ratel.event.id",
     "required_envelope_fields": ["v", "event_id", "ts", "session_id", "source_id", "type"],
     "event_types": [
+      "catalog_definition",
       "search",
       "skill_search",
       "gateway_search",
@@ -36,6 +37,88 @@
       "experiment_invocation",
       "experiment_outcome",
       "events_dropped"
+    ]
+  },
+  "catalog_definition_canonicalization": {
+    "algorithm": "RFC 8785",
+    "vectors": [
+      {
+        "name": "mixed-case and non-BMP keys",
+        "input": {
+          "kind": "tool",
+          "id": "mixed-keys",
+          "name": "Mixed 😀",
+          "description": "Mixed key order",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "a": { "type": "string" },
+              "B": { "type": "number" },
+              "𐀀": { "type": "boolean" },
+              "｡": { "type": "null" }
+            }
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } }
+          },
+          "searchable_description": "Mixed key order",
+          "searchable_description_overridden": false
+        },
+        "canonical": "{\"description\":\"Mixed key order\",\"id\":\"mixed-keys\",\"input_schema\":{\"properties\":{\"B\":{\"type\":\"number\"},\"a\":{\"type\":\"string\"},\"𐀀\":{\"type\":\"boolean\"},\"｡\":{\"type\":\"null\"}},\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Mixed 😀\",\"output_schema\":{\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"type\":\"object\"},\"searchable_description\":\"Mixed key order\",\"searchable_description_overridden\":false,\"tags\":[]}",
+        "input_schema_canonical": "{\"properties\":{\"B\":{\"type\":\"number\"},\"a\":{\"type\":\"string\"},\"𐀀\":{\"type\":\"boolean\"},\"｡\":{\"type\":\"null\"}},\"type\":\"object\"}",
+        "output_schema_canonical": "{\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"type\":\"object\"}",
+        "sha256": "6874d8d75d1dd8e5bf59755e7e9ad7bd572d9e95f7f0e24bf9b8669e4ed824bf"
+      },
+      {
+        "name": "ECMAScript number forms",
+        "input": {
+          "kind": "tool",
+          "id": "numbers",
+          "name": "Numbers",
+          "description": "Number formatting",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "examples": [1e-7, 1e-6, 1e21, 1.0, -0.0, 333333333.33333329, 4.50, 2e-3, 1e-27]
+          },
+          "output_schema": { "type": "number", "const": -0.0 },
+          "searchable_description": "Number formatting",
+          "searchable_description_overridden": false
+        },
+        "canonical": "{\"description\":\"Number formatting\",\"id\":\"numbers\",\"input_schema\":{\"examples\":[1e-7,0.000001,1e+21,1,0,333333333.3333333,4.5,0.002,1e-27],\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Numbers\",\"output_schema\":{\"const\":0,\"type\":\"number\"},\"searchable_description\":\"Number formatting\",\"searchable_description_overridden\":false,\"tags\":[]}",
+        "input_schema_canonical": "{\"examples\":[1e-7,0.000001,1e+21,1,0,333333333.3333333,4.5,0.002,1e-27],\"type\":\"object\"}",
+        "output_schema_canonical": "{\"const\":0,\"type\":\"number\"}",
+        "sha256": "9a62a9f71e9fb6139bb4067ad86eccce152246bd4742f0c6862463e0011ba9a4"
+      },
+      {
+        "name": "Unicode controls and nested arrays",
+        "input": {
+          "kind": "tool",
+          "id": "unicode-controls",
+          "name": "Unicode ☃",
+          "description": "Line\nTab\tQuote\"Slash\\ Emoji 😀",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "text": { "enum": ["\u0000\b\f\n\r\t", "雪", "😀"] },
+              "nested": { "items": [{ "z": true, "A": null }, [3, 2, 1]] }
+            }
+          },
+          "output_schema": {
+            "type": "array",
+            "items": [{ "type": "string" }, { "type": "number" }]
+          },
+          "searchable_description": "Line\nTab\tQuote\"Slash\\ Emoji 😀",
+          "searchable_description_overridden": true
+        },
+        "canonical": "{\"description\":\"Line\\nTab\\tQuote\\\"Slash\\\\ Emoji 😀\",\"id\":\"unicode-controls\",\"input_schema\":{\"properties\":{\"nested\":{\"items\":[{\"A\":null,\"z\":true},[3,2,1]]},\"text\":{\"enum\":[\"\\u0000\\b\\f\\n\\r\\t\",\"雪\",\"😀\"]}},\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Unicode ☃\",\"output_schema\":{\"items\":[{\"type\":\"string\"},{\"type\":\"number\"}],\"type\":\"array\"},\"searchable_description\":\"Line\\nTab\\tQuote\\\"Slash\\\\ Emoji 😀\",\"searchable_description_overridden\":true,\"tags\":[]}",
+        "input_schema_canonical": "{\"properties\":{\"nested\":{\"items\":[{\"A\":null,\"z\":true},[3,2,1]]},\"text\":{\"enum\":[\"\\u0000\\b\\f\\n\\r\\t\",\"雪\",\"😀\"]}},\"type\":\"object\"}",
+        "output_schema_canonical": "{\"items\":[{\"type\":\"string\"},{\"type\":\"number\"}],\"type\":\"array\"}",
+        "sha256": "00cbf4a93c435f1a404f931f74a61475de8a26790ff11949ab87c2552d876e09"
+      }
     ]
   },
   "fixtures": [

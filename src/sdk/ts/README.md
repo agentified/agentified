@@ -398,8 +398,11 @@ subscription.unsubscribe();
 
 Delivery is best effort, bounded, and fail-open: subscriber work never blocks catalog operations.
 `flush()` drains work already accepted by this process and waits for async handlers to settle.
-The stream includes search, invocation, catalog churn, upstream/auth, experiment, and observable
-delivery-loss facts described by [ADR 0020](../../../docs/adr/0020-runtime-events-lane.md).
+The stream includes search, invocation, catalog churn and public `catalog_definition` changes,
+upstream/auth, experiment, and observable delivery-loss facts described by
+[ADR 0020](../../../docs/adr/0020-runtime-events-lane.md). Attaching a publisher explicitly
+consents to those definition fields; the OTel message-content capture setting does not filter this
+runtime lane.
 
 Experiments are SDK-owned facts. Pass the runtime stream as the second argument so their OTel and
 runtime projections share event IDs:
@@ -408,8 +411,9 @@ runtime projections share event IDs:
 const experiment = experimentalDefineExperiment(config, r.events);
 ```
 
-`catalog.snapshot()` is deliberately separate from the event stream: consumers publish it as an
-atomic full replacement under `snapshot.source_id`.
+`catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
+consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
+recovery.
 
 ## Telemetry
 

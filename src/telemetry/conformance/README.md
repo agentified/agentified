@@ -8,6 +8,10 @@ Each **consuming** language helper's conformance test loads it, builds each span
 `ratel.*` constants through the real OpenTelemetry SDK**, emits Events through the Logs API,
 and asserts both signals exactly. These Events are not SpanEvents.
 
+The same file also pins full catalog-definition RFC 8785 inputs, canonical bytes, canonical schema
+attributes, and lowercase SHA-256 hashes. Rust core and both SDKs assert every vector; protocol
+v2's separately frozen ETag algorithm is out of scope.
+
 ## Fixture shape
 
 | Field | Meaning |

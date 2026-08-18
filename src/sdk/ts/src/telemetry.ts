@@ -123,6 +123,7 @@ import {
   type SearchTarget,
   setContentCapture,
 } from "@ratel-ai/telemetry";
+import canonicalize from "canonicalize";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import type { SearchOrigin } from "./catalog.js";
 import type {
@@ -267,21 +268,9 @@ function catalogDefinitionAttributes(
 }
 
 function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        // Code-unit order, never localeCompare: the hash must match the Rust core
-        // (serde_json byte order) and Python (code-point order) on any host locale.
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, item]) => [key, sortJson(item)]),
-    );
-  }
-  return value;
+  const canonical = canonicalize(value);
+  if (canonical === undefined) throw new TypeError("catalog definition is not JSON serializable");
+  return canonical;
 }
 
 function eventProjection(span: Span, invocationId?: string): RuntimeEventProjection {

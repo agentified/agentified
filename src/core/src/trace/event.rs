@@ -645,20 +645,9 @@ impl TraceEvent {
 }
 
 fn catalog_definition_hash(content: &CatalogDefinitionContent<'_>) -> String {
-    let mut value = serde_json::to_value(content).expect("catalog definition is JSON serializable");
-    canonicalize_json(&mut value);
-    format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
-}
-
-fn canonicalize_json(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Array(values) => values.iter_mut().for_each(canonicalize_json),
-        serde_json::Value::Object(map) => {
-            map.values_mut().for_each(canonicalize_json);
-            map.sort_keys();
-        }
-        _ => {}
-    }
+    let canonical = serde_json_canonicalizer::to_vec(content)
+        .expect("catalog definition must satisfy RFC 8785 JSON constraints");
+    format!("{:x}", Sha256::digest(canonical))
 }
 
 /// Per-event correlation fields supplied by the emitting integration.

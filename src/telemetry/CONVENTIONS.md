@@ -139,10 +139,12 @@ Legacy content blocks to v1.42.0 message parts:
 Other v1.42.0 parts available but not in the legacy inventory: `server_tool_call` /
 `server_tool_call_response` (provider-executed tools), `generic` (extensibility escape hatch).
 
-**Capture gating.** Content is Opt-In, **default off**. The gate is the ecosystem instrumentation
+**OTel capture gating.** Content is Opt-In, **default off**. The gate is the ecosystem instrumentation
 convention `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Note this is an *instrumentation-level*
 convention, not a semconv-v1.42.0 attribute. Honor it rather than inventing a Ratel flag. Values:
 legacy boolean, or the enum `NO_CONTENT` (default) | `SPAN_ONLY` | `EVENT_ONLY` | `SPAN_AND_EVENT`.
+It governs this OTel projection only. An explicitly attached ADR-0020 runtime-event publisher has
+its own consent boundary and receives `catalog_definition` regardless of this setting.
 
 The four values select **two independent channels** — span attributes and Logs EventRecords — and every
 content-bearing helper honors both, so a mode is truthful (no mode silently drops content it names):
@@ -267,9 +269,12 @@ definition hash is suppressed, while a changed definition emits again.
 | `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
 
 The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
-searchable description, and the override flag. It is a deduplication token, not a redaction:
-the event remains content and is off in `NO_CONTENT` and `SPAN_ONLY` modes. Catalog-definition
-events are not part of ADR-0020's frozen remotely publishable runtime vocabulary.
+searchable description, and the override flag. RFC 8785 JSON Canonicalization Scheme bytes are
+used for both the hash input and the `input_schema` / `output_schema` strings; the digest is
+lowercase SHA-256. Non-I-JSON numbers such as NaN and infinity are rejected. This is a
+deduplication token, not a redaction: the OTel event remains content and is off in `NO_CONTENT`
+and `SPAN_ONLY` modes. Independently, ADR-0020's runtime vocabulary includes a
+`catalog_definition` event under explicit runtime-publisher consent.
 
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 

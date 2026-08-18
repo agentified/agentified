@@ -27,6 +27,7 @@ RuntimeEvent = dict[str, Any]
 RuntimeEventHandler = Callable[[list[RuntimeEvent]], Optional[Awaitable[None]]]
 
 RUNTIME_EVENT_TYPES = (
+    "catalog_definition",
     "search",
     "skill_search",
     "gateway_search",

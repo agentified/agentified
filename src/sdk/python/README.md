@@ -122,8 +122,11 @@ subscription.unsubscribe()
 
 Async handlers are marshaled onto the subscribing event loop; synchronous handlers run on the
 native callback thread. Both are observational and fail open. `flush()` waits for work already
-accepted by the bounded native queues and for async handlers to settle. Snapshots contain sorted
-public definitions only — never tool executors or skill bodies. Python exposes no Cloud transport;
+accepted by the bounded native queues and for async handlers to settle. Subscribing a remote
+publisher explicitly consents to public `catalog_definition` fields regardless of the OTel
+message-content capture setting. Definition events are lossy and change-sensitive; snapshots are
+the authoritative full replacement for removals and recovery. They contain sorted public
+definitions only—never tool executors or skill bodies. Python exposes no Cloud transport;
 applications may publish these events and snapshots through their own adapter.
 
 ## Facts (experimental)
