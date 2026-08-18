@@ -171,6 +171,92 @@ describe("ratel() standalone core", () => {
     expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
   });
 
+  it("restores accepted registrations until mutated values are explicitly re-registered", async () => {
+    const r = ratel();
+    const tool = {
+      ...native("deploy", "Original tool"),
+      searchableDescription: "originaltoolterm",
+      inputSchema: { type: "object", properties: { target: { type: "string" } } },
+    };
+    const skill = {
+      id: "deploy-skill",
+      name: "deploy-skill",
+      description: "Original skill",
+      searchableDescription: "originalskillterm",
+      tags: ["original"],
+      metadata: { audiences: ["operators"] },
+      body: "Original skill body",
+    };
+    const fact = {
+      id: "deploy-fact",
+      name: "deploy-fact",
+      description: "Original fact",
+      searchableDescription: "originalfactterm",
+      tags: ["original"],
+      metadata: { regions: ["eu"] },
+      body: "Original fact body",
+    };
+    await r.tools.register(tool);
+    await r.skills.register(skill);
+    await r.facts.register(fact);
+    const overrides = [
+      { kind: "tool" as const, entryId: tool.id, searchableDescription: "cloudtoolterm" },
+      { kind: "skill" as const, entryId: skill.id, searchableDescription: "cloudskillterm" },
+      { kind: "fact" as const, entryId: fact.id, searchableDescription: "cloudfactterm" },
+    ];
+    await r.catalog.applyCloudDefinitions(overrides);
+
+    tool.description = "Mutated tool";
+    tool.searchableDescription = "mutatedtoolterm";
+    tool.inputSchema.properties.target.type = "number";
+    skill.description = "Mutated skill";
+    skill.searchableDescription = "mutatedskillterm";
+    skill.tags.push("mutated");
+    skill.metadata.audiences.push("developers");
+    skill.body = "Mutated skill body";
+    fact.description = "Mutated fact";
+    fact.searchableDescription = "mutatedfactterm";
+    fact.tags.push("mutated");
+    fact.metadata.regions.push("us");
+    fact.body = "Mutated fact body";
+
+    await r.catalog.applyCloudDefinitions([]);
+
+    expect(r.tools.search("originaltoolterm", 5).map((hit) => hit.toolId)).toEqual([tool.id]);
+    expect(r.skills.search("originalskillterm", 5).map((hit) => hit.skillId)).toEqual([skill.id]);
+    expect(r.facts.search("originalfactterm", 5).map((hit) => hit.factId)).toEqual([fact.id]);
+    expect(r.catalog.snapshot().tools[0]?.inputSchema).toEqual({
+      type: "object",
+      properties: { target: { type: "string" } },
+    });
+    expect(r.skills.get(skill.id)).toMatchObject({
+      tags: ["original"],
+      metadata: { audiences: ["operators"] },
+      body: "Original skill body",
+    });
+    expect(r.facts.get(fact.id)).toMatchObject({
+      tags: ["original"],
+      metadata: { regions: ["eu"] },
+      body: "Original fact body",
+    });
+
+    await r.catalog.applyCloudDefinitions(overrides);
+    await r.tools.register(tool);
+    await r.skills.register(skill);
+    await r.facts.register(fact);
+    await r.catalog.applyCloudDefinitions([]);
+
+    expect(r.tools.search("mutatedtoolterm", 5).map((hit) => hit.toolId)).toEqual([tool.id]);
+    expect(r.skills.search("mutatedskillterm", 5).map((hit) => hit.skillId)).toEqual([skill.id]);
+    expect(r.facts.search("mutatedfactterm", 5).map((hit) => hit.factId)).toEqual([fact.id]);
+    expect(r.catalog.snapshot().tools[0]?.inputSchema).toEqual({
+      type: "object",
+      properties: { target: { type: "number" } },
+    });
+    expect(r.skills.invoke(skill.id)).toBe("Mutated skill body");
+    expect(r.facts.get(fact.id)?.body).toBe("Mutated fact body");
+  });
+
   it("applies Cloud retrieval descriptions to skills registered after attach", async () => {
     const r = ratel();
     await r.catalog.applyCloudDefinitions([

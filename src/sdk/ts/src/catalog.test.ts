@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EmbedderError, type ExecutableTool, ToolCatalog } from "./index.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 
@@ -140,6 +140,61 @@ describe("ToolCatalog", () => {
 
     expect(received).toBe("/tmp/x");
     expect(catalog.getExecutable("read_file")?.validateInput).toBeTypeOf("function");
+  });
+
+  it("snapshots registered metadata deeply while preserving tool behavior", async () => {
+    const validateInput = vi.fn((input: unknown) => ({ success: true as const, value: input }));
+    const execute = vi.fn((input: unknown) => ({ input }));
+    const tool: ExecutableTool = {
+      id: "mutable",
+      name: "mutable",
+      description: "Accepted description",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+      outputSchema: { type: "object" },
+      validateInput,
+      execute,
+    };
+    const catalog = new ToolCatalog();
+
+    await catalog.register(tool);
+    tool.description = "Re-registered description";
+    (
+      tool.inputSchema as { properties: { path: { type: string } }; required: string[] }
+    ).properties.path.type = "number";
+    (tool.inputSchema as { required: string[] }).required.push("mode");
+
+    expect(catalog.snapshot()).toEqual([
+      {
+        id: "mutable",
+        name: "mutable",
+        description: "Accepted description",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+        outputSchema: { type: "object" },
+      },
+    ]);
+    await expect(catalog.invoke("mutable", { path: 42 })).resolves.toEqual({
+      input: { path: 42 },
+    });
+    expect(catalog.getExecutable("mutable")?.execute).toBe(execute);
+    expect(catalog.getExecutable("mutable")?.validateInput).toBe(validateInput);
+
+    await catalog.register(tool);
+
+    expect(catalog.snapshot()[0]).toMatchObject({
+      description: "Re-registered description",
+      inputSchema: {
+        properties: { path: { type: "number" } },
+        required: ["path", "mode"],
+      },
+    });
   });
 
   it("clears a framework validator when native registration replaces the tool", async () => {

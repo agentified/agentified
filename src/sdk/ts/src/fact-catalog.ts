@@ -107,9 +107,10 @@ export class FactCatalog {
   async register(facts: Fact | readonly Fact[]): Promise<void> {
     const batch = Array.isArray(facts) ? facts : [facts];
     for (const fact of batch) assertValidFact(fact);
+    const localBatch = batch.map((fact) => structuredClone(fact));
     await this.registerEffective(
-      batch.map((fact) => this.applyCloudDefinition(fact)),
-      batch,
+      localBatch.map((fact) => this.applyCloudDefinition(fact)),
+      localBatch,
     );
   }
 

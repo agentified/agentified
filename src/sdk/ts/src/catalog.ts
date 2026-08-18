@@ -406,9 +406,10 @@ export class ToolCatalog {
         throw new Error(`tool ${tool.id} has no execute handler`);
       }
     }
+    const localBatch = batch.map(snapshotExecutableTool);
     await this.registerEffective(
-      batch.map((tool) => this.applyCloudDefinition(tool)),
-      batch,
+      localBatch.map((tool) => this.applyCloudDefinition(tool)),
+      localBatch,
     );
   }
 
@@ -841,6 +842,12 @@ export class ToolCatalog {
       context === undefined ? fn(input) : fn(input, context),
     );
   }
+}
+
+function snapshotExecutableTool(tool: ExecutableTool): ExecutableTool {
+  const { execute, validateInput, ...metadata } = tool;
+  const snapshot = structuredClone(metadata);
+  return validateInput ? { ...snapshot, validateInput, execute } : { ...snapshot, execute };
 }
 
 /**

@@ -119,9 +119,10 @@ export class SkillCatalog {
    */
   async register(skills: Skill | readonly Skill[]): Promise<void> {
     const batch = Array.isArray(skills) ? skills : [skills];
+    const localBatch = batch.map((skill) => structuredClone(skill));
     await this.registerEffective(
-      batch.map((skill) => this.applyCloudDefinition(skill)),
-      batch,
+      localBatch.map((skill) => this.applyCloudDefinition(skill)),
+      localBatch,
     );
   }
 
@@ -184,13 +185,14 @@ export class SkillCatalog {
    *   rejection.
    */
   replaceAll(skills: readonly Skill[]): PendingReplace {
-    const localIds = new Set(skills.map((skill) => skill.id));
+    const localSkills = skills.map((skill) => structuredClone(skill));
+    const localIds = new Set(localSkills.map((skill) => skill.id));
     for (const warnedId of this.warnedCloudShadowIds) {
       if (!localIds.has(warnedId)) this.warnedCloudShadowIds.delete(warnedId);
     }
     return this.replaceAllEffective(
-      skills.map((skill) => this.applyCloudDefinition(skill)),
-      skills,
+      localSkills.map((skill) => this.applyCloudDefinition(skill)),
+      localSkills,
     );
   }
 

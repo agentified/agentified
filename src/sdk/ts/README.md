@@ -454,7 +454,10 @@ const experiment = experimentalDefineExperiment(config, r.events);
 `catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
 consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
 recovery. It always contains the locally registered definitions, even while an opted-in Cloud
-overlay supplies the live Retrieval descriptions.
+overlay supplies the live Retrieval descriptions. Registration and `skills.replaceAll()` retain a
+deep snapshot of accepted serializable metadata, so later caller-object mutation changes neither
+snapshots nor Cloud restoration; explicitly re-register to adopt a changed value. Tool executor
+and validator function identities are retained.
 
 ## Telemetry
 
