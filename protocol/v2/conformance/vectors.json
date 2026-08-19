@@ -668,7 +668,8 @@
       "`centroid` MAY be absent; a consumer without an embedder matches lexically over `members`, and one with an embedder MAY derive a centroid from `members`.",
       "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
       "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
-      "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores."
+      "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores.",
+      "`seeded_support` is provenance only \u2014 it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains."
     ],
     "valid": [
       {
@@ -952,6 +953,62 @@
             }
           ]
         }
+      },
+      {
+        "name": "seeded-full",
+        "why": "Straight out of a baseline capture: every observation is seeded, so seeded_support equals support. Equality is legal and is the normal post-seeding state.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 4,
+              "seeded_support": 4,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "seeded-mixed",
+        "why": "A seeded base that live traffic has since built on: the gap between support and seeded_support is what was learned after the switchover.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 7,
+              "seeded_support": 4,
+              "tools": {
+                "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
       }
     ],
     "invalid": [
@@ -1205,6 +1262,34 @@
               "tools": {
                 "gh_run_list": 0.8,
                 "gh_run_view": 0.2
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "seeded-support-exceeds-support",
+        "because": "`seeded_support` counts a subset of `support`; a value above it is not expressible by any producer.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 2,
+              "seeded_support": 3,
+              "tools": {
+                "gh_run_list": 0.8
               },
               "skills": {}
             }
