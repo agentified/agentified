@@ -1218,6 +1218,7 @@ mod tests {
     fn semantic_does_not_embed_schemas() {
         let mut reg = with_embedder(Arc::new(StubEmbedder));
         let mut target = tool("catalog", "delete records");
+        target.experimental_searchable_description = Some("delete records".into());
         target.input_schema = serde_json::json!({
             "properties": {
                 "document": { "description": "read records" }
