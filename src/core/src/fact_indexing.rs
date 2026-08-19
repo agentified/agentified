@@ -18,7 +18,7 @@ pub(crate) fn searchable_text(fact: &Fact) -> String {
         push_identifier(&fact.name, &mut tokens);
     }
     let description = fact
-        .searchable_description
+        .experimental_searchable_description
         .as_deref()
         .unwrap_or(&fact.description);
     if !description.is_empty() {
@@ -43,7 +43,7 @@ mod tests {
             id: "shop-address".into(),
             name: "shop-address".into(),
             description: "Where the barbershop is located and its opening hours".into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: vec!["location".into(), "opening hours".into()],
             metadata: HashMap::from([("stacks".into(), vec!["react".into()])]),
             body: "12 Baker Street, London — must not affect ranking".into(),
@@ -81,7 +81,7 @@ mod tests {
             id: "cancellation_policy".into(),
             name: "cancellation_policy".into(),
             description: String::new(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: vec![],
             metadata: HashMap::new(),
             body: String::new(),

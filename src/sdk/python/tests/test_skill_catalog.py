@@ -65,14 +65,14 @@ async def test_minimal_skill_without_tags_or_body() -> None:
     assert catalog.search("minimal", 5)[0].skill_id == "min"
 
 
-async def test_searchable_description_replaces_skill_description_for_ranking() -> None:
+async def test_experimental_searchable_description_replaces_skill_description_for_ranking() -> None:
     catalog = SkillCatalog()
     await catalog.register(
         Skill(
             id="skill",
             name="skill",
             description="composedonlyterm",
-            searchable_description="overrideonlyterm",
+            experimental_searchable_description="overrideonlyterm",
         )
     )
 

@@ -878,7 +878,7 @@ impl ToolRegistry {
             id,
             name,
             description,
-            searchable_description: None,
+            experimental_searchable_description: None,
             input_schema,
             output_schema,
         });
@@ -891,7 +891,14 @@ impl ToolRegistry {
         let tools = tools
             .into_iter()
             .map(
-                |(id, name, description, searchable_description, input_schema, output_schema)| {
+                |(
+                    id,
+                    name,
+                    description,
+                    experimental_searchable_description,
+                    input_schema,
+                    output_schema,
+                )| {
                     let input_schema: Value = pythonize::depythonize(input_schema.bind(py))
                         .map_err(|e| PyValueError::new_err(format!("invalid input_schema: {e}")))?;
                     let output_schema: Value = pythonize::depythonize(output_schema.bind(py))
@@ -902,7 +909,7 @@ impl ToolRegistry {
                         id,
                         name,
                         description,
-                        searchable_description,
+                        experimental_searchable_description,
                         input_schema,
                         output_schema,
                     })
@@ -1351,7 +1358,7 @@ impl SkillRegistry {
             id,
             name,
             description,
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags,
             tools,
             metadata,
@@ -1362,12 +1369,22 @@ impl SkillRegistry {
     /// Register a batch only after PyO3 has converted every item's full shape.
     /// A bad later item therefore fails before this method mutates the registry.
     fn _register_many(&mut self, skills: Vec<SkillBatchItem>) {
-        for (id, name, description, searchable_description, tags, tools, metadata, body) in skills {
+        for (
+            id,
+            name,
+            description,
+            experimental_searchable_description,
+            tags,
+            tools,
+            metadata,
+            body,
+        ) in skills
+        {
             self.inner.register(core::Skill {
                 id,
                 name,
                 description,
-                searchable_description,
+                experimental_searchable_description,
                 tags,
                 tools,
                 metadata,
@@ -1390,7 +1407,7 @@ impl SkillRegistry {
                         id,
                         name,
                         description,
-                        searchable_description,
+                        experimental_searchable_description,
                         tags,
                         tools,
                         metadata,
@@ -1399,7 +1416,7 @@ impl SkillRegistry {
                         id,
                         name,
                         description,
-                        searchable_description,
+                        experimental_searchable_description,
                         tags,
                         tools,
                         metadata,
@@ -1798,7 +1815,7 @@ impl FactRegistry {
             id,
             name,
             description,
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags,
             metadata,
             body,
@@ -1814,7 +1831,16 @@ impl FactRegistry {
         let facts = facts
             .into_iter()
             .map(
-                |(id, name, description, searchable_description, tags, metadata, body, pin)| {
+                |(
+                    id,
+                    name,
+                    description,
+                    experimental_searchable_description,
+                    tags,
+                    metadata,
+                    body,
+                    pin,
+                )| {
                     let pin = pin
                         .parse::<core::PinMode>()
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1822,7 +1848,7 @@ impl FactRegistry {
                         id,
                         name,
                         description,
-                        searchable_description,
+                        experimental_searchable_description,
                         tags,
                         metadata,
                         body,

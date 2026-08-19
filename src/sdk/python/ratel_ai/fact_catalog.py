@@ -135,8 +135,8 @@ class Fact:
     # "always" (injected every turn) or "retrieved" (the default: surfaced only
     # when a query ranks it in).
     pin: str = "retrieved"
-    # Optional retrieval-description override; name and tags stay indexed.
-    searchable_description: str | None = None
+    # Experimental retrieval-description override; name and tags stay indexed.
+    experimental_searchable_description: str | None = None
 
 
 class FactRegistry:
@@ -438,7 +438,7 @@ class FactRegistry:
                         fact.id,
                         fact.name,
                         fact.description,
-                        fact.searchable_description,
+                        fact.experimental_searchable_description,
                         fact.tags,
                         fact.metadata,
                         fact.body,

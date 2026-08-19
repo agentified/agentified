@@ -26,7 +26,7 @@ const registerWithSearchableDescription = view.tools.register({
       inputSchema: z.object({}),
       execute: async () => ({}),
     }),
-    { searchableDescription: "forecast conditions" },
+    { experimentalSearchableDescription: "forecast conditions" },
   ),
 });
 

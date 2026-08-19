@@ -19,7 +19,7 @@ pub(crate) fn searchable_text(skill: &Skill) -> String {
         push_identifier(&skill.name, &mut tokens);
     }
     let description = skill
-        .searchable_description
+        .experimental_searchable_description
         .as_deref()
         .unwrap_or(&skill.description);
     if !description.is_empty() {
@@ -43,7 +43,7 @@ mod tests {
             id: "frontend-slides".into(),
             name: "frontend-slides".into(),
             description: "Build animation-rich HTML presentations".into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: vec![
                 "frontend".into(),
                 "presentations".into(),
@@ -90,7 +90,7 @@ mod tests {
             id: "code_review".into(),
             name: "code_review".into(),
             description: String::new(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: vec![],
             tools: vec![],
             metadata: HashMap::new(),

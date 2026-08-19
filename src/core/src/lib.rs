@@ -52,7 +52,7 @@
 //!     id: "read_file".into(),
 //!     name: "read_file".into(),
 //!     description: "Read a file from disk".into(),
-//!     searchable_description: None,
+//!     experimental_searchable_description: None,
 //!     input_schema: serde_json::json!({
 //!         "properties": {
 //!             "path": { "type": "string", "description": "absolute path" }
@@ -64,7 +64,7 @@
 //!     id: "send_email".into(),
 //!     name: "send_email".into(),
 //!     description: "Send an email to a recipient".into(),
-//!     searchable_description: None,
+//!     experimental_searchable_description: None,
 //!     input_schema: serde_json::json!({}),
 //!     output_schema: serde_json::json!({}),
 //! });

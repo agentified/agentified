@@ -13,8 +13,8 @@ import type { AdapterConformanceOptions, ConformanceToolSpec, RecallExpectation 
 export interface FakeTool {
   /** What retrieval ranks on and the exposed codec preserves. */
   description: string;
-  /** Optional description-only retrieval override. */
-  searchableDescription?: string;
+  /** ⚠️ Experimental description-only retrieval override. */
+  experimentalSearchableDescription?: string;
   /** The catalog's native JSON-Schema spelling — no cast needed. */
   inputSchema: JSONSchema7;
   /** Runs the tool; absent marks it provider-executed (a passthrough). */
@@ -69,7 +69,7 @@ export function referenceAdapter(): RatelAdapter<FakeTool, FakeMessage, FakeExt>
       if (!tool.execute) return "passthrough";
       return {
         description: tool.description,
-        searchableDescription: tool.searchableDescription,
+        experimentalSearchableDescription: tool.experimentalSearchableDescription,
         inputSchema: tool.inputSchema,
         execute: tool.execute,
       };

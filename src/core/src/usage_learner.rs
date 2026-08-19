@@ -304,7 +304,7 @@ fn accepts(policy: ObservationPolicy, origin: Origin) -> bool {
 ///     id: "gh_run_list".into(),
 ///     name: "gh_run_list".into(),
 ///     description: "List CI runs".into(),
-///     searchable_description: None,
+///     experimental_searchable_description: None,
 ///     input_schema: serde_json::json!({}),
 ///     output_schema: serde_json::json!({}),
 /// });

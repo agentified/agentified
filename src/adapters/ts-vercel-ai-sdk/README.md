@@ -53,7 +53,7 @@ for await (const delta of result.textStream) process.stdout.write(delta);
 messages.push(...(await result.responseMessages));
 ```
 
-To tune retrieval without changing the description sent to the model, attach an explicit override to the constructed tool: `Object.assign(tool({...}), { searchableDescription: "forecast conditions" })`. The adapter forwards it to Ratel and leaves the AI SDK description untouched.
+To experimentally tune retrieval without changing the description sent to the model, attach an explicit override to the constructed tool: `Object.assign(tool({...}), { experimentalSearchableDescription: "forecast conditions" })`. The adapter forwards it to Ratel and leaves the AI SDK description untouched. This surface may change without a major-version bump.
 
 `prepareStep` is the alternative injection point — drop it straight into `generateText` / `streamText` / `ToolLoopAgent` and skip the manual `appendRecall` call:
 

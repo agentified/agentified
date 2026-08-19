@@ -5,14 +5,31 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
     if !tool.name.is_empty() {
         push_identifier(&tool.name, &mut tokens);
     }
-    let description = tool
-        .searchable_description
-        .as_deref()
-        .unwrap_or(&tool.description);
-    if !description.is_empty() {
-        tokens.push(description.to_string());
+    if let Some(description) = &tool.experimental_searchable_description {
+        if !description.is_empty() {
+            tokens.push(description.clone());
+        }
+    } else {
+        if !tool.description.is_empty() {
+            tokens.push(tool.description.clone());
+        }
+        flatten(&tool.input_schema, &mut tokens);
+        flatten(&tool.output_schema, &mut tokens);
     }
     tokens.join(" ")
+}
+
+fn flatten(value: &serde_json::Value, tokens: &mut Vec<String>) {
+    if let Some(properties) = value.get("properties").and_then(|value| value.as_object()) {
+        for (key, value) in properties {
+            push_identifier(key, tokens);
+            push_field_tokens(value, tokens);
+            flatten(value, tokens);
+        }
+    }
+    if let Some(items) = value.get("items") {
+        flatten(items, tokens);
+    }
 }
 
 // Push the original identifier and, if it differs, a space-split form so that
@@ -43,6 +60,19 @@ pub(crate) fn split_identifier(s: &str) -> String {
     out
 }
 
+fn push_field_tokens(value: &serde_json::Value, tokens: &mut Vec<String>) {
+    if let Some(description) = value.get("description").and_then(|value| value.as_str()) {
+        tokens.push(description.to_string());
+    }
+    if let Some(values) = value.get("enum").and_then(|value| value.as_array()) {
+        for value in values {
+            if let Some(value) = value.as_str() {
+                tokens.push(value.to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,7 +83,7 @@ mod tests {
             id: "read_file".into(),
             name: "read_file".into(),
             description: "Read a file from disk".into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             input_schema: json!({
                 "properties": {
                     "path": {
@@ -80,10 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn searchable_text_excludes_schemas() {
+    fn stable_searchable_text_keeps_schemas() {
         let tool = read_file_tool();
         let text = searchable_text(&tool);
-        assert!(!text.contains("path"), "input schema leaked: {text}");
-        assert!(!text.contains("encoding"), "output schema leaked: {text}");
+        assert!(text.contains("path"), "input schema missing: {text}");
+        assert!(text.contains("encoding"), "output schema missing: {text}");
     }
 }

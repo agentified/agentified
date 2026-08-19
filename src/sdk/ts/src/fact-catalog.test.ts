@@ -46,13 +46,13 @@ describe("FactCatalog", () => {
     expect(hits[0].factId).toBe("cancellation");
   });
 
-  it("ranks a fact by searchableDescription instead of its description", async () => {
+  it("ranks a fact by experimentalSearchableDescription instead of its description", async () => {
     const catalog = new FactCatalog();
     await catalog.register({
       id: "fact",
       name: "fact",
       description: "composedonlyterm",
-      searchableDescription: "overrideonlyterm",
+      experimentalSearchableDescription: "overrideonlyterm",
     });
 
     expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.factId)).toEqual(["fact"]);

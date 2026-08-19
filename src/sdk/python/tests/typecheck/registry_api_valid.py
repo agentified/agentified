@@ -21,7 +21,7 @@ async def _register() -> None:
             id="read",
             name="read",
             description="Read a file",
-            searchable_description="filesystem content retrieval",
+            experimental_searchable_description="filesystem content retrieval",
         )
     )
     await tools.register([Tool(id="write", name="write", description="Write a file")])
@@ -32,7 +32,7 @@ async def _register() -> None:
             id="deploy",
             name="deploy",
             description="Deploy an app",
-            searchable_description="production release",
+            experimental_searchable_description="production release",
         )
     )
     await skills.register([Skill(id="lint", name="lint", description="Lint the code")])
@@ -42,6 +42,6 @@ async def _register() -> None:
             id="hours",
             name="hours",
             description="Opening hours",
-            searchable_description="business schedule",
+            experimental_searchable_description="business schedule",
         )
     )

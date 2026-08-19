@@ -73,7 +73,7 @@ describe("mastra() identity", () => {
 });
 
 describe("ingest codec", () => {
-  it("forwards an app-supplied searchableDescription", () => {
+  it("forwards an app-supplied experimentalSearchableDescription", () => {
     const native = Object.assign(
       createTool({
         id: "tool",
@@ -81,12 +81,12 @@ describe("ingest codec", () => {
         inputSchema: z.object({}),
         execute: async () => ({ ok: true }),
       }),
-      { searchableDescription: "overrideonlyterm" },
+      { experimentalSearchableDescription: "overrideonlyterm" },
     );
 
     const registration = mastra().ingest("tool", native);
     if (registration === "passthrough") throw new Error("expected executable registration");
-    expect(registration.searchableDescription).toBe("overrideonlyterm");
+    expect(registration.experimentalSearchableDescription).toBe("overrideonlyterm");
   });
 
   it("passes through a Mastra tool with no execute (client/provider-executed)", () => {

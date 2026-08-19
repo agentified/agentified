@@ -73,8 +73,8 @@ class Skill:
     # {"stacks": ["react"]} for the push ranker to boost by project context.
     metadata: dict[str, list[str]] = field(default_factory=dict)
     body: str = ""
-    # Optional retrieval-description override; name and tags stay indexed.
-    searchable_description: str | None = None
+    # Experimental retrieval-description override; name and tags stay indexed.
+    experimental_searchable_description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -618,7 +618,7 @@ class SkillRegistry:
                         skill.id,
                         skill.name,
                         skill.description,
-                        skill.searchable_description,
+                        skill.experimental_searchable_description,
                         skill.tags,
                         skill.tools,
                         skill.metadata,
@@ -639,7 +639,7 @@ class SkillRegistry:
                         skill.id,
                         skill.name,
                         skill.description,
-                        skill.searchable_description,
+                        skill.experimental_searchable_description,
                         skill.tags,
                         skill.tools,
                         skill.metadata,

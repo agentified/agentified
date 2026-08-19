@@ -1,5 +1,8 @@
 # Ratel catalog-source contract — v2
 
+> **Experimental preview.** v1 remains the current stable contract. v2 may change before
+> graduation and must not be treated as a compatibility commitment yet.
+
 v2 carries forward v1's catalog pull-sync, authentication, scope, 304, error, and skills-only
 semantics unchanged. Its sole catalog change is an optional `searchableDescription` override
 with an eight-field ETag projection. A conforming catalog source is the authoritative *source*

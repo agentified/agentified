@@ -448,12 +448,12 @@ describe("ratel().adaptTo(adapter)", () => {
     expect(Object.keys(a.modelTools()).sort()).toEqual([...CAPABILITY_IDS].sort());
   });
 
-  it("forwards an adapter registration searchableDescription into ranking", async () => {
+  it("forwards an adapter registration experimentalSearchableDescription into ranking", async () => {
     const a = ratel().adaptTo(referenceAdapter());
     await a.tools.register({
       tool: {
         ...exec("composedonlyterm"),
-        searchableDescription: "overrideonlyterm",
+        experimentalSearchableDescription: "overrideonlyterm",
       },
     });
 

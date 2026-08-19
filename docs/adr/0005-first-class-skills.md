@@ -47,7 +47,7 @@ skill-search tool.
 
 ### Skill data model
 
-`Skill` is `{ id, name, description, searchable_description?, tags, tools, metadata, body }`.
+`Skill` is `{ id, name, description, experimental_searchable_description?, tags, tools, metadata, body }`.
 Catalog protocol v1 keeps its frozen shape; v2 adds the optional override:
 
 - **`tags`**: indexed. Author labels and task phrases ("frontend", "login form") folded into

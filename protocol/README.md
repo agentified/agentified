@@ -13,9 +13,9 @@ loader and source implementations live outside `protocol/`.
 
 ## Layout
 
-- `v1/` — the frozen original contract: auth, catalog pull-sync, seven-field skill wire/ETag
-  projection, error model, and intent-graph producer shape. It remains available unchanged.
-- `v2/` — the current major version: v1 plus optional `searchableDescription` and its
+- `v1/` — the current contract: auth, catalog pull-sync, seven-field skill wire/ETag projection,
+  error model, and intent-graph producer shape. It remains available unchanged.
+- `v2/` — experimental preview: v1 plus optional `searchableDescription` and its
   eight-field ETag projection with a canonical `null` unset representation. It includes its
   own schemas and executable conformance vectors.
 
@@ -25,8 +25,9 @@ the local learner and Ratel Cloud, not a synced endpoint
 
 ## Versioning
 
-Each **major** version is a subfolder. Additive changes — new optional fields, new endpoints,
-new enum members — land **within** the current major; a conforming client MUST ignore fields
+Each **major** version is a subfolder. Preview versions may change before graduation. Within a
+stable version, additive changes — new optional fields, new endpoints,
+new enum members — land **within** that major; a conforming client MUST ignore fields
 it does not recognise. A change that alters an existing shape's meaning (including the ETag
 content projection) is **breaking** and requires a new major. The frozen pieces of each major
 are listed in that major's README.

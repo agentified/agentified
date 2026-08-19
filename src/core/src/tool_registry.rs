@@ -474,7 +474,7 @@ impl ToolRegistry {
     ///     id: "read_file".into(),
     ///     name: "read_file".into(),
     ///     description: desc.into(),
-    ///     searchable_description: None,
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// };
@@ -526,7 +526,7 @@ impl ToolRegistry {
     ///     id: "read_file".into(),
     ///     name: "read_file".into(),
     ///     description: "Read a file from disk".into(),
-    ///     searchable_description: None,
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// });
@@ -569,7 +569,7 @@ impl ToolRegistry {
     ///     id: "delete_file".into(),
     ///     name: "delete_file".into(),
     ///     description: "Delete a path from the filesystem".into(),
-    ///     searchable_description: None,
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// });
@@ -1103,7 +1103,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             description: description.into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
         }
@@ -1185,10 +1185,10 @@ mod tests {
     }
 
     #[test]
-    fn semantic_uses_searchable_description_and_keeps_name() {
+    fn semantic_uses_experimental_searchable_description_and_keeps_name() {
         let mut reg = with_embedder(Arc::new(StubEmbedder));
         let mut overridden = tool("catalog", "read records");
-        overridden.searchable_description = Some("delete records".into());
+        overridden.experimental_searchable_description = Some("delete records".into());
         reg.register(overridden);
         reg.register(tool("reader", "read records"));
         reg.build_embeddings().unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
         let mut named = with_embedder(Arc::new(StubEmbedder));
         let mut named_tool = tool("named", "unrelated records");
         named_tool.name = "read_helper".into();
-        named_tool.searchable_description = Some("delete records".into());
+        named_tool.experimental_searchable_description = Some("delete records".into());
         named.register(named_tool);
         named.register(tool("deleter", "delete records"));
         named.build_embeddings().unwrap();

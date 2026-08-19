@@ -396,7 +396,7 @@ impl SkillRegistry {
     ///         id: id.into(),
     ///         name: id.into(),
     ///         description: description.into(),
-    ///         searchable_description: None,
+    ///         experimental_searchable_description: None,
     ///         tags: vec![],
     ///         tools: vec![],
     ///         metadata: std::collections::HashMap::new(),
@@ -498,7 +498,7 @@ impl SkillRegistry {
     ///     id: "api-design".into(),
     ///     name: "api-design".into(),
     ///     description: "REST API design patterns: resource naming, pagination".into(),
-    ///     searchable_description: None,
+    ///     experimental_searchable_description: None,
     ///     tags: vec!["backend".into(), "api".into()],
     ///     tools: vec![],
     ///     metadata: std::collections::HashMap::new(),
@@ -955,7 +955,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             tools: vec![],
             metadata: std::collections::HashMap::new(),
@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn searchable_description_replaces_skill_description_but_keeps_name_and_tags() {
+    fn experimental_searchable_description_replaces_skill_description_but_keeps_name_and_tags() {
         let mut reg = SkillRegistry::new();
         let mut overridden = skill(
             "billing",
@@ -1179,7 +1179,7 @@ mod tests {
             "orchestrate zeppelin manifests",
             &["finance_ops"],
         );
-        overridden.searchable_description = Some("reconcile overdue invoices".into());
+        overridden.experimental_searchable_description = Some("reconcile overdue invoices".into());
         reg.register(overridden);
 
         assert_eq!(reg.search("overdue invoices", 5)[0].skill_id, "billing");
@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_all_re_embeds_only_the_searchable_description_edit() {
+    fn replace_all_re_embeds_only_the_experimental_searchable_description_edit() {
         let counter = Arc::new(CountingEmbedder::new());
         let sink = Arc::new(MemorySink::new("test-session"));
         let mut reg = with_embedder(counter.clone());
@@ -1358,7 +1358,7 @@ mod tests {
         sink.drain();
 
         let mut edited = skill("edit", "edit", "REST API design", &["api"]);
-        edited.searchable_description = Some("HTML slides frontend".into());
+        edited.experimental_searchable_description = Some("HTML slides frontend".into());
         let outcome = reg.replace_all(vec![
             skill("keep", "keep", "REST API design", &["api"]),
             edited,
@@ -1483,10 +1483,10 @@ mod tests {
     }
 
     #[test]
-    fn semantic_uses_searchable_description_and_keeps_name_and_tags() {
+    fn semantic_uses_experimental_searchable_description_and_keeps_name_and_tags() {
         let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
         let mut overridden = skill("target", "catalog", "REST API design", &["general"]);
-        overridden.searchable_description = Some("frontend slides".into());
+        overridden.experimental_searchable_description = Some("frontend slides".into());
         overridden_reg.register(overridden);
         overridden_reg.register(skill("decoy", "decoy", "REST API design", &["general"]));
         overridden_reg.build_embeddings().unwrap();
@@ -1500,7 +1500,7 @@ mod tests {
 
         let mut name_reg = with_embedder(Arc::new(StubEmbedder));
         let mut named = skill("named", "api_helper", "unrelated", &["general"]);
-        named.searchable_description = Some("frontend slides".into());
+        named.experimental_searchable_description = Some("frontend slides".into());
         name_reg.register(named);
         name_reg.register(skill("name-decoy", "decoy", "frontend slides", &[]));
         name_reg.build_embeddings().unwrap();
@@ -1514,7 +1514,7 @@ mod tests {
 
         let mut tag_reg = with_embedder(Arc::new(StubEmbedder));
         let mut tagged = skill("tagged", "catalog", "unrelated", &["rest_ops"]);
-        tagged.searchable_description = Some("frontend slides".into());
+        tagged.experimental_searchable_description = Some("frontend slides".into());
         tag_reg.register(tagged);
         tag_reg.register(skill("tag-decoy", "decoy", "frontend slides", &[]));
         tag_reg.build_embeddings().unwrap();

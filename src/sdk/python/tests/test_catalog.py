@@ -174,14 +174,14 @@ async def test_search_ranks_the_relevant_tool_first() -> None:
     assert hits[0].tool_id == "read_file"
 
 
-async def test_searchable_description_replaces_tool_description_for_ranking() -> None:
+async def test_experimental_searchable_description_replaces_tool_description_for_ranking() -> None:
     catalog = ToolCatalog()
     await catalog.register(
         ExecutableTool(
             id="tool",
             name="tool",
             description="composedonlyterm",
-            searchable_description="overrideonlyterm",
+            experimental_searchable_description="overrideonlyterm",
             execute=lambda args: {},
         )
     )

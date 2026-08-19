@@ -160,7 +160,7 @@ impl FactRegistry {
     ///     id: "cancellation".into(),
     ///     name: "cancellation-policy".into(),
     ///     description: "How to cancel or reschedule a booking".into(),
-    ///     searchable_description: None,
+    ///     experimental_searchable_description: None,
     ///     tags: vec!["booking".into()],
     ///     metadata: std::collections::HashMap::new(),
     ///     body: "Cancel at least 24h ahead for a full refund.".into(),
@@ -431,7 +431,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
-            searchable_description: None,
+            experimental_searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             metadata: std::collections::HashMap::new(),
             body: format!("{name} body"),
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn searchable_description_replaces_fact_description_but_keeps_name_and_tags() {
+    fn experimental_searchable_description_replaces_fact_description_but_keeps_name_and_tags() {
         let mut reg = FactRegistry::new();
         let mut overridden = fact(
             "billing",
@@ -545,7 +545,7 @@ mod tests {
             &["finance_ops"],
             PinMode::Retrieved,
         );
-        overridden.searchable_description = Some("reconcile overdue invoices".into());
+        overridden.experimental_searchable_description = Some("reconcile overdue invoices".into());
         reg.register(overridden);
 
         assert_eq!(reg.search("overdue invoices", 5)[0].fact_id, "billing");
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_uses_searchable_description_and_keeps_name_and_tags() {
+    fn semantic_uses_experimental_searchable_description_and_keeps_name_and_tags() {
         let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
         let mut overridden = fact(
             "target",
@@ -656,7 +656,7 @@ mod tests {
             &["general"],
             PinMode::Retrieved,
         );
-        overridden.searchable_description = Some("cancel refund policy".into());
+        overridden.experimental_searchable_description = Some("cancel refund policy".into());
         overridden_reg.register(overridden);
         overridden_reg.register(fact(
             "decoy",
@@ -682,7 +682,7 @@ mod tests {
             &["general"],
             PinMode::Retrieved,
         );
-        named.searchable_description = Some("cancel refund".into());
+        named.experimental_searchable_description = Some("cancel refund".into());
         name_reg.register(named);
         name_reg.register(fact(
             "name-decoy",
@@ -705,7 +705,7 @@ mod tests {
             &["location"],
             PinMode::Retrieved,
         );
-        tagged.searchable_description = Some("cancel refund".into());
+        tagged.experimental_searchable_description = Some("cancel refund".into());
         tag_reg.register(tagged);
         tag_reg.register(fact(
             "tag-decoy",

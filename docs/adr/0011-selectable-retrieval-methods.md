@@ -6,7 +6,7 @@ Date: 2026-07-06
 
 Accepted
 
-Builds on ADR-0021 (retrieval: the `searchable_text` projection and BM25 scorer), which
+Builds on ADR-0004 (retrieval: the stable `searchable_text` projection and BM25 scorer), which
 anticipated a semantic ranker merging with the lexical signal. ADR-0006 (native FFI bindings)
 and ADR-0007 (telemetry schema) frame how the choice surfaces through the SDKs and traces.
 
@@ -71,7 +71,8 @@ parallel to `SearchOrigin`.
 
 - The default stays lightweight and infallible; the ML dependency (Candle, tokenizers with the
   pure-Rust `fancy-regex` backend, `hf-hub`) is compiled in but never exercised unless a caller
-  opts into semantic/hybrid. The `searchable_text` contract (now ADR-0021) is shared, so all
+  opts into semantic/hybrid. The `searchable_text` contract (ADR-0004, experimentally extended
+  by ADR-0021) is shared, so all
   three engines rank the same projection.
 - Capability tools inherit the catalog's construction-time default and await async search. MCP
   ingestion registers metadata only, so several upstreams can be ingested before one batched

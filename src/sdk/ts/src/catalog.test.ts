@@ -60,14 +60,14 @@ describe("ToolCatalog", () => {
     expect(hits[0].score).toBeGreaterThan(0);
   });
 
-  it("ranks a tool by searchableDescription instead of its description", async () => {
+  it("ranks a tool by experimentalSearchableDescription instead of its description", async () => {
     const catalog = new ToolCatalog();
     await catalog.register({
       ...readFile,
       id: "tool",
       name: "tool",
       description: "composedonlyterm",
-      searchableDescription: "overrideonlyterm",
+      experimentalSearchableDescription: "overrideonlyterm",
     });
 
     expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.toolId)).toEqual(["tool"]);

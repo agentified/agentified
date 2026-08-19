@@ -74,8 +74,8 @@ export interface RatelConfig {
 export interface CatalogRegistration {
   /** Retrieval ranks on this; resolve dynamic descriptions at ingest time. */
   description: string;
-  /** Optional replacement for the description component used only by retrieval. */
-  searchableDescription?: string;
+  /** ⚠️ Experimental (ADR-0021). Optional retrieval-only description replacement. */
+  experimentalSearchableDescription?: string;
   /** Input JSON Schema (the catalog's native spelling). */
   inputSchema: JSONSchema7;
   /** Output JSON Schema; defaults to `{ type: "object" }` when omitted. */
@@ -585,7 +585,7 @@ export function ratel(config: RatelConfig = {}): Ratel {
             id,
             name: id,
             description: registration.description,
-            searchableDescription: registration.searchableDescription,
+            experimentalSearchableDescription: registration.experimentalSearchableDescription,
             inputSchema: registration.inputSchema,
             outputSchema: registration.outputSchema ?? DEFAULT_OUTPUT_SCHEMA,
             validateInput: registration.validateInput,

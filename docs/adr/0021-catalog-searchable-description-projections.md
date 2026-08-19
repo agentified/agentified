@@ -4,10 +4,9 @@ Date: 2026-08-15
 
 ## Status
 
-Accepted
+Accepted — experimental rollout
 
-Supersedes ADR-0004. Its tool-selection decision is retained; its schema-inclusive tool
-projection is replaced.
+Extends ADR-0004. Its schema-inclusive tool projection remains the stable default.
 
 ## Context
 
@@ -22,17 +21,18 @@ that seam, preserve stable identity signals, and participate in embedding-cache 
 
 ## Decision
 
-Each `Tool`, `Skill`, and `Fact` carries `searchable_description: Option<String>`. Its retrieval
-projection is deterministic and ordered as follows:
+Each `Tool`, `Skill`, and `Fact` carries
+`experimental_searchable_description: Option<String>`. Supplying it opts that entry into the
+experimental projection, ordered as follows:
 
 1. name, both whole and identifier-split;
-2. effective searchable description — `description` when the override is `None`, otherwise the
-   override verbatim;
+2. the override verbatim;
 3. tags, whole and identifier-split, for skills and facts.
 
 An override replaces only the description component. Name and tags remain indexed, including
-when the override is empty. Tool input and output schemas are model-facing and are no longer
-indexed by either BM25 or dense retrieval.
+when the override is empty. For an opted-in tool, input and output schemas are model-facing and
+are not indexed by either BM25 or dense retrieval. A tool without an override retains ADR-0004's
+stable schema-inclusive projection; skills and facts continue to use their authored description.
 
 The private per-catalog `searchable_text()` functions remain the single projection seam used by
 BM25 documents and `Embeddable::embed_text`. The artifact `projection_version` hashes all three
@@ -45,9 +45,11 @@ Tool selection remains as decided in ADR-0004: `replace` is the default and `sug
 ## Consequences
 
 - Retrieval can be tuned independently of the LLM-facing description, schemas, and payload.
-- The default tool ranking behavior changes because schema-only terms stop matching. This is a
-  breaking ranking change at 0.x and requires a minor core/SDK release. BFCL and SR-Agents impact
-  is measured separately in `ratel-bench`; numbers follow this decision rather than gate it.
+- Existing callers retain schema-inclusive tool ranking. Only entries carrying the experimental
+  override change projection. BFCL and SR-Agents impact is measured separately in `ratel-bench`
+  before graduation.
+- The experimental field may change or be removed without a major-version bump. Graduation adds
+  the stable field while retaining the experimental spelling as a deprecated compatibility shim.
 - Existing embedding artifacts self-invalidate when any catalog projection implementation changes.
 - Rejected: overriding the entire projection. That would let optimization erase durable name and
   tag signals and make catalog entries undiscoverable by their identifiers or labels.

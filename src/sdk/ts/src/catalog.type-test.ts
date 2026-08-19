@@ -55,7 +55,7 @@ async function registerShapes(): Promise<void> {
     id: "read",
     name: "read",
     description: "Read a file",
-    searchableDescription: "filesystem content retrieval",
+    experimentalSearchableDescription: "filesystem content retrieval",
     inputSchema: {},
     outputSchema: {},
   });
@@ -68,7 +68,7 @@ async function registerShapes(): Promise<void> {
     id: "deploy",
     name: "deploy",
     description: "Deploy an app",
-    searchableDescription: "production release",
+    experimentalSearchableDescription: "production release",
   });
   await skills.register([
     { id: "lint", name: "lint", description: "Lint the code" } satisfies Skill,
@@ -79,7 +79,7 @@ async function registerShapes(): Promise<void> {
     id: "read_file",
     name: "read_file",
     description: "Read a file",
-    searchableDescription: "filesystem content retrieval",
+    experimentalSearchableDescription: "filesystem content retrieval",
     inputSchema: {},
     outputSchema: {},
     execute: async () => ({}),
@@ -100,7 +100,7 @@ async function registerShapes(): Promise<void> {
     id: "deploy",
     name: "deploy",
     description: "Deploy an app",
-    searchableDescription: "production release",
+    experimentalSearchableDescription: "production release",
   });
   await skillCatalog.register([{ id: "lint", name: "lint", description: "Lint the code" }]);
 
@@ -109,14 +109,14 @@ async function registerShapes(): Promise<void> {
     id: "hours",
     name: "hours",
     description: "Opening hours",
-    searchableDescription: "business schedule",
+    experimentalSearchableDescription: "business schedule",
   } satisfies Fact);
   const factCatalog = new FactCatalog();
   await factCatalog.register({
     id: "address",
     name: "address",
     description: "Shop location",
-    searchableDescription: "street directions",
+    experimentalSearchableDescription: "street directions",
   });
 }
 void registerShapes;
