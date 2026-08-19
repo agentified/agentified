@@ -96,6 +96,8 @@ export interface RuntimeEventsOptions {
   queueCapacity?: number;
   /** Maximum envelopes per callback batch. Defaults to the native bridge default. */
   batchSize?: number;
+  /** ⚠️ Experimental. Publish complete catalog-definition events. Defaults to false. */
+  experimentalCatalogDefinitions?: boolean;
 }
 
 /** One runtime-events subscription. */
@@ -133,6 +135,7 @@ interface SdkSubscriber {
 }
 
 interface EventSource {
+  experimentalEnableCatalogDefinitions(): void;
   subscribeEvents(
     handler: (batch: RuntimeEvent[]) => void,
     options: Required<RuntimeEventsOptions>,
@@ -158,8 +161,12 @@ export class RuntimeEvents {
       sourceId: this.sourceId,
       queueCapacity: options.queueCapacity ?? 1_024,
       batchSize: options.batchSize ?? 64,
+      experimentalCatalogDefinitions: options.experimentalCatalogDefinitions ?? false,
     };
     this.#sources = sources;
+    if (this.#options.experimentalCatalogDefinitions) {
+      for (const source of sources) source.experimentalEnableCatalogDefinitions();
+    }
   }
 
   /**

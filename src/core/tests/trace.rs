@@ -81,7 +81,7 @@ fn register_emits_index_churn_add() {
     registry.register(lookup_tool("alpha"));
 
     let events = sink.snapshot();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 1);
     let env: &TraceEnvelope = &events[0];
     assert_eq!(env.session_id, "session-1");
     assert_eq!(env.source_id, "ratel");
@@ -98,13 +98,36 @@ fn register_emits_index_churn_add() {
 }
 
 #[test]
+fn catalog_definitions_require_explicit_experimental_opt_in() {
+    let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
+    let mut tools = ToolRegistry::with_trace_sink(sink.clone());
+    tools.register(lookup_tool("read"));
+    assert!(
+        sink.snapshot()
+            .iter()
+            .all(|envelope| !matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+    );
+
+    tools.experimental_enable_catalog_definitions();
+    let mut changed = lookup_tool("read");
+    changed.description = "Read changed records".into();
+    tools.register(changed);
+    assert!(
+        sink.snapshot()
+            .iter()
+            .any(|envelope| matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+    );
+}
+
+#[test]
 fn registration_emits_complete_catalog_definitions_for_every_kind() {
     let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
     let mut tools = ToolRegistry::with_trace_sink(sink.clone());
+    tools.experimental_enable_catalog_definitions();
     let mut tool = lookup_tool("read");
     tool.name = "read_records".into();
     tool.description = "Read records".into();
-    tool.searchable_description = Some("find archive".into());
+    tool.experimental_searchable_description = Some("find archive".into());
     tool.input_schema = json!({
         "type": "object",
         "properties": { "path": { "type": "string" } }
@@ -113,11 +136,12 @@ fn registration_emits_complete_catalog_definitions_for_every_kind() {
     tools.register(tool);
 
     let mut skills = SkillRegistry::with_trace_sink(sink.clone());
+    skills.experimental_enable_catalog_definitions();
     skills.register(Skill {
         id: "review".into(),
         name: "review_code".into(),
         description: "Review source".into(),
-        searchable_description: None,
+        experimental_searchable_description: None,
         tags: vec!["quality".into()],
         tools: vec!["read".into()],
         metadata: Default::default(),
@@ -125,11 +149,12 @@ fn registration_emits_complete_catalog_definitions_for_every_kind() {
     });
 
     let mut facts = FactRegistry::with_trace_sink(sink.clone());
+    facts.experimental_enable_catalog_definitions();
     facts.register(Fact {
         id: "address".into(),
         name: "shop_address".into(),
         description: "Where the shop is".into(),
-        searchable_description: None,
+        experimental_searchable_description: None,
         tags: vec!["location".into()],
         metadata: Default::default(),
         body: "private address".into(),
@@ -220,11 +245,12 @@ fn catalog_definitions_match_shared_rfc8785_vectors() {
 
         let sink = Arc::new(MemorySink::with_source("jcs", "ratel"));
         let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+        registry.experimental_enable_catalog_definitions();
         registry.register(Tool {
             id: input["id"].as_str().unwrap().into(),
             name: input["name"].as_str().unwrap().into(),
             description: input["description"].as_str().unwrap().into(),
-            searchable_description: input["searchable_description_overridden"]
+            experimental_searchable_description: input["searchable_description_overridden"]
                 .as_bool()
                 .unwrap()
                 .then(|| input["searchable_description"].as_str().unwrap().into()),
@@ -255,6 +281,7 @@ fn catalog_definition_canonicalizer_rejects_non_json_numbers() {
 fn byte_identical_registration_emits_no_duplicate_definition() {
     let sink = Arc::new(MemorySink::new("session-1"));
     let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+    registry.experimental_enable_catalog_definitions();
 
     registry.register(lookup_tool("read"));
     registry.register(lookup_tool("read"));
@@ -770,6 +797,7 @@ fn fn_sink_lines_match_jsonl_modulo_per_record_identity() {
 fn fn_sink_composes_as_a_registry_sink() {
     let (sink, lines) = collecting_sink("session-fn-3");
     let mut registry = ToolRegistry::with_trace_sink(sink);
+    registry.experimental_enable_catalog_definitions();
     registry.register(lookup_tool("alpha"));
 
     let lines = lines.lock().unwrap();

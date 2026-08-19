@@ -222,6 +222,11 @@ export class ToolRegistry {
     this.native.setTraceSink(config);
   }
 
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
+  }
+
   /** @internal Attach one public runtime-event subscriber. */
   subscribeEvents(
     handler: (batch: RuntimeEvent[]) => void,
@@ -549,6 +554,11 @@ export class SkillRegistry {
     this.native.setTraceSink(config);
   }
 
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
+  }
+
   /** @internal Attach one public runtime-event subscriber. */
   subscribeEvents(
     handler: (batch: RuntimeEvent[]) => void,
@@ -773,6 +783,11 @@ export class FactRegistry {
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
   }
 
   /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */

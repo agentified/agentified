@@ -23,6 +23,10 @@ SEMCONV_VERSION: Final = "1.42.0"
 #: NO_CONTENT (default) / SPAN_ONLY / EVENT_ONLY / SPAN_AND_EVENT.
 CAPTURE_CONTENT_ENV: Final = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
 
+#: Ratel-specific opt-in for the experimental catalog-definition event.
+#: The generic content-capture gate must also allow EventRecord content.
+EXPERIMENTAL_CATALOG_DEFINITIONS_ENV: Final = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS"
+
 # ---------------------------------------------------------------------------
 # Span names (CONVENTIONS.md, Tier 2)
 # ---------------------------------------------------------------------------
@@ -58,7 +62,7 @@ RATEL_SEARCH_RESULTS: Final = "ratel.search.results"
 #: ratel.tool.execution.details — Opt-In structured tool arguments/result event.
 RATEL_TOOL_EXECUTION_DETAILS: Final = "ratel.tool.execution.details"
 
-#: ratel.catalog.definition — Opt-In complete catalog definition event.
+#: ratel.catalog.definition — experimental, opt-in complete catalog definition event.
 RATEL_CATALOG_DEFINITION: Final = "ratel.catalog.definition"
 
 #: ratel.experiment.results — ranked measurement for one experiment arm.
@@ -176,9 +180,7 @@ RATEL_EXPERIMENT_RANKING_ERROR: Final = "ratel.experiment.ranking_error"
 RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR: Final = "ratel.experiment.result_attributes_error"
 
 #: ratel.experiment.result_attrs_encoding_error — item-attribute encoding error type.
-RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: Final = (
-    "ratel.experiment.result_attrs_encoding_error"
-)
+RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: Final = "ratel.experiment.result_attrs_encoding_error"
 
 #: ratel.experiment.result_ids — ordered ranked result identifiers.
 RATEL_EXPERIMENT_RESULT_IDS: Final = "ratel.experiment.result_ids"
@@ -430,6 +432,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "CAPTURE_CONTENT_ENV",
+    "EXPERIMENTAL_CATALOG_DEFINITIONS_ENV",
     "EXECUTE_TOOL",
     "GEN_AI_INFERENCE_DETAILS",
     "GEN_AI_INPUT_MESSAGES",

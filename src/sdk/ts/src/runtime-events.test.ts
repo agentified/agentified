@@ -260,7 +260,7 @@ describe("public runtime events", () => {
     "SPAN_AND_EVENT",
   ])("publishes catalog definitions independently of OTel capture mode %s", async (captureMode) => {
     process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = captureMode;
-    const runtime = ratel();
+    const runtime = ratel({ events: { experimentalCatalogDefinitions: true } });
     const received: RuntimeEvent[] = [];
     const subscription = runtime.events.subscribe((batch) => received.push(...batch));
 
@@ -287,6 +287,23 @@ describe("public runtime events", () => {
       searchable_description_overridden: false,
     });
     expect(definition).not.toHaveProperty("execute");
+    subscription.unsubscribe();
+  });
+
+  it("keeps experimental catalog definitions off the runtime stream by default", async () => {
+    const runtime = ratel();
+    const received: RuntimeEvent[] = [];
+    const subscription = runtime.events.subscribe((batch) => received.push(...batch));
+    await runtime.tools.register({
+      id: "read_file",
+      name: "read_file",
+      description: "Read a file",
+      inputSchema: {},
+      outputSchema: {},
+      execute: () => undefined,
+    });
+    await subscription.flush();
+    expect(received.some((event) => event.type === "catalog_definition")).toBe(false);
     subscription.unsubscribe();
   });
 

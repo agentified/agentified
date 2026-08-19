@@ -33,6 +33,7 @@ import {
   clearContentCapture,
   contentCaptureMode,
   EXECUTE_TOOL,
+  EXPERIMENTAL_CATALOG_DEFINITIONS_ENV,
   GEN_AI_OPERATION_NAME,
   GEN_AI_TOOL_CALL_ARGUMENTS,
   GEN_AI_TOOL_CALL_RESULT,
@@ -199,7 +200,7 @@ export interface CatalogDefinitionInput {
   id: string;
   name: string;
   description: string;
-  searchableDescription?: string;
+  experimentalSearchableDescription?: string;
   tags?: string[];
   inputSchema?: unknown;
   outputSchema?: unknown;
@@ -215,7 +216,12 @@ export function recordCatalogDefinitions(
   definitions: readonly CatalogDefinitionInput[],
   emittedHashes: Map<string, string>,
 ): void {
-  if (!captureContentOnEvent()) return;
+  if (
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV]?.toLowerCase() !== "true" ||
+    !captureContentOnEvent()
+  ) {
+    return;
+  }
   for (const definition of definitions) {
     const attributes = catalogDefinitionAttributes(kind, definition);
     const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
@@ -233,8 +239,10 @@ function catalogDefinitionAttributes(
   definition: CatalogDefinitionInput,
 ): Record<string, AnyValue> {
   const tags = definition.tags ?? [];
-  const searchableDescription = definition.searchableDescription ?? definition.description;
-  const searchableDescriptionOverridden = definition.searchableDescription !== undefined;
+  const searchableDescription =
+    definition.experimentalSearchableDescription ?? definition.description;
+  const searchableDescriptionOverridden =
+    definition.experimentalSearchableDescription !== undefined;
   const inputSchema = kind === "tool" ? definition.inputSchema : null;
   const outputSchema = kind === "tool" ? definition.outputSchema : null;
   const content = {

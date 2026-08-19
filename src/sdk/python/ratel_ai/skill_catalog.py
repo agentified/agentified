@@ -473,6 +473,12 @@ class SkillRegistry:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
 
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        with self._dense_state:
+            self._raise_if_busy()
+            self._native.experimental_enable_catalog_definitions()
+
     def experimental_enable_adaptive_ranking(
         self,
         graph: IntentGraph,
@@ -821,9 +827,7 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda projection: self._registry.search_with_origin(
-                query, top_k, origin, projection
-            ),
+            lambda projection: self._registry.search_with_origin(query, top_k, origin, projection),
         )
 
     async def search_async(
@@ -902,6 +906,10 @@ class SkillCatalog:
             queue_capacity=queue_capacity,
             batch_size=batch_size,
         )
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        self._registry.experimental_enable_catalog_definitions()
 
     def experimental_enable_adaptive_ranking(
         self,

@@ -4,7 +4,7 @@ Date: 2026-08-13
 
 ## Status
 
-Accepted
+Accepted — experimental rollout
 
 ## Context
 
@@ -30,6 +30,10 @@ types are non-breaking; renames and removals are breaking. Consumers MUST ignore
 and accept unknown event types. Shared fixtures under `src/telemetry/conformance/` pin the wire
 names and values across languages.
 
+Catalog-definition production is experimental and disabled by default. SDK consumers explicitly
+enable it with `experimentalCatalogDefinitions` (TypeScript) or
+`experimental_catalog_definitions` (Python); other event families remain unchanged.
+
 The remotely publishable v1 event set is:
 
 | Family | Event types | Required product facts |
@@ -52,8 +56,8 @@ the unknown envelope rather than rejecting the batch. Core diagnostic variants t
 the table remain local until deliberately added to the remotely publishable set.
 
 Search query text, hit ids/scores, and catalog-definition fields are part of the facts contract.
-A query is at most 4 KiB and `hits[]` at most 100 entries. Attaching a runtime-event publisher is
-explicit consent to publish those fields, including catalog definitions. This lane is independent
+A query is at most 4 KiB and `hits[]` at most 100 entries. Enabling the experimental
+catalog-definition option is explicit consent to publish those definition fields. This lane is independent
 of `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; that setting governs only the OTel
 projection. Inference messages, tool arguments/results, executors, tokens, cost, model details,
 credentials, skill/fact bodies, and other secrets do not enter this lane.

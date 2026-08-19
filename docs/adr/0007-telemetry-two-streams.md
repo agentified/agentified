@@ -92,8 +92,9 @@ make Ratel Cloud an island.
   inference messages ride the standard `gen_ai.client.inference.operation.details` EventRecord;
   tool arguments/results ride `gen_ai.tool.call.*` span attributes in span modes and the
   structured `ratel.tool.execution.details` EventRecord in event modes; search text follows the
-  same split. Changed tool, skill, and fact definitions ride `ratel.catalog.definition` in event
-  modes. These are Events in the Logs data model, not SpanEvents. The
+  same split. Experimental changed tool, skill, and fact definitions ride
+  `ratel.catalog.definition` in event modes only when
+  `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. These are Events in the Logs data model, not SpanEvents. The
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` gate controls only this OTel projection;
   it does not filter explicitly attached runtime-event publishers.
 - **Ratel Cloud ingests stock OTLP** (`http/protobuf` + `Bearer`). No custom wire format or

@@ -6,6 +6,7 @@ Each constant is asserted against the vocabulary pinned in ../CONVENTIONS.md.
 from ratel_ai_telemetry import (
     CAPTURE_CONTENT_ENV,
     EXECUTE_TOOL,
+    EXPERIMENTAL_CATALOG_DEFINITIONS_ENV,
     GEN_AI_INFERENCE_DETAILS,
     GEN_AI_OPERATION_NAME,
     GEN_AI_TOOL_CALL_ARGUMENTS,
@@ -112,6 +113,7 @@ def test_pins_the_otel_gen_ai_semconv_version() -> None:
 
 def test_gates_content_capture_on_the_ecosystem_env_var() -> None:
     assert CAPTURE_CONTENT_ENV == "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+    assert EXPERIMENTAL_CATALOG_DEFINITIONS_ENV == "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS"
 
 
 def test_names_the_ratel_spans_per_the_pin() -> None:

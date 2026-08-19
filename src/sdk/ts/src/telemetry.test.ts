@@ -37,6 +37,7 @@ let exporter: InMemorySpanExporter;
 let logExporter: InMemoryLogRecordExporter;
 
 const CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
+const EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS";
 
 interface CatalogCanonicalizationFixture {
   catalog_definition_canonicalization: {
@@ -86,6 +87,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env[CAPTURE_ENV];
+  delete process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV];
   setContentCapture(null); // never leak a programmatic capture override across tests
   trace.disable(); // reset the global provider to the no-op default
   logs.disable();
@@ -170,6 +172,7 @@ describe("execute_tool span", () => {
 
   it("emits gated tool, skill, and fact definitions once per unchanged content hash", async () => {
     process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
     const tools = new ToolCatalog();
     const skills = new SkillCatalog();
     const facts = new FactCatalog();
@@ -220,8 +223,18 @@ describe("execute_tool span", () => {
     );
   });
 
+  it("does not emit experimental catalog definitions from the generic content gate alone", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+
+    await catalog.register(readFile);
+
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+  });
+
   it("hashes mixed-case schema keys identically to the Rust core and Python", async () => {
     process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
     const catalog = new ToolCatalog();
     await catalog.register({
       id: "mixed_case",
@@ -242,6 +255,7 @@ describe("execute_tool span", () => {
 
   it("matches shared RFC 8785 catalog-definition bytes, schema attributes, and hashes", async () => {
     process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
     const catalog = new ToolCatalog();
 
     for (const vector of catalogCanonicalization.vectors) {
@@ -253,7 +267,7 @@ describe("execute_tool span", () => {
         inputSchema: vector.input.input_schema,
         outputSchema: vector.input.output_schema,
         ...(vector.input.searchable_description_overridden
-          ? { searchableDescription: vector.input.searchable_description }
+          ? { experimentalSearchableDescription: vector.input.searchable_description }
           : {}),
         execute: () => undefined,
       });

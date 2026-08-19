@@ -633,6 +633,12 @@ class ToolRegistry:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
 
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        with self._dense_state:
+            self._raise_if_busy()
+            self._native.experimental_enable_catalog_definitions()
+
     def experimental_enable_adaptive_ranking(
         self,
         graph: IntentGraph,
@@ -744,9 +750,7 @@ class ToolRegistry:
             EmbedderError: the queries could not be embedded.
         """
         json = await self._run_dense(
-            lambda: self._native._build_intent_graph(
-                jsonl, origins, provenance
-            )
+            lambda: self._native._build_intent_graph(jsonl, origins, provenance)
         )
         return IntentGraph.from_json(json)
 
@@ -883,9 +887,7 @@ class BaselineTurn:
     def invoked(self, tool_id: str) -> BaselineTurn:
         """Attribute a tool invocation to this turn. Chainable."""
         self._still_open()
-        self._events.append(
-            {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
-        )
+        self._events.append({"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0})
         return self
 
     def invoked_skill(self, skill_id: str) -> BaselineTurn:
@@ -1051,9 +1053,7 @@ class ToolCatalog:
             query,
             top_k,
             origin,
-            lambda projection: self._registry.search_with_origin(
-                query, top_k, origin, projection
-            ),
+            lambda projection: self._registry.search_with_origin(query, top_k, origin, projection),
         )
 
     async def search_async(
@@ -1149,6 +1149,10 @@ class ToolCatalog:
             queue_capacity=queue_capacity,
             batch_size=batch_size,
         )
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        self._registry.experimental_enable_catalog_definitions()
 
     def experimental_enable_adaptive_ranking(
         self,
@@ -1253,13 +1257,9 @@ class ToolCatalog:
             }
         )
         for tool_id in invoked or ():
-            self.record_event(
-                {"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0}
-            )
+            self.record_event({"type": "invoke_start", "tool_id": tool_id, "args_size_bytes": 0})
         for skill_id in invoked_skills or ():
-            self.record_event(
-                {"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0}
-            )
+            self.record_event({"type": "skill_invoke", "skill_id": skill_id, "took_ms": 0})
 
     async def experimental_build_intent_graph(
         self,

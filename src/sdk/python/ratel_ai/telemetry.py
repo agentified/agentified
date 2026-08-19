@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
 from typing import Any, TypedDict, TypeVar
@@ -72,9 +73,7 @@ try:
     RATEL_CATALOG_DESCRIPTION: str = getattr(
         _telemetry_vocabulary, "RATEL_CATALOG_DESCRIPTION", "ratel.catalog.description"
     )
-    RATEL_CATALOG_ID: str = getattr(
-        _telemetry_vocabulary, "RATEL_CATALOG_ID", "ratel.catalog.id"
-    )
+    RATEL_CATALOG_ID: str = getattr(_telemetry_vocabulary, "RATEL_CATALOG_ID", "ratel.catalog.id")
     RATEL_CATALOG_INPUT_SCHEMA: str = getattr(
         _telemetry_vocabulary, "RATEL_CATALOG_INPUT_SCHEMA", "ratel.catalog.input_schema"
     )
@@ -99,6 +98,11 @@ try:
     )
     RATEL_CATALOG_TAGS: str = getattr(
         _telemetry_vocabulary, "RATEL_CATALOG_TAGS", "ratel.catalog.tags"
+    )
+    EXPERIMENTAL_CATALOG_DEFINITIONS_ENV: str = getattr(
+        _telemetry_vocabulary,
+        "EXPERIMENTAL_CATALOG_DEFINITIONS_ENV",
+        "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS",
     )
 
     RATEL_EVENT_ID: str
@@ -141,14 +145,16 @@ def record_catalog_definitions(
     emitted_hashes: dict[str, str],
 ) -> None:
     """Project changed catalog definitions into the opt-in Logs channel."""
-    if not _ENABLED or not _capture_content_on_event():
+    if (
+        not _ENABLED
+        or os.getenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "").lower() != "true"
+        or not _capture_content_on_event()
+    ):
         return
     for definition in definitions:
         tags = list(getattr(definition, "tags", []))
-        override = getattr(definition, "searchable_description", None)
-        searchable_description = (
-            definition.description if override is None else override
-        )
+        override = getattr(definition, "experimental_searchable_description", None)
+        searchable_description = definition.description if override is None else override
         input_schema = getattr(definition, "input_schema", None) if kind == "tool" else None
         output_schema = getattr(definition, "output_schema", None) if kind == "tool" else None
         content = {
@@ -325,9 +331,7 @@ async def trace_execute_tool(
     No-op pass-through when telemetry is disabled.
     """
     if not _ENABLED:
-        return await run(
-            _event_projection(invocation_id=new_runtime_event_id())
-        )
+        return await run(_event_projection(invocation_id=new_runtime_event_id()))
     with _tracer().start_as_current_span(
         f"{EXECUTE_TOOL} {tool_id}", kind=SpanKind.INTERNAL
     ) as span:

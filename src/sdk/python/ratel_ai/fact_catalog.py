@@ -325,7 +325,7 @@ class FactRegistry:
             raise ValueError(f"unknown search method: {method}")
         if method != "bm25":
             raise RuntimeError(
-                f'{method} search is asynchronous; use `await registry.search_async(..., '
+                f"{method} search is asynchronous; use `await registry.search_async(..., "
                 f'method="{method}")`'
             )
         return self.search_with_origin(query, top_k, origin)
@@ -383,6 +383,12 @@ class FactRegistry:
         with self._dense_state:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        with self._dense_state:
+            self._raise_if_busy()
+            self._native.experimental_enable_catalog_definitions()
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured native trace events."""
@@ -561,7 +567,7 @@ class FactCatalog:
             raise ValueError(f"unknown search method: {resolved_method}")
         if resolved_method != "bm25":
             raise RuntimeError(
-                f'{resolved_method} search is asynchronous; use `await catalog.search_async(..., '
+                f"{resolved_method} search is asynchronous; use `await catalog.search_async(..., "
                 f'method="{resolved_method}")`'
             )
         return trace_search(

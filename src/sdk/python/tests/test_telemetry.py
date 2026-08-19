@@ -46,6 +46,7 @@ from ratel_ai import (  # noqa: E402
 from ratel_ai.experimental import Fact, FactCatalog  # noqa: E402
 
 CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS"
 
 # OpenTelemetry forbids overriding the global provider once set, so register one
 # provider for the whole module and give each test a clean exporter via clear().
@@ -63,6 +64,7 @@ _logs.set_logger_provider(_LOG_PROVIDER)
 def exporter(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The shared in-memory exporter, cleared so each test sees only its own spans."""
     monkeypatch.delenv(CAPTURE_ENV, raising=False)
+    monkeypatch.delenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, raising=False)
     _EXPORTER.clear()
     _LOG_EXPORTER.clear()
     return _EXPORTER
@@ -181,6 +183,7 @@ async def test_catalog_definitions_are_gated_complete_and_deduplicated(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
     tools = ToolCatalog()
     skills = SkillCatalog()
     facts = FactCatalog()
@@ -231,9 +234,7 @@ async def test_catalog_definitions_are_gated_complete_and_deduplicated(
         ),
         "ratel.catalog.tags": (),
         "ratel.catalog.input_schema": '{"properties":{"path":{"type":"string"}}}',
-        "ratel.catalog.output_schema": (
-            '{"properties":{"contents":{"type":"string"}}}'
-        ),
+        "ratel.catalog.output_schema": ('{"properties":{"contents":{"type":"string"}}}'),
         "ratel.catalog.searchable_description": (
             "Read a file from local disk and return its textual contents."
         ),
@@ -250,10 +251,23 @@ async def test_catalog_definitions_are_gated_complete_and_deduplicated(
 
 
 @pytest.mark.asyncio
+async def test_catalog_definitions_require_experimental_gate(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+
+    await catalog.register(_read_file())
+
+    assert _log_events_named("ratel.catalog.definition") == []
+
+
+@pytest.mark.asyncio
 async def test_catalog_definitions_match_shared_rfc8785_vectors(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
     fixtures = json.loads(
         (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
     )
@@ -270,7 +284,7 @@ async def test_catalog_definitions_match_shared_rfc8785_vectors(
                 description=definition["description"],
                 input_schema=definition["input_schema"],
                 output_schema=definition["output_schema"],
-                searchable_description=(
+                experimental_searchable_description=(
                     definition["searchable_description"]
                     if definition["searchable_description_overridden"]
                     else None
@@ -282,12 +296,8 @@ async def test_catalog_definitions_match_shared_rfc8785_vectors(
     events = _log_events_named("ratel.catalog.definition")
     assert len(events) == len(vectors)
     for event, vector in zip(events, vectors):
-        assert event.attributes["ratel.catalog.input_schema"] == vector[
-            "input_schema_canonical"
-        ]
-        assert event.attributes["ratel.catalog.output_schema"] == vector[
-            "output_schema_canonical"
-        ]
+        assert event.attributes["ratel.catalog.input_schema"] == vector["input_schema_canonical"]
+        assert event.attributes["ratel.catalog.output_schema"] == vector["output_schema_canonical"]
         assert event.attributes["ratel.catalog.content_hash"] == vector["sha256"]
 
 
@@ -297,6 +307,7 @@ async def test_catalog_definitions_reject_non_json_numbers(
     number: float, exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
     catalog = ToolCatalog()
 
     with pytest.raises((ValueError, TypeError, OverflowError)):
@@ -317,6 +328,7 @@ async def test_catalog_definition_capture_fails_open_for_u64_schema_values(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
     catalog = ToolCatalog()
 
     await catalog.register(

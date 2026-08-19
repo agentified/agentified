@@ -130,6 +130,7 @@ pub struct ToolRegistry {
     /// stays one-entry-per-id — no `avgdl` drift, no leak (RAT-378).
     tools: IndexMap<String, Tool>,
     sink: Arc<dyn TraceSink>,
+    experimental_catalog_definitions: bool,
     /// Prebuilt BM25 index over `tools`, built lazily by the first search and
     /// reused until [`Self::register`] invalidates it — a rebuild costs a full
     /// corpus tokenization (~100x one query), so it happens once per corpus
@@ -162,6 +163,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -173,6 +175,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink,
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -188,6 +191,7 @@ impl ToolRegistry {
         Self {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
@@ -198,6 +202,11 @@ impl ToolRegistry {
     /// events go to `sink`. Already-recorded events are not replayed.
     pub fn set_trace_sink(&mut self, sink: Arc<dyn TraceSink>) {
         self.sink = sink;
+    }
+
+    /// Enable experimental complete catalog-definition events for later registrations.
+    pub fn experimental_enable_catalog_definitions(&mut self) {
+        self.experimental_catalog_definitions = true;
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink. Higher
@@ -486,10 +495,14 @@ impl ToolRegistry {
     /// ```
     pub fn register(&mut self, tool: Tool) {
         let tool_id = tool.id.clone();
-        let definition = TraceEvent::catalog_definition_for_tool(&tool);
-        let definition_changed = self.tools.get(&tool_id).is_none_or(|existing| {
-            TraceEvent::catalog_definition_for_tool(existing).catalog_definition_hash()
-                != definition.catalog_definition_hash()
+        let definition = self
+            .experimental_catalog_definitions
+            .then(|| TraceEvent::catalog_definition_for_tool(&tool));
+        let definition_changed = definition.as_ref().is_some_and(|definition| {
+            self.tools.get(&tool_id).is_none_or(|existing| {
+                TraceEvent::catalog_definition_for_tool(existing).catalog_definition_hash()
+                    != definition.catalog_definition_hash()
+            })
         });
         // Add or replace, the corpus changed either way: the prebuilt BM25
         // index no longer matches it.
@@ -503,7 +516,7 @@ impl ToolRegistry {
             tool_id,
         });
         if definition_changed {
-            self.sink.record(definition);
+            self.sink.record(definition.expect("definition is enabled"));
         }
     }
 
@@ -1100,6 +1113,7 @@ mod tests {
         ToolRegistry {
             tools: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
@@ -1175,14 +1189,15 @@ mod tests {
     fn register_emits_one_definition_for_identical_tool_content() {
         let sink = Arc::new(MemorySink::new("definition-session"));
         let mut reg = ToolRegistry::with_trace_sink(sink.clone());
+        reg.experimental_enable_catalog_definitions();
         let mut registered = tool("read_file", "read a file");
-        registered.searchable_description = Some("open local documents".into());
+        registered.experimental_searchable_description = Some("open local documents".into());
         registered.input_schema = serde_json::json!({"type": "object"});
         registered.output_schema = serde_json::json!({"type": "string"});
 
         reg.register(registered);
         let mut identical = tool("read_file", "read a file");
-        identical.searchable_description = Some("open local documents".into());
+        identical.experimental_searchable_description = Some("open local documents".into());
         identical.input_schema = serde_json::json!({"type": "object"});
         identical.output_schema = serde_json::json!({"type": "string"});
         reg.register(identical);

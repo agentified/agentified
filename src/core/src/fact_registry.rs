@@ -44,6 +44,7 @@ pub struct FactRegistry {
     /// [`Self::pinned`] injects always-on facts in.
     facts: IndexMap<String, Fact>,
     sink: Arc<dyn TraceSink>,
+    experimental_catalog_definitions: bool,
     /// Prebuilt BM25 index over `facts`, cached across searches and invalidated
     /// on any mutation of the indexed text (mirrors the skill/tool registries).
     bm25: Bm25Cache,
@@ -64,6 +65,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
@@ -74,6 +76,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink,
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
@@ -85,6 +88,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
         }
@@ -93,6 +97,11 @@ impl FactRegistry {
     /// Replace the trace sink; subsequent events go to `sink`.
     pub fn set_trace_sink(&mut self, sink: Arc<dyn TraceSink>) {
         self.sink = sink;
+    }
+
+    /// Enable experimental complete catalog-definition events for later registrations.
+    pub fn experimental_enable_catalog_definitions(&mut self) {
+        self.experimental_catalog_definitions = true;
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink. The SDK fact
@@ -107,10 +116,14 @@ impl FactRegistry {
     /// holds a duplicate.
     pub fn register(&mut self, fact: Fact) {
         let fact_id = fact.id.clone();
-        let definition = TraceEvent::catalog_definition_for_fact(&fact);
-        let definition_changed = self.facts.get(&fact_id).is_none_or(|existing| {
-            TraceEvent::catalog_definition_for_fact(existing).catalog_definition_hash()
-                != definition.catalog_definition_hash()
+        let definition = self
+            .experimental_catalog_definitions
+            .then(|| TraceEvent::catalog_definition_for_fact(&fact));
+        let definition_changed = definition.as_ref().is_some_and(|definition| {
+            self.facts.get(&fact_id).is_none_or(|existing| {
+                TraceEvent::catalog_definition_for_fact(existing).catalog_definition_hash()
+                    != definition.catalog_definition_hash()
+            })
         });
         if self.facts.insert(fact_id.clone(), fact).is_some() {
             // Replaced an existing id: drop its stale embedding.
@@ -123,7 +136,7 @@ impl FactRegistry {
             fact_id,
         });
         if definition_changed {
-            self.sink.record(definition);
+            self.sink.record(definition.expect("definition is enabled"));
         }
     }
 
@@ -429,6 +442,7 @@ mod tests {
         FactRegistry {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
         }

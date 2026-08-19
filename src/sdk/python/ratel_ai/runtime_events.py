@@ -79,6 +79,8 @@ def new_runtime_event_id(now_ms: int | None = None) -> str:
 
 
 class _EventSource(Protocol):
+    def experimental_enable_catalog_definitions(self) -> None: ...
+
     def subscribe_events(
         self,
         handler: Callable[[list[RuntimeEvent]], object],
@@ -156,9 +158,7 @@ class RuntimeEventSubscription:
     @property
     def dropped_count(self) -> int:
         """Envelopes lost to native overflow or a closed async-handler loop."""
-        native_dropped = sum(
-            subscription.dropped_count for subscription in self._subscriptions
-        )
+        native_dropped = sum(subscription.dropped_count for subscription in self._subscriptions)
         return native_dropped + self._state.dropped_count
 
 
@@ -173,6 +173,7 @@ class RuntimeEvents:
         source_id: str | None = None,
         queue_capacity: int = 1_024,
         batch_size: int = 64,
+        experimental_catalog_definitions: bool = False,
     ) -> None:
         """Create a stream sharing one identity across all event sources.
 
@@ -188,6 +189,9 @@ class RuntimeEvents:
         self.session_id = session_id or str(uuid.uuid4())
         self.source_id = source_id or _default_source_id()
         self._sources = tuple(sources)
+        if experimental_catalog_definitions:
+            for source in sources:
+                source.experimental_enable_catalog_definitions()
         self._queue_capacity = queue_capacity
         self._batch_size = batch_size
 
@@ -210,9 +214,7 @@ class RuntimeEvents:
             def schedule() -> None:
                 future = asyncio.ensure_future(awaitable, loop=loop)
                 pending.add(future)
-                future.add_done_callback(
-                    lambda finished: _finish_async_handler(finished, pending)
-                )
+                future.add_done_callback(lambda finished: _finish_async_handler(finished, pending))
 
             try:
                 on_target_loop = asyncio.get_running_loop() is loop
@@ -371,10 +373,7 @@ def _sanitize_bounded_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_sanitize_bounded_value(item) for item in value[:RUNTIME_EVENT_MAX_HITS]]
     if isinstance(value, dict):
-        return {
-            str(key): _sanitize_bounded_value(child)
-            for key, child in list(value.items())[:32]
-        }
+        return {str(key): _sanitize_bounded_value(child) for key, child in list(value.items())[:32]}
     return value
 
 

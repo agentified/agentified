@@ -3,6 +3,7 @@ import {
   AuthOutcome,
   CAPTURE_CONTENT_ENV,
   EXECUTE_TOOL,
+  EXPERIMENTAL_CATALOG_DEFINITIONS_ENV,
   ExperimentArmOutcome,
   ExperimentArmRole,
   ExperimentDropReason,
@@ -107,6 +108,7 @@ describe("ratel telemetry vocabulary", () => {
 
   it("gates content capture on the ecosystem instrumentation env var", () => {
     expect(CAPTURE_CONTENT_ENV).toBe("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT");
+    expect(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV).toBe("RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS");
   });
 
   it("exports no exporter configuration: the host resolves its own endpoint and auth", async () => {

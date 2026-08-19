@@ -144,7 +144,8 @@ convention `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Note this is an
 convention, not a semconv-v1.42.0 attribute. Honor it rather than inventing a Ratel flag. Values:
 legacy boolean, or the enum `NO_CONTENT` (default) | `SPAN_ONLY` | `EVENT_ONLY` | `SPAN_AND_EVENT`.
 It governs this OTel projection only. An explicitly attached ADR-0020 runtime-event publisher has
-its own consent boundary and receives `catalog_definition` regardless of this setting.
+its own consent boundary. Experimental catalog-definition export additionally requires
+`RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true` for OTel or the SDK runtime-events option.
 
 The four values select **two independent channels** — span attributes and Logs EventRecords — and every
 content-bearing helper honors both, so a mode is truthful (no mode silently drops content it names):
@@ -249,10 +250,10 @@ per the two-channel table in § Tier 1 content.
 | `ratel.upstream.transport` | string | `stdio \| http \| sse \| ...` |
 | `ratel.upstream.tool_count` | int | tools ingested |
 
-### `ratel.catalog.definition`: opt-in catalog definitions
+### `ratel.catalog.definition`: experimental opt-in catalog definitions
 
 Registering or replacing a tool, skill, or fact emits this Logs EventRecord under the event
-content channel. Emission is session-local and change-sensitive: a byte-identical canonical
+content channel only when `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Emission is session-local and change-sensitive: a byte-identical canonical
 definition hash is suppressed, while a changed definition emits again.
 
 | Attribute | Type | Notes |
@@ -272,9 +273,9 @@ The hash input includes kind, identity, authored fields, tags, nullable schemas,
 searchable description, and the override flag. RFC 8785 JSON Canonicalization Scheme bytes are
 used for both the hash input and the `input_schema` / `output_schema` strings; the digest is
 lowercase SHA-256. Non-I-JSON numbers such as NaN and infinity are rejected. This is a
-deduplication token, not a redaction: the OTel event remains content and is off in `NO_CONTENT`
-and `SPAN_ONLY` modes. Independently, ADR-0020's runtime vocabulary includes a
-`catalog_definition` event under explicit runtime-publisher consent.
+deduplication token, not a redaction: the OTel event remains content and is off unless both the
+experimental gate and an EventRecord content mode are enabled. Independently, ADR-0020's runtime
+vocabulary includes a `catalog_definition` event behind an explicit experimental SDK option.
 
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 

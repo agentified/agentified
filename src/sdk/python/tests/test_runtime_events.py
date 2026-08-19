@@ -176,7 +176,7 @@ async def test_publishes_catalog_definitions_independently_of_otel_capture_mode(
 ) -> None:
     monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", capture_mode)
     tools = ToolCatalog()
-    events = RuntimeEvents([tools])
+    events = RuntimeEvents([tools], experimental_catalog_definitions=True)
     received: list[dict[str, object]] = []
     subscription = events.subscribe(lambda batch: received.extend(batch))
 
@@ -206,6 +206,25 @@ async def test_publishes_catalog_definitions_independently_of_otel_capture_mode(
     }
     assert {key: definition[key] for key in expected} == expected
     assert "execute" not in definition
+    subscription.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_are_disabled_by_default() -> None:
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools])
+    received: list[dict[str, object]] = []
+    subscription = events.subscribe(lambda batch: received.extend(batch))
+    await tools.register(
+        ExecutableTool(
+            id="read_file",
+            name="read_file",
+            description="Read a file",
+            execute=lambda _args: {},
+        )
+    )
+    await subscription.flush()
+    assert all(event["type"] != "catalog_definition" for event in received)
     subscription.unsubscribe()
 
 

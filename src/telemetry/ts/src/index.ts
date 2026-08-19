@@ -35,6 +35,12 @@ export const SEMCONV_VERSION = "1.42.0";
  */
 export const CAPTURE_CONTENT_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
 
+/**
+ * Ratel-specific opt-in for the experimental catalog-definition event.
+ * The generic content-capture gate must also allow EventRecord content.
+ */
+export const EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS";
+
 // ---------------------------------------------------------------------------
 // Span names (CONVENTIONS.md, Tier 2)
 // ---------------------------------------------------------------------------
@@ -75,7 +81,7 @@ export const RATEL_SEARCH_RESULTS = "ratel.search.results";
 /** `ratel.tool.execution.details` — Opt-In structured tool arguments/result event. */
 export const RATEL_TOOL_EXECUTION_DETAILS = "ratel.tool.execution.details";
 
-/** `ratel.catalog.definition` — Opt-In complete catalog definition event. */
+/** `ratel.catalog.definition` — experimental, opt-in complete catalog definition event. */
 export const RATEL_CATALOG_DEFINITION = "ratel.catalog.definition";
 
 /** `ratel.experiment.results` — ranked measurement for one experiment arm. */

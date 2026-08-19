@@ -567,7 +567,7 @@ impl TraceEvent {
             &[],
             Some(tool.input_schema.clone()),
             Some(tool.output_schema.clone()),
-            tool.searchable_description.as_deref(),
+            tool.experimental_searchable_description.as_deref(),
         )
     }
 
@@ -580,7 +580,7 @@ impl TraceEvent {
             &skill.tags,
             None,
             None,
-            skill.searchable_description.as_deref(),
+            skill.experimental_searchable_description.as_deref(),
         )
     }
 
@@ -593,7 +593,7 @@ impl TraceEvent {
             &fact.tags,
             None,
             None,
-            fact.searchable_description.as_deref(),
+            fact.experimental_searchable_description.as_deref(),
         )
     }
 
