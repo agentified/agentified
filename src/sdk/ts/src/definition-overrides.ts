@@ -1,7 +1,7 @@
 interface SearchableDefinition {
   readonly id: string;
   readonly description: string;
-  readonly searchableDescription?: string;
+  readonly experimentalSearchableDescription?: string;
 }
 
 /** @internal Whether two definitions produce the same retrieval-description component. */
@@ -10,8 +10,8 @@ export function hasSameRetrievalDescription(
   right: SearchableDefinition,
 ): boolean {
   return (
-    (left.searchableDescription ?? left.description) ===
-    (right.searchableDescription ?? right.description)
+    (left.experimentalSearchableDescription ?? left.description) ===
+    (right.experimentalSearchableDescription ?? right.description)
   );
 }
 
@@ -27,20 +27,20 @@ export function withDefinitionOverride<T extends SearchableDefinition>(
     warnedIds.delete(definition.id);
     return definition;
   }
-  if (definition.searchableDescription === undefined) {
+  if (definition.experimentalSearchableDescription === undefined) {
     warnedIds.delete(definition.id);
   } else if (!warnedIds.has(definition.id)) {
     warnOverrideShadow(kind, definition.id);
     warnedIds.add(definition.id);
   }
-  return { ...definition, searchableDescription };
+  return { ...definition, experimentalSearchableDescription: searchableDescription };
 }
 
 function warnOverrideShadow(kind: "tool" | "skill" | "fact", entryId: string): void {
   try {
     console.warn(
       `ratel: definition override for ${kind} "${entryId}" shadows the local ` +
-        "searchableDescription while useDefinitionOverrides is enabled",
+        "experimentalSearchableDescription while definition overrides are enabled",
     );
   } catch {
     // Diagnostics must never break registration or overlay refresh.

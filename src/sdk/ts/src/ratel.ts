@@ -24,11 +24,11 @@ import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
 import {
-  type DefinitionOverride,
-  type DefinitionOverridesAttachment,
-  type DefinitionOverridesAttachOptions,
-  type DefinitionOverridesRuntimeCatalog,
-  type InternalDefinitionOverridesRuntimeCatalog,
+  type ExperimentalDefinitionOverride,
+  type ExperimentalDefinitionOverridesAttachment,
+  type ExperimentalDefinitionOverridesAttachOptions,
+  type ExperimentalDefinitionOverridesRuntimeCatalog,
+  type InternalExperimentalDefinitionOverridesRuntimeCatalog,
   RuntimeEvents,
   type RuntimeEventsOptions,
 } from "./runtime-events.js";
@@ -271,7 +271,7 @@ export interface AdaptedBase<TTool, TMessage> {
   /** Merged runtime-event stream shared by every view of this core. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: DefinitionOverridesRuntimeCatalog;
+  readonly catalog: ExperimentalDefinitionOverridesRuntimeCatalog;
   /**
    * The model-facing toolset in the framework's shape: this view's passthroughs
    * plus the three capability tools run through the adapter's `expose` codec.
@@ -338,7 +338,7 @@ export interface Ratel {
   /** Merged runtime-event stream shared by tools, skills, and SDK-owned facts. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: DefinitionOverridesRuntimeCatalog;
+  readonly catalog: ExperimentalDefinitionOverridesRuntimeCatalog;
   /**
    * The three capability tools (`search_capabilities`, `invoke_tool`,
    * `get_skill_content`) in native shape, for framework-free hosts. All three
@@ -460,10 +460,10 @@ export function ratel(config: RatelConfig = {}): Ratel {
   let factOverrides = new Map<string, string>();
   let useDefinitionOverrides = false;
   const applyDefinitionOverrides = async (
-    overrides: readonly DefinitionOverride[],
+    overrides: readonly ExperimentalDefinitionOverride[],
   ): Promise<void> => {
     useDefinitionOverrides = true;
-    const byKind = (kind: DefinitionOverride["kind"]): Map<string, string> =>
+    const byKind = (kind: ExperimentalDefinitionOverride["kind"]): Map<string, string> =>
       new Map(
         overrides
           .filter((override) => override.kind === kind)
@@ -476,13 +476,11 @@ export function ratel(config: RatelConfig = {}): Ratel {
       factsCatalog?.applyDefinitionOverrides(factOverrides),
     ]);
   };
-  const attachDefinitionOverrides = async (
-    options: DefinitionOverridesAttachOptions,
-  ): Promise<DefinitionOverridesAttachment> => {
-    if (!options.useDefinitionOverrides) return { refresh: async () => false };
-
+  const experimentalAttachDefinitionOverrides = async (
+    options: ExperimentalDefinitionOverridesAttachOptions,
+  ): Promise<ExperimentalDefinitionOverridesAttachment> => {
     let etag: string | undefined;
-    const attachment: DefinitionOverridesAttachment = {
+    const attachment: ExperimentalDefinitionOverridesAttachment = {
       refresh: async () => {
         const response = await options.source.fetch(etag);
         if (response.status === 304) return false;
@@ -494,13 +492,13 @@ export function ratel(config: RatelConfig = {}): Ratel {
     await attachment.refresh();
     return attachment;
   };
-  const runtimeCatalog: InternalDefinitionOverridesRuntimeCatalog = {
+  const runtimeCatalog: InternalExperimentalDefinitionOverridesRuntimeCatalog = {
     snapshot: () => ({
       source_id: events.sourceId,
       tools: catalog.snapshot(),
       skills: skills.snapshot(),
     }),
-    attachDefinitionOverrides,
+    experimentalAttachDefinitionOverrides,
     applyDefinitionOverrides,
   };
   // The fact catalog owns the grounding freshness state (its injected-body map),

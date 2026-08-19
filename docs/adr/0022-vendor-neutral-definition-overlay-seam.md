@@ -4,7 +4,7 @@ Date: 2026-08-19
 
 ## Status
 
-Accepted
+Accepted — experimental rollout
 
 Extends ADR-0021. The searchable-description projection is unchanged; this ADR decides who may
 supply that description at runtime and how.
@@ -26,13 +26,13 @@ backend, so that branding would have been unrenamable once the SDK reached GA.
 
 The overlay seam is vendor-neutral in name as well as in mechanism.
 
-- The SDK exposes `DefinitionOverlaySource` — one method, `fetch(ifNoneMatch?)`, returning a `200`
+- The SDK exposes `ExperimentalDefinitionOverlaySource` — one method, `fetch(ifNoneMatch?)`, returning a `200`
   with a strong ETag and a complete `{ overrides: [...] }` body, or a `304`. Any implementation
   qualifies. `@ratel-ai/cloud-sdk` is the first one, not a privileged one; it keeps its own Cloud
   branding on its own facade.
-- Opting in is `catalog.attachDefinitionOverrides({ useDefinitionOverrides: true, source })`, and
-  it is one-way for the life of the process: the flag is set-only, so a later attach without it
-  neither clears the opt-in nor restores local text. Reverting means restarting the runtime.
+- Opting in is the explicitly experimental
+  `catalog.experimentalAttachDefinitionOverrides({ source })`. It is one-way for the life of the
+  process; reverting means restarting the runtime.
 - `applyDefinitionOverrides` is internal. It writes an override set straight to the live catalogs
   and so bypasses the conditional-request protocol that keeps an attachment's ETag honest; only
   the attach path and tests call it.

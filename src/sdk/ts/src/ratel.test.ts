@@ -12,8 +12,8 @@ import {
 } from "./index.js";
 import { unadaptedError } from "./ratel.js";
 import type {
-  DefinitionOverridesRuntimeCatalog,
-  InternalDefinitionOverridesRuntimeCatalog,
+  ExperimentalDefinitionOverridesRuntimeCatalog,
+  InternalExperimentalDefinitionOverridesRuntimeCatalog,
 } from "./runtime-events.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 import {
@@ -38,9 +38,9 @@ const native = (id: string, description: string): ExecutableTool => ({
 // bypasses the conditional-request protocol); tests drive it through the
 // implementation-side type the runtime actually returns.
 const internalCatalog = (
-  catalog: DefinitionOverridesRuntimeCatalog,
-): InternalDefinitionOverridesRuntimeCatalog =>
-  catalog as InternalDefinitionOverridesRuntimeCatalog;
+  catalog: ExperimentalDefinitionOverridesRuntimeCatalog,
+): InternalExperimentalDefinitionOverridesRuntimeCatalog =>
+  catalog as InternalExperimentalDefinitionOverridesRuntimeCatalog;
 
 const CAPABILITY_IDS = [SEARCH_CAPABILITIES_ID, INVOKE_TOOL_ID, GET_SKILL_CONTENT_ID];
 
@@ -49,13 +49,13 @@ describe("ratel() standalone core", () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
-      searchableDescription: "localcanaryterm",
+      experimentalSearchableDescription: "localcanaryterm",
     });
     await r.skills.register({
       id: "deploy-skill",
       name: "deploy-skill",
       description: "Deploy an application.",
-      searchableDescription: "localskillterm",
+      experimentalSearchableDescription: "localskillterm",
     });
     const snapshotBeforeAttach = r.catalog.snapshot();
     const requests: Array<string | undefined> = [];
@@ -85,8 +85,7 @@ describe("ratel() standalone core", () => {
         body: { overrides: [] },
       },
     ];
-    const attachment = await r.catalog.attachDefinitionOverrides({
-      useDefinitionOverrides: true,
+    const attachment = await r.catalog.experimentalAttachDefinitionOverrides({
       source: {
         fetch: async (ifNoneMatch) => {
           requests.push(ifNoneMatch);
@@ -113,42 +112,11 @@ describe("ratel() standalone core", () => {
     expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-1"']);
   });
 
-  it("does not pull or apply definition overrides without the opt-in flag", async () => {
-    const r = ratel();
-    await r.tools.register({
-      ...native("deploy", "Deploy an application."),
-      searchableDescription: "localcanaryterm",
-    });
-    const fetch = vi.fn(async () => ({
-      status: 200 as const,
-      etag: '"overlay-1"',
-      body: {
-        overrides: [
-          {
-            kind: "tool" as const,
-            entryId: "deploy",
-            searchableDescription: "overriderollbackterm",
-          },
-        ],
-      },
-    }));
-
-    const attachment = await r.catalog.attachDefinitionOverrides({
-      useDefinitionOverrides: false,
-      source: { fetch },
-    });
-    await attachment.refresh();
-
-    expect(fetch).not.toHaveBeenCalled();
-    expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
-    expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
-  });
-
   it("keeps local retrieval descriptions when definition overrides are not enabled", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
-      searchableDescription: "localcanaryterm",
+      experimentalSearchableDescription: "localcanaryterm",
     });
 
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
@@ -159,7 +127,7 @@ describe("ratel() standalone core", () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
-      searchableDescription: "localcanaryterm",
+      experimentalSearchableDescription: "localcanaryterm",
     });
 
     await internalCatalog(r.catalog).applyDefinitionOverrides([
@@ -175,7 +143,7 @@ describe("ratel() standalone core", () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
-      searchableDescription: "localcanaryterm",
+      experimentalSearchableDescription: "localcanaryterm",
     });
     await internalCatalog(r.catalog).applyDefinitionOverrides([
       { kind: "tool", entryId: "deploy", searchableDescription: "overriderollbackterm" },
@@ -191,14 +159,14 @@ describe("ratel() standalone core", () => {
     const r = ratel();
     const tool = {
       ...native("deploy", "Original tool"),
-      searchableDescription: "originaltoolterm",
+      experimentalSearchableDescription: "originaltoolterm",
       inputSchema: { type: "object", properties: { target: { type: "string" } } },
     };
     const skill = {
       id: "deploy-skill",
       name: "deploy-skill",
       description: "Original skill",
-      searchableDescription: "originalskillterm",
+      experimentalSearchableDescription: "originalskillterm",
       tags: ["original"],
       metadata: { audiences: ["operators"] },
       body: "Original skill body",
@@ -207,7 +175,7 @@ describe("ratel() standalone core", () => {
       id: "deploy-fact",
       name: "deploy-fact",
       description: "Original fact",
-      searchableDescription: "originalfactterm",
+      experimentalSearchableDescription: "originalfactterm",
       tags: ["original"],
       metadata: { regions: ["eu"] },
       body: "Original fact body",
@@ -223,15 +191,15 @@ describe("ratel() standalone core", () => {
     await internalCatalog(r.catalog).applyDefinitionOverrides(overrides);
 
     tool.description = "Mutated tool";
-    tool.searchableDescription = "mutatedtoolterm";
+    tool.experimentalSearchableDescription = "mutatedtoolterm";
     tool.inputSchema.properties.target.type = "number";
     skill.description = "Mutated skill";
-    skill.searchableDescription = "mutatedskillterm";
+    skill.experimentalSearchableDescription = "mutatedskillterm";
     skill.tags.push("mutated");
     skill.metadata.audiences.push("developers");
     skill.body = "Mutated skill body";
     fact.description = "Mutated fact";
-    fact.searchableDescription = "mutatedfactterm";
+    fact.experimentalSearchableDescription = "mutatedfactterm";
     fact.tags.push("mutated");
     fact.metadata.regions.push("us");
     fact.body = "Mutated fact body";
@@ -283,7 +251,7 @@ describe("ratel() standalone core", () => {
       id: "deploy",
       name: "deploy",
       description: "Deploy an application.",
-      searchableDescription: "localcanaryterm",
+      experimentalSearchableDescription: "localcanaryterm",
       body: "# Deploy",
     });
 
@@ -303,7 +271,7 @@ describe("ratel() standalone core", () => {
       id: "address",
       name: "address",
       description: "Where the shop is.",
-      searchableDescription: "localaddressterm",
+      experimentalSearchableDescription: "localaddressterm",
     });
 
     expect(r.facts.search("overridelocationterm", 5).map((hit) => hit.factId)).toEqual(["address"]);
@@ -316,7 +284,7 @@ describe("ratel() standalone core", () => {
       const r = ratel();
       await r.tools.register({
         ...native("deploy", "Deploy an application."),
-        searchableDescription: "localcanaryterm",
+        experimentalSearchableDescription: "localcanaryterm",
       });
       const override = {
         kind: "tool" as const,
@@ -331,7 +299,7 @@ describe("ratel() standalone core", () => {
 
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenCalledWith(
-        'ratel: definition override for tool "deploy" shadows the local searchableDescription while useDefinitionOverrides is enabled',
+        'ratel: definition override for tool "deploy" shadows the local experimentalSearchableDescription while definition overrides are enabled',
       );
     } finally {
       warn.mockRestore();

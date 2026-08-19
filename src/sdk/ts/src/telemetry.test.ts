@@ -289,8 +289,7 @@ describe("execute_tool span", () => {
       description: "Where the shop is",
     });
 
-    await runtime.catalog.attachDefinitionOverrides({
-      useDefinitionOverrides: true,
+    await runtime.catalog.experimentalAttachDefinitionOverrides({
       source: {
         fetch: async () => ({
           status: 200,

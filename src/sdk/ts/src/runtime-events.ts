@@ -131,7 +131,7 @@ export interface CatalogSnapshot {
 }
 
 /** One externally-authored retrieval-description override for a local catalog entry. */
-export interface DefinitionOverride {
+export interface ExperimentalDefinitionOverride {
   /** Catalog containing the entry. */
   readonly kind: "tool" | "skill" | "fact";
   /** Stable local catalog entry id. */
@@ -141,61 +141,54 @@ export interface DefinitionOverride {
 }
 
 /** Successful payload from the runtime-catalog override endpoint. */
-export interface DefinitionOverlay {
+export interface ExperimentalDefinitionOverlay {
   /** Complete override set, sorted by the source's wire contract. */
-  readonly overrides: readonly DefinitionOverride[];
+  readonly overrides: readonly ExperimentalDefinitionOverride[];
 }
 
 /** Fresh complete overlay and its strong entity tag. */
-export interface DefinitionOverlayUpdated {
+export interface ExperimentalDefinitionOverlayUpdated {
   /** Successful conditional request. */
   readonly status: 200;
   /** Strong entity tag to send on the next refresh. */
   readonly etag: string;
   /** Complete overlay payload. */
-  readonly body: DefinitionOverlay;
+  readonly body: ExperimentalDefinitionOverlay;
 }
 
 /** Response indicating that the previously applied overlay is still current. */
-export interface DefinitionOverlayNotModified {
+export interface ExperimentalDefinitionOverlayNotModified {
   /** Not-modified conditional response. */
   readonly status: 304;
 }
 
 /** Conditional overlay response surfaced by an injected overlay source. */
-export type DefinitionOverlayResponse = DefinitionOverlayUpdated | DefinitionOverlayNotModified;
+export type ExperimentalDefinitionOverlayResponse =
+  | ExperimentalDefinitionOverlayUpdated
+  | ExperimentalDefinitionOverlayNotModified;
 
 /**
  * Pluggable boundary implemented by whichever client owns the overlay; the Ratel
  * Cloud SDK's runtime client is the first implementation, not the only one.
  */
-export interface DefinitionOverlaySource {
+export interface ExperimentalDefinitionOverlaySource {
   /** Pull the overlay, conditionally when a previous strong entity tag is available. */
-  fetch(ifNoneMatch?: string): Promise<DefinitionOverlayResponse>;
+  fetch(ifNoneMatch?: string): Promise<ExperimentalDefinitionOverlayResponse>;
 }
 
 /**
- * Opt-in options for letting an overlay source own Retrieval descriptions.
- * Opting in is one-way for the life of the process: the flag is set-only, and a
- * later attach without it neither clears the opt-in nor restores local text.
+ * Experimental options for letting an overlay source own retrieval descriptions.
+ * Calling the experimental attach method is explicit, one-way opt-in for the
+ * life of the process.
  */
-export type DefinitionOverridesAttachOptions =
-  | {
-      /** Give the overlay source ownership of Retrieval descriptions for covered entries. */
-      readonly useDefinitionOverrides: true;
-      /** Source supplied by the attaching client. */
-      readonly source: DefinitionOverlaySource;
-    }
-  | {
-      /** Keep local Retrieval descriptions authoritative. */
-      readonly useDefinitionOverrides?: false;
-      /** Ignored while override ownership is disabled. */
-      readonly source?: DefinitionOverlaySource;
-    };
+export interface ExperimentalDefinitionOverridesAttachOptions {
+  /** Source supplied by the attaching client. Calling attach opts into override ownership. */
+  readonly source: ExperimentalDefinitionOverlaySource;
+}
 
 /** Active definition-overrides attachment. */
-export interface DefinitionOverridesAttachment {
-  /** Pull and apply a changed complete overlay; returns false for 304 or disabled attach. */
+export interface ExperimentalDefinitionOverridesAttachment {
+  /** Pull and apply a changed complete overlay; returns false for 304. */
   refresh(): Promise<boolean>;
 }
 
@@ -205,12 +198,12 @@ export interface RuntimeCatalog {
   snapshot(): CatalogSnapshot;
 }
 
-/** Runtime catalog implemented by current SDK runtimes for definition-overlay attach. */
-export interface DefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
-  /** Attach an injected definition-overlay source and complete the initial pull. */
-  attachDefinitionOverrides(
-    options: DefinitionOverridesAttachOptions,
-  ): Promise<DefinitionOverridesAttachment>;
+/** Experimental runtime catalog seam for definition-overlay attachment. */
+export interface ExperimentalDefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
+  /** ⚠️ Experimental. Attach an injected overlay source and complete the initial pull. */
+  experimentalAttachDefinitionOverrides(
+    options: ExperimentalDefinitionOverridesAttachOptions,
+  ): Promise<ExperimentalDefinitionOverridesAttachment>;
 }
 
 /**
@@ -218,10 +211,10 @@ export interface DefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
  * conditional-request protocol that keeps an attachment's entity tag honest, so it
  * stays off the public interface; the attach path and tests reach it through here.
  */
-export interface InternalDefinitionOverridesRuntimeCatalog
-  extends DefinitionOverridesRuntimeCatalog {
+export interface InternalExperimentalDefinitionOverridesRuntimeCatalog
+  extends ExperimentalDefinitionOverridesRuntimeCatalog {
   /** Apply the latest complete override set to live local registrations. */
-  applyDefinitionOverrides(overrides: readonly DefinitionOverride[]): Promise<void>;
+  applyDefinitionOverrides(overrides: readonly ExperimentalDefinitionOverride[]): Promise<void>;
 }
 
 /** Asynchronous, fail-open consumer of one public event batch. */
