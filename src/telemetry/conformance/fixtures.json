@@ -740,7 +740,7 @@
             "ratel_catalog_output_schema": "{\"type\":\"string\"}",
             "ratel_catalog_searchable_description": "open documents",
             "ratel_catalog_searchable_description_overridden": true,
-            "ratel_catalog_use_cloud_definitions": true,
+            "ratel_catalog_use_definition_overrides": true,
             "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         },
@@ -756,7 +756,7 @@
             "ratel_catalog_output_schema": "{\"type\":\"string\"}",
             "ratel_catalog_searchable_description": "open documents",
             "ratel_catalog_searchable_description_overridden": true,
-            "ratel_catalog_use_cloud_definitions": true,
+            "ratel_catalog_use_definition_overrides": true,
             "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         },
@@ -807,7 +807,7 @@
             "ratel.catalog.output_schema": "{\"type\":\"string\"}",
             "ratel.catalog.searchable_description": "open documents",
             "ratel.catalog.searchable_description_overridden": true,
-            "ratel.catalog.use_cloud_definitions": true,
+            "ratel.catalog.use_definition_overrides": true,
             "ratel.catalog.content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         },

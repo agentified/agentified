@@ -303,12 +303,12 @@ describe("execute_tool span", () => {
     const events = logEventsNamed("ratel.catalog.definition");
     expect(events).toHaveLength(6);
     expect(
-      events.slice(0, 3).map((event) => event.attributes["ratel.catalog.use_cloud_definitions"]),
+      events.slice(0, 3).map((event) => event.attributes["ratel.catalog.use_definition_overrides"]),
     ).toEqual([undefined, undefined, undefined]);
     expect(
       events.slice(3).map((event) => ({
         kind: event.attributes["ratel.catalog.kind"],
-        useCloudDefinitions: event.attributes["ratel.catalog.use_cloud_definitions"],
+        useCloudDefinitions: event.attributes["ratel.catalog.use_definition_overrides"],
       })),
     ).toEqual([
       { kind: "tool", useCloudDefinitions: true },

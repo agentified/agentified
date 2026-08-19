@@ -255,9 +255,9 @@ per the two-channel table in § Tier 1 content.
 Registering or replacing a tool, skill, or fact emits this Logs EventRecord under the event
 content channel only when `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Emission is
 session-local and change-sensitive: a byte-identical canonical definition hash is suppressed,
-while a changed definition emits again. When a runtime first opts into Cloud-owned definitions,
-it re-emits its unchanged definitions with `ratel.catalog.use_cloud_definitions=true` so adoption
-can be observed.
+while a changed definition emits again. When a runtime first opts into externally-sourced
+definition overrides, it re-emits its unchanged definitions with
+`ratel.catalog.use_definition_overrides=true` so adoption can be observed.
 
 | Attribute | Type | Notes |
 |---|---|---|
@@ -271,7 +271,7 @@ can be observed.
 | `ratel.catalog.schema_omitted` | boolean | true when an oversized tool schema attribute was omitted |
 | `ratel.catalog.searchable_description` | string | effective search text after fallback |
 | `ratel.catalog.searchable_description_overridden` | boolean | true when an explicit override supplied the effective text |
-| `ratel.catalog.use_cloud_definitions` | boolean | optional; true when the emitting runtime opted into Cloud-owned definitions |
+| `ratel.catalog.use_definition_overrides` | boolean | optional; true when the emitting runtime opted into externally-sourced definition overrides |
 | `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
 
 The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
