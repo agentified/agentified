@@ -24,10 +24,11 @@ import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
 import {
-  type CloudDefinitionOverride,
-  type CloudDefinitionsAttachment,
-  type CloudDefinitionsAttachOptions,
-  type CloudDefinitionsRuntimeCatalog,
+  type DefinitionOverride,
+  type DefinitionOverridesAttachment,
+  type DefinitionOverridesAttachOptions,
+  type DefinitionOverridesRuntimeCatalog,
+  type InternalDefinitionOverridesRuntimeCatalog,
   RuntimeEvents,
   type RuntimeEventsOptions,
 } from "./runtime-events.js";
@@ -270,7 +271,7 @@ export interface AdaptedBase<TTool, TMessage> {
   /** Merged runtime-event stream shared by every view of this core. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: CloudDefinitionsRuntimeCatalog;
+  readonly catalog: DefinitionOverridesRuntimeCatalog;
   /**
    * The model-facing toolset in the framework's shape: this view's passthroughs
    * plus the three capability tools run through the adapter's `expose` codec.
@@ -337,7 +338,7 @@ export interface Ratel {
   /** Merged runtime-event stream shared by tools, skills, and SDK-owned facts. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: CloudDefinitionsRuntimeCatalog;
+  readonly catalog: DefinitionOverridesRuntimeCatalog;
   /**
    * The three capability tools (`search_capabilities`, `invoke_tool`,
    * `get_skill_content`) in native shape, for framework-free hosts. All three
@@ -456,36 +457,36 @@ export function ratel(config: RatelConfig = {}): Ratel {
   });
   const events = new RuntimeEvents([catalog, skills], config.events);
   let factsCatalog: FactCatalog | undefined;
-  let cloudFactDefinitions = new Map<string, string>();
-  let useCloudDefinitions = false;
-  const applyCloudDefinitions = async (
-    overrides: readonly CloudDefinitionOverride[],
+  let factOverrides = new Map<string, string>();
+  let useDefinitionOverrides = false;
+  const applyDefinitionOverrides = async (
+    overrides: readonly DefinitionOverride[],
   ): Promise<void> => {
-    useCloudDefinitions = true;
-    const byKind = (kind: CloudDefinitionOverride["kind"]): Map<string, string> =>
+    useDefinitionOverrides = true;
+    const byKind = (kind: DefinitionOverride["kind"]): Map<string, string> =>
       new Map(
         overrides
           .filter((override) => override.kind === kind)
           .map((override) => [override.entryId, override.searchableDescription]),
       );
-    cloudFactDefinitions = byKind("fact");
+    factOverrides = byKind("fact");
     await Promise.all([
-      catalog.applyCloudDefinitions(byKind("tool")),
-      skills.applyCloudDefinitions(byKind("skill")),
-      factsCatalog?.applyCloudDefinitions(cloudFactDefinitions),
+      catalog.applyDefinitionOverrides(byKind("tool")),
+      skills.applyDefinitionOverrides(byKind("skill")),
+      factsCatalog?.applyDefinitionOverrides(factOverrides),
     ]);
   };
-  const attachCloudDefinitions = async (
-    options: CloudDefinitionsAttachOptions,
-  ): Promise<CloudDefinitionsAttachment> => {
-    if (!options.useCloudDefinitions) return { refresh: async () => false };
+  const attachDefinitionOverrides = async (
+    options: DefinitionOverridesAttachOptions,
+  ): Promise<DefinitionOverridesAttachment> => {
+    if (!options.useDefinitionOverrides) return { refresh: async () => false };
 
     let etag: string | undefined;
-    const attachment: CloudDefinitionsAttachment = {
+    const attachment: DefinitionOverridesAttachment = {
       refresh: async () => {
         const response = await options.source.fetch(etag);
         if (response.status === 304) return false;
-        await applyCloudDefinitions(response.body.overrides);
+        await applyDefinitionOverrides(response.body.overrides);
         etag = response.etag;
         return true;
       },
@@ -493,14 +494,14 @@ export function ratel(config: RatelConfig = {}): Ratel {
     await attachment.refresh();
     return attachment;
   };
-  const runtimeCatalog: CloudDefinitionsRuntimeCatalog = {
+  const runtimeCatalog: InternalDefinitionOverridesRuntimeCatalog = {
     snapshot: () => ({
       source_id: events.sourceId,
       tools: catalog.snapshot(),
       skills: skills.snapshot(),
     }),
-    attachCloudDefinitions,
-    applyCloudDefinitions,
+    attachDefinitionOverrides,
+    applyDefinitionOverrides,
   };
   // The fact catalog owns the grounding freshness state (its injected-body map),
   // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:
@@ -517,7 +518,7 @@ export function ratel(config: RatelConfig = {}): Ratel {
         trace: config.trace,
         factsTopK: config.factsTopK,
       });
-      if (useCloudDefinitions) factsCatalog.setCloudDefinitions(cloudFactDefinitions);
+      if (useDefinitionOverrides) factsCatalog.setDefinitionOverrides(factOverrides);
     }
     return factsCatalog;
   };

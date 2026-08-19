@@ -21,39 +21,41 @@ Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` f
 
 Every tool, skill, and fact accepts an optional experimental `experimentalSearchableDescription`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
 
-## Cloud-owned Retrieval descriptions
+## Definition overrides from an external source
 
 Registration always owns the complete local definition and syncs that definition up through
-`ratel.catalog.definition` telemetry. Cloud changes apply down only when the runtime explicitly
-opts in at attach time:
+`ratel.catalog.definition` telemetry. An external source can override only the Retrieval
+description, and only when the runtime explicitly opts in at attach time. The seam is a plain
+injected source — any implementation of `DefinitionOverlaySource` works; `@ratel-ai/cloud-sdk` is
+the first one, supplying an authenticated network client:
 
 ```ts
-import { ratel, type CloudDefinitionsOverlaySource } from "@ratel-ai/sdk";
+import { ratel, type DefinitionOverlaySource } from "@ratel-ai/sdk";
 
 const runtime = ratel();
 await runtime.tools.register(localTools);
 
-export async function attachCloudDefinitions(source: CloudDefinitionsOverlaySource) {
-  return runtime.catalog.attachCloudDefinitions({ useCloudDefinitions: true, source });
+export async function attachOverrides(source: DefinitionOverlaySource) {
+  return runtime.catalog.attachDefinitionOverrides({ useDefinitionOverrides: true, source });
 }
 ```
 
-With `useCloudDefinitions` omitted or false, local `searchableDescription` values remain
+With `useDefinitionOverrides` omitted or false, local `searchableDescription` values remain
 authoritative and the source is not called. With it enabled, the attach promise includes the
 initial pull and applies the complete overlay to live tools, skills, and facts. Call the returned
 attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
 source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
-ETag. Applying an identical or empty overlay does not re-index unchanged entries. The Cloud SDK
-supplies the authenticated network source; this package owns only the typed attach-and-apply
-boundary.
+ETag. Applying an identical or empty overlay does not re-index unchanged entries. Opting in is
+one-way for the life of the process: a later attach without the flag neither clears the opt-in nor
+restores local text.
 
-Removing a Cloud override restores the latest local value. If both sides define a Retrieval
-description for one entry, Cloud wins while attached and the SDK warns once for that continuous
-shadowing period; clearing and later reapplying the Cloud override starts a new period.
+Removing an override restores the latest local value. If both sides define a Retrieval description
+for one entry, the override wins while attached and the SDK warns once for that continuous
+shadowing period; clearing and later reapplying the override starts a new period.
 
 The model-facing description, schemas, bodies, tags, and executors always remain local. Definition
-events emitted after opt-in carry `ratel.catalog.use_cloud_definitions=true`, including one
-re-emission of otherwise unchanged definitions so Cloud can observe adoption.
+events emitted after opt-in carry `ratel.catalog.use_definition_overrides=true`, including one
+re-emission of otherwise unchanged definitions so the override owner can observe adoption.
 
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
@@ -453,10 +455,10 @@ const experiment = experimentalDefineExperiment(config, r.events);
 
 `catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
 consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
-recovery. It always contains the locally registered definitions, even while an opted-in Cloud
+recovery. It always contains the locally registered definitions, even while an opted-in definition
 overlay supplies the live Retrieval descriptions. Registration and `skills.replaceAll()` retain a
 deep snapshot of accepted serializable metadata, so later caller-object mutation changes neither
-snapshots nor Cloud restoration; explicitly re-register to adopt a changed value. Tool executor
+snapshots nor override restoration; explicitly re-register to adopt a changed value. Tool executor
 and validator function identities are retained.
 
 ## Telemetry

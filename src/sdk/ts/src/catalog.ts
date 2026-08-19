@@ -2,7 +2,7 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
-import { hasSameRetrievalDescription, withCloudDefinition } from "./cloud-definitions.js";
+import { hasSameRetrievalDescription, withDefinitionOverride } from "./definition-overrides.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -359,8 +359,8 @@ export class ToolCatalog {
   private readonly inputValidators = new Map<string, InputValidator>();
   private readonly localTools = new Map<string, ExecutableTool>();
   private readonly tools = new Map<string, Tool>();
-  private cloudSearchableDescriptions = new Map<string, string>();
-  private readonly warnedCloudShadowIds = new Set<string>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -408,16 +408,18 @@ export class ToolCatalog {
     }
     const localBatch = batch.map(snapshotExecutableTool);
     await this.registerEffective(
-      localBatch.map((tool) => this.applyCloudDefinition(tool)),
+      localBatch.map((tool) => this.applyDefinitionOverride(tool)),
       localBatch,
     );
   }
 
-  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
-  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
-    this.cloudSearchableDescriptions = new Map(overrides);
-    const effective = [...this.localTools.values()].map((tool) => this.applyCloudDefinition(tool));
-    this.registry.setUseCloudDefinitions(effective);
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.overrideSearchableDescriptions = new Map(overrides);
+    const effective = [...this.localTools.values()].map((tool) =>
+      this.applyDefinitionOverride(tool),
+    );
+    this.registry.setUseDefinitionOverrides(effective);
     const changed = effective.filter((tool) => {
       const current = this.tools.get(tool.id);
       return current === undefined || !hasSameRetrievalDescription(current, tool);
@@ -448,12 +450,12 @@ export class ToolCatalog {
     await this.ensureDenseReady();
   }
 
-  private applyCloudDefinition(tool: ExecutableTool): ExecutableTool {
-    return withCloudDefinition(
+  private applyDefinitionOverride(tool: ExecutableTool): ExecutableTool {
+    return withDefinitionOverride(
       "tool",
       tool,
-      this.cloudSearchableDescriptions,
-      this.warnedCloudShadowIds,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
     );
   }
 

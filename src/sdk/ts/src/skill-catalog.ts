@@ -8,7 +8,7 @@ import type {
   SearchOrigin,
   TraceSinkConfig,
 } from "./catalog.js";
-import { withCloudDefinition } from "./cloud-definitions.js";
+import { withDefinitionOverride } from "./definition-overrides.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -80,8 +80,8 @@ export class SkillCatalog {
   private readonly registry: SkillRegistry;
   private readonly localSkills = new Map<string, Skill>();
   private readonly skills = new Map<string, Skill>();
-  private cloudSearchableDescriptions = new Map<string, string>();
-  private readonly warnedCloudShadowIds = new Set<string>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -121,17 +121,17 @@ export class SkillCatalog {
     const batch = Array.isArray(skills) ? skills : [skills];
     const localBatch = batch.map((skill) => structuredClone(skill));
     await this.registerEffective(
-      localBatch.map((skill) => this.applyCloudDefinition(skill)),
+      localBatch.map((skill) => this.applyDefinitionOverride(skill)),
       localBatch,
     );
   }
 
-  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
-  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
-    this.cloudSearchableDescriptions = new Map(overrides);
-    this.registry.setUseCloudDefinitions();
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.overrideSearchableDescriptions = new Map(overrides);
+    this.registry.setUseDefinitionOverrides();
     await this.replaceAllEffective(
-      [...this.localSkills.values()].map((skill) => this.applyCloudDefinition(skill)),
+      [...this.localSkills.values()].map((skill) => this.applyDefinitionOverride(skill)),
     );
   }
 
@@ -187,11 +187,11 @@ export class SkillCatalog {
   replaceAll(skills: readonly Skill[]): PendingReplace {
     const localSkills = skills.map((skill) => structuredClone(skill));
     const localIds = new Set(localSkills.map((skill) => skill.id));
-    for (const warnedId of this.warnedCloudShadowIds) {
-      if (!localIds.has(warnedId)) this.warnedCloudShadowIds.delete(warnedId);
+    for (const warnedId of this.warnedShadowIds) {
+      if (!localIds.has(warnedId)) this.warnedShadowIds.delete(warnedId);
     }
     return this.replaceAllEffective(
-      localSkills.map((skill) => this.applyCloudDefinition(skill)),
+      localSkills.map((skill) => this.applyDefinitionOverride(skill)),
       localSkills,
     );
   }
@@ -215,12 +215,12 @@ export class SkillCatalog {
     return Object.assign(embedded, outcome);
   }
 
-  private applyCloudDefinition(skill: Skill): Skill {
-    return withCloudDefinition(
+  private applyDefinitionOverride(skill: Skill): Skill {
+    return withDefinitionOverride(
       "skill",
       skill,
-      this.cloudSearchableDescriptions,
-      this.warnedCloudShadowIds,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
     );
   }
 

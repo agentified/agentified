@@ -130,66 +130,71 @@ export interface CatalogSnapshot {
   readonly skills: readonly SkillDefinition[];
 }
 
-/** One operator-authored retrieval-description override from Ratel Cloud. */
-export interface CloudDefinitionOverride {
+/** One externally-authored retrieval-description override for a local catalog entry. */
+export interface DefinitionOverride {
   /** Catalog containing the entry. */
   readonly kind: "tool" | "skill" | "fact";
   /** Stable local catalog entry id. */
   readonly entryId: string;
-  /** Cloud-authored replacement for the description component used by retrieval. */
+  /** Externally-authored replacement for the description component used by retrieval. */
   readonly searchableDescription: string;
 }
 
 /** Successful payload from the runtime-catalog override endpoint. */
-export interface CloudDefinitionsOverlay {
+export interface DefinitionOverlay {
   /** Complete override set, sorted by the source's wire contract. */
-  readonly overrides: readonly CloudDefinitionOverride[];
+  readonly overrides: readonly DefinitionOverride[];
 }
 
 /** Fresh complete overlay and its strong entity tag. */
-export interface CloudDefinitionsOverlayUpdated {
+export interface DefinitionOverlayUpdated {
   /** Successful conditional request. */
   readonly status: 200;
   /** Strong entity tag to send on the next refresh. */
   readonly etag: string;
   /** Complete overlay payload. */
-  readonly body: CloudDefinitionsOverlay;
+  readonly body: DefinitionOverlay;
 }
 
 /** Response indicating that the previously applied overlay is still current. */
-export interface CloudDefinitionsOverlayNotModified {
+export interface DefinitionOverlayNotModified {
   /** Not-modified conditional response. */
   readonly status: 304;
 }
 
-/** Conditional overlay response surfaced by an injected Cloud client. */
-export type CloudDefinitionsOverlayResponse =
-  | CloudDefinitionsOverlayUpdated
-  | CloudDefinitionsOverlayNotModified;
+/** Conditional overlay response surfaced by an injected overlay source. */
+export type DefinitionOverlayResponse = DefinitionOverlayUpdated | DefinitionOverlayNotModified;
 
-/** Pluggable boundary implemented by the Cloud SDK's runtime client. */
-export interface CloudDefinitionsOverlaySource {
+/**
+ * Pluggable boundary implemented by whichever client owns the overlay; the Ratel
+ * Cloud SDK's runtime client is the first implementation, not the only one.
+ */
+export interface DefinitionOverlaySource {
   /** Pull the overlay, conditionally when a previous strong entity tag is available. */
-  fetch(ifNoneMatch?: string): Promise<CloudDefinitionsOverlayResponse>;
+  fetch(ifNoneMatch?: string): Promise<DefinitionOverlayResponse>;
 }
 
-/** Opt-in options for attaching Cloud-owned Retrieval descriptions. */
-export type CloudDefinitionsAttachOptions =
+/**
+ * Opt-in options for letting an overlay source own Retrieval descriptions.
+ * Opting in is one-way for the life of the process: the flag is set-only, and a
+ * later attach without it neither clears the opt-in nor restores local text.
+ */
+export type DefinitionOverridesAttachOptions =
   | {
-      /** Give Cloud ownership of Retrieval descriptions for covered entries. */
-      readonly useCloudDefinitions: true;
-      /** Source supplied by the attaching Cloud client. */
-      readonly source: CloudDefinitionsOverlaySource;
+      /** Give the overlay source ownership of Retrieval descriptions for covered entries. */
+      readonly useDefinitionOverrides: true;
+      /** Source supplied by the attaching client. */
+      readonly source: DefinitionOverlaySource;
     }
   | {
       /** Keep local Retrieval descriptions authoritative. */
-      readonly useCloudDefinitions?: false;
-      /** Ignored while Cloud ownership is disabled. */
-      readonly source?: CloudDefinitionsOverlaySource;
+      readonly useDefinitionOverrides?: false;
+      /** Ignored while override ownership is disabled. */
+      readonly source?: DefinitionOverlaySource;
     };
 
-/** Active Cloud-definition attachment. */
-export interface CloudDefinitionsAttachment {
+/** Active definition-overrides attachment. */
+export interface DefinitionOverridesAttachment {
   /** Pull and apply a changed complete overlay; returns false for 304 or disabled attach. */
   refresh(): Promise<boolean>;
 }
@@ -200,14 +205,23 @@ export interface RuntimeCatalog {
   snapshot(): CatalogSnapshot;
 }
 
-/** Runtime catalog implemented by current SDK runtimes for Cloud attach. */
-export interface CloudDefinitionsRuntimeCatalog extends RuntimeCatalog {
-  /** Attach an injected Cloud overlay source and complete the initial pull. */
-  attachCloudDefinitions(
-    options: CloudDefinitionsAttachOptions,
-  ): Promise<CloudDefinitionsAttachment>;
-  /** Apply the latest complete Cloud override set to live local registrations. */
-  applyCloudDefinitions(overrides: readonly CloudDefinitionOverride[]): Promise<void>;
+/** Runtime catalog implemented by current SDK runtimes for definition-overlay attach. */
+export interface DefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
+  /** Attach an injected definition-overlay source and complete the initial pull. */
+  attachDefinitionOverrides(
+    options: DefinitionOverridesAttachOptions,
+  ): Promise<DefinitionOverridesAttachment>;
+}
+
+/**
+ * @internal Implementation-side catalog. `applyDefinitionOverrides` bypasses the
+ * conditional-request protocol that keeps an attachment's entity tag honest, so it
+ * stays off the public interface; the attach path and tests reach it through here.
+ */
+export interface InternalDefinitionOverridesRuntimeCatalog
+  extends DefinitionOverridesRuntimeCatalog {
+  /** Apply the latest complete override set to live local registrations. */
+  applyDefinitionOverrides(overrides: readonly DefinitionOverride[]): Promise<void>;
 }
 
 /** Asynchronous, fail-open consumer of one public event batch. */

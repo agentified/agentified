@@ -218,7 +218,7 @@ export function recordCatalogDefinitions(
   kind: "tool" | "skill" | "fact",
   definitions: readonly CatalogDefinitionInput[],
   emittedHashes: Map<string, string>,
-  useCloudDefinitions = false,
+  useDefinitionOverrides = false,
 ): void {
   if (
     process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV]?.toLowerCase() !== "true" ||
@@ -235,13 +235,13 @@ export function recordCatalogDefinitions(
     }
     if (attributes === undefined) continue;
     const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
-    const dedupeHash = useCloudDefinitions ? `${contentHash}:overrides` : contentHash;
+    const dedupeHash = useDefinitionOverrides ? `${contentHash}:overrides` : contentHash;
     if (emittedHashes.get(definition.id) === dedupeHash) continue;
     getLogger().emit({
       eventName: RATEL_CATALOG_DEFINITION,
       attributes: {
         ...attributes,
-        ...(useCloudDefinitions ? { [RATEL_CATALOG_USE_DEFINITION_OVERRIDES]: true } : {}),
+        ...(useDefinitionOverrides ? { [RATEL_CATALOG_USE_DEFINITION_OVERRIDES]: true } : {}),
       },
     });
     emittedHashes.set(definition.id, dedupeHash);

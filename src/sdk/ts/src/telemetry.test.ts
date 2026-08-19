@@ -272,7 +272,7 @@ describe("execute_tool span", () => {
     expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
   });
 
-  it("re-emits definitions with the Cloud ownership flag when the runtime opts in", async () => {
+  it("re-emits definitions with the override ownership flag when the runtime opts in", async () => {
     process.env[CAPTURE_ENV] = "EVENT_ONLY";
     process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
     const runtime = ratel();
@@ -289,8 +289,8 @@ describe("execute_tool span", () => {
       description: "Where the shop is",
     });
 
-    await runtime.catalog.attachCloudDefinitions({
-      useCloudDefinitions: true,
+    await runtime.catalog.attachDefinitionOverrides({
+      useDefinitionOverrides: true,
       source: {
         fetch: async () => ({
           status: 200,
@@ -308,12 +308,12 @@ describe("execute_tool span", () => {
     expect(
       events.slice(3).map((event) => ({
         kind: event.attributes["ratel.catalog.kind"],
-        useCloudDefinitions: event.attributes["ratel.catalog.use_definition_overrides"],
+        useDefinitionOverrides: event.attributes["ratel.catalog.use_definition_overrides"],
       })),
     ).toEqual([
-      { kind: "tool", useCloudDefinitions: true },
-      { kind: "skill", useCloudDefinitions: true },
-      { kind: "fact", useCloudDefinitions: true },
+      { kind: "tool", useDefinitionOverrides: true },
+      { kind: "skill", useDefinitionOverrides: true },
+      { kind: "fact", useDefinitionOverrides: true },
     ]);
     expect(events.slice(3).map((event) => event.attributes["ratel.catalog.content_hash"])).toEqual(
       events.slice(0, 3).map((event) => event.attributes["ratel.catalog.content_hash"]),

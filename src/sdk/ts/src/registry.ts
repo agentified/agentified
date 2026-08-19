@@ -51,7 +51,7 @@ export class ToolRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
-  private useCloudDefinitions = false;
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -94,12 +94,17 @@ export class ToolRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
+    recordCatalogDefinitions(
+      "tool",
+      items,
+      this.emittedDefinitionHashes,
+      this.useDefinitionOverrides,
+    );
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
-  setUseCloudDefinitions(items: readonly Tool[] = []): void {
-    this.useCloudDefinitions = true;
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Tool[] = []): void {
+    this.useDefinitionOverrides = true;
     recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, true);
   }
 
@@ -398,7 +403,7 @@ export class SkillRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
-  private useCloudDefinitions = false;
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -438,7 +443,7 @@ export class SkillRegistry {
       "skill",
       items,
       this.emittedDefinitionHashes,
-      this.useCloudDefinitions,
+      this.useDefinitionOverrides,
     );
   }
 
@@ -459,14 +464,14 @@ export class SkillRegistry {
       "skill",
       items,
       this.emittedDefinitionHashes,
-      this.useCloudDefinitions,
+      this.useDefinitionOverrides,
     );
     return outcome;
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
-  setUseCloudDefinitions(items: readonly Skill[] = []): void {
-    this.useCloudDefinitions = true;
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Skill[] = []): void {
+    this.useDefinitionOverrides = true;
     recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes, true);
   }
 
@@ -709,7 +714,7 @@ export class FactRegistry {
   private readonly native: NativeFactRegistry;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
-  private useCloudDefinitions = false;
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -749,12 +754,17 @@ export class FactRegistry {
     const items = Array.isArray(item) ? item : [item];
     for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, this.useCloudDefinitions);
+    recordCatalogDefinitions(
+      "fact",
+      items,
+      this.emittedDefinitionHashes,
+      this.useDefinitionOverrides,
+    );
   }
 
-  /** @internal Mark subsequent definition events as Cloud-owned and optionally re-emit adoption. */
-  setUseCloudDefinitions(items: readonly Fact[] = []): void {
-    this.useCloudDefinitions = true;
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Fact[] = []): void {
+    this.useDefinitionOverrides = true;
     recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, true);
   }
 

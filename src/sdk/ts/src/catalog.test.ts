@@ -619,28 +619,28 @@ describe("ToolCatalog embedding config", () => {
 });
 
 describe("ToolCatalog tracing", () => {
-  it("does not churn unchanged retrieval text when a Cloud overlay is applied", async () => {
+  it("does not churn unchanged retrieval text when a definition overlay is applied", async () => {
     const catalog = new ToolCatalog({ trace: { kind: "memory", sessionId: "t" } });
     const writeFile = { ...readFile, id: "write_file", name: "write_file" };
     await catalog.register([readFile, writeFile]);
     catalog.drainTraceEvents();
 
-    await catalog.applyCloudDefinitions(new Map());
+    await catalog.applyDefinitionOverrides(new Map());
 
     expect(catalog.drainTraceEvents()).toEqual([]);
 
     const overlay = new Map([
-      [readFile.id, "cloud retrieval text"],
+      [readFile.id, "override retrieval text"],
       [writeFile.id, writeFile.description],
     ]);
-    await catalog.applyCloudDefinitions(overlay);
+    await catalog.applyDefinitionOverrides(overlay);
     expect(
       (catalog.drainTraceEvents() as Array<{ type: string; tool_id?: string }>)
         .filter((event) => event.type === "index_churn")
         .map((event) => event.tool_id),
     ).toEqual([readFile.id]);
 
-    await catalog.applyCloudDefinitions(overlay);
+    await catalog.applyDefinitionOverrides(overlay);
     expect(catalog.drainTraceEvents()).toEqual([]);
   });
 

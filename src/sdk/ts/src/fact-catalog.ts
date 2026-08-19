@@ -2,7 +2,7 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { hasSameRetrievalDescription, withCloudDefinition } from "./cloud-definitions.js";
+import { hasSameRetrievalDescription, withDefinitionOverride } from "./definition-overrides.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
   assertValidFact,
@@ -56,8 +56,8 @@ export class FactCatalog {
   private readonly registry: FactRegistry;
   private readonly localFacts = new Map<string, Fact>();
   private readonly facts = new Map<string, Fact>();
-  private cloudSearchableDescriptions = new Map<string, string>();
-  private readonly warnedCloudShadowIds = new Set<string>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly factsTopK?: number;
   // Session bookkeeping for the freshness gate: the body this catalog last
@@ -109,22 +109,24 @@ export class FactCatalog {
     for (const fact of batch) assertValidFact(fact);
     const localBatch = batch.map((fact) => structuredClone(fact));
     await this.registerEffective(
-      localBatch.map((fact) => this.applyCloudDefinition(fact)),
+      localBatch.map((fact) => this.applyDefinitionOverride(fact)),
       localBatch,
     );
   }
 
-  /** @internal Configure Cloud definitions before the first local registration. */
-  setCloudDefinitions(overrides: ReadonlyMap<string, string>): void {
-    this.cloudSearchableDescriptions = new Map(overrides);
-    this.registry.setUseCloudDefinitions();
+  /** @internal Configure definition overrides before the first local registration. */
+  setDefinitionOverrides(overrides: ReadonlyMap<string, string>): void {
+    this.overrideSearchableDescriptions = new Map(overrides);
+    this.registry.setUseDefinitionOverrides();
   }
 
-  /** @internal Apply a complete Cloud overlay while retaining local definitions for restore. */
-  async applyCloudDefinitions(overrides: ReadonlyMap<string, string>): Promise<void> {
-    this.cloudSearchableDescriptions = new Map(overrides);
-    const effective = [...this.localFacts.values()].map((fact) => this.applyCloudDefinition(fact));
-    this.registry.setUseCloudDefinitions(effective);
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+    this.overrideSearchableDescriptions = new Map(overrides);
+    const effective = [...this.localFacts.values()].map((fact) =>
+      this.applyDefinitionOverride(fact),
+    );
+    this.registry.setUseDefinitionOverrides(effective);
     const changed = effective.filter((fact) => {
       const current = this.facts.get(fact.id);
       return current === undefined || !hasSameRetrievalDescription(current, fact);
@@ -149,12 +151,12 @@ export class FactCatalog {
     await this.registry.buildDense();
   }
 
-  private applyCloudDefinition(fact: Fact): Fact {
-    return withCloudDefinition(
+  private applyDefinitionOverride(fact: Fact): Fact {
+    return withDefinitionOverride(
       "fact",
       fact,
-      this.cloudSearchableDescriptions,
-      this.warnedCloudShadowIds,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
     );
   }
 

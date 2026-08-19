@@ -11,6 +11,10 @@ import {
   ToolCatalog,
 } from "./index.js";
 import { unadaptedError } from "./ratel.js";
+import type {
+  DefinitionOverridesRuntimeCatalog,
+  InternalDefinitionOverridesRuntimeCatalog,
+} from "./runtime-events.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 import {
   type FakeMessage,
@@ -30,10 +34,18 @@ const native = (id: string, description: string): ExecutableTool => ({
   execute: () => ({ ok: true }),
 });
 
+// `applyDefinitionOverrides` is deliberately off the public catalog interface (it
+// bypasses the conditional-request protocol); tests drive it through the
+// implementation-side type the runtime actually returns.
+const internalCatalog = (
+  catalog: DefinitionOverridesRuntimeCatalog,
+): InternalDefinitionOverridesRuntimeCatalog =>
+  catalog as InternalDefinitionOverridesRuntimeCatalog;
+
 const CAPABILITY_IDS = [SEARCH_CAPABILITIES_ID, INVOKE_TOOL_ID, GET_SKILL_CONTENT_ID];
 
 describe("ratel() standalone core", () => {
-  it("attaches and refreshes Cloud retrieval descriptions through an injected source", async () => {
+  it("attaches and refreshes override retrieval descriptions through an injected source", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
@@ -56,12 +68,12 @@ describe("ratel() standalone core", () => {
             {
               kind: "tool" as const,
               entryId: "deploy",
-              searchableDescription: "cloudrollbackterm",
+              searchableDescription: "overriderollbackterm",
             },
             {
               kind: "skill" as const,
               entryId: "deploy-skill",
-              searchableDescription: "cloudskillterm",
+              searchableDescription: "overrideskillterm",
             },
           ],
         },
@@ -73,8 +85,8 @@ describe("ratel() standalone core", () => {
         body: { overrides: [] },
       },
     ];
-    const attachment = await r.catalog.attachCloudDefinitions({
-      useCloudDefinitions: true,
+    const attachment = await r.catalog.attachDefinitionOverrides({
+      useDefinitionOverrides: true,
       source: {
         fetch: async (ifNoneMatch) => {
           requests.push(ifNoneMatch);
@@ -85,23 +97,23 @@ describe("ratel() standalone core", () => {
       },
     });
 
-    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("overriderollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
     expect(r.tools.search("localcanaryterm", 5)).toEqual([]);
-    expect(r.skills.search("cloudskillterm", 5).map((hit) => hit.skillId)).toEqual([
+    expect(r.skills.search("overrideskillterm", 5).map((hit) => hit.skillId)).toEqual([
       "deploy-skill",
     ]);
     expect(r.catalog.snapshot()).toEqual(snapshotBeforeAttach);
 
     await attachment.refresh();
-    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("overriderollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
 
     await attachment.refresh();
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
-    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+    expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
     expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-1"']);
   });
 
-  it("does not pull or apply Cloud definitions without the opt-in flag", async () => {
+  it("does not pull or apply definition overrides without the opt-in flag", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
@@ -112,23 +124,27 @@ describe("ratel() standalone core", () => {
       etag: '"overlay-1"',
       body: {
         overrides: [
-          { kind: "tool" as const, entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+          {
+            kind: "tool" as const,
+            entryId: "deploy",
+            searchableDescription: "overriderollbackterm",
+          },
         ],
       },
     }));
 
-    const attachment = await r.catalog.attachCloudDefinitions({
-      useCloudDefinitions: false,
+    const attachment = await r.catalog.attachDefinitionOverrides({
+      useDefinitionOverrides: false,
       source: { fetch },
     });
     await attachment.refresh();
 
     expect(fetch).not.toHaveBeenCalled();
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
-    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+    expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
   });
 
-  it("keeps local retrieval descriptions when Cloud definitions are not enabled", async () => {
+  it("keeps local retrieval descriptions when definition overrides are not enabled", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
@@ -136,39 +152,39 @@ describe("ratel() standalone core", () => {
     });
 
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
-    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+    expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
   });
 
-  it("applies Cloud retrieval descriptions without changing local definitions", async () => {
+  it("applies override retrieval descriptions without changing local definitions", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
       searchableDescription: "localcanaryterm",
     });
 
-    await r.catalog.applyCloudDefinitions([
-      { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    await internalCatalog(r.catalog).applyDefinitionOverrides([
+      { kind: "tool", entryId: "deploy", searchableDescription: "overriderollbackterm" },
     ]);
 
-    expect(r.tools.search("cloudrollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("overriderollbackterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
     expect(r.tools.search("localcanaryterm", 5)).toEqual([]);
     expect(r.tools.get("deploy")?.description).toBe("Deploy an application.");
   });
 
-  it("restores the local retrieval description when Cloud removes an override", async () => {
+  it("restores the local retrieval description when the source removes an override", async () => {
     const r = ratel();
     await r.tools.register({
       ...native("deploy", "Deploy an application."),
       searchableDescription: "localcanaryterm",
     });
-    await r.catalog.applyCloudDefinitions([
-      { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    await internalCatalog(r.catalog).applyDefinitionOverrides([
+      { kind: "tool", entryId: "deploy", searchableDescription: "overriderollbackterm" },
     ]);
 
-    await r.catalog.applyCloudDefinitions([]);
+    await internalCatalog(r.catalog).applyDefinitionOverrides([]);
 
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
-    expect(r.tools.search("cloudrollbackterm", 5)).toEqual([]);
+    expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
   });
 
   it("restores accepted registrations until mutated values are explicitly re-registered", async () => {
@@ -200,11 +216,11 @@ describe("ratel() standalone core", () => {
     await r.skills.register(skill);
     await r.facts.register(fact);
     const overrides = [
-      { kind: "tool" as const, entryId: tool.id, searchableDescription: "cloudtoolterm" },
-      { kind: "skill" as const, entryId: skill.id, searchableDescription: "cloudskillterm" },
-      { kind: "fact" as const, entryId: fact.id, searchableDescription: "cloudfactterm" },
+      { kind: "tool" as const, entryId: tool.id, searchableDescription: "overridetoolterm" },
+      { kind: "skill" as const, entryId: skill.id, searchableDescription: "overrideskillterm" },
+      { kind: "fact" as const, entryId: fact.id, searchableDescription: "overridefactterm" },
     ];
-    await r.catalog.applyCloudDefinitions(overrides);
+    await internalCatalog(r.catalog).applyDefinitionOverrides(overrides);
 
     tool.description = "Mutated tool";
     tool.searchableDescription = "mutatedtoolterm";
@@ -220,7 +236,7 @@ describe("ratel() standalone core", () => {
     fact.metadata.regions.push("us");
     fact.body = "Mutated fact body";
 
-    await r.catalog.applyCloudDefinitions([]);
+    await internalCatalog(r.catalog).applyDefinitionOverrides([]);
 
     expect(r.tools.search("originaltoolterm", 5).map((hit) => hit.toolId)).toEqual([tool.id]);
     expect(r.skills.search("originalskillterm", 5).map((hit) => hit.skillId)).toEqual([skill.id]);
@@ -240,11 +256,11 @@ describe("ratel() standalone core", () => {
       body: "Original fact body",
     });
 
-    await r.catalog.applyCloudDefinitions(overrides);
+    await internalCatalog(r.catalog).applyDefinitionOverrides(overrides);
     await r.tools.register(tool);
     await r.skills.register(skill);
     await r.facts.register(fact);
-    await r.catalog.applyCloudDefinitions([]);
+    await internalCatalog(r.catalog).applyDefinitionOverrides([]);
 
     expect(r.tools.search("mutatedtoolterm", 5).map((hit) => hit.toolId)).toEqual([tool.id]);
     expect(r.skills.search("mutatedskillterm", 5).map((hit) => hit.skillId)).toEqual([skill.id]);
@@ -257,10 +273,10 @@ describe("ratel() standalone core", () => {
     expect(r.facts.get(fact.id)?.body).toBe("Mutated fact body");
   });
 
-  it("applies Cloud retrieval descriptions to skills registered after attach", async () => {
+  it("applies override retrieval descriptions to skills registered after attach", async () => {
     const r = ratel();
-    await r.catalog.applyCloudDefinitions([
-      { kind: "skill", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
+    await internalCatalog(r.catalog).applyDefinitionOverrides([
+      { kind: "skill", entryId: "deploy", searchableDescription: "overriderollbackterm" },
     ]);
 
     await r.skills.register({
@@ -271,14 +287,16 @@ describe("ratel() standalone core", () => {
       body: "# Deploy",
     });
 
-    expect(r.skills.search("cloudrollbackterm", 5).map((hit) => hit.skillId)).toEqual(["deploy"]);
+    expect(r.skills.search("overriderollbackterm", 5).map((hit) => hit.skillId)).toEqual([
+      "deploy",
+    ]);
     expect(r.skills.search("localcanaryterm", 5)).toEqual([]);
   });
 
-  it("applies Cloud retrieval descriptions to facts without eagerly creating the catalog", async () => {
+  it("applies override retrieval descriptions to facts without eagerly creating the catalog", async () => {
     const r = ratel();
-    await r.catalog.applyCloudDefinitions([
-      { kind: "fact", entryId: "address", searchableDescription: "cloudlocationterm" },
+    await internalCatalog(r.catalog).applyDefinitionOverrides([
+      { kind: "fact", entryId: "address", searchableDescription: "overridelocationterm" },
     ]);
 
     await r.facts.register({
@@ -288,11 +306,11 @@ describe("ratel() standalone core", () => {
       searchableDescription: "localaddressterm",
     });
 
-    expect(r.facts.search("cloudlocationterm", 5).map((hit) => hit.factId)).toEqual(["address"]);
+    expect(r.facts.search("overridelocationterm", 5).map((hit) => hit.factId)).toEqual(["address"]);
     expect(r.facts.search("localaddressterm", 5)).toEqual([]);
   });
 
-  it("warns once per continuous period that Cloud shadows a local retrieval description", async () => {
+  it("warns once per continuous period that an override shadows a local retrieval description", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const r = ratel();
@@ -303,32 +321,32 @@ describe("ratel() standalone core", () => {
       const override = {
         kind: "tool" as const,
         entryId: "deploy",
-        searchableDescription: "cloudrollbackterm",
+        searchableDescription: "overriderollbackterm",
       };
 
-      await r.catalog.applyCloudDefinitions([override]);
-      await r.catalog.applyCloudDefinitions([override]);
-      await r.catalog.applyCloudDefinitions([]);
-      await r.catalog.applyCloudDefinitions([override]);
+      await internalCatalog(r.catalog).applyDefinitionOverrides([override]);
+      await internalCatalog(r.catalog).applyDefinitionOverrides([override]);
+      await internalCatalog(r.catalog).applyDefinitionOverrides([]);
+      await internalCatalog(r.catalog).applyDefinitionOverrides([override]);
 
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenCalledWith(
-        'ratel: Cloud retrieval description for tool "deploy" shadows the local searchableDescription while useCloudDefinitions is enabled',
+        'ratel: definition override for tool "deploy" shadows the local searchableDescription while useDefinitionOverrides is enabled',
       );
     } finally {
       warn.mockRestore();
     }
   });
 
-  it("does not warn when a Cloud override has no matching explicit local value", async () => {
+  it("does not warn when an override has no matching explicit local value", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const r = ratel();
       await r.tools.register(native("deploy", "Deploy an application."));
 
-      await r.catalog.applyCloudDefinitions([
-        { kind: "tool", entryId: "deploy", searchableDescription: "cloudrollbackterm" },
-        { kind: "tool", entryId: "unknown", searchableDescription: "cloudunknownterm" },
+      await internalCatalog(r.catalog).applyDefinitionOverrides([
+        { kind: "tool", entryId: "deploy", searchableDescription: "overriderollbackterm" },
+        { kind: "tool", entryId: "unknown", searchableDescription: "overrideunknownterm" },
       ]);
 
       expect(warn).not.toHaveBeenCalled();
