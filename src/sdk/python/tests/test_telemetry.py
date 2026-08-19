@@ -313,6 +313,28 @@ async def test_catalog_definitions_reject_non_json_numbers(
 
 
 @pytest.mark.asyncio
+async def test_catalog_definition_capture_fails_open_for_u64_schema_values(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+
+    await catalog.register(
+        ExecutableTool(
+            id="wide-integer",
+            name="wide-integer",
+            description="Accept a u64 schema value",
+            input_schema={"properties": {"value": {"maximum": 2**64 - 1}}},
+            output_schema={},
+            execute=lambda _args: "registered",
+        )
+    )
+
+    assert await catalog.invoke("wide-integer", {}) == "registered"
+    assert _log_events_named("ratel.catalog.definition") == []
+
+
+@pytest.mark.asyncio
 async def test_content_captured_when_gate_set(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

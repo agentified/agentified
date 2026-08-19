@@ -162,7 +162,15 @@ def record_catalog_definitions(
             "searchable_description": searchable_description,
             "searchable_description_overridden": override is not None,
         }
-        content_hash = hashlib.sha256(_canonical_json(content).encode()).hexdigest()
+        try:
+            content_hash = hashlib.sha256(_canonical_json(content).encode()).hexdigest()
+            if kind == "tool":
+                canonical_input_schema = _canonical_json(input_schema)
+                canonical_output_schema = _canonical_json(output_schema)
+        except rfc8785.IntegerDomainError:
+            # Catalog mutation already succeeded. Content telemetry is lossy and
+            # must never turn a supported schema into a failed registration.
+            continue
         if emitted_hashes.get(definition.id) == content_hash:
             continue
         attributes: dict[str, Any] = {
@@ -176,8 +184,8 @@ def record_catalog_definitions(
             RATEL_CATALOG_CONTENT_HASH: content_hash,
         }
         if kind == "tool":
-            attributes[RATEL_CATALOG_INPUT_SCHEMA] = _canonical_json(input_schema)
-            attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = _canonical_json(output_schema)
+            attributes[RATEL_CATALOG_INPUT_SCHEMA] = canonical_input_schema
+            attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = canonical_output_schema
         _logger().emit(event_name=RATEL_CATALOG_DEFINITION, attributes=attributes)
         emitted_hashes[definition.id] = content_hash
 
