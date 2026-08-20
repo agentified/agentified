@@ -12,8 +12,9 @@
 //!
 //! Three registries hold the corpus, one per capability kind:
 //!
-//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints ranked by name and
-//!   searchable description; JSON schemas remain model-facing.
+//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints ranked by name
+//!   plus description and JSON schema tokens, or by a searchable-description
+//!   override that replaces both.
 //! - [`SkillRegistry`] indexes [`Skill`]s — reusable instruction playbooks
 //!   whose body is dispatched on demand (a *pull*).
 //! - [`FactRegistry`] indexes [`Fact`]s — constant grounding content whose body

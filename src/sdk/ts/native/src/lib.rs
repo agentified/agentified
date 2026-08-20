@@ -1004,12 +1004,15 @@ pub struct Tool {
     /// What the tool does and when to use it — the main ranking signal.
     pub description: String,
     /// Optional replacement for the description component used by retrieval.
-    /// The tool name stays indexed; schemas are never indexed.
+    /// Setting it opts this tool out of schema indexing; the tool name stays
+    /// indexed. Omitting it keeps the stable description-plus-schema projection.
     pub experimental_searchable_description: Option<String>,
-    /// JSON Schema of the arguments. Stored for invocation, not indexed.
+    /// JSON Schema of the arguments. Property names and their `description`s
+    /// (nested included) are indexed for ranking, unless
+    /// `experimentalSearchableDescription` is set.
     #[napi(ts_type = "import('json-schema').JSONSchema7")]
     pub input_schema: Value,
-    /// JSON Schema of the result. Stored for invocation, not indexed.
+    /// JSON Schema of the result; indexed the same way as `inputSchema`.
     #[napi(ts_type = "import('json-schema').JSONSchema7")]
     pub output_schema: Value,
 }
