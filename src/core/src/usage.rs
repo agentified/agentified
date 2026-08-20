@@ -1401,12 +1401,20 @@ impl IntentGraph {
     /// centroids are still being filled in, and a query that no centroid
     /// recognizes may still share words with a cluster.
     fn best_match(&self, query: &str, vector: Option<&[f32]>) -> Option<usize> {
-        if let Some(v) = vector
-            && let Some(i) = self.best_dense_match(v)
-        {
-            return Some(i);
+        match vector {
+            // Same guard the serving path applies in `arm`: once a query has been
+            // put to the centroid-bearing clusters and refused, token overlap must
+            // not hand it back to one of them. Only clusters the dense tier cannot
+            // see — those with no centroid — remain eligible.
+            //
+            // Learning needs this more than serving does, not less. A bad serve is
+            // one bad ranking; a bad admission is written into the graph and every
+            // later query is matched against a cluster that has drifted.
+            Some(v) if self.has_centroids() => self
+                .best_dense_match(v)
+                .or_else(|| self.best_lexical_matching(query, true)),
+            _ => self.best_lexical_matching(query, false),
         }
-        self.best_lexical_match(query)
     }
 
     /// Index of the nearest cluster centroid clearing [`TAU_COSINE`]. Ties break
@@ -1427,7 +1435,7 @@ impl IntentGraph {
     /// Index of the cluster whose member-token bag best covers `query`, if any
     /// clears [`TAU_LEXICAL`]. Ties break by cluster id so growth does not
     /// depend on `Vec` order.
-    fn best_lexical_match(&self, query: &str) -> Option<usize> {
+    fn best_lexical_matching(&self, query: &str, centroidless_only: bool) -> Option<usize> {
         let q: std::collections::HashSet<String> = tokenize(query).into_iter().collect();
         if q.is_empty() {
             return None;
@@ -1435,6 +1443,7 @@ impl IntentGraph {
         self.intents
             .iter()
             .enumerate()
+            .filter(|(_, it)| !centroidless_only || it.centroid.is_none())
             .map(|(i, it)| (i, it.lexical_score(&q)))
             .filter(|(_, score)| *score >= TAU_LEXICAL)
             .max_by(|a, b| {
@@ -3634,6 +3643,36 @@ mod tests {
             g.observe_live(&q, Capability::Tool, &format!("tool_{topic}"), T0, true);
         }
         g
+    }
+
+    #[test]
+    fn a_dense_rejected_cluster_is_not_joined_by_word_overlap_while_learning() {
+        // The learning twin of a_dense_rejected_cluster_is_not_rescued_by_word_
+        // overlap. Learning needs the guard more than serving does: a bad serve is
+        // one bad ranking, but a bad admission is written into the graph, and
+        // every later query is then matched against a cluster that has drifted.
+        //
+        // It also gets louder with coverage in place, because the dense tier now
+        // refuses far more often — every refusal is another chance for token
+        // overlap to hand the query straight back.
+        let mut dense = intent("dense", &["deploy the app to prod"], &[("t", 1.0)]);
+        dense.centroid = Some(normalize(vec![1.0, 0.0, 0.0]));
+        dense.last_ts = T0;
+        let mut g = graph(vec![dense]);
+
+        // Orthogonal to the centroid, so the dense tier refuses it — while it
+        // shares every word with the cluster's only member.
+        let q = "deploy the app to prod now";
+        g.note_query_vector(q, &[0.0, 1.0, 0.0], "m");
+        g.observe_live(q, Capability::Tool, "t", T0, true);
+
+        assert_eq!(
+            g.intents.len(),
+            2,
+            "a query the dense tier refused must seed its own cluster, not rejoin \
+             on word overlap: {:?}",
+            g.intents.iter().map(|i| &i.members).collect::<Vec<_>>()
+        );
     }
 
     #[test]
