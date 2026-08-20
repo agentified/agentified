@@ -2,5 +2,7 @@
 ^https://www\.npmjs\.com/package/@ratel-ai/sdk$
 ^https://pyo3\.rs/?$
 ^https://tsx\.is/?$
+# OpenTelemetry language docs intermittently reject GitHub-hosted Lychee requests.
+^https://opentelemetry\.io/docs/languages/(python|js)/$
 # ADR-0012 ships in this branch; its blob/main URL 404s until merge. Remove once on main.
 ^https://github\.com/ratel-ai/ratel/blob/main/docs/adr/0012-configurable-embedding-models\.md$

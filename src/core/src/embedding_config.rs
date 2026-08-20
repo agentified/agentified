@@ -1290,7 +1290,7 @@ mod tests {
         };
         assert_eq!(
             with_pool.configured_fingerprint(),
-            format!("local|path=11:/models/foo|pool=3:cls|q=3:q: |d=3:d: ")
+            "local|path=11:/models/foo|pool=3:cls|q=3:q: |d=3:d: ".to_string()
         );
     }
 
