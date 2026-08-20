@@ -97,7 +97,14 @@ mod tests {
                     }
                 }
             }),
-            output_schema: json!({}),
+            output_schema: json!({
+                "properties": {
+                    "checksum": {
+                        "type": "string",
+                        "description": "sha256 digest of the returned bytes"
+                    }
+                }
+            }),
         }
     }
 
@@ -114,7 +121,7 @@ mod tests {
         let tool = read_file_tool();
         let text = searchable_text(&tool);
         assert!(text.contains("path"), "input schema missing: {text}");
-        assert!(text.contains("encoding"), "output schema missing: {text}");
+        assert!(text.contains("checksum"), "output schema missing: {text}");
     }
 
     #[test]
