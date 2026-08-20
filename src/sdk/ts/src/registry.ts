@@ -24,7 +24,7 @@ import type {
 import { mapArtifactBuildError, mapArtifactWarmError, mapEmbedderError } from "./errors.js";
 import { assertValidFact, type Fact } from "./grounding.js";
 import type { RuntimeEvent, RuntimeEventsOptions } from "./runtime-events.js";
-import type { RuntimeEventProjection } from "./telemetry.js";
+import { type RuntimeEventProjection, recordCatalogDefinitions } from "./telemetry.js";
 
 export { IntentGraph };
 
@@ -50,6 +50,7 @@ export class ToolRegistry {
   #adaptiveWarned = false;
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
+  private readonly emittedDefinitionHashes = new Map<string, string>();
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -92,6 +93,7 @@ export class ToolRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
+    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes);
   }
 
   /**
@@ -218,6 +220,11 @@ export class ToolRegistry {
       return;
     }
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
   }
 
   /** @internal Attach one public runtime-event subscriber. */
@@ -383,6 +390,7 @@ export class SkillRegistry {
   #adaptiveWarned = false;
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
+  private readonly emittedDefinitionHashes = new Map<string, string>();
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -418,6 +426,7 @@ export class SkillRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
+    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
   }
 
   /**
@@ -432,7 +441,9 @@ export class SkillRegistry {
    */
   replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
     assertNotArtifactBusy(this);
-    return this.native.replaceAll([...items]);
+    const outcome = this.native.replaceAll([...items]);
+    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
+    return outcome;
   }
 
   /**
@@ -541,6 +552,11 @@ export class SkillRegistry {
       return;
     }
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
   }
 
   /** @internal Attach one public runtime-event subscriber. */
@@ -668,6 +684,7 @@ export class SkillRegistry {
 export class FactRegistry {
   private readonly native: NativeFactRegistry;
   private readonly eager: boolean;
+  private readonly emittedDefinitionHashes = new Map<string, string>();
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -707,6 +724,7 @@ export class FactRegistry {
     const items = Array.isArray(item) ? item : [item];
     for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
+    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes);
   }
 
   /**
@@ -765,6 +783,11 @@ export class FactRegistry {
   /** Replace the trace sink; subsequent events go to the new destination. */
   setTraceSink(config: TraceSinkConfig): void {
     this.native.setTraceSink(config);
+  }
+
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.native.experimentalEnableCatalogDefinitions();
   }
 
   /** Drain captured envelopes from a `"memory"` sink; `[]` otherwise. */

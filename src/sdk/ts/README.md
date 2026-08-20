@@ -386,7 +386,12 @@ envelope has one session/source stamp and a client ULID. The matching OTel proje
 same ID as `ratel.event.id`; OTel remains a parallel observability channel.
 
 ```ts
-const r = ratel({ events: { sourceId: "checkout-api" } });
+const r = ratel({
+  events: {
+    sourceId: "checkout-api",
+    experimentalCatalogDefinitions: true,
+  },
+});
 const subscription = r.events.subscribe(async (batch) => publish(batch));
 
 // Full serializable state; tool executors and skill bodies are always omitted.
@@ -398,8 +403,12 @@ subscription.unsubscribe();
 
 Delivery is best effort, bounded, and fail-open: subscriber work never blocks catalog operations.
 `flush()` drains work already accepted by this process and waits for async handlers to settle.
-The stream includes search, invocation, catalog churn, upstream/auth, experiment, and observable
-delivery-loss facts described by [ADR 0020](../../../docs/adr/0020-runtime-events-lane.md).
+The stream includes search, invocation, catalog churn and, when explicitly enabled, experimental
+`catalog_definition` changes,
+upstream/auth, experiment, and observable delivery-loss facts described by
+[ADR 0020](../../../docs/adr/0020-runtime-events-lane.md). Setting
+`experimentalCatalogDefinitions: true` explicitly consents to those definition fields; the OTel
+message-content capture setting does not filter this runtime lane.
 
 Experiments are SDK-owned facts. Pass the runtime stream as the second argument so their OTel and
 runtime projections share event IDs:
@@ -408,8 +417,9 @@ runtime projections share event IDs:
 const experiment = experimentalDefineExperiment(config, r.events);
 ```
 
-`catalog.snapshot()` is deliberately separate from the event stream: consumers publish it as an
-atomic full replacement under `snapshot.source_id`.
+`catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
+consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
+recovery.
 
 ## Telemetry
 
@@ -432,7 +442,7 @@ Both lists matter: with `spanProcessors` alone, `NodeSDK` builds the logger prov
 
 **A vendor processor may drop most of it, silently.** Emission and delivery are separate: the provider hands every span to every processor, and each destination then applies its own filter. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so `execute_tool <tool>` survives while `ratel.search`, `ratel.skill.load`, `ratel.upstream.register`, `ratel.auth.flow`, and `ratel.experiment.arm` do not. Nothing errors; the retrieval spans are simply absent. Widening it is one line of the vendor's own config, keyed on scope — see [`src/telemetry/`](../../telemetry/README.md#emission-is-not-delivery) for the predicate, the full span inventory, and the `ai@7` and Mastra wirings.
 
-Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). The `ratel.*` constants themselves live in [`@ratel-ai/telemetry`](../../telemetry/ts/README.md); this package re-exports only the content-capture gate.
+Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Experimental catalog-definition export additionally requires `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Changed definitions then emit one `ratel.catalog.definition` EventRecord per registry-local content hash. The `ratel.*` constants themselves live in [`@ratel-ai/telemetry`](../../telemetry/ts/README.md); this package re-exports only the content-capture gate.
 
 ## Package layout
 

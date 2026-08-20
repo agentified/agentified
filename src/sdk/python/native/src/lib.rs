@@ -1210,6 +1210,11 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Enable experimental complete catalog-definition events.
+    fn experimental_enable_catalog_definitions(&mut self) {
+        self.inner.experimental_enable_catalog_definitions();
+    }
+
     /// Turn on adaptive usage ranking against `graph` (ADR-0014).
     ///
     /// Wires both halves: this registry ranks against the graph, and its trace
@@ -1678,6 +1683,11 @@ impl SkillRegistry {
         Ok(())
     }
 
+    /// Enable experimental complete catalog-definition events.
+    fn experimental_enable_catalog_definitions(&mut self) {
+        self.inner.experimental_enable_catalog_definitions();
+    }
+
     /// Turn on adaptive usage ranking against `graph` (ADR-0014).
     ///
     /// Wires both halves: this registry ranks against the graph, and its trace
@@ -1980,6 +1990,11 @@ impl FactRegistry {
             }
         }
         Ok(())
+    }
+
+    /// Enable experimental complete catalog-definition events.
+    fn experimental_enable_catalog_definitions(&mut self) {
+        self.inner.experimental_enable_catalog_definitions();
     }
 
     /// Drain captured envelopes from the active sink — see

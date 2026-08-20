@@ -253,6 +253,11 @@ export class SkillCatalog {
     return this.registry.subscribeEvents(handler, options);
   }
 
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.registry.experimentalEnableCatalogDefinitions();
+  }
+
   /**
    * Number of registered skills (distinct ids). `searchCapabilitiesTool` uses
    * this to decide whether to advertise a `skills` bucket at all.

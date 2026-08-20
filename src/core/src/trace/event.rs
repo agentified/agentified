@@ -1,4 +1,34 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{Fact, Skill, Tool};
+
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// Catalog entry type carried by [`TraceEvent::CatalogDefinition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogKind {
+    /// An executable tool definition.
+    Tool,
+    /// An on-demand skill definition.
+    Skill,
+    /// A grounding fact definition.
+    Fact,
+}
+
+#[derive(Serialize)]
+struct CatalogDefinitionContent<'a> {
+    kind: CatalogKind,
+    id: &'a str,
+    name: &'a str,
+    description: &'a str,
+    tags: &'a [String],
+    input_schema: Option<&'a serde_json::Value>,
+    output_schema: Option<&'a serde_json::Value>,
+    searchable_description: &'a str,
+    searchable_description_overridden: bool,
+}
 
 /// Where a search came from. Trace consumers separate the paths: rerankers
 /// train on agent calls, the inspector shows all of them, and offline graph
@@ -160,6 +190,31 @@ pub enum FactInjectReason {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TraceEvent {
+    /// A catalog definition was registered or materially changed. Content is
+    /// present on the local stream; SDKs project it to the opt-in
+    /// `ratel.catalog.definition` Logs EventRecord.
+    CatalogDefinition {
+        /// Catalog entry type.
+        kind: CatalogKind,
+        /// Stable catalog entry id.
+        id: String,
+        /// Model-facing display/callable name.
+        name: String,
+        /// Model-facing description.
+        description: String,
+        /// Search tags; empty for tools.
+        tags: Vec<String>,
+        /// Tool input JSON Schema; absent for skills and facts.
+        input_schema: Option<Box<serde_json::Value>>,
+        /// Tool output JSON Schema; absent for skills and facts.
+        output_schema: Option<Box<serde_json::Value>>,
+        /// Effective searchable description after applying the optional override.
+        searchable_description: String,
+        /// Whether the effective searchable description came from an override.
+        searchable_description_overridden: bool,
+        /// Lowercase SHA-256 of the definition fields above.
+        content_hash: String,
+    },
     /// A [`crate::ToolRegistry`] search completed (any [`crate::SearchMethod`]).
     /// Carries the query, the requested `top_k`, the ranked `hits` with
     /// scores, the per-engine `stages` timings, and the total wall time.
@@ -502,6 +557,114 @@ pub enum TraceEvent {
         /// The pooling mode that was assumed (`"cls"` or `"mean"`).
         pooling: String,
     },
+}
+
+impl TraceEvent {
+    pub(crate) fn catalog_definition_for_tool(tool: &Tool) -> Option<Self> {
+        Self::catalog_definition(
+            CatalogKind::Tool,
+            &tool.id,
+            &tool.name,
+            &tool.description,
+            &[],
+            Some(tool.input_schema.clone()),
+            Some(tool.output_schema.clone()),
+            tool.experimental_searchable_description.as_deref(),
+        )
+    }
+
+    pub(crate) fn catalog_definition_for_skill(skill: &Skill) -> Option<Self> {
+        Self::catalog_definition(
+            CatalogKind::Skill,
+            &skill.id,
+            &skill.name,
+            &skill.description,
+            &skill.tags,
+            None,
+            None,
+            skill.experimental_searchable_description.as_deref(),
+        )
+    }
+
+    pub(crate) fn catalog_definition_for_fact(fact: &Fact) -> Option<Self> {
+        Self::catalog_definition(
+            CatalogKind::Fact,
+            &fact.id,
+            &fact.name,
+            &fact.description,
+            &fact.tags,
+            None,
+            None,
+            fact.experimental_searchable_description.as_deref(),
+        )
+    }
+
+    pub(crate) fn catalog_definition_hash(&self) -> Option<&str> {
+        match self {
+            Self::CatalogDefinition { content_hash, .. } => Some(content_hash),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn catalog_definition(
+        kind: CatalogKind,
+        id: &str,
+        name: &str,
+        description: &str,
+        tags: &[String],
+        input_schema: Option<serde_json::Value>,
+        output_schema: Option<serde_json::Value>,
+        override_description: Option<&str>,
+    ) -> Option<Self> {
+        if input_schema.as_ref().is_some_and(has_unsafe_integer)
+            || output_schema.as_ref().is_some_and(has_unsafe_integer)
+        {
+            return None;
+        }
+        let searchable_description = override_description.unwrap_or(description);
+        let searchable_description_overridden = override_description.is_some();
+        let content = CatalogDefinitionContent {
+            kind,
+            id,
+            name,
+            description,
+            tags,
+            input_schema: input_schema.as_ref(),
+            output_schema: output_schema.as_ref(),
+            searchable_description,
+            searchable_description_overridden,
+        };
+        let content_hash = catalog_definition_hash(&content)?;
+        Some(Self::CatalogDefinition {
+            kind,
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            tags: tags.to_vec(),
+            input_schema: input_schema.map(Box::new),
+            output_schema: output_schema.map(Box::new),
+            searchable_description: searchable_description.into(),
+            searchable_description_overridden,
+            content_hash,
+        })
+    }
+}
+
+fn catalog_definition_hash(content: &CatalogDefinitionContent<'_>) -> Option<String> {
+    let canonical = serde_json_canonicalizer::to_vec(content).ok()?;
+    Some(format!("{:x}", Sha256::digest(canonical)))
+}
+
+fn has_unsafe_integer(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_f64()
+            .is_some_and(|number| number.fract() == 0.0 && number.abs() > MAX_SAFE_INTEGER),
+        serde_json::Value::Array(values) => values.iter().any(has_unsafe_integer),
+        serde_json::Value::Object(values) => values.values().any(has_unsafe_integer),
+        _ => false,
+    }
 }
 
 /// Per-event correlation fields supplied by the emitting integration.

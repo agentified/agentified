@@ -139,10 +139,13 @@ Legacy content blocks to v1.42.0 message parts:
 Other v1.42.0 parts available but not in the legacy inventory: `server_tool_call` /
 `server_tool_call_response` (provider-executed tools), `generic` (extensibility escape hatch).
 
-**Capture gating.** Content is Opt-In, **default off**. The gate is the ecosystem instrumentation
+**OTel capture gating.** Content is Opt-In, **default off**. The gate is the ecosystem instrumentation
 convention `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Note this is an *instrumentation-level*
 convention, not a semconv-v1.42.0 attribute. Honor it rather than inventing a Ratel flag. Values:
 legacy boolean, or the enum `NO_CONTENT` (default) | `SPAN_ONLY` | `EVENT_ONLY` | `SPAN_AND_EVENT`.
+It governs this OTel projection only. An explicitly attached ADR-0020 runtime-event publisher has
+its own consent boundary. Experimental catalog-definition export additionally requires
+`RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true` for OTel or the SDK runtime-events option.
 
 The four values select **two independent channels** — span attributes and Logs EventRecords — and every
 content-bearing helper honors both, so a mode is truthful (no mode silently drops content it names):
@@ -160,8 +163,8 @@ content-bearing helper honors both, so a mode is truthful (no mode silently drop
   `ratel.tool.execution.details` event carrying structured `gen_ai.tool.call.arguments` and, on
   success, `gen_ai.tool.call.result`, plus `gen_ai.operation.name = execute_tool` and
   `gen_ai.tool.name`; search text on a `ratel.search.results` event carrying
-  `ratel.search.query`. The search event carries only the query — hit ids/scores/BM25 timing live
-  on the local trace stream, not the OTLP glue.
+  `ratel.search.query`; changed definitions on `ratel.catalog.definition`. The search event carries
+  only the query — hit ids/scores/BM25 timing live on the local trace stream, not the OTLP glue.
 
 `gen_ai.output.messages` is reserved for model-generated outputs; every output message requires
 `finish_reason`. A tool execution result is therefore never encoded as an output message.
@@ -247,6 +250,38 @@ per the two-channel table in § Tier 1 content.
 | `ratel.upstream.transport` | string | `stdio \| http \| sse \| ...` |
 | `ratel.upstream.tool_count` | int | tools ingested |
 
+### `ratel.catalog.definition`: experimental opt-in catalog definitions
+
+Registering or replacing a tool, skill, or fact emits this Logs EventRecord under the event
+content channel only when `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Emission is session-local and change-sensitive: a byte-identical canonical
+definition hash is suppressed, while a changed definition emits again.
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `ratel.catalog.kind` | string | `tool \| skill \| fact` |
+| `ratel.catalog.id` | string | catalog identity and dedup key |
+| `ratel.catalog.name` | string | display name |
+| `ratel.catalog.description` | string | authored description |
+| `ratel.catalog.tags` | string[] | empty when no tags were supplied |
+| `ratel.catalog.input_schema` | string | canonical JSON; tool definitions only |
+| `ratel.catalog.output_schema` | string | canonical JSON; tool definitions only |
+| `ratel.catalog.schema_omitted` | boolean | true when an oversized tool schema attribute was omitted |
+| `ratel.catalog.searchable_description` | string | effective search text after fallback |
+| `ratel.catalog.searchable_description_overridden` | boolean | true when an explicit override supplied the effective text |
+| `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
+
+The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
+searchable description, and the override flag. RFC 8785 JSON Canonicalization Scheme bytes are
+used for both the hash input and the `input_schema` / `output_schema` strings; the digest is
+lowercase SHA-256. Each schema attribute is limited to 65,536 UTF-8 bytes. An oversized schema is
+omitted whole, `ratel.catalog.schema_omitted` is true, and the hash still covers the complete
+definition. A definition containing an integral numeric value outside
+`[-9007199254740991, 9007199254740991]` is registered but omitted from definition telemetry;
+later safe edits remain eligible for emission. This is a deduplication token, not a redaction: the
+OTel event remains content and is off unless both the experimental gate and an EventRecord content
+mode are enabled. Independently, ADR-0020's runtime vocabulary includes a `catalog_definition`
+event behind an explicit experimental SDK option.
+
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 
 | Attribute | Type | Notes |
@@ -319,6 +354,8 @@ both span and log-record processors to deliver the complete experiment signal.
 
 `index_churn` / `skill_churn` are internal catalog-maintenance events with no consumer in this
 mapping source. They stay **local-only** (the ADR-0007 JSONL stream) and are not expressed in `ratel.*`.
+Their definition payloads are separately eligible for the opt-in `ratel.catalog.definition`
+EventRecord above; this does not make the churn observations remote.
 
 ---
 

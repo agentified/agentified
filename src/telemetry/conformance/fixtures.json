@@ -9,6 +9,7 @@
     "otel_event_id_attribute": "ratel.event.id",
     "required_envelope_fields": ["v", "event_id", "ts", "session_id", "source_id", "type"],
     "event_types": [
+      "catalog_definition",
       "search",
       "skill_search",
       "gateway_search",
@@ -36,6 +37,133 @@
       "experiment_invocation",
       "experiment_outcome",
       "events_dropped"
+    ]
+  },
+  "catalog_definition_canonicalization": {
+    "algorithm": "RFC 8785",
+    "canonicalizer_only_vectors": [
+      {
+        "name": "positive exponent threshold",
+        "input": 1e21,
+        "canonical": "1e+21"
+      }
+    ],
+    "vectors": [
+      {
+        "name": "mixed-case and non-BMP keys",
+        "input": {
+          "kind": "tool",
+          "id": "mixed-keys",
+          "name": "Mixed 😀",
+          "description": "Mixed key order",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "a": { "type": "string" },
+              "B": { "type": "number" },
+              "𐀀": { "type": "boolean" },
+              "｡": { "type": "null" }
+            }
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } }
+          },
+          "searchable_description": "Mixed key order",
+          "searchable_description_overridden": false
+        },
+        "canonical": "{\"description\":\"Mixed key order\",\"id\":\"mixed-keys\",\"input_schema\":{\"properties\":{\"B\":{\"type\":\"number\"},\"a\":{\"type\":\"string\"},\"𐀀\":{\"type\":\"boolean\"},\"｡\":{\"type\":\"null\"}},\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Mixed 😀\",\"output_schema\":{\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"type\":\"object\"},\"searchable_description\":\"Mixed key order\",\"searchable_description_overridden\":false,\"tags\":[]}",
+        "input_schema_canonical": "{\"properties\":{\"B\":{\"type\":\"number\"},\"a\":{\"type\":\"string\"},\"𐀀\":{\"type\":\"boolean\"},\"｡\":{\"type\":\"null\"}},\"type\":\"object\"}",
+        "output_schema_canonical": "{\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"type\":\"object\"}",
+        "sha256": "6874d8d75d1dd8e5bf59755e7e9ad7bd572d9e95f7f0e24bf9b8669e4ed824bf"
+      },
+      {
+        "name": "ECMAScript number forms",
+        "input": {
+          "kind": "tool",
+          "id": "numbers",
+          "name": "Numbers",
+          "description": "Number formatting",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "examples": [1e-7, 1e-6, 1.0, -0.0, 333333333.33333329, 4.50, 2e-3, 1e-27]
+          },
+          "output_schema": { "type": "number", "const": -0.0 },
+          "searchable_description": "Number formatting",
+          "searchable_description_overridden": false
+        },
+        "canonical": "{\"description\":\"Number formatting\",\"id\":\"numbers\",\"input_schema\":{\"examples\":[1e-7,0.000001,1,0,333333333.3333333,4.5,0.002,1e-27],\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Numbers\",\"output_schema\":{\"const\":0,\"type\":\"number\"},\"searchable_description\":\"Number formatting\",\"searchable_description_overridden\":false,\"tags\":[]}",
+        "input_schema_canonical": "{\"examples\":[1e-7,0.000001,1,0,333333333.3333333,4.5,0.002,1e-27],\"type\":\"object\"}",
+        "output_schema_canonical": "{\"const\":0,\"type\":\"number\"}",
+        "sha256": "500d1f1c1cfbfb1895f31e8169732f0bb097996bd150fa96d8fd63defc9488e7"
+      },
+      {
+        "name": "Unicode controls and nested arrays",
+        "input": {
+          "kind": "tool",
+          "id": "unicode-controls",
+          "name": "Unicode ☃",
+          "description": "Line\nTab\tQuote\"Slash\\ Emoji 😀",
+          "tags": [],
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "text": { "enum": ["\u0000\b\f\n\r\t", "雪", "😀"] },
+              "nested": { "items": [{ "z": true, "A": null }, [3, 2, 1]] }
+            }
+          },
+          "output_schema": {
+            "type": "array",
+            "items": [{ "type": "string" }, { "type": "number" }]
+          },
+          "searchable_description": "Line\nTab\tQuote\"Slash\\ Emoji 😀",
+          "searchable_description_overridden": true
+        },
+        "canonical": "{\"description\":\"Line\\nTab\\tQuote\\\"Slash\\\\ Emoji 😀\",\"id\":\"unicode-controls\",\"input_schema\":{\"properties\":{\"nested\":{\"items\":[{\"A\":null,\"z\":true},[3,2,1]]},\"text\":{\"enum\":[\"\\u0000\\b\\f\\n\\r\\t\",\"雪\",\"😀\"]}},\"type\":\"object\"},\"kind\":\"tool\",\"name\":\"Unicode ☃\",\"output_schema\":{\"items\":[{\"type\":\"string\"},{\"type\":\"number\"}],\"type\":\"array\"},\"searchable_description\":\"Line\\nTab\\tQuote\\\"Slash\\\\ Emoji 😀\",\"searchable_description_overridden\":true,\"tags\":[]}",
+        "input_schema_canonical": "{\"properties\":{\"nested\":{\"items\":[{\"A\":null,\"z\":true},[3,2,1]]},\"text\":{\"enum\":[\"\\u0000\\b\\f\\n\\r\\t\",\"雪\",\"😀\"]}},\"type\":\"object\"}",
+        "output_schema_canonical": "{\"items\":[{\"type\":\"string\"},{\"type\":\"number\"}],\"type\":\"array\"}",
+        "sha256": "00cbf4a93c435f1a404f931f74a61475de8a26790ff11949ab87c2552d876e09"
+      }
+    ],
+    "rejected_vectors": [
+      {
+        "name": "integer above the interoperable safe range",
+        "reason": "unsafe_integer",
+        "input": {
+          "kind": "tool",
+          "id": "unsafe-integer",
+          "name": "Unsafe integer",
+          "description": "Integer outside the interoperable safe range",
+          "tags": [],
+          "input_schema": {
+            "type": "integer",
+            "maximum": 9007199254740992
+          },
+          "output_schema": { "type": "object" },
+          "searchable_description": "Integer outside the interoperable safe range",
+          "searchable_description_overridden": false
+        }
+      },
+      {
+        "name": "integer below the interoperable safe range",
+        "reason": "unsafe_integer",
+        "input": {
+          "kind": "tool",
+          "id": "unsafe-negative-integer",
+          "name": "Unsafe negative integer",
+          "description": "Integer below the interoperable safe range",
+          "tags": [],
+          "input_schema": {
+            "type": "integer",
+            "minimum": -9007199254740992
+          },
+          "output_schema": { "type": "object" },
+          "searchable_description": "Integer below the interoperable safe range",
+          "searchable_description_overridden": false
+        }
+      }
     ]
   },
   "fixtures": [
@@ -585,6 +713,125 @@
             "ratel.experiment.selection_id": "selection-46",
             "ratel.experiment.outcome.label": "accepted",
             "ratel.experiment.outcome.score": 0.9
+          }
+        }
+      ]
+    },
+    {
+      "name": "catalog definition EventRecords cover every kind and deduplicate id plus hash",
+      "span": "ratel_search",
+      "set": {
+        "ratel_search_target": "tool",
+        "ratel_search_top_k": 1,
+        "ratel_search_hit_count": 0,
+        "ratel_origin": "direct"
+      },
+      "dedupe_catalog_definitions": true,
+      "emit_events": [
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "tool",
+            "ratel_catalog_id": "read_file",
+            "ratel_catalog_name": "read_file",
+            "ratel_catalog_description": "Read files",
+            "ratel_catalog_tags": [],
+            "ratel_catalog_input_schema": "{\"type\":\"object\"}",
+            "ratel_catalog_output_schema": "{\"type\":\"string\"}",
+            "ratel_catalog_searchable_description": "open documents",
+            "ratel_catalog_searchable_description_overridden": true,
+            "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "tool",
+            "ratel_catalog_id": "read_file",
+            "ratel_catalog_name": "read_file",
+            "ratel_catalog_description": "Read files",
+            "ratel_catalog_tags": [],
+            "ratel_catalog_input_schema": "{\"type\":\"object\"}",
+            "ratel_catalog_output_schema": "{\"type\":\"string\"}",
+            "ratel_catalog_searchable_description": "open documents",
+            "ratel_catalog_searchable_description_overridden": true,
+            "ratel_catalog_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "skill",
+            "ratel_catalog_id": "review",
+            "ratel_catalog_name": "review_code",
+            "ratel_catalog_description": "Review source",
+            "ratel_catalog_tags": ["quality"],
+            "ratel_catalog_searchable_description": "Review source",
+            "ratel_catalog_searchable_description_overridden": false,
+            "ratel_catalog_content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "event": "ratel_catalog_definition",
+          "attributes": {
+            "ratel_catalog_kind": "fact",
+            "ratel_catalog_id": "address",
+            "ratel_catalog_name": "shop_address",
+            "ratel_catalog_description": "Where the shop is",
+            "ratel_catalog_tags": ["location"],
+            "ratel_catalog_searchable_description": "Where the shop is",
+            "ratel_catalog_searchable_description_overridden": false,
+            "ratel_catalog_content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        }
+      ],
+      "expect_name": "ratel.search",
+      "expect_attributes": {
+        "ratel.search.target": "tool",
+        "ratel.search.top_k": 1,
+        "ratel.search.hit_count": 0,
+        "ratel.origin": "direct"
+      },
+      "expect_events": [
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "tool",
+            "ratel.catalog.id": "read_file",
+            "ratel.catalog.name": "read_file",
+            "ratel.catalog.description": "Read files",
+            "ratel.catalog.tags": [],
+            "ratel.catalog.input_schema": "{\"type\":\"object\"}",
+            "ratel.catalog.output_schema": "{\"type\":\"string\"}",
+            "ratel.catalog.searchable_description": "open documents",
+            "ratel.catalog.searchable_description_overridden": true,
+            "ratel.catalog.content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "skill",
+            "ratel.catalog.id": "review",
+            "ratel.catalog.name": "review_code",
+            "ratel.catalog.description": "Review source",
+            "ratel.catalog.tags": ["quality"],
+            "ratel.catalog.searchable_description": "Review source",
+            "ratel.catalog.searchable_description_overridden": false,
+            "ratel.catalog.content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "name": "ratel.catalog.definition",
+          "attributes": {
+            "ratel.catalog.kind": "fact",
+            "ratel.catalog.id": "address",
+            "ratel.catalog.name": "shop_address",
+            "ratel.catalog.description": "Where the shop is",
+            "ratel.catalog.tags": ["location"],
+            "ratel.catalog.searchable_description": "Where the shop is",
+            "ratel.catalog.searchable_description_overridden": false,
+            "ratel.catalog.content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
           }
         }
       ]

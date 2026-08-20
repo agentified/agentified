@@ -31,6 +31,17 @@ from ratel_ai_telemetry import (
     GEN_AI_TOOL_NAME,
     RATEL_AUTH_FLOW,
     RATEL_AUTH_OUTCOME,
+    RATEL_CATALOG_CONTENT_HASH,
+    RATEL_CATALOG_DEFINITION,
+    RATEL_CATALOG_DESCRIPTION,
+    RATEL_CATALOG_ID,
+    RATEL_CATALOG_INPUT_SCHEMA,
+    RATEL_CATALOG_KIND,
+    RATEL_CATALOG_NAME,
+    RATEL_CATALOG_OUTPUT_SCHEMA,
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+    RATEL_CATALOG_TAGS,
     RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
     RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
     RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -173,10 +184,23 @@ ATTR_KEY = {
     "ratel_upstream_transport": RATEL_UPSTREAM_TRANSPORT,
     "ratel_upstream_tool_count": RATEL_UPSTREAM_TOOL_COUNT,
     "ratel_auth_outcome": RATEL_AUTH_OUTCOME,
+    "ratel_catalog_content_hash": RATEL_CATALOG_CONTENT_HASH,
+    "ratel_catalog_description": RATEL_CATALOG_DESCRIPTION,
+    "ratel_catalog_id": RATEL_CATALOG_ID,
+    "ratel_catalog_input_schema": RATEL_CATALOG_INPUT_SCHEMA,
+    "ratel_catalog_kind": RATEL_CATALOG_KIND,
+    "ratel_catalog_name": RATEL_CATALOG_NAME,
+    "ratel_catalog_output_schema": RATEL_CATALOG_OUTPUT_SCHEMA,
+    "ratel_catalog_searchable_description": RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+    "ratel_catalog_searchable_description_overridden": (
+        RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN
+    ),
+    "ratel_catalog_tags": RATEL_CATALOG_TAGS,
 }
 
 # Logical event id -> the event-name constant under test.
 EVENT_NAME = {
+    "ratel_catalog_definition": RATEL_CATALOG_DEFINITION,
     "ratel_experiment_comparison": RATEL_EXPERIMENT_COMPARISON,
     "ratel_experiment_drop": RATEL_EXPERIMENT_DROP,
     "ratel_experiment_fallback": RATEL_EXPERIMENT_FALLBACK,
@@ -208,7 +232,19 @@ def test_fixture_emits_pinned_keys(fixture: dict[str, Any]) -> None:
     span = tracer.start_span(SPAN_NAME[fixture["span"]])
     for field, value in fixture["set"].items():
         span.set_attribute(ATTR_KEY[field], value)
+    seen_definitions: set[tuple[Any, Any]] = set()
     for event in fixture.get("emit_events", []):
+        if (
+            fixture.get("dedupe_catalog_definitions")
+            and event["event"] == "ratel_catalog_definition"
+        ):
+            key = (
+                event["attributes"]["ratel_catalog_id"],
+                event["attributes"]["ratel_catalog_content_hash"],
+            )
+            if key in seen_definitions:
+                continue
+            seen_definitions.add(key)
         attributes = {
             ATTR_KEY[field]: value for field, value in event["attributes"].items()
         }

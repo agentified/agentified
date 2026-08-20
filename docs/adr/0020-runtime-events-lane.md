@@ -4,15 +4,16 @@ Date: 2026-08-13
 
 ## Status
 
-Accepted
+Accepted — experimental rollout
 
 ## Context
 
 Ratel's core trace stream already records the product facts that power inspection, adaptive
 ranking, suggestions, and catalog views. Ratel Cloud can infer some of those facts from the
-parallel OpenTelemetry projection, but sampling, processors, and the content-capture gate make
-OTel an observation channel rather than a census. Catalog definitions are state, not telemetry,
-and cannot be reconstructed from lossy churn events.
+parallel OpenTelemetry projection, but sampling, processors, and the OTel content-capture gate
+make OTel an observation channel rather than a census. Catalog definitions are state as well as
+change observations: definition events make changes visible, but current state cannot be
+reconstructed safely from a lossy stream.
 
 The SDK therefore needs one public, cross-language event seam that local consumers and an
 optional Cloud adapter can subscribe to without changing the existing OTel wrappers. It also
@@ -29,6 +30,10 @@ types are non-breaking; renames and removals are breaking. Consumers MUST ignore
 and accept unknown event types. Shared fixtures under `src/telemetry/conformance/` pin the wire
 names and values across languages.
 
+Catalog-definition production is experimental and disabled by default. SDK consumers explicitly
+enable it with `experimentalCatalogDefinitions` (TypeScript) or
+`experimental_catalog_definitions` (Python); other event families remain unchanged.
+
 The remotely publishable v1 event set is:
 
 | Family | Event types | Required product facts |
@@ -37,6 +42,7 @@ The remotely publishable v1 event set is:
 | Tool invocation | `invoke_start`, `invoke_end`, `invoke_error`, `gateway_invoke`, `gateway_error` | tool id, `invocation_id`, outcome/error class, and duration where known |
 | Skill use | `skill_invoke` | skill id, outcome, and duration |
 | Catalog churn | `index_churn`, `skill_churn` | add/remove, target id, and catalog version where known |
+| Catalog definitions | `catalog_definition` | public definition fields and canonical content hash |
 | Upstream MCP | `upstream_register`, `upstream_invoke`, `upstream_error` | server, transport/tool count or tool id, outcome/error class, and duration where known |
 | Auth | `auth_refresh`, `auth_needs`, `auth_flow_start`, `auth_flow_end` | upstream id and outcome; never credentials |
 | Experiments | `experiment_selection`, `experiment_results`, `experiment_comparison`, `experiment_skip`, `experiment_fallback`, `experiment_drop`, `experiment_invocation`, `experiment_outcome` | `selection_id`; served/shadow arm data; agreement metrics; result ids/scores; attribution, drop/fallback reason, and labelled outcome as applicable |
@@ -49,11 +55,32 @@ Newer SDKs may emit additive types before every receiver understands them; the r
 the unknown envelope rather than rejecting the batch. Core diagnostic variants that are not in
 the table remain local until deliberately added to the remotely publishable set.
 
-Search query text and hit ids/scores are part of the facts contract. A query is at most 4 KiB
-and `hits[]` at most 100 entries. Attaching a remote publisher is explicit consent to send those
-fields and uses a gate independent of `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`.
-Inference messages, tool arguments/results, executors, tokens, cost, and model details do not
-enter this lane; they remain absent or OTel-only as applicable.
+Search query text, hit ids/scores, and catalog-definition fields are part of the facts contract.
+A query is at most 4 KiB and `hits[]` at most 100 entries. Enabling the experimental
+catalog-definition option is explicit consent to publish those definition fields. This lane is independent
+of `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; that setting governs only the OTel
+projection. Inference messages, tool arguments/results, executors, tokens, cost, model details,
+credentials, skill/fact bodies, and other secrets do not enter this lane.
+
+`catalog_definition` is change-sensitive and intentionally lossy. It is emitted for an accepted
+tool, skill, or fact definition when its canonical content changes and carries:
+
+| Field | Contract |
+|---|---|
+| `kind` | `tool \| skill \| fact` |
+| `id`, `name`, `description` | public identity and authored text |
+| `tags` | public search tags; empty where unsupported or absent |
+| `input_schema`, `output_schema` | tool JSON Schemas; `null` for skills and facts |
+| `searchable_description` | effective retrieval text |
+| `searchable_description_overridden` | whether an explicit override supplied that text |
+| `content_hash` | lowercase SHA-256 over the RFC 8785 canonical fields above |
+
+Executors, validation functions, credentials, skill/fact bodies, and unlisted fields are omitted.
+The event is suitable for observation, cache hints, and snapshot triggers—not state recovery.
+Definitions containing an integral numeric value outside
+`[-9007199254740991, 9007199254740991]` remain registered but emit no definition event. A later
+safe edit is eligible again; the lossy telemetry path never rounds schema values or blocks catalog
+mutation.
 
 ### Envelope v2 and identity
 
@@ -131,12 +158,14 @@ drill-down. Other sources in the project may continue on OTel-derived facts.
 
 ### Catalog snapshot publication carve-out
 
-Catalog definitions do not ride runtime events. `catalog.snapshot()` returns the complete
-serializable definition set (ids, names, descriptions, schemas, and public metadata), never an
-executor or secret material. The Cloud adapter publishes that state separately under the same
-`source_id`, using a canonical content hash and atomic full replacement so removals work and
-unchanged snapshots are skipped. Churn events may debounce/trigger publication, but are not an
-oplog from which catalog state is rebuilt.
+Definition events do not replace `catalog.snapshot()`. The event stream is bounded, lossy,
+change-sensitive, and has no complete removal/recovery protocol. `catalog.snapshot()` remains the
+authoritative full replacement: the complete serializable definition set (ids, names,
+descriptions, schemas, and public metadata), never an executor or secret material. The Cloud
+adapter publishes that state separately under the same `source_id`, using a canonical content
+hash and atomic full replacement so removals and recovery work and unchanged snapshots are
+skipped. Definition and churn events may debounce/trigger publication, but are not an oplog from
+which catalog state is rebuilt.
 
 This upward path is not catalog authoring or bidirectional source sync. It publishes the
 running SDK's observed state and append-only facts. Event and snapshot shapes structurally omit
@@ -163,8 +192,8 @@ exists.
   can remove fields Cloud features require.
 - **Rebase OTel on runtime events:** point events cannot preserve wrapper span lifecycle and
   ambient context without redesigning working instrumentation.
-- **Catalog definitions as events:** a lossy stream cannot safely reconstruct current state or
-  removals.
+- **Catalog definition events as catalog authority:** a lossy stream cannot safely reconstruct
+  current state or removals; events are observations and snapshots remain authoritative.
 - **Durable delivery in the SDK:** a spool/ack protocol is a different reliability tier; this
   lane remains fail-open and in-memory.
 - **Bidirectional catalog sync:** creates offline merge and secret-leak classes. Source pull and

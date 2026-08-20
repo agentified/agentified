@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { context, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -13,6 +14,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import canonicalize from "canonicalize";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FactCatalog } from "./experimental.js";
 import {
@@ -35,6 +37,49 @@ let exporter: InMemorySpanExporter;
 let logExporter: InMemoryLogRecordExporter;
 
 const CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
+const EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS";
+
+interface CatalogDefinitionFixtureInput {
+  kind: "tool";
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  input_schema: ExecutableTool["inputSchema"];
+  output_schema: ExecutableTool["outputSchema"];
+  searchable_description: string;
+  searchable_description_overridden: boolean;
+}
+
+interface CatalogCanonicalizationFixture {
+  catalog_definition_canonicalization: {
+    algorithm: string;
+    canonicalizer_only_vectors: Array<{
+      name: string;
+      input: unknown;
+      canonical: string;
+    }>;
+    vectors: Array<{
+      name: string;
+      input: CatalogDefinitionFixtureInput;
+      canonical: string;
+      input_schema_canonical: string;
+      output_schema_canonical: string;
+      sha256: string;
+    }>;
+    rejected_vectors: Array<{
+      name: string;
+      reason: "unsafe_integer";
+      input: CatalogDefinitionFixtureInput;
+    }>;
+  };
+}
+
+const catalogCanonicalization = (
+  JSON.parse(
+    readFileSync(new URL("../../../telemetry/conformance/fixtures.json", import.meta.url), "utf8"),
+  ) as CatalogCanonicalizationFixture
+).catalog_definition_canonicalization;
 
 beforeEach(() => {
   // Fresh exporter + provider each test. Don't shut the provider down in teardown
@@ -54,6 +99,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env[CAPTURE_ENV];
+  delete process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV];
   setContentCapture(null); // never leak a programmatic capture override across tests
   trace.disable(); // reset the global provider to the no-op default
   logs.disable();
@@ -133,6 +179,205 @@ describe("execute_tool span", () => {
     expect(attrs(span)["gen_ai.tool.call.arguments"]).toBeUndefined();
     expect(attrs(span)["gen_ai.tool.call.result"]).toBeUndefined();
     expect(logEventsNamed("ratel.tool.execution.details")).toHaveLength(0);
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+  });
+
+  it("emits gated tool, skill, and fact definitions once per unchanged content hash", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const tools = new ToolCatalog();
+    const skills = new SkillCatalog();
+    const facts = new FactCatalog();
+
+    await tools.register(readFile);
+    await tools.register(readFile);
+    const review = {
+      id: "review",
+      name: "review_code",
+      description: "Review source",
+      tags: ["quality"],
+    };
+    await skills.register(review);
+    await facts.register({
+      id: "address",
+      name: "shop_address",
+      description: "Where the shop is",
+      tags: ["location"],
+    });
+    await skills.replaceAll([review]);
+    await skills.replaceAll([{ ...review, description: "Review changed source" }]);
+
+    const events = logEventsNamed("ratel.catalog.definition");
+    expect(events).toHaveLength(4);
+    expect(events.map((event) => event.attributes["ratel.catalog.kind"])).toEqual([
+      "tool",
+      "skill",
+      "fact",
+      "skill",
+    ]);
+    expect(events[0]?.attributes).toEqual({
+      "ratel.catalog.kind": "tool",
+      "ratel.catalog.id": "read_file",
+      "ratel.catalog.name": "read_file",
+      "ratel.catalog.description": "Read a file from local disk and return its textual contents.",
+      "ratel.catalog.tags": [],
+      "ratel.catalog.input_schema": '{"properties":{"path":{"type":"string"}}}',
+      "ratel.catalog.output_schema": '{"properties":{"contents":{"type":"string"}}}',
+      "ratel.catalog.searchable_description":
+        "Read a file from local disk and return its textual contents.",
+      "ratel.catalog.searchable_description_overridden": false,
+      "ratel.catalog.content_hash":
+        "a6135789c27ce3a9cb35a0ca2303133e20d29bd17aad90ebebe2b99fb4fcd0eb",
+    });
+    expect(events[3]?.attributes["ratel.catalog.id"]).toBe("review");
+    expect(events[3]?.attributes["ratel.catalog.content_hash"]).not.toBe(
+      events[1]?.attributes["ratel.catalog.content_hash"],
+    );
+  });
+
+  it("omits oversized catalog schemas without dropping unrelated logs", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+
+    await catalog.register({
+      id: "oversized",
+      name: "oversized",
+      description: "Oversized schema",
+      inputSchema: { type: "string", description: "x".repeat(100_000) },
+      outputSchema: { type: "object" },
+      execute: () => undefined,
+    });
+    logs.getLogger("test").emit({ eventName: "unrelated", attributes: { ok: true } });
+
+    const [event] = logEventsNamed("ratel.catalog.definition");
+    expect(event?.attributes).toMatchObject({
+      "ratel.catalog.kind": "tool",
+      "ratel.catalog.id": "oversized",
+      "ratel.catalog.output_schema": '{"type":"object"}',
+      "ratel.catalog.schema_omitted": true,
+      "ratel.catalog.content_hash": expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(event?.attributes).not.toHaveProperty("ratel.catalog.input_schema");
+    expect(logEventsNamed("unrelated")).toHaveLength(1);
+  });
+
+  it("does not emit experimental catalog definitions from the generic content gate alone", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+
+    await catalog.register(readFile);
+
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+  });
+
+  it("hashes mixed-case schema keys identically to the Rust core and Python", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+    await catalog.register({
+      id: "mixed_case",
+      name: "mixed_case",
+      description: "Mixed-case schema keys.",
+      inputSchema: { properties: { B: { type: "string" }, a: { type: "string" } } },
+      outputSchema: { properties: { ok: { type: "string" } } },
+      execute: async () => ({ ok: "ok" }),
+    });
+
+    const [event] = logEventsNamed("ratel.catalog.definition");
+    // Pinned via the Python twin's canonicalization, which the Rust core reproduces
+    // byte-identically; byte order puts "B" before "a", locale collation does not.
+    expect(event?.attributes["ratel.catalog.content_hash"]).toBe(
+      "03542abe36f96c27db84a086337f7b66737c2480848193fde046e770b63231b8",
+    );
+  });
+
+  it("matches shared RFC 8785 catalog-definition bytes, schema attributes, and hashes", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+
+    for (const vector of catalogCanonicalization.canonicalizer_only_vectors) {
+      expect(canonicalize(vector.input), vector.name).toBe(vector.canonical);
+    }
+    for (const vector of catalogCanonicalization.vectors) {
+      expect(canonicalize(vector.input), vector.name).toBe(vector.canonical);
+      await catalog.register({
+        id: vector.input.id,
+        name: vector.input.name,
+        description: vector.input.description,
+        inputSchema: vector.input.input_schema,
+        outputSchema: vector.input.output_schema,
+        ...(vector.input.searchable_description_overridden
+          ? { experimentalSearchableDescription: vector.input.searchable_description }
+          : {}),
+        execute: () => undefined,
+      });
+    }
+
+    const events = logEventsNamed("ratel.catalog.definition");
+    expect(events).toHaveLength(catalogCanonicalization.vectors.length);
+    for (const [index, vector] of catalogCanonicalization.vectors.entries()) {
+      expect(events[index]?.attributes, vector.name).toMatchObject({
+        "ratel.catalog.input_schema": vector.input_schema_canonical,
+        "ratel.catalog.output_schema": vector.output_schema_canonical,
+        "ratel.catalog.content_hash": vector.sha256,
+      });
+    }
+  });
+
+  it("skips shared unsafe-integer definitions and emits after a safe edit", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+
+    for (const vector of catalogCanonicalization.rejected_vectors) {
+      const definition = vector.input;
+      await catalog.register({
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.input_schema,
+        outputSchema: definition.output_schema,
+        execute: () => undefined,
+      });
+    }
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+
+    for (const vector of catalogCanonicalization.rejected_vectors) {
+      const definition = vector.input;
+      await catalog.register({
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        inputSchema: { type: "integer", maximum: Number.MAX_SAFE_INTEGER },
+        outputSchema: definition.output_schema,
+        execute: () => undefined,
+      });
+    }
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(
+      catalogCanonicalization.rejected_vectors.length,
+    );
+  });
+
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])("rejects non-JSON schema number %s", async (number) => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    const catalog = new ToolCatalog();
+
+    await expect(
+      catalog.register({
+        id: "invalid-number",
+        name: "invalid-number",
+        description: "Invalid number",
+        inputSchema: { const: number },
+        outputSchema: {},
+        execute: () => undefined,
+      }),
+    ).rejects.toThrow();
   });
 
   it("under SPAN_AND_EVENT captures content on both the span and the event", async () => {

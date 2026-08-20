@@ -1566,6 +1566,13 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Enable experimental complete catalog-definition events.
+    #[napi]
+    pub fn experimental_enable_catalog_definitions(&mut self) -> napi::Result<()> {
+        write_registry(&self.inner, &self.pending_dense)?.experimental_enable_catalog_definitions();
+        Ok(())
+    }
+
     /// Replace the trace sink with one that hands every event to `callback` as
     /// a JSON line — the destination for hosts this crate cannot write to
     /// itself, such as a process-per-request server persisting to a database.
@@ -2086,6 +2093,13 @@ impl FactRegistry {
         Ok(())
     }
 
+    /// Enable experimental complete catalog-definition events.
+    #[napi]
+    pub fn experimental_enable_catalog_definitions(&mut self) -> napi::Result<()> {
+        write_registry(&self.inner, &self.pending_dense)?.experimental_enable_catalog_definitions();
+        Ok(())
+    }
+
     /// Drain captured envelopes from the active sink. Returns `[]` unless the
     /// active sink is "memory".
     #[napi]
@@ -2523,6 +2537,13 @@ impl SkillRegistry {
         registry.set_trace_sink(sink);
         drop(registry);
         self.memory_sink = memory;
+        Ok(())
+    }
+
+    /// Enable experimental complete catalog-definition events.
+    #[napi]
+    pub fn experimental_enable_catalog_definitions(&mut self) -> napi::Result<()> {
+        write_registry(&self.inner, &self.pending_dense)?.experimental_enable_catalog_definitions();
         Ok(())
     }
 

@@ -12,9 +12,20 @@ const REQUIRED_ENVELOPE_FIELDS = new Set([
   "source_id",
   "type",
 ]);
+const CATALOG_CRITICAL_FIELDS = ["kind", "id", "name", "content_hash"] as const;
+const CATALOG_SCHEMA_FIELDS = ["input_schema", "output_schema"] as const;
+const CATALOG_DEFINITION_FIELDS = new Set([
+  ...CATALOG_CRITICAL_FIELDS,
+  ...CATALOG_SCHEMA_FIELDS,
+  "description",
+  "tags",
+  "searchable_description",
+  "searchable_description_overridden",
+]);
 
 /** Frozen remotely publishable v1 event names from ADR-0020. */
 export const RUNTIME_EVENT_TYPES = [
+  "catalog_definition",
   "search",
   "skill_search",
   "gateway_search",
@@ -95,6 +106,8 @@ export interface RuntimeEventsOptions {
   queueCapacity?: number;
   /** Maximum envelopes per callback batch. Defaults to the native bridge default. */
   batchSize?: number;
+  /** ⚠️ Experimental. Publish complete catalog-definition events. Defaults to false. */
+  experimentalCatalogDefinitions?: boolean;
 }
 
 /** One runtime-events subscription. */
@@ -132,6 +145,7 @@ interface SdkSubscriber {
 }
 
 interface EventSource {
+  experimentalEnableCatalogDefinitions(): void;
   subscribeEvents(
     handler: (batch: RuntimeEvent[]) => void,
     options: Required<RuntimeEventsOptions>,
@@ -157,8 +171,12 @@ export class RuntimeEvents {
       sourceId: this.sourceId,
       queueCapacity: options.queueCapacity ?? 1_024,
       batchSize: options.batchSize ?? 64,
+      experimentalCatalogDefinitions: options.experimentalCatalogDefinitions ?? false,
     };
     this.#sources = sources;
+    if (this.#options.experimentalCatalogDefinitions) {
+      for (const source of sources) source.experimentalEnableCatalogDefinitions();
+    }
   }
 
   /**
@@ -288,6 +306,11 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
     return normalized as unknown as RuntimeEvent;
   }
 
+  normalizedSize = trimCatalogSchemas(normalized, normalizedSize);
+  if (normalizedSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
+    return normalized as unknown as RuntimeEvent;
+  }
+
   for (const key of Object.keys(normalized)) {
     if (!REQUIRED_ENVELOPE_FIELDS.has(key) && !isProductFactField(key)) {
       normalizedSize = sizeAfterDeletingProperty(normalized, key, normalizedSize);
@@ -311,7 +334,7 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
   );
   bounded.payload_truncated = true;
   let boundedSize = serializedSize(bounded);
-  for (const [key, value] of Object.entries(normalized)) {
+  for (const [key, value] of prioritizedProductFactEntries(normalized)) {
     if (REQUIRED_ENVELOPE_FIELDS.has(key) || !isProductFactField(key)) continue;
     const boundedValue = sanitizeBoundedValue(value);
     const candidateSize = sizeAfterSettingProperty(bounded, key, boundedValue, boundedSize);
@@ -320,6 +343,35 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
     boundedSize = candidateSize;
   }
   return bounded as unknown as RuntimeEvent;
+}
+
+function trimCatalogSchemas(value: Record<string, unknown>, currentSize: number): number {
+  if (value.type !== "catalog_definition") return currentSize;
+  const fields = CATALOG_SCHEMA_FIELDS.filter((key) => Object.hasOwn(value, key)).sort(
+    (left, right) =>
+      serializedPropertySize(right, value[right]) - serializedPropertySize(left, value[left]),
+  );
+  for (const key of fields) {
+    currentSize = sizeAfterDeletingProperty(value, key, currentSize);
+    delete value[key];
+    currentSize = sizeAfterSettingProperty(value, "payload_truncated", true, currentSize);
+    value.payload_truncated = true;
+    if (currentSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) break;
+  }
+  return currentSize;
+}
+
+function prioritizedProductFactEntries(value: Record<string, unknown>): [string, unknown][] {
+  const entries = Object.entries(value).filter(
+    ([key]) => !REQUIRED_ENVELOPE_FIELDS.has(key) && isProductFactField(key),
+  );
+  if (value.type !== "catalog_definition") return entries;
+  return [
+    ...CATALOG_CRITICAL_FIELDS.flatMap((key) =>
+      Object.hasOwn(value, key) ? ([[key, value[key]]] as [string, unknown][]) : [],
+    ),
+    ...entries.filter(([key]) => !(CATALOG_CRITICAL_FIELDS as readonly string[]).includes(key)),
+  ];
 }
 
 function sanitizeValue(value: unknown, key: string): unknown {
@@ -426,6 +478,7 @@ function serializedPropertySize(key: string, value: unknown): number {
 
 function isProductFactField(key: string): boolean {
   return (
+    CATALOG_DEFINITION_FIELDS.has(key) ||
     key.endsWith("_id") ||
     key.endsWith("_ids") ||
     key.endsWith("_ms") ||

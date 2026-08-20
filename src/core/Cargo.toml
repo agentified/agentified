@@ -19,6 +19,8 @@ bm25 = "2.3"
 indexmap = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+# Cross-language catalog-definition telemetry hashes (protocol v2 ETags stay separate).
+serde_json_canonicalizer = "0.3"
 ulid = "1"
 
 # Dense (semantic) retrieval — pure-Rust Candle inference, no C++/ONNX native

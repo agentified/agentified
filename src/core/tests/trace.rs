@@ -1,11 +1,16 @@
 use std::sync::{Arc, Condvar, Mutex, RwLock, mpsc};
 
 use ratel_ai_core::{
-    ChurnKind, FanoutSink, FnSink, IntentGraph, JsonlSink, MemorySink, NoopSink, Origin, Tool,
-    ToolRegistry, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink, UsageLearner,
+    CatalogKind, ChurnKind, Fact, FactRegistry, FanoutSink, FnSink, IntentGraph, JsonlSink,
+    MemorySink, NoopSink, Origin, PinMode, Skill, SkillRegistry, Tool, ToolRegistry, TraceEnvelope,
+    TraceEvent, TraceEventContext, TraceSink, UsageLearner,
 };
 use serde_json::{Value, json};
 use tempfile::tempdir;
+
+fn catalog_canonicalization_vectors() -> Value {
+    serde_json::from_str(include_str!("../../telemetry/conformance/fixtures.json")).unwrap()
+}
 
 struct BlockingSink {
     released: (Mutex<bool>, Condvar),
@@ -90,6 +95,257 @@ fn register_emits_index_churn_add() {
         }
         other => panic!("expected IndexChurn, got {other:?}"),
     }
+}
+
+#[test]
+fn catalog_definitions_require_explicit_experimental_opt_in() {
+    let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
+    let mut tools = ToolRegistry::with_trace_sink(sink.clone());
+    tools.register(lookup_tool("read"));
+    assert!(
+        sink.snapshot()
+            .iter()
+            .all(|envelope| !matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+    );
+
+    tools.experimental_enable_catalog_definitions();
+    let mut changed = lookup_tool("read");
+    changed.description = "Read changed records".into();
+    tools.register(changed);
+    assert!(
+        sink.snapshot()
+            .iter()
+            .any(|envelope| matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+    );
+}
+
+#[test]
+fn registration_emits_complete_catalog_definitions_for_every_kind() {
+    let sink = Arc::new(MemorySink::with_source("session-1", "ratel"));
+    let mut tools = ToolRegistry::with_trace_sink(sink.clone());
+    tools.experimental_enable_catalog_definitions();
+    let mut tool = lookup_tool("read");
+    tool.name = "read_records".into();
+    tool.description = "Read records".into();
+    tool.experimental_searchable_description = Some("find archive".into());
+    tool.input_schema = json!({
+        "type": "object",
+        "properties": { "path": { "type": "string" } }
+    });
+    tool.output_schema = json!({ "type": "string" });
+    tools.register(tool);
+
+    let mut skills = SkillRegistry::with_trace_sink(sink.clone());
+    skills.experimental_enable_catalog_definitions();
+    skills.register(Skill {
+        id: "review".into(),
+        name: "review_code".into(),
+        description: "Review source".into(),
+        experimental_searchable_description: None,
+        tags: vec!["quality".into()],
+        tools: vec!["read".into()],
+        metadata: Default::default(),
+        body: "private instructions".into(),
+    });
+
+    let mut facts = FactRegistry::with_trace_sink(sink.clone());
+    facts.experimental_enable_catalog_definitions();
+    facts.register(Fact {
+        id: "address".into(),
+        name: "shop_address".into(),
+        description: "Where the shop is".into(),
+        experimental_searchable_description: None,
+        tags: vec!["location".into()],
+        metadata: Default::default(),
+        body: "private address".into(),
+        pin: PinMode::Always,
+    });
+
+    let definitions: Vec<_> = sink
+        .snapshot()
+        .into_iter()
+        .filter_map(|envelope| match envelope.event {
+            TraceEvent::CatalogDefinition {
+                kind,
+                id,
+                name,
+                description,
+                tags,
+                input_schema,
+                output_schema,
+                searchable_description,
+                searchable_description_overridden,
+                content_hash,
+            } => Some((
+                kind,
+                id,
+                name,
+                description,
+                tags,
+                input_schema,
+                output_schema,
+                searchable_description,
+                searchable_description_overridden,
+                content_hash,
+            )),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(definitions.len(), 3);
+    assert_eq!(definitions[0].0, CatalogKind::Tool);
+    assert_eq!(definitions[0].1, "read");
+    assert_eq!(definitions[0].2, "read_records");
+    assert_eq!(definitions[0].3, "Read records");
+    assert!(definitions[0].4.is_empty());
+    assert_eq!(
+        definitions[0].5.as_deref(),
+        Some(&json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } }
+        }))
+    );
+    assert_eq!(
+        definitions[0].6.as_deref(),
+        Some(&json!({ "type": "string" }))
+    );
+    assert_eq!(definitions[0].7, "find archive");
+    assert!(definitions[0].8);
+    assert_eq!(
+        definitions[0].9,
+        "b114cd9a32169e1b0f05b4cf993ef7babc63c27e4944af3dbf7ec984ca507e4f"
+    );
+
+    assert_eq!(definitions[1].0, CatalogKind::Skill);
+    assert_eq!(definitions[1].1, "review");
+    assert_eq!(definitions[1].4, vec!["quality"]);
+    assert_eq!(definitions[1].5, None);
+    assert_eq!(definitions[1].6, None);
+    assert_eq!(definitions[1].7, "Review source");
+    assert!(!definitions[1].8);
+
+    assert_eq!(definitions[2].0, CatalogKind::Fact);
+    assert_eq!(definitions[2].1, "address");
+    assert_eq!(definitions[2].4, vec!["location"]);
+    assert_eq!(definitions[2].7, "Where the shop is");
+    assert!(!definitions[2].8);
+}
+
+#[test]
+fn catalog_definitions_match_shared_rfc8785_vectors() {
+    let fixtures = catalog_canonicalization_vectors();
+    for vector in fixtures["catalog_definition_canonicalization"]["canonicalizer_only_vectors"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(
+            serde_json_canonicalizer::to_string(&vector["input"]).unwrap(),
+            vector["canonical"].as_str().unwrap()
+        );
+    }
+    let vectors = fixtures["catalog_definition_canonicalization"]["vectors"]
+        .as_array()
+        .unwrap();
+
+    for vector in vectors {
+        let input = &vector["input"];
+        let canonical = serde_json_canonicalizer::to_string(input).unwrap();
+        assert_eq!(canonical, vector["canonical"].as_str().unwrap());
+
+        let sink = Arc::new(MemorySink::with_source("jcs", "ratel"));
+        let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+        registry.experimental_enable_catalog_definitions();
+        registry.register(Tool {
+            id: input["id"].as_str().unwrap().into(),
+            name: input["name"].as_str().unwrap().into(),
+            description: input["description"].as_str().unwrap().into(),
+            experimental_searchable_description: input["searchable_description_overridden"]
+                .as_bool()
+                .unwrap()
+                .then(|| input["searchable_description"].as_str().unwrap().into()),
+            input_schema: input["input_schema"].clone(),
+            output_schema: input["output_schema"].clone(),
+        });
+
+        let hash = sink
+            .drain()
+            .into_iter()
+            .find_map(|envelope| match envelope.event {
+                TraceEvent::CatalogDefinition { content_hash, .. } => Some(content_hash),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(hash, vector["sha256"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn catalog_definitions_skip_shared_unsafe_integer_vectors_and_recover() {
+    let fixtures = catalog_canonicalization_vectors();
+    let vectors = fixtures["catalog_definition_canonicalization"]["rejected_vectors"]
+        .as_array()
+        .unwrap();
+
+    for vector in vectors {
+        let input = &vector["input"];
+        let tool = |input: &Value| Tool {
+            id: input["id"].as_str().unwrap().into(),
+            name: input["name"].as_str().unwrap().into(),
+            description: input["description"].as_str().unwrap().into(),
+            experimental_searchable_description: None,
+            input_schema: input["input_schema"].clone(),
+            output_schema: input["output_schema"].clone(),
+        };
+        let sink = Arc::new(MemorySink::with_source("unsafe", "ratel"));
+        let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+        registry.experimental_enable_catalog_definitions();
+
+        registry.register(tool(input));
+
+        assert_eq!(registry.len(), 1);
+        assert!(
+            sink.drain()
+                .into_iter()
+                .all(|event| !matches!(event.event, TraceEvent::CatalogDefinition { .. }))
+        );
+
+        let mut safe = input.clone();
+        safe["input_schema"] = json!({
+            "type": "integer",
+            "minimum": -9_007_199_254_740_991_i64,
+            "maximum": 9_007_199_254_740_991_u64,
+        });
+        registry.register(tool(&safe));
+        assert!(
+            sink.drain()
+                .into_iter()
+                .any(|event| matches!(event.event, TraceEvent::CatalogDefinition { .. }))
+        );
+    }
+}
+
+#[test]
+fn catalog_definition_canonicalizer_rejects_non_json_numbers() {
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(serde_json_canonicalizer::to_vec(&number).is_err());
+    }
+}
+
+#[test]
+fn byte_identical_registration_emits_no_duplicate_definition() {
+    let sink = Arc::new(MemorySink::new("session-1"));
+    let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+    registry.experimental_enable_catalog_definitions();
+
+    registry.register(lookup_tool("read"));
+    registry.register(lookup_tool("read"));
+
+    let definitions = sink
+        .snapshot()
+        .into_iter()
+        .filter(|envelope| matches!(envelope.event, TraceEvent::CatalogDefinition { .. }))
+        .count();
+    assert_eq!(definitions, 1);
 }
 
 #[test]
@@ -595,13 +851,18 @@ fn fn_sink_lines_match_jsonl_modulo_per_record_identity() {
 fn fn_sink_composes_as_a_registry_sink() {
     let (sink, lines) = collecting_sink("session-fn-3");
     let mut registry = ToolRegistry::with_trace_sink(sink);
+    registry.experimental_enable_catalog_definitions();
     registry.register(lookup_tool("alpha"));
 
     let lines = lines.lock().unwrap();
-    assert_eq!(lines.len(), 1);
+    // Registration emits index_churn followed by the catalog_definition record.
+    assert_eq!(lines.len(), 2);
     let env: Value = serde_json::from_str(&lines[0]).unwrap();
     assert_eq!(env["session_id"], "session-fn-3");
     assert_eq!(env["type"], "index_churn");
+    let definition: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(definition["session_id"], "session-fn-3");
+    assert_eq!(definition["type"], "catalog_definition");
 }
 
 #[test]

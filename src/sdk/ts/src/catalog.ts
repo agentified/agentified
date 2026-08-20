@@ -501,6 +501,11 @@ export class ToolCatalog {
     return this.registry.subscribeEvents(handler, options);
   }
 
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.registry.experimentalEnableCatalogDefinitions();
+  }
+
   /**
    * Look up a tool with its executor reattached.
    *

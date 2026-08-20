@@ -35,6 +35,12 @@ export const SEMCONV_VERSION = "1.42.0";
  */
 export const CAPTURE_CONTENT_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
 
+/**
+ * Ratel-specific opt-in for the experimental catalog-definition event.
+ * The generic content-capture gate must also allow EventRecord content.
+ */
+export const EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS";
+
 // ---------------------------------------------------------------------------
 // Span names (CONVENTIONS.md, Tier 2)
 // ---------------------------------------------------------------------------
@@ -75,6 +81,9 @@ export const RATEL_SEARCH_RESULTS = "ratel.search.results";
 /** `ratel.tool.execution.details` — Opt-In structured tool arguments/result event. */
 export const RATEL_TOOL_EXECUTION_DETAILS = "ratel.tool.execution.details";
 
+/** `ratel.catalog.definition` — experimental, opt-in complete catalog definition event. */
+export const RATEL_CATALOG_DEFINITION = "ratel.catalog.definition";
+
 /** `ratel.experiment.results` — ranked measurement for one experiment arm. */
 export const RATEL_EXPERIMENT_RESULTS = "ratel.experiment.results";
 
@@ -108,6 +117,30 @@ export const RATEL_ORIGIN = "ratel.origin";
 
 /** `ratel.event.id` — runtime-event/OTel deduplication and join key. */
 export const RATEL_EVENT_ID = "ratel.event.id";
+
+/** `ratel.catalog.kind` — `tool`, `skill`, or `fact`. */
+export const RATEL_CATALOG_KIND = "ratel.catalog.kind";
+/** `ratel.catalog.id` — stable catalog entry id. */
+export const RATEL_CATALOG_ID = "ratel.catalog.id";
+/** `ratel.catalog.name` — model-facing catalog entry name. */
+export const RATEL_CATALOG_NAME = "ratel.catalog.name";
+/** `ratel.catalog.description` — model-facing catalog entry description. */
+export const RATEL_CATALOG_DESCRIPTION = "ratel.catalog.description";
+/** `ratel.catalog.tags` — search tags; empty for tools. */
+export const RATEL_CATALOG_TAGS = "ratel.catalog.tags";
+/** `ratel.catalog.input_schema` — canonical JSON tool input schema. */
+export const RATEL_CATALOG_INPUT_SCHEMA = "ratel.catalog.input_schema";
+/** `ratel.catalog.output_schema` — canonical JSON tool output schema. */
+export const RATEL_CATALOG_OUTPUT_SCHEMA = "ratel.catalog.output_schema";
+/** `ratel.catalog.schema_omitted` — one or more oversized schema attributes were omitted. */
+export const RATEL_CATALOG_SCHEMA_OMITTED = "ratel.catalog.schema_omitted";
+/** `ratel.catalog.searchable_description` — effective searchable description. */
+export const RATEL_CATALOG_SEARCHABLE_DESCRIPTION = "ratel.catalog.searchable_description";
+/** Whether the effective searchable description came from an explicit override. */
+export const RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN =
+  "ratel.catalog.searchable_description_overridden";
+/** `ratel.catalog.content_hash` — canonical definition SHA-256. */
+export const RATEL_CATALOG_CONTENT_HASH = "ratel.catalog.content_hash";
 
 /** `ratel.search.target` — `tool`, `skill`, or `fact` (see {@link SearchTarget}). */
 export const RATEL_SEARCH_TARGET = "ratel.search.target";

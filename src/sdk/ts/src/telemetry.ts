@@ -16,6 +16,7 @@
  * capture gate's span-attribute and Logs EventRecord channels (default off), per ADR-0007.
  */
 
+import { createHash } from "node:crypto";
 import {
   context,
   type Context as OtelContext,
@@ -32,12 +33,25 @@ import {
   clearContentCapture,
   contentCaptureMode,
   EXECUTE_TOOL,
+  EXPERIMENTAL_CATALOG_DEFINITIONS_ENV,
   GEN_AI_OPERATION_NAME,
   GEN_AI_TOOL_CALL_ARGUMENTS,
   GEN_AI_TOOL_CALL_RESULT,
   GEN_AI_TOOL_NAME,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_CATALOG_CONTENT_HASH,
+  RATEL_CATALOG_DEFINITION,
+  RATEL_CATALOG_DESCRIPTION,
+  RATEL_CATALOG_ID,
+  RATEL_CATALOG_INPUT_SCHEMA,
+  RATEL_CATALOG_KIND,
+  RATEL_CATALOG_NAME,
+  RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SCHEMA_OMITTED,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  RATEL_CATALOG_TAGS,
   RATEL_EVENT_ID,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
@@ -111,6 +125,7 @@ import {
   type SearchTarget,
   setContentCapture,
 } from "@ratel-ai/telemetry";
+import canonicalize from "canonicalize";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import type { SearchOrigin } from "./catalog.js";
 import type {
@@ -125,6 +140,7 @@ import { newRuntimeEventId } from "./runtime-events.js";
 const TRACER_NAME = "@ratel-ai/sdk";
 const LOGGER_NAME = "@ratel-ai/sdk";
 const ERROR_TYPE = "error.type";
+const CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES = 64 * 1_024;
 const RESERVED_EXPERIMENT_ATTRIBUTES = new Set([
   ERROR_TYPE,
   GEN_AI_TOOL_NAME,
@@ -179,6 +195,125 @@ export interface RuntimeEventProjection {
   invocationId?: string;
   traceId?: string;
   spanId?: string;
+}
+
+/** @internal Definition fields shared by tool, skill, and fact registrations. */
+export interface CatalogDefinitionInput {
+  id: string;
+  name: string;
+  description: string;
+  experimentalSearchableDescription?: string;
+  tags?: string[];
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+}
+
+/**
+ * Project changed catalog definitions into the opt-in Logs channel.
+ * `emittedHashes` scopes deduplication to one registry/session.
+ * @internal
+ */
+export function recordCatalogDefinitions(
+  kind: "tool" | "skill" | "fact",
+  definitions: readonly CatalogDefinitionInput[],
+  emittedHashes: Map<string, string>,
+): void {
+  if (
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV]?.toLowerCase() !== "true" ||
+    !captureContentOnEvent()
+  ) {
+    return;
+  }
+  for (const definition of definitions) {
+    let attributes: Record<string, AnyValue> | undefined;
+    try {
+      attributes = catalogDefinitionAttributes(kind, definition);
+    } catch {
+      continue;
+    }
+    if (attributes === undefined) continue;
+    const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
+    if (emittedHashes.get(definition.id) === contentHash) continue;
+    getLogger().emit({
+      eventName: RATEL_CATALOG_DEFINITION,
+      attributes,
+    });
+    emittedHashes.set(definition.id, contentHash);
+  }
+}
+
+function catalogDefinitionAttributes(
+  kind: "tool" | "skill" | "fact",
+  definition: CatalogDefinitionInput,
+): Record<string, AnyValue> | undefined {
+  const tags = definition.tags ?? [];
+  const searchableDescription =
+    definition.experimentalSearchableDescription ?? definition.description;
+  const searchableDescriptionOverridden =
+    definition.experimentalSearchableDescription !== undefined;
+  const inputSchema = kind === "tool" ? definition.inputSchema : null;
+  const outputSchema = kind === "tool" ? definition.outputSchema : null;
+  const content = {
+    kind,
+    id: definition.id,
+    name: definition.name,
+    description: definition.description,
+    tags,
+    input_schema: inputSchema,
+    output_schema: outputSchema,
+    searchable_description: searchableDescription,
+    searchable_description_overridden: searchableDescriptionOverridden,
+  };
+  if (hasUnsafeInteger(content)) return undefined;
+  const contentHash = createHash("sha256").update(canonicalJson(content), "utf8").digest("hex");
+  const canonicalInputSchema = kind === "tool" ? canonicalJson(inputSchema) : undefined;
+  const canonicalOutputSchema = kind === "tool" ? canonicalJson(outputSchema) : undefined;
+  const inputSchemaOmitted = exceedsCatalogSchemaAttributeLimit(canonicalInputSchema);
+  const outputSchemaOmitted = exceedsCatalogSchemaAttributeLimit(canonicalOutputSchema);
+  return {
+    [RATEL_CATALOG_KIND]: kind,
+    [RATEL_CATALOG_ID]: definition.id,
+    [RATEL_CATALOG_NAME]: definition.name,
+    [RATEL_CATALOG_DESCRIPTION]: definition.description,
+    [RATEL_CATALOG_TAGS]: tags,
+    ...(kind === "tool"
+      ? {
+          ...(inputSchemaOmitted
+            ? {}
+            : { [RATEL_CATALOG_INPUT_SCHEMA]: canonicalInputSchema as string }),
+          ...(outputSchemaOmitted
+            ? {}
+            : { [RATEL_CATALOG_OUTPUT_SCHEMA]: canonicalOutputSchema as string }),
+          ...(inputSchemaOmitted || outputSchemaOmitted
+            ? { [RATEL_CATALOG_SCHEMA_OMITTED]: true }
+            : {}),
+        }
+      : {}),
+    [RATEL_CATALOG_SEARCHABLE_DESCRIPTION]: searchableDescription,
+    [RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN]: searchableDescriptionOverridden,
+    [RATEL_CATALOG_CONTENT_HASH]: contentHash,
+  };
+}
+
+function exceedsCatalogSchemaAttributeLimit(value: string | undefined): boolean {
+  return (
+    value !== undefined && Buffer.byteLength(value, "utf8") > CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
+  );
+}
+
+function hasUnsafeInteger(value: unknown): boolean {
+  if (typeof value === "number") return Number.isInteger(value) && !Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.some(hasUnsafeInteger);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).some(hasUnsafeInteger);
+  }
+  return false;
+}
+
+function canonicalJson(value: unknown): string {
+  const canonical = canonicalize(value);
+  if (canonical === undefined) throw new TypeError("catalog definition is not JSON serializable");
+  return canonical;
 }
 
 function eventProjection(span: Span, invocationId?: string): RuntimeEventProjection {

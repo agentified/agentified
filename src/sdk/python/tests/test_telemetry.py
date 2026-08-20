@@ -10,10 +10,12 @@ host deployment would wire it. These tests need the OpenTelemetry SDK
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 import pytest
+import rfc8785
 
 pytest.importorskip("opentelemetry.sdk.trace", reason="OpenTelemetry SDK not installed")
 pytest.importorskip("ratel_ai_telemetry", reason="ratel-ai telemetry vocabulary not installed")
@@ -41,8 +43,10 @@ from ratel_ai import (  # noqa: E402
     TraceSinkConfig,
     configure_telemetry,
 )
+from ratel_ai.experimental import Fact, FactCatalog  # noqa: E402
 
 CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS"
 
 # OpenTelemetry forbids overriding the global provider once set, so register one
 # provider for the whole module and give each test a clean exporter via clear().
@@ -60,6 +64,7 @@ _logs.set_logger_provider(_LOG_PROVIDER)
 def exporter(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The shared in-memory exporter, cleared so each test sees only its own spans."""
     monkeypatch.delenv(CAPTURE_ENV, raising=False)
+    monkeypatch.delenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, raising=False)
     _EXPORTER.clear()
     _LOG_EXPORTER.clear()
     return _EXPORTER
@@ -170,6 +175,232 @@ async def test_content_not_captured_by_default(exporter: Any) -> None:
     assert "gen_ai.tool.call.arguments" not in attrs
     assert "gen_ai.tool.call.result" not in attrs
     assert _log_events_named("ratel.tool.execution.details") == []
+    assert _log_events_named("ratel.catalog.definition") == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_are_gated_complete_and_deduplicated(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    tools = ToolCatalog()
+    skills = SkillCatalog()
+    facts = FactCatalog()
+
+    await tools.register(_read_file())
+    await tools.register(_read_file())
+    review = Skill(
+        id="review",
+        name="review_code",
+        description="Review source",
+        tags=["quality"],
+    )
+    await skills.register(review)
+    await facts.register(
+        Fact(
+            id="address",
+            name="shop_address",
+            description="Where the shop is",
+            tags=["location"],
+        )
+    )
+    await skills.replace_all([review])
+    await skills.replace_all(
+        [
+            Skill(
+                id="review",
+                name="review_code",
+                description="Review changed source",
+                tags=["quality"],
+            )
+        ]
+    )
+
+    events = _log_events_named("ratel.catalog.definition")
+    assert len(events) == 4
+    assert [event.attributes["ratel.catalog.kind"] for event in events] == [
+        "tool",
+        "skill",
+        "fact",
+        "skill",
+    ]
+    assert dict(events[0].attributes or {}) == {
+        "ratel.catalog.kind": "tool",
+        "ratel.catalog.id": "read_file",
+        "ratel.catalog.name": "read_file",
+        "ratel.catalog.description": (
+            "Read a file from local disk and return its textual contents."
+        ),
+        "ratel.catalog.tags": (),
+        "ratel.catalog.input_schema": '{"properties":{"path":{"type":"string"}}}',
+        "ratel.catalog.output_schema": ('{"properties":{"contents":{"type":"string"}}}'),
+        "ratel.catalog.searchable_description": (
+            "Read a file from local disk and return its textual contents."
+        ),
+        "ratel.catalog.searchable_description_overridden": False,
+        "ratel.catalog.content_hash": (
+            "a6135789c27ce3a9cb35a0ca2303133e20d29bd17aad90ebebe2b99fb4fcd0eb"
+        ),
+    }
+    assert events[3].attributes["ratel.catalog.id"] == "review"
+    assert (
+        events[3].attributes["ratel.catalog.content_hash"]
+        != events[1].attributes["ratel.catalog.content_hash"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_omit_oversized_schemas_without_dropping_unrelated_logs(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    catalog = ToolCatalog()
+
+    await catalog.register(
+        ExecutableTool(
+            id="oversized",
+            name="oversized",
+            description="Oversized schema",
+            input_schema={"type": "string", "description": "x" * 100_000},
+            output_schema={"type": "object"},
+            execute=lambda _args: None,
+        )
+    )
+    _logs.get_logger("test").emit(event_name="unrelated", attributes={"ok": True})
+
+    event = _log_events_named("ratel.catalog.definition")[0]
+    assert event.attributes["ratel.catalog.kind"] == "tool"
+    assert event.attributes["ratel.catalog.id"] == "oversized"
+    assert event.attributes["ratel.catalog.output_schema"] == '{"type":"object"}'
+    assert event.attributes["ratel.catalog.schema_omitted"] is True
+    assert len(event.attributes["ratel.catalog.content_hash"]) == 64
+    assert "ratel.catalog.input_schema" not in event.attributes
+    assert len(_log_events_named("unrelated")) == 1
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_require_experimental_gate(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    catalog = ToolCatalog()
+
+    await catalog.register(_read_file())
+
+    assert _log_events_named("ratel.catalog.definition") == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_match_shared_rfc8785_vectors(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    fixtures = json.loads(
+        (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
+    )
+    canonicalization = fixtures["catalog_definition_canonicalization"]
+    for vector in canonicalization["canonicalizer_only_vectors"]:
+        assert rfc8785.dumps(vector["input"]) == vector["canonical"].encode()
+    vectors = canonicalization["vectors"]
+    catalog = ToolCatalog()
+
+    for vector in vectors:
+        definition = vector["input"]
+        assert rfc8785.dumps(definition) == vector["canonical"].encode()
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema=definition["input_schema"],
+                output_schema=definition["output_schema"],
+                experimental_searchable_description=(
+                    definition["searchable_description"]
+                    if definition["searchable_description_overridden"]
+                    else None
+                ),
+                execute=lambda _args: None,
+            )
+        )
+
+    events = _log_events_named("ratel.catalog.definition")
+    assert len(events) == len(vectors)
+    for event, vector in zip(events, vectors):
+        assert event.attributes["ratel.catalog.input_schema"] == vector["input_schema_canonical"]
+        assert event.attributes["ratel.catalog.output_schema"] == vector["output_schema_canonical"]
+        assert event.attributes["ratel.catalog.content_hash"] == vector["sha256"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", [math.nan, math.inf, -math.inf])
+async def test_catalog_definitions_reject_non_json_numbers(
+    number: float, exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    catalog = ToolCatalog()
+
+    with pytest.raises((ValueError, TypeError, OverflowError)):
+        await catalog.register(
+            ExecutableTool(
+                id="invalid-number",
+                name="invalid-number",
+                description="Invalid number",
+                input_schema={"const": number},
+                output_schema={},
+                execute=lambda _args: None,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_catalog_definitions_skip_shared_unsafe_integers_and_emit_after_a_safe_edit(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    fixtures = json.loads(
+        (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
+    )
+    vectors = fixtures["catalog_definition_canonicalization"]["rejected_vectors"]
+    catalog = ToolCatalog()
+
+    for vector in vectors:
+        definition = vector["input"]
+        input_schema = dict(definition["input_schema"])
+        for bound in ("minimum", "maximum"):
+            if bound in input_schema:
+                input_schema[bound] = float(input_schema[bound])
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema=input_schema,
+                output_schema=definition["output_schema"],
+                execute=lambda _args: "registered",
+            )
+        )
+
+    assert await catalog.invoke(vectors[0]["input"]["id"], {}) == "registered"
+    assert _log_events_named("ratel.catalog.definition") == []
+
+    for vector in vectors:
+        definition = vector["input"]
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema={"type": "integer", "maximum": 2**53 - 1},
+                output_schema=definition["output_schema"],
+                execute=lambda _args: "registered",
+            )
+        )
+    assert len(_log_events_named("ratel.catalog.definition")) == len(vectors)
 
 
 @pytest.mark.asyncio

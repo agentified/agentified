@@ -3,6 +3,7 @@ import {
   AuthOutcome,
   CAPTURE_CONTENT_ENV,
   EXECUTE_TOOL,
+  EXPERIMENTAL_CATALOG_DEFINITIONS_ENV,
   ExperimentArmOutcome,
   ExperimentArmRole,
   ExperimentDropReason,
@@ -16,6 +17,18 @@ import {
   Origin,
   RATEL_AUTH_FLOW,
   RATEL_AUTH_OUTCOME,
+  RATEL_CATALOG_CONTENT_HASH,
+  RATEL_CATALOG_DEFINITION,
+  RATEL_CATALOG_DESCRIPTION,
+  RATEL_CATALOG_ID,
+  RATEL_CATALOG_INPUT_SCHEMA,
+  RATEL_CATALOG_KIND,
+  RATEL_CATALOG_NAME,
+  RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SCHEMA_OMITTED,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+  RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+  RATEL_CATALOG_TAGS,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
   RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K,
@@ -96,6 +109,7 @@ describe("ratel telemetry vocabulary", () => {
 
   it("gates content capture on the ecosystem instrumentation env var", () => {
     expect(CAPTURE_CONTENT_ENV).toBe("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT");
+    expect(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV).toBe("RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS");
   });
 
   it("exports no exporter configuration: the host resolves its own endpoint and auth", async () => {
@@ -121,6 +135,7 @@ describe("ratel telemetry vocabulary", () => {
   });
 
   it("names the EventRecords per the pin", () => {
+    expect(RATEL_CATALOG_DEFINITION).toBe("ratel.catalog.definition");
     expect(RATEL_EXPERIMENT_RESULTS).toBe("ratel.experiment.results");
     expect(RATEL_EXPERIMENT_COMPARISON).toBe("ratel.experiment.comparison");
     expect(RATEL_EXPERIMENT_SKIP).toBe("ratel.experiment.skip");
@@ -131,6 +146,34 @@ describe("ratel telemetry vocabulary", () => {
     expect(RATEL_SEARCH_RESULTS).toBe("ratel.search.results");
     expect(RATEL_TOOL_EXECUTION_DETAILS).toBe("ratel.tool.execution.details");
     expect(GEN_AI_INFERENCE_DETAILS).toBe("gen_ai.client.inference.operation.details");
+  });
+
+  it("pins the catalog definition attribute vocabulary", () => {
+    expect([
+      RATEL_CATALOG_KIND,
+      RATEL_CATALOG_ID,
+      RATEL_CATALOG_NAME,
+      RATEL_CATALOG_DESCRIPTION,
+      RATEL_CATALOG_TAGS,
+      RATEL_CATALOG_INPUT_SCHEMA,
+      RATEL_CATALOG_OUTPUT_SCHEMA,
+      RATEL_CATALOG_SCHEMA_OMITTED,
+      RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
+      RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+      RATEL_CATALOG_CONTENT_HASH,
+    ]).toEqual([
+      "ratel.catalog.kind",
+      "ratel.catalog.id",
+      "ratel.catalog.name",
+      "ratel.catalog.description",
+      "ratel.catalog.tags",
+      "ratel.catalog.input_schema",
+      "ratel.catalog.output_schema",
+      "ratel.catalog.schema_omitted",
+      "ratel.catalog.searchable_description",
+      "ratel.catalog.searchable_description_overridden",
+      "ratel.catalog.content_hash",
+    ]);
   });
 
   it("models tool invocation as the gen_ai execute_tool operation, not ratel.invoke", () => {

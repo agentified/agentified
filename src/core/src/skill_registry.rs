@@ -92,6 +92,7 @@ pub struct SkillRegistry {
     /// place, never duplicating it (RAT-378).
     skills: IndexMap<String, Skill>,
     sink: Arc<dyn TraceSink>,
+    experimental_catalog_definitions: bool,
     /// Prebuilt BM25 index over `skills` — the skill-side twin of
     /// [`crate::ToolRegistry`]'s field: built lazily by the first search,
     /// reused until [`Self::register`] or [`Self::replace_all`] invalidates it.
@@ -118,6 +119,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -130,6 +132,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink,
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -145,6 +148,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
@@ -155,6 +159,11 @@ impl SkillRegistry {
     /// [`crate::ToolRegistry::set_trace_sink`].
     pub fn set_trace_sink(&mut self, sink: Arc<dyn TraceSink>) {
         self.sink = sink;
+    }
+
+    /// Enable experimental complete catalog-definition events for later registrations.
+    pub fn experimental_enable_catalog_definitions(&mut self) {
+        self.experimental_catalog_definitions = true;
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink — see
@@ -350,6 +359,19 @@ impl SkillRegistry {
     /// cached embedding; the corpus never holds a duplicate.
     pub fn register(&mut self, skill: Skill) {
         let skill_id = skill.id.clone();
+        let definition = self
+            .experimental_catalog_definitions
+            .then(|| TraceEvent::catalog_definition_for_skill(&skill))
+            .flatten();
+        let definition_changed = definition.as_ref().is_some_and(|definition| {
+            self.skills.get(&skill_id).is_none_or(|existing| {
+                let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
+                    != definition.catalog_definition_hash()
+            })
+        });
         // Add or replace, the corpus changed either way: the prebuilt BM25
         // index no longer matches it.
         self.bm25.invalidate();
@@ -361,6 +383,9 @@ impl SkillRegistry {
             kind: ChurnKind::Add,
             skill_id,
         });
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
+        }
     }
 
     /// Replace the entire corpus with `skills`: ids absent from the batch are
@@ -443,6 +468,19 @@ impl SkillRegistry {
         }
 
         for (id, skill) in &next {
+            let definition = self
+                .experimental_catalog_definitions
+                .then(|| TraceEvent::catalog_definition_for_skill(skill))
+                .flatten();
+            let definition_changed = definition.as_ref().is_some_and(|definition| {
+                self.skills.get(id).is_none_or(|existing| {
+                    let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                    existing_definition
+                        .as_ref()
+                        .and_then(TraceEvent::catalog_definition_hash)
+                        != definition.catalog_definition_hash()
+                })
+            });
             match self.skills.get(id) {
                 Some(current) if current == skill => {
                     outcome.unchanged += 1;
@@ -464,6 +502,9 @@ impl SkillRegistry {
                 kind: ChurnKind::Add,
                 skill_id: id.clone(),
             });
+            if definition_changed && let Some(definition) = definition {
+                self.sink.record(definition);
+            }
         }
 
         if indexed_text_changed {
@@ -944,6 +985,7 @@ mod tests {
         SkillRegistry {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,

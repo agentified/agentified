@@ -7,8 +7,8 @@ mod event;
 mod sink;
 
 pub use event::{
-    ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, Origin, SearchHitTrace,
-    SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceEventContext,
+    CatalogKind, ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, Origin,
+    SearchHitTrace, SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceEventContext,
 };
 pub use sink::{
     FanoutSink, FanoutSubscription, FnSink, JsonlSink, MemorySink, NoopSink, TraceSink,
