@@ -101,6 +101,8 @@ mod usage;
 mod usage_learner;
 
 #[cfg(test)]
+mod harness;
+#[cfg(test)]
 mod test_support;
 
 pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};

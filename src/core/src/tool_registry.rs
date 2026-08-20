@@ -168,6 +168,20 @@ impl ToolRegistry {
         }
     }
 
+    /// A registry backed by an injected embedder, for tests and the measurement
+    /// harness — the harness lives in its own module and cannot reach these
+    /// private fields, and it must not load a real model on every run.
+    #[cfg(test)]
+    pub(crate) fn with_embedder_for_test(embedder: Arc<dyn crate::embedding::Embedder>) -> Self {
+        Self {
+            tools: IndexMap::new(),
+            sink: Arc::new(NoopSink),
+            bm25: Bm25Cache::new(),
+            dense: DenseCache::with_embedder(embedder),
+            graph: None,
+        }
+    }
+
     /// An empty registry recording trace events to `sink` from the start.
     pub fn with_trace_sink(sink: Arc<dyn TraceSink>) -> Self {
         Self {
@@ -1086,13 +1100,7 @@ mod tests {
     }
 
     fn with_embedder(embedder: Arc<dyn Embedder>) -> ToolRegistry {
-        ToolRegistry {
-            tools: IndexMap::new(),
-            sink: Arc::new(NoopSink),
-            bm25: Bm25Cache::new(),
-            dense: DenseCache::with_embedder(embedder),
-            graph: None,
-        }
+        ToolRegistry::with_embedder_for_test(embedder)
     }
 
     fn tool(id: &str, description: &str) -> Tool {

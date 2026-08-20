@@ -306,7 +306,7 @@ impl ArmOutcome {
 /// behaviour they assert rather than as struct literals.
 #[cfg(test)]
 impl IntentGraph {
-    fn observe_live(
+    pub(crate) fn observe_live(
         &mut self,
         query: &str,
         kind: Capability,
@@ -589,7 +589,7 @@ pub struct Intent {
     ///
     /// Absent on the wire means `1.0` — the pre-cohesion bar, unchanged.
     #[serde(default = "one_f32", skip_serializing_if = "is_one_f32")]
-    cohesion: f32,
+    pub(crate) cohesion: f32,
     /// Running mean of the folded query vectors, kept **unnormalized** — the
     /// accumulator [`Self::centroid`] is derived from.
     ///
@@ -763,7 +763,7 @@ impl Intent {
     /// lexically-grown cluster, or one reloaded from the wire. That is "no dense
     /// evidence available", **not** "rejected": the caller falls back to the
     /// centroid bar rather than treating an unanswerable question as a no.
-    fn coverage(&self, query: &[f32]) -> Option<Coverage> {
+    pub(crate) fn coverage(&self, query: &[f32]) -> Option<Coverage> {
         let mut total = 0u32;
         let mut qualifying = 0u32;
         let mut sum = 0.0f32;
@@ -1771,19 +1771,22 @@ fn arm_from(
 }
 
 /// How much of a cluster a query matched — see [`Intent::coverage`].
+///
+/// `pub(crate)` so the measurement harness can report the rule's own numbers
+/// rather than recomputing them beside it, where the two could drift.
 #[derive(Debug, Clone, Copy)]
-struct Coverage {
+pub(crate) struct Coverage {
     /// Members whose cosine cleared [`TAU_MEMBER`].
-    qualifying: u32,
+    pub(crate) qualifying: u32,
     /// Members that had to clear it — see [`required_matches`].
-    required: u32,
+    pub(crate) required: u32,
     /// `qualifying / comparable members`, in `[0, 1]`. Comparable across clusters
     /// of different sizes, which a raw count is not: a 50-member cluster would
     /// otherwise outrank a 4-member one on count alone.
-    fraction: f32,
+    pub(crate) fraction: f32,
     /// Mean cosine over the members that qualified. Breaks ties between clusters
     /// a query covers equally.
-    mean_cos: f32,
+    pub(crate) mean_cos: f32,
 }
 
 /// How many of `n` comparable members a query must match to join.
@@ -1801,20 +1804,20 @@ fn required_matches(n: u32) -> u32 {
 /// One cluster's dense verdict for a query: whether it admits, how well it
 /// matched, and the centroid cosine to report on the trace.
 #[derive(Debug, Clone, Copy)]
-struct DenseVerdict {
-    admitted: bool,
+pub(crate) struct DenseVerdict {
+    pub(crate) admitted: bool,
     /// Whether the verdict rests on member coverage rather than the centroid
     /// alone. Clusters with real per-member evidence outrank those without, so a
     /// legacy or freshly-loaded cluster cannot beat one that actually matched.
-    covered: bool,
+    pub(crate) covered: bool,
     /// Coverage fraction, or the centroid cosine when the cluster has no
     /// comparable member vectors. Both are in `[0, 1]`, and they are only ever
     /// compared within the same `covered` tier.
-    score: f32,
-    mean_cos: f32,
+    pub(crate) score: f32,
+    pub(crate) mean_cos: f32,
     /// Always the centroid cosine — what `UsageBoost.similarity` reports, whose
     /// meaning must not change under integrators.
-    centroid_cos: f32,
+    pub(crate) centroid_cos: f32,
 }
 
 /// Score `query` against one cluster's dense tier, or `None` if the cluster is
@@ -1826,7 +1829,7 @@ struct DenseVerdict {
 /// shape the lexical tier uses, where `bag` prefilters `lexical_score`. Because
 /// the prefilter threshold is [`TAU_COSINE`] itself, admission here is the old
 /// rule *and* coverage, never looser.
-fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> {
+pub(crate) fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> {
     let centroid = it.centroid.as_deref()?;
     if centroid.len() != query.len() {
         return None; // a different embedding model — not comparable
