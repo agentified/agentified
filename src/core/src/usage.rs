@@ -716,12 +716,17 @@ impl Intent {
     /// The drop count is returned rather than discarded because an arm that
     /// loses every id is indistinguishable, from the outside, from a cluster
     /// that never matched — see [`ArmOutcome`].
-    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> (Vec<String>, u32) {
+    fn ranked(
+        &self,
+        kind: Capability,
+        known: &dyn Fn(&str) -> bool,
+        cf: &ClusterFrequency<'_>,
+    ) -> (Vec<String>, u32) {
         let edges = self.edges(kind);
         let mut ranked: Vec<(String, f32)> = edges
             .iter()
             .filter(|(id, _)| known(id.as_str()))
-            .map(|(id, w)| (id.clone(), *w))
+            .map(|(id, w)| (id.clone(), *w * cf.weight(id)))
             .collect();
         let dropped = (edges.len() - ranked.len()) as u32;
         let len = ranked.len();
@@ -1542,6 +1547,36 @@ impl IntentGraph {
         self.rev += 1;
     }
 
+    /// Count, across every cluster, how many name each capability of `kind`.
+    ///
+    /// Built over the **raw** edge maps, before any registry filtering. `known`
+    /// is a property of whichever catalog happens to be attached, not of the
+    /// graph, so counting surviving edges would make this statistic differ
+    /// between two agents sharing one graph — and differ again in a harness that
+    /// knows every id. Counting raw keeps it a pure function of the graph, which
+    /// is also why it needs no wire field: any consumer of the same document
+    /// derives the same numbers.
+    ///
+    /// A consequence worth stating: a capability the registry no longer defines
+    /// still counts toward how spread out *other* capabilities are. That is the
+    /// graph-faithful answer — the observations happened — and it is what keeps
+    /// the numbers portable.
+    fn cluster_frequency(&self, kind: Capability) -> ClusterFrequency<'_> {
+        let mut seen_in: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut clusters = 0usize;
+        for it in &self.intents {
+            let edges = it.edges(kind);
+            if edges.is_empty() {
+                continue;
+            }
+            clusters += 1;
+            for id in edges.keys() {
+                *seen_in.entry(id.as_str()).or_insert(0) += 1;
+            }
+        }
+        ClusterFrequency { clusters, seen_in }
+    }
+
     /// The cluster this query belongs to: by cosine when an embedding is
     /// available and some cluster carries a centroid, otherwise by token
     /// overlap.
@@ -1803,6 +1838,7 @@ impl IntentGraph {
             self.built_from_ts,
             kind,
             known,
+            &self.cluster_frequency(kind),
         )
     }
 
@@ -1852,7 +1888,14 @@ impl IntentGraph {
         else {
             return ArmOutcome::NoMatch;
         };
-        arm_from(best.0, best.1, self.built_from_ts, kind, known)
+        arm_from(
+            best.0,
+            best.1,
+            self.built_from_ts,
+            kind,
+            known,
+            &self.cluster_frequency(kind),
+        )
     }
 }
 
@@ -1871,8 +1914,9 @@ fn arm_from(
     now_ts: u64,
     kind: Capability,
     known: &dyn Fn(&str) -> bool,
+    cf: &ClusterFrequency<'_>,
 ) -> ArmOutcome {
-    let (ids, dropped) = intent.ranked(kind, known);
+    let (ids, dropped) = intent.ranked(kind, known, cf);
     if ids.is_empty() {
         // Matched, but nothing it remembers of this kind still exists. Two very
         // different reasons: the catalog dropped every id it knew (`dropped >
@@ -1899,6 +1943,41 @@ fn arm_from(
         ids,
         dropped,
     })
+}
+
+/// How many clusters each capability of one kind appears in, and how many
+/// clusters carry that kind at all — the corpus statistic behind
+/// [`Intent::ranked`]'s inverse-cluster-frequency weight.
+///
+/// Scoped to one [`Capability`] because `tools` and `skills` are separate
+/// namespaces: the same string in each is unrelated, a search reads only one,
+/// and a tools-only cluster is ordinary — counting those in the skill
+/// denominator would inflate every skill's weight.
+pub(crate) struct ClusterFrequency<'a> {
+    /// Clusters carrying at least one edge of this kind.
+    clusters: usize,
+    /// Capability id → how many of those clusters name it.
+    seen_in: std::collections::HashMap<&'a str, usize>,
+}
+
+impl ClusterFrequency<'_> {
+    /// `1 + ln(clusters / seen_in)` — how much this capability being rare across
+    /// the corpus should count for.
+    ///
+    /// **Smoothed, and the `1 +` is load-bearing.** Plain `ln(N / cf)` sends a
+    /// capability present in *every* cluster to exactly zero, pinning it last in
+    /// every arm forever — which for a genuine workhorse is wrong. The floor of
+    /// 1.0 stops ubiquity earning a promotion without making it earn a
+    /// punishment. It is also why there is nothing here to configure: the
+    /// smoothing is the whole of the tuning.
+    ///
+    /// An id this index has never seen scores the maximum rather than dividing
+    /// by zero; that only happens if a caller mixes an index of one kind with
+    /// edges of another, which the type makes awkward and the callers do not do.
+    fn weight(&self, id: &str) -> f32 {
+        let seen = self.seen_in.get(id).copied().unwrap_or(1).max(1);
+        1.0 + (self.clusters.max(1) as f32 / seen as f32).ln()
+    }
 }
 
 /// How much of a cluster a query matched — see [`Intent::coverage`].

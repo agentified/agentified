@@ -211,7 +211,7 @@ it enters the fusion at half weight against two full-weight arms.
 | find | find tasks related to authentication | intent_2 | 0.966 | search_tasks, create_task, search_document_chunks |
 | find | find tasks about the rate limiter | intent_8 | 0.931 | search_document_chunks, search_tasks |
 | find | look up tasks about the login system | intent_2 | 0.831 | search_tasks, create_task, search_document_chunks |
-| exists | is there a task for the e2e suite | intent_4 | 0.957 | create_task, search_tasks, update_task |
+| exists | is there a task for the e2e suite | intent_4 | 0.957 | update_task, search_tasks, create_task |
 | exists | what tasks exist about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks |
 | exists | are there any tasks about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks |
 | status | mark the migration task in progress | intent_5 | 0.945 | update_task |
@@ -229,7 +229,7 @@ it enters the fusion at half weight against two full-weight arms.
 | count | count the tasks in progress | intent_10 | 0.941 | count_tasks |
 | filter | filter my tasks by status | intent_11 | 0.924 | filter_tasks, list_tasks_by_status |
 | filter | list tasks that are blocked | intent_11 | 0.924 | filter_tasks, list_tasks_by_status |
-| status | mark the e2e task complete | intent_4 | 0.957 | create_task, search_tasks, update_task |
+| status | mark the e2e task complete | intent_4 | 0.957 | update_task, search_tasks, create_task |
 | create | add a task for the payments migration | intent_15 | 0.744 | search_projects |
 | find | find open tasks about the auth flow | intent_2 | 0.888 | search_tasks, create_task, search_document_chunks |
 | comment | post an update on the auth task | intent_6 | 0.932 | post_progress_comment, update_task |
