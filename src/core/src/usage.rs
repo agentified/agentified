@@ -2780,6 +2780,113 @@ mod tests {
     }
 
     #[test]
+    fn a_capability_spread_across_clusters_loses_to_one_specific_to_this_intent() {
+        // Sorting edges by raw count alone lets a capability rank on volume
+        // rather than on answering *this* question. Here every edge in the
+        // matched cluster sits at one observation, so the order is decided
+        // entirely by the tie-break — and by id ascending that hands it to
+        // `apply_migration`, a capability every other cluster also reaches for,
+        // over one only this cluster has ever used.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("apply_migration", 3.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("apply_migration", 1.0), ("gh_run_list", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &all_known)
+            .unwrap();
+        assert_eq!(
+            arm.ids,
+            vec!["gh_run_list", "apply_migration"],
+            "a capability that answers every intent identifies none of them"
+        );
+    }
+
+    #[test]
+    fn a_real_count_gap_still_beats_cluster_frequency() {
+        // The guard on the other side. Down-weighting spread must not be strong
+        // enough to invert genuine evidence: `gh_run_list` was chosen four times
+        // here against one, and stays ahead even though it is the more widely
+        // used of the two.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("gh_run_list", 2.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("gh_run_list", 4.0), ("apply_migration", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &all_known)
+            .unwrap();
+        assert_eq!(arm.ids, vec!["gh_run_list", "apply_migration"]);
+    }
+
+    #[test]
+    fn cluster_frequency_is_read_from_the_graph_not_the_registry() {
+        // `known` is a REGISTRY closure, so counting cluster frequency over
+        // surviving edges would make the statistic depend on which catalog is
+        // attached: two agents sharing a graph would rank the same cluster
+        // differently, and the harness — which knows everything — would disagree
+        // with both. Counting over the raw edges keeps it a property of the graph.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("apply_migration", 3.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("apply_migration", 1.0), ("gh_run_list", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        // A registry that has never heard of the other clusters' capability —
+        // it is dropped from the arm, but it still counted toward the spread.
+        let narrow = |id: &str| id != "ghost";
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &narrow)
+            .unwrap();
+        assert_eq!(
+            arm.ids,
+            vec!["gh_run_list", "apply_migration"],
+            "the order must not depend on what the registry happens to define"
+        );
+    }
+
+    #[test]
     fn edges_rank_by_weight_not_by_id() {
         // The edges live in a BTreeMap, which already iterates id-ascending — so a
         // fixture whose weight order happens to agree with alphabetical order proves
@@ -2798,6 +2905,10 @@ mod tests {
 
     #[test]
     fn tied_edge_weights_break_by_id_ascending() {
+        // One cluster, so every id has cluster frequency 1 and the inverse-
+        // cluster-frequency weight is exactly 1.0 — this pins the tie-break that
+        // remains once cf has nothing to say. The multi-cluster case, where cf
+        // decides instead, is the sibling below.
         let g = graph(vec![intent(
             "i0",
             &["build broken"],
