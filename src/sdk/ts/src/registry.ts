@@ -90,16 +90,18 @@ export class ToolRegistry {
    *
    * @internal
    */
-  registerItems(item: Tool | readonly Tool[]): void {
+  registerItems(item: Tool | readonly Tool[], emitDefinitions = true): void {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions(
-      "tool",
-      items,
-      this.emittedDefinitionHashes,
-      this.useDefinitionOverrides,
-    );
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "tool",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
   }
 
   /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
@@ -457,15 +459,17 @@ export class SkillRegistry {
    *
    * @internal
    */
-  replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
+  replaceAllItems(items: readonly Skill[], emitDefinitions = true): ReplaceOutcome {
     assertNotArtifactBusy(this);
     const outcome = this.native.replaceAll([...items]);
-    recordCatalogDefinitions(
-      "skill",
-      items,
-      this.emittedDefinitionHashes,
-      this.useDefinitionOverrides,
-    );
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "skill",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
     return outcome;
   }
 
@@ -750,16 +754,18 @@ export class FactRegistry {
    *
    * @internal
    */
-  registerItems(item: Fact | readonly Fact[]): void {
+  registerItems(item: Fact | readonly Fact[], emitDefinitions = true): void {
     const items = Array.isArray(item) ? item : [item];
     for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
-    recordCatalogDefinitions(
-      "fact",
-      items,
-      this.emittedDefinitionHashes,
-      this.useDefinitionOverrides,
-    );
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "fact",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
   }
 
   /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */

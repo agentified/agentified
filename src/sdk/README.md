@@ -17,8 +17,8 @@ The TypeScript SDK. Part of the pnpm workspace; bundles `ratel-ai-core` via a NA
 
 Its definition-overlay seam follows register-up/attach-down ownership: local registration syncs
 definitions up, while externally-authored Retrieval descriptions apply down only with
-`useDefinitionOverrides: true`. See the TypeScript SDK README for the attach example and shadowing
-rules.
+`catalog.experimentalAttachDefinitionOverrides({ source })`. See the TypeScript SDK README for the
+attach example, validation, and shadowing rules.
 
 Binding strategy and tool-injection mode are documented in [ADR 0006](../../docs/adr/0006-native-ffi-bindings.md) and [ADR 0004](../../docs/adr/0004-retrieval-and-tool-selection.md).
 

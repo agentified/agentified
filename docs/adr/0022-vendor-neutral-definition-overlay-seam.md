@@ -30,6 +30,11 @@ The overlay seam is vendor-neutral in name as well as in mechanism.
   with a strong ETag and a complete `{ overrides: [...] }` body, or a `304`. Any implementation
   qualifies. `@ratel-ai/cloud-sdk` is the first one, not a privileged one; it keeps its own Cloud
   branding on its own facade.
+- The SDK treats source responses as untrusted. It validates status, ETag, body, entry shape, and
+  bounded string sizes before catalog mutation. Invalid input raises `DefinitionOverlayError`.
+- One refresh has cross-catalog rollback. Tool, skill, and fact applications all settle before
+  failure restores the last accepted maps; the ETag and one-way ownership latch advance only after
+  all three succeed. Concurrent callers share one in-flight refresh.
 - Opting in is the explicitly experimental
   `catalog.experimentalAttachDefinitionOverrides({ source })`. It is one-way for the life of the
   process; reverting means restarting the runtime.

@@ -74,9 +74,11 @@ export type {
   ExperimentalEmbeddingArtifact,
 } from "./embedding-artifact.js";
 export { experimentalBuildEmbeddingArtifact } from "./embedding-artifact.js";
+export type { DefinitionOverlayErrorCode } from "./errors.js";
 export {
   ArtifactError,
   ArtifactWarmError,
+  DefinitionOverlayError,
   DimensionMismatchError,
   EmbedderError,
   IncompatibleMergeError,

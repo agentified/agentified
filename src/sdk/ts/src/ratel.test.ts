@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DefinitionOverlayError,
   type ExecutableTool,
   GET_SKILL_CONTENT_ID,
   INVOKE_TOOL_ID,
@@ -110,6 +111,291 @@ describe("ratel() standalone core", () => {
     expect(r.tools.search("localcanaryterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
     expect(r.tools.search("overriderollbackterm", 5)).toEqual([]);
     expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-1"']);
+  });
+
+  it("coalesces concurrent override refreshes around one ETag", async () => {
+    const r = ratel();
+    const requests: Array<string | undefined> = [];
+    let releaseRefresh: (() => void) | undefined;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const attachment = await r.catalog.experimentalAttachDefinitionOverrides({
+      source: {
+        fetch: async (ifNoneMatch) => {
+          requests.push(ifNoneMatch);
+          if (requests.length === 1) {
+            return { status: 200, etag: '"overlay-1"', body: { overrides: [] } };
+          }
+          if (requests.length === 2) {
+            await refreshGate;
+            return { status: 200, etag: '"overlay-2"', body: { overrides: [] } };
+          }
+          return { status: 304 };
+        },
+      },
+    });
+
+    const first = attachment.refresh();
+    const second = attachment.refresh();
+    expect(requests).toEqual([undefined, '"overlay-1"']);
+    releaseRefresh?.();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    await expect(attachment.refresh()).resolves.toBe(false);
+    expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-2"']);
+  });
+
+  it("retains the last accepted ETag after rejecting a refresh response", async () => {
+    const r = ratel();
+    const requests: Array<string | undefined> = [];
+    const responses = [
+      { status: 200 as const, etag: '"overlay-1"', body: { overrides: [] } },
+      { status: 200 as const, etag: "", body: { overrides: [] } },
+      { status: 304 as const },
+    ];
+    const attachment = await r.catalog.experimentalAttachDefinitionOverrides({
+      source: {
+        fetch: async (ifNoneMatch) => {
+          requests.push(ifNoneMatch);
+          const response = responses.shift();
+          if (response === undefined) throw new Error("unexpected overlay fetch");
+          return response;
+        },
+      },
+    });
+
+    await expect(attachment.refresh()).rejects.toMatchObject({
+      name: "DefinitionOverlayError",
+      code: "invalid_etag",
+    });
+    await expect(attachment.refresh()).resolves.toBe(false);
+    expect(requests).toEqual([undefined, '"overlay-1"', '"overlay-1"']);
+  });
+
+  it("rejects a malformed override set without changing current or future catalogs", async () => {
+    const r = ratel();
+    await r.tools.register({
+      ...native("deploy", "Deploy an application."),
+      experimentalSearchableDescription: "localtoolterm",
+    });
+    await r.skills.register({
+      id: "deploy-skill",
+      name: "deploy-skill",
+      description: "Deploy an application.",
+      experimentalSearchableDescription: "localskillterm",
+    });
+
+    await expect(
+      r.catalog.experimentalAttachDefinitionOverrides({
+        source: {
+          fetch: async () => ({
+            status: 200,
+            etag: '"overlay-1"',
+            body: {
+              overrides: [
+                {
+                  kind: "tool",
+                  entryId: "deploy",
+                  searchableDescription: "overridetoolterm",
+                },
+                {
+                  kind: "skill",
+                  entryId: "deploy-skill",
+                  searchableDescription: 123 as unknown as string,
+                },
+                {
+                  kind: "fact",
+                  entryId: "address",
+                  searchableDescription: "overridefactterm",
+                },
+              ],
+            },
+          }),
+        },
+      }),
+    ).rejects.toThrow("definition overlay override 1 searchableDescription must be a string");
+
+    expect(r.tools.search("localtoolterm", 5).map((hit) => hit.toolId)).toEqual(["deploy"]);
+    expect(r.tools.search("overridetoolterm", 5)).toEqual([]);
+    expect(r.skills.search("localskillterm", 5).map((hit) => hit.skillId)).toEqual([
+      "deploy-skill",
+    ]);
+    expect(r.skills.search("overrideskillterm", 5)).toEqual([]);
+
+    await r.facts.register({
+      id: "address",
+      name: "address",
+      description: "Where the shop is.",
+      experimentalSearchableDescription: "localfactterm",
+    });
+    expect(r.facts.search("localfactterm", 5).map((hit) => hit.factId)).toEqual(["address"]);
+    expect(r.facts.search("overridefactterm", 5)).toEqual([]);
+  });
+
+  it("restores every catalog when applying a valid override set fails", async () => {
+    const server = await startDelayedEmbeddingServer();
+    try {
+      const r = ratel({
+        method: "semantic",
+        embedding: { url: server.url, model: "test-model" },
+      });
+      await r.tools.register({
+        ...native("deploy", "Deploy an application."),
+        experimentalSearchableDescription: "localtoolterm",
+      });
+      await r.skills.register({
+        id: "deploy-skill",
+        name: "deploy-skill",
+        description: "Deploy an application.",
+        experimentalSearchableDescription: "localskillterm",
+      });
+      await server.setResponseModels(["test-model", "changed-model"]);
+
+      const error = await r.catalog
+        .experimentalAttachDefinitionOverrides({
+          source: {
+            fetch: async () => ({
+              status: 200,
+              etag: '"overlay-1"',
+              body: {
+                overrides: [
+                  {
+                    kind: "tool",
+                    entryId: "deploy",
+                    searchableDescription: "overridetoolterm",
+                  },
+                  {
+                    kind: "skill",
+                    entryId: "deploy-skill",
+                    searchableDescription: "overrideskillterm",
+                  },
+                  {
+                    kind: "fact",
+                    entryId: "address",
+                    searchableDescription: "overridefactterm",
+                  },
+                ],
+              },
+            }),
+          },
+        })
+        .then(
+          () => undefined,
+          (cause: unknown) => cause,
+        );
+
+      expect(error).toBeInstanceOf(DefinitionOverlayError);
+      expect(error).toMatchObject({ code: "apply_failed" });
+      expect(
+        r.tools.catalog.search("localtoolterm", 5, "direct", "bm25").map((hit) => hit.toolId),
+      ).toEqual(["deploy"]);
+      expect(r.tools.catalog.search("overridetoolterm", 5, "direct", "bm25")).toEqual([]);
+      expect(
+        r.skills.search("localskillterm", 5, "direct", "bm25").map((hit) => hit.skillId),
+      ).toEqual(["deploy-skill"]);
+      expect(r.skills.search("overrideskillterm", 5, "direct", "bm25")).toEqual([]);
+
+      await r.facts.register({
+        id: "address",
+        name: "address",
+        description: "Where the shop is.",
+        experimentalSearchableDescription: "localfactterm",
+      });
+      expect(r.facts.search("localfactterm", 5, "direct", "bm25").map((hit) => hit.factId)).toEqual(
+        ["address"],
+      );
+      expect(r.facts.search("overridefactterm", 5, "direct", "bm25")).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([
+    [
+      "an unexpected status",
+      { status: 500 },
+      "invalid_status",
+      "definition overlay response status must be 200 or 304",
+    ],
+    [
+      "a null body",
+      { status: 200, etag: '"overlay-1"', body: null },
+      "invalid_payload",
+      "definition overlay response body must be an object",
+    ],
+    [
+      "a non-array overrides field",
+      { status: 200, etag: '"overlay-1"', body: { overrides: "invalid" } },
+      "invalid_payload",
+      "definition overlay overrides must be an array",
+    ],
+    [
+      "an unknown override kind",
+      {
+        status: 200,
+        etag: '"overlay-1"',
+        body: {
+          overrides: [
+            { kind: "prompt", entryId: "deploy", searchableDescription: "Deploy safely" },
+          ],
+        },
+      },
+      "invalid_payload",
+      "definition overlay override 0 kind must be tool, skill, or fact",
+    ],
+    [
+      "an empty ETag",
+      { status: 200, etag: " ", body: { overrides: [] } },
+      "invalid_etag",
+      "definition overlay response etag must be a non-empty string",
+    ],
+    [
+      "an oversized entry id",
+      {
+        status: 200,
+        etag: '"overlay-1"',
+        body: {
+          overrides: [
+            { kind: "tool", entryId: "x".repeat(513), searchableDescription: "Deploy safely" },
+          ],
+        },
+      },
+      "invalid_payload",
+      "definition overlay override 0 entryId exceeds 512 UTF-8 bytes",
+    ],
+    [
+      "an oversized searchable description",
+      {
+        status: 200,
+        etag: '"overlay-1"',
+        body: {
+          overrides: [
+            {
+              kind: "tool",
+              entryId: "deploy",
+              searchableDescription: "x".repeat(16_385),
+            },
+          ],
+        },
+      },
+      "invalid_payload",
+      "definition overlay override 0 searchableDescription exceeds 16384 UTF-8 bytes",
+    ],
+  ])("rejects %s from an override source", async (_name, response, code, message) => {
+    const r = ratel();
+
+    const error = await r.catalog
+      .experimentalAttachDefinitionOverrides({
+        source: { fetch: async () => response as never },
+      })
+      .then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+    expect(error).toBeInstanceOf(DefinitionOverlayError);
+    expect(error).toMatchObject({ code, message });
   });
 
   it("keeps local retrieval descriptions when definition overrides are not enabled", async () => {

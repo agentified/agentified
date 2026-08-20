@@ -2,7 +2,11 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
-import { hasSameRetrievalDescription, withDefinitionOverride } from "./definition-overrides.js";
+import {
+  type DefinitionOverrideApplyOptions,
+  hasSameRetrievalDescription,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
   assertValidFact,
@@ -121,27 +125,37 @@ export class FactCatalog {
   }
 
   /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
-  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
     this.overrideSearchableDescriptions = new Map(overrides);
     const effective = [...this.localFacts.values()].map((fact) =>
       this.applyDefinitionOverride(fact),
     );
-    this.registry.setUseDefinitionOverrides(effective);
+    if (adopt) this.registry.setUseDefinitionOverrides(effective);
     const changed = effective.filter((fact) => {
       const current = this.facts.get(fact.id);
       return current === undefined || !hasSameRetrievalDescription(current, fact);
     });
-    if (changed.length > 0) await this.registerEffective(changed);
+    if (changed.length > 0) await this.registerEffective(changed, undefined, emitDefinitions);
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.facts.values()]);
   }
 
   private async registerEffective(
     batch: readonly Fact[],
     localBatch?: readonly Fact[],
+    emitDefinitions = true,
   ): Promise<void> {
     // Validation lives in `registerItems` (the registry is public too), which
     // checks the whole batch before indexing any of it — so the local map below
     // can only ever see facts the registry accepted.
-    this.registry.registerItems(batch);
+    this.registry.registerItems(batch, emitDefinitions);
     if (localBatch) {
       for (const fact of localBatch) this.localFacts.set(fact.id, fact);
     }

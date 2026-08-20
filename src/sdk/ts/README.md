@@ -45,9 +45,14 @@ and no source is called. The attach promise includes the initial pull and applie
 overlay to live tools, skills, and facts. Call the returned
 attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
 source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
-ETag. Applying an identical or empty overlay does not re-index unchanged entries. Opting in is
-one-way for the life of the process; reverting means restarting the runtime. These APIs may change
-without a major-version bump.
+ETag. Source responses are runtime-validated before any catalog changes: statuses must be `200` or
+`304`, a `200` needs a non-empty ETag and complete override array, entry ids are capped at 512 UTF-8
+bytes, and retrieval descriptions are capped at 16 KiB. Invalid responses throw
+`DefinitionOverlayError` and retain the previously accepted ETag and definitions. Tool, skill, and
+fact changes share rollback; a failed catalog update restores all three. Concurrent
+`refresh()` calls share one in-flight request. Applying an identical or empty overlay does not
+re-index unchanged entries. Opting in is one-way for the life of the process; reverting means
+restarting the runtime. These APIs may change without a major-version bump.
 
 Removing an override restores the latest local value. If both sides define a Retrieval description
 for one entry, the override wins while attached and the SDK warns once for that continuous

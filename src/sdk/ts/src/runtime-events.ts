@@ -188,7 +188,7 @@ export interface ExperimentalDefinitionOverridesAttachOptions {
 
 /** Active definition-overrides attachment. */
 export interface ExperimentalDefinitionOverridesAttachment {
-  /** Pull and apply a changed complete overlay; returns false for 304. */
+  /** Pull and apply a changed overlay with cross-catalog rollback; concurrent calls share one request. */
   refresh(): Promise<boolean>;
 }
 
@@ -200,7 +200,10 @@ export interface RuntimeCatalog {
 
 /** Experimental runtime catalog seam for definition-overlay attachment. */
 export interface ExperimentalDefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
-  /** ⚠️ Experimental. Attach an injected overlay source and complete the initial pull. */
+  /**
+   * ⚠️ Experimental. Attach an injected overlay source and complete the initial pull.
+   * @throws DefinitionOverlayError for an invalid response or failed cross-catalog apply.
+   */
   experimentalAttachDefinitionOverrides(
     options: ExperimentalDefinitionOverridesAttachOptions,
   ): Promise<ExperimentalDefinitionOverridesAttachment>;

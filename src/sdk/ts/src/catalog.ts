@@ -2,7 +2,11 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.cjs";
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
-import { hasSameRetrievalDescription, withDefinitionOverride } from "./definition-overrides.js";
+import {
+  type DefinitionOverrideApplyOptions,
+  hasSameRetrievalDescription,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -414,25 +418,36 @@ export class ToolCatalog {
   }
 
   /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
-  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
     this.overrideSearchableDescriptions = new Map(overrides);
     const effective = [...this.localTools.values()].map((tool) =>
       this.applyDefinitionOverride(tool),
     );
-    this.registry.setUseDefinitionOverrides(effective);
+    if (adopt) this.registry.setUseDefinitionOverrides(effective);
     const changed = effective.filter((tool) => {
       const current = this.tools.get(tool.id);
       return current === undefined || !hasSameRetrievalDescription(current, tool);
     });
-    if (changed.length > 0) await this.registerEffective(changed);
+    if (changed.length > 0) await this.registerEffective(changed, undefined, emitDefinitions);
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.tools.values()]);
   }
 
   private async registerEffective(
     batch: readonly ExecutableTool[],
     localBatch?: readonly ExecutableTool[],
+    emitDefinitions = true,
   ): Promise<void> {
     this.registry.registerItems(
       batch.map(({ execute: _execute, validateInput: _validateInput, ...metadata }) => metadata),
+      emitDefinitions,
     );
     if (localBatch) {
       for (const tool of localBatch) this.localTools.set(tool.id, tool);

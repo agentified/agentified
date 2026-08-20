@@ -19,7 +19,9 @@ import {
   ToolCatalog,
   type TraceSinkConfig,
 } from "./catalog.js";
+import { validateDefinitionOverlayResponse } from "./definition-overrides.js";
 import type { ExperimentalEmbeddingArtifact } from "./embedding-artifact.js";
+import { DefinitionOverlayError } from "./errors.js";
 import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
@@ -457,36 +459,87 @@ export function ratel(config: RatelConfig = {}): Ratel {
   });
   const events = new RuntimeEvents([catalog, skills], config.events);
   let factsCatalog: FactCatalog | undefined;
+  let toolOverrides = new Map<string, string>();
+  let skillOverrides = new Map<string, string>();
   let factOverrides = new Map<string, string>();
   let useDefinitionOverrides = false;
   const applyDefinitionOverrides = async (
     overrides: readonly ExperimentalDefinitionOverride[],
   ): Promise<void> => {
-    useDefinitionOverrides = true;
     const byKind = (kind: ExperimentalDefinitionOverride["kind"]): Map<string, string> =>
       new Map(
         overrides
           .filter((override) => override.kind === kind)
           .map((override) => [override.entryId, override.searchableDescription]),
       );
-    factOverrides = byKind("fact");
-    await Promise.all([
-      catalog.applyDefinitionOverrides(byKind("tool")),
-      skills.applyDefinitionOverrides(byKind("skill")),
-      factsCatalog?.applyDefinitionOverrides(factOverrides),
+    const nextToolOverrides = byKind("tool");
+    const nextSkillOverrides = byKind("skill");
+    const nextFactOverrides = byKind("fact");
+    const stagedOptions = { adopt: false, emitDefinitions: false } as const;
+    const factsAtStart = factsCatalog;
+    const results: PromiseSettledResult<void>[] = await Promise.allSettled([
+      catalog.applyDefinitionOverrides(nextToolOverrides, stagedOptions),
+      skills.applyDefinitionOverrides(nextSkillOverrides, stagedOptions),
+      factsAtStart?.applyDefinitionOverrides(nextFactOverrides, stagedOptions) ?? Promise.resolve(),
     ]);
+    const lateFacts = factsCatalog;
+    if (
+      !results.some((result) => result.status === "rejected") &&
+      lateFacts !== undefined &&
+      lateFacts !== factsAtStart
+    ) {
+      const [lateFactResult] = await Promise.allSettled([
+        lateFacts.applyDefinitionOverrides(nextFactOverrides, stagedOptions),
+      ]);
+      if (lateFactResult !== undefined) results.push(lateFactResult);
+    }
+    const applyFailures = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (applyFailures.length > 0) {
+      const rollbackResults = await Promise.allSettled([
+        catalog.applyDefinitionOverrides(toolOverrides, stagedOptions),
+        skills.applyDefinitionOverrides(skillOverrides, stagedOptions),
+        factsCatalog?.applyDefinitionOverrides(factOverrides, stagedOptions),
+      ]);
+      const rollbackFailures = rollbackResults.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      const causes = [...applyFailures, ...rollbackFailures].map((result) => result.reason);
+      throw new DefinitionOverlayError(
+        rollbackFailures.length === 0
+          ? "definition overlay apply failed; previous definitions restored"
+          : "definition overlay apply failed and rollback did not complete",
+        "apply_failed",
+        { cause: causes.length === 1 ? causes[0] : new AggregateError(causes) },
+      );
+    }
+    toolOverrides = nextToolOverrides;
+    skillOverrides = nextSkillOverrides;
+    factOverrides = nextFactOverrides;
+    useDefinitionOverrides = true;
+    catalog.enableDefinitionOverrides();
+    skills.enableDefinitionOverrides();
+    factsCatalog?.enableDefinitionOverrides();
   };
   const experimentalAttachDefinitionOverrides = async (
     options: ExperimentalDefinitionOverridesAttachOptions,
   ): Promise<ExperimentalDefinitionOverridesAttachment> => {
     let etag: string | undefined;
+    let inFlightRefresh: Promise<boolean> | undefined;
+    const refreshOnce = async (): Promise<boolean> => {
+      const response = validateDefinitionOverlayResponse(await options.source.fetch(etag));
+      if (response.status === 304) return false;
+      await applyDefinitionOverrides(response.body.overrides);
+      etag = response.etag;
+      return true;
+    };
     const attachment: ExperimentalDefinitionOverridesAttachment = {
-      refresh: async () => {
-        const response = await options.source.fetch(etag);
-        if (response.status === 304) return false;
-        await applyDefinitionOverrides(response.body.overrides);
-        etag = response.etag;
-        return true;
+      refresh: () => {
+        inFlightRefresh ??= refreshOnce().finally(() => {
+          inFlightRefresh = undefined;
+        });
+        return inFlightRefresh;
       },
     };
     await attachment.refresh();

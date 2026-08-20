@@ -8,7 +8,10 @@ import type {
   SearchOrigin,
   TraceSinkConfig,
 } from "./catalog.js";
-import { withDefinitionOverride } from "./definition-overrides.js";
+import {
+  type DefinitionOverrideApplyOptions,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
 import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
@@ -127,12 +130,23 @@ export class SkillCatalog {
   }
 
   /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
-  async applyDefinitionOverrides(overrides: ReadonlyMap<string, string>): Promise<void> {
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
     this.overrideSearchableDescriptions = new Map(overrides);
-    this.registry.setUseDefinitionOverrides();
+    if (adopt) this.registry.setUseDefinitionOverrides();
     await this.replaceAllEffective(
       [...this.localSkills.values()].map((skill) => this.applyDefinitionOverride(skill)),
+      undefined,
+      emitDefinitions,
     );
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.skills.values()]);
   }
 
   private async registerEffective(
@@ -199,8 +213,9 @@ export class SkillCatalog {
   private replaceAllEffective(
     skills: readonly Skill[],
     localSkills?: readonly Skill[],
+    emitDefinitions = true,
   ): PendingReplace {
-    const outcome = this.registry.replaceAllItems(skills);
+    const outcome = this.registry.replaceAllItems(skills, emitDefinitions);
     if (localSkills) {
       this.localSkills.clear();
       for (const skill of localSkills) this.localSkills.set(skill.id, skill);
