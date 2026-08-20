@@ -20,6 +20,11 @@ switched on — see [Seeding from a baseline capture](#seeding-from-a-baseline-c
 learning remains how ranking learns while serving; the "no build step" claim below is narrowed
 to the serving path, not the bootstrap.
 
+Amended 2026-08-20: the cluster policy (similarity threshold and coverage fraction) is
+**configurable per catalog and recorded on the graph**, reversing the "fixed tuning, not public
+knobs" position taken earlier the same day — see
+[The clustering policy is configurable, and recorded](#the-clustering-policy-is-configurable-and-recorded).
+
 Amended 2026-08-20: the dense tier admits a query by **member coverage**, not by one cosine
 against the centroid — see [Two similarity tiers](#two-similarity-tiers). Not porting the
 lexical tier's per-member guard was a defect, and it collapsed 12 distinct queries into a
@@ -159,12 +164,45 @@ the bad boost, or discards it and destroys the learning). Recency eviction is no
 either: an over-merged cluster absorbs nearly every turn, so its `last_ts` stays fresh and it
 is never approached.
 
-`TAU_MEMBER`, `COVERAGE_FRACTION`, and `VECTOR_RETAIN` are fixed tuning, not public knobs
-(ADR-0004), alongside `BM25_K1`, `RRF_K`, and `TAU_COSINE`. The `ObservationPolicy` added for
-baseline capture is not a precedent: it configures *which evidence enters the graph*, a
-decision only the host can make, where these configure ranking geometry. Decisively, the wire
-format does not record the constants a graph was clustered under, so two producers at
-different values would disagree about what a cluster means while both claiming `v: 1`.
+### The clustering policy is configurable, and recorded
+
+The similarity a query must clear and the share of members it must clear it against — the
+**cluster policy** — are set per catalog and default to today's values.
+
+This reverses the position first recorded here, which was that they are fixed tuning like
+`BM25_K1` and `RRF_K`. Two arguments overturned it. The threshold is **model-dependent**: an
+endpoint catalog can carry any embedding model, and a cosine of 0.70 does not mean the same
+thing on two of them. It is **corpus-dependent** too — a narrow single-domain catalog and a
+broad one want different granularity, and the integrator knows their corpus better than a
+constant chosen once against one model. Measured on the checked-in incident fixture, bge-small
+puts same-intent query pairs at a median cosine of 0.688 and distinct-intent pairs at 0.639, so
+even for the built-in model 0.70 sits inside the overlap rather than between the modes.
+
+The decisive objection was not that these are geometry rather than policy — it was that **the
+wire format did not record the constants a graph was clustered under**, so two producers at
+different values would disagree about what a cluster means while both claiming `v: 1`. That
+objection is answered rather than waived: the graph now carries its policy, exactly as it
+already carries the `model` its centroids were built with, and a consumer can tell the two
+apart. `VECTOR_RETAIN` stays internal — it bounds memory, it does not draw boundaries.
+
+`ObservationPolicy` remains a different thing, and the distinction is where each lives.
+It configures which *events* become evidence, so it belongs to the learner. The cluster policy
+is read while matching, from both the learning and the serving path, so it belongs to the graph
+— which is also what makes recording it natural.
+
+**A policy change is a notice, not a pause.** A model mismatch pauses the arm because cosine
+across two vector spaces is meaningless. A policy mismatch is not that: the vectors are fine and
+the clusters are still coherent, merely coarser or finer than the current setting would draw
+them. The mechanical reason matters more than the principle. Both SDKs auto-recover on a status
+beginning `paused`, and the remedy they reach for is `rebuild_intent_graph` — which cannot
+revisit cluster boundaries, for the reason given above. Routing a policy change through that
+string would fire an embedding pass incapable of fixing what it fired for, so the new status
+begins `active` and the notice is raised deliberately instead.
+
+Changing the policy therefore **does not re-cluster**. Raising the threshold on a graph that
+already over-merged leaves those clusters exactly as they are; only later admissions are
+stricter. Re-drawing boundaries means replaying the trace log through `build_intent_graph`, or
+relearning from scratch.
 
 The cost is recall, and it is the right trade. Two queries sharing one word out of two are
 structurally identical whether they are the same question phrased differently or two
