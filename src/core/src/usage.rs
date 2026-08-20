@@ -1399,6 +1399,34 @@ impl IntentGraph {
         self.rev
     }
 
+    /// Whether this graph's boundaries were drawn under the policy now in force.
+    ///
+    /// `None` when they match, or when the graph is still at the defaults it was
+    /// necessarily written under. `Some((built, active))` is a **notice, not a
+    /// pause**: the vectors are fine and the clusters are still coherent, merely
+    /// coarser or finer than the current setting would draw them. What it warns
+    /// about is that they will not be redrawn.
+    pub(crate) fn cluster_policy_drift(&self) -> Option<(ClusterPolicy, ClusterPolicy)> {
+        (self.cluster_policy != self.active_policy)
+            .then_some((self.cluster_policy, self.active_policy))
+    }
+
+    /// Set the policy future admissions are measured against.
+    ///
+    /// Does **not** redraw existing boundaries — nothing can, since a cluster's
+    /// edges are aggregate counts with no member attribution to split on. The
+    /// graph keeps reporting the policy it was clustered under, and the
+    /// difference surfaces as a drift notice.
+    pub fn set_cluster_policy(&mut self, policy: ClusterPolicy) {
+        self.active_policy = policy;
+    }
+
+    /// The policy future admissions are measured against.
+    #[must_use]
+    pub fn active_cluster_policy(&self) -> ClusterPolicy {
+        self.active_policy
+    }
+
     /// Whether this graph's centroids can be trusted against the currently active
     /// embedding model, whose vectors are `query_dim`-wide with identity
     /// `active_fingerprint`.
@@ -3880,6 +3908,28 @@ mod tests {
                 "a cosine and a fraction both live in (0, 1]: {bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_policy_change_is_visible_as_drift() {
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_similarity(0.75));
+        assert!(
+            g.cluster_policy_drift().is_none(),
+            "nothing has changed yet"
+        );
+
+        g.set_cluster_policy(ClusterPolicy::default().with_similarity(0.9));
+
+        let (built, active) = g
+            .cluster_policy_drift()
+            .expect("the change must be visible");
+        assert_eq!(built.similarity, 0.75);
+        assert_eq!(active.similarity, 0.9);
+        assert_eq!(
+            g.intents.len(),
+            1,
+            "and it must not have redrawn anything — nothing can"
+        );
     }
 
     // ---- dense clustering must not collapse ---------------------------------

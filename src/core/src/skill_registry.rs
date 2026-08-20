@@ -207,7 +207,17 @@ impl SkillRegistry {
         };
         let active_dim = self.dense.dim().unwrap_or(0);
         match g.model_status(&active_fp, active_dim).describe() {
-            None => AdaptiveRankingStatus::Active,
+            // A paused graph is reported as paused: a policy notice would be the
+            // lesser problem, and the caller can only act on one at a time.
+            None => match g.cluster_policy_drift() {
+                None => AdaptiveRankingStatus::Active,
+                Some((built, active)) => AdaptiveRankingStatus::PolicyDrift {
+                    built_similarity: built.similarity,
+                    built_coverage: built.coverage,
+                    active_similarity: active.similarity,
+                    active_coverage: active.coverage,
+                },
+            },
             Some((built, active, dim_mismatch)) => AdaptiveRankingStatus::Paused {
                 dim_mismatch,
                 built,
@@ -268,24 +278,39 @@ impl SkillRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // Usage ranking is an enhancement; a poisoned lock degrades to today's
         // behavior rather than failing the search.
-        let (outcome, mismatch) = {
+        let (outcome, mismatch, drift) = {
             let guard = graph.read().ok()?;
+            // Read under the same guard as the arm, so the notice describes the
+            // graph the ranking actually came from.
+            let drift = guard.cluster_policy_drift();
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
                 _ => None,
             };
             if mismatch.is_some() {
-                (ArmOutcome::NoMatch, mismatch)
+                (ArmOutcome::NoMatch, mismatch, drift)
             } else {
                 if let (Some(v), Some(fp)) = (query_vec, &fingerprint) {
                     guard.note_query_vector(query, v, fp);
                 }
                 let known = |id: &str| self.skills.contains_key(id);
-                (guard.arm(query, query_vec, Capability::Skill, &known), None)
+                (
+                    guard.arm(query, query_vec, Capability::Skill, &known),
+                    None,
+                    drift,
+                )
             }
         };
         // The read guard is released BEFORE the sink runs (RwLock is not
         // reentrant and a `UsageLearner` sink takes the write lock).
+        if let Some((built, active)) = drift {
+            self.sink.record(TraceEvent::UsageClusterPolicyChanged {
+                built_similarity: f64::from(built.similarity),
+                built_coverage: f64::from(built.coverage),
+                active_similarity: f64::from(active.similarity),
+                active_coverage: f64::from(active.coverage),
+            });
+        }
         if let Some((built, active, dim_mismatch)) = mismatch {
             self.sink.record(TraceEvent::UsageModelMismatch {
                 built,

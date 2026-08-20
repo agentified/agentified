@@ -664,6 +664,26 @@ fn map_adaptive_status(
             Some(active),
             Some(dim_mismatch),
         ),
+        // Begins "active" on purpose: the arm is still serving, and a caller that
+        // recovers from anything "paused" by rebuilding would summon a remedy
+        // that cannot revisit cluster boundaries.
+        S::PolicyDrift {
+            built_similarity,
+            built_coverage,
+            active_similarity,
+            active_coverage,
+        } => (
+            "active: policy drift".into(),
+            Some(format!(
+                "similarity {built_similarity} / coverage {built_coverage}"
+            )),
+            Some(format!(
+                "similarity {active_similarity} / coverage {active_coverage}"
+            )),
+            None,
+        ),
+        // Non-exhaustive upstream: degrade rather than fail to compile.
+        _ => ("unknown".into(), None, None, None),
     }
 }
 

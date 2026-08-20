@@ -22,8 +22,11 @@ use crate::usage::{ArmOutcome, Capability, IntentGraph, UsageArm};
 use crate::usage_learner::{self, ObservationPolicy};
 
 /// Whether adaptive usage ranking is currently contributing to a registry's
-/// results — the SDK-facing view of the model-compatibility check (ADR-0014).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// results — the SDK-facing view of the compatibility checks (ADR-0014).
+///
+/// Not `Eq`: the policy-drift variant carries the thresholds, which are floats.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AdaptiveRankingStatus {
     /// No intent graph attached.
     Inactive,
@@ -42,6 +45,24 @@ pub enum AdaptiveRankingStatus {
         built: String,
         /// The active model, in the same units.
         active: String,
+    },
+    /// Attached and serving, but the clusters were drawn under a different
+    /// [`crate::ClusterPolicy`] than the one now in force.
+    ///
+    /// Deliberately **not** a `Paused` variant. Nothing here is meaningless — the
+    /// clusters are still coherent, merely coarser or finer than the current
+    /// setting would draw them — and the SDKs recover from anything reported as
+    /// paused by rebuilding, which cannot revisit cluster boundaries and so
+    /// cannot fix this. Re-deriving boundaries means a replay or a relearn.
+    PolicyDrift {
+        /// Similarity the existing boundaries were drawn under.
+        built_similarity: f32,
+        /// Coverage fraction the existing boundaries were drawn under.
+        built_coverage: f32,
+        /// Similarity now in force.
+        active_similarity: f32,
+        /// Coverage fraction now in force.
+        active_coverage: f32,
     },
 }
 
@@ -274,7 +295,17 @@ impl ToolRegistry {
         };
         let active_dim = self.dense.dim().unwrap_or(0);
         match g.model_status(&active_fp, active_dim).describe() {
-            None => AdaptiveRankingStatus::Active,
+            // A paused graph is reported as paused: a policy notice would be the
+            // lesser problem, and the caller can only act on one at a time.
+            None => match g.cluster_policy_drift() {
+                None => AdaptiveRankingStatus::Active,
+                Some((built, active)) => AdaptiveRankingStatus::PolicyDrift {
+                    built_similarity: built.similarity,
+                    built_coverage: built.coverage,
+                    active_similarity: active.similarity,
+                    active_coverage: active.coverage,
+                },
+            },
             Some((built, active, dim_mismatch)) => AdaptiveRankingStatus::Paused {
                 dim_mismatch,
                 built,
@@ -425,8 +456,11 @@ impl ToolRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // A poisoned lock must not take down a search: usage ranking is an
         // enhancement, and losing it degrades to today's behavior.
-        let (outcome, mismatch) = {
+        let (outcome, mismatch, drift) = {
             let guard = graph.read().ok()?;
+            // Read under the same guard as the arm, so the notice describes the
+            // graph the ranking actually came from.
+            let drift = guard.cluster_policy_drift();
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
                 _ => None,
@@ -435,7 +469,7 @@ impl ToolRegistry {
                 // Paused: the graph's centroids belong to another model. Base
                 // ranking is untouched; the query is NOT noted, so the learner
                 // does not fold a foreign-model vector.
-                (ArmOutcome::NoMatch, mismatch)
+                (ArmOutcome::NoMatch, mismatch, drift)
             } else {
                 // Hand the embedded query to the learner: it only sees trace
                 // events, which carry text and not vectors, so this is how a
@@ -446,13 +480,25 @@ impl ToolRegistry {
                 let known = |id: &str| self.tools.contains_key(id);
                 // The graph picks the match tier from what it carries; a lexically
                 // grown graph has no centroids to compare a query vector against.
-                (guard.arm(query, query_vec, Capability::Tool, &known), None)
+                (
+                    guard.arm(query, query_vec, Capability::Tool, &known),
+                    None,
+                    drift,
+                )
             }
         };
         // The read guard is released BEFORE the sink runs. A `UsageLearner` sink
         // takes the write lock on this same graph, and `RwLock` is not
         // reentrant — recording while still holding the read guard would
         // deadlock the search path.
+        if let Some((built, active)) = drift {
+            self.sink.record(TraceEvent::UsageClusterPolicyChanged {
+                built_similarity: f64::from(built.similarity),
+                built_coverage: f64::from(built.coverage),
+                active_similarity: f64::from(active.similarity),
+                active_coverage: f64::from(active.coverage),
+            });
+        }
         if let Some((built, active, dim_mismatch)) = mismatch {
             self.sink.record(TraceEvent::UsageModelMismatch {
                 built,
@@ -2372,6 +2418,40 @@ mod tests {
             SidedEmbedder::QUERY.to_vec(),
             "members must be re-embedded query-side, got {centroid:?}"
         );
+    }
+
+    #[test]
+    fn policy_drift_is_reported_as_active_not_paused() {
+        use crate::usage::ClusterPolicy;
+
+        // The whole design in one assertion. Both SDKs recover from a status
+        // beginning "paused" by rebuilding, and a rebuild replaces centroids
+        // without revisiting cluster boundaries — so reporting drift as paused
+        // would fire an embedding pass incapable of fixing what it fired for.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("read_file", "read a file"));
+        reg.build_embeddings().unwrap();
+
+        // The stub takes the trait's default fingerprint, so name it: the model
+        // must MATCH, or the graph reports paused and drift never gets a look in.
+        let graph = graph_with_model("read_file", vec![1.0, 0.0, 0.0], "unknown");
+        graph
+            .write()
+            .unwrap()
+            .set_cluster_policy(ClusterPolicy::default().with_similarity(0.9));
+        reg.set_intent_graph(Some(graph));
+
+        match reg.adaptive_ranking_status() {
+            AdaptiveRankingStatus::PolicyDrift {
+                built_similarity,
+                active_similarity,
+                ..
+            } => {
+                assert_eq!(built_similarity, 0.70, "the graph's own default");
+                assert_eq!(active_similarity, 0.9);
+            }
+            other => panic!("expected policy drift, got {other:?}"),
+        }
     }
 
     #[test]

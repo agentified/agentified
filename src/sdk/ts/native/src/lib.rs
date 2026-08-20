@@ -1096,7 +1096,11 @@ fn resolve_embedding(config: Option<EmbeddingConfig>) -> napi::Result<Option<Emb
 #[napi(object)]
 pub struct AdaptiveRankingStatus {
     /// One of `"active" | "inactive" | "unknown" | "paused: dim mismatch" |
-    /// "paused: model mismatch"`.
+    /// "paused: model mismatch" | "active: policy drift"`.
+    ///
+    /// Policy drift begins `active` on purpose: the arm is still serving, and a
+    /// caller that recovers from anything `paused` by rebuilding would summon a
+    /// remedy that cannot revisit cluster boundaries.
     pub status: String,
     /// When paused: the embedding model (or its dimension) the graph's centroids
     /// were built with. Absent unless paused.
@@ -1144,6 +1148,29 @@ fn map_status(s: core::AdaptiveRankingStatus) -> AdaptiveRankingStatus {
             built: Some(built),
             active: Some(active),
             dim_mismatch: Some(dim_mismatch),
+        },
+        S::PolicyDrift {
+            built_similarity,
+            built_coverage,
+            active_similarity,
+            active_coverage,
+        } => AdaptiveRankingStatus {
+            status: "active: policy drift".into(),
+            built: Some(format!(
+                "similarity {built_similarity} / coverage {built_coverage}"
+            )),
+            active: Some(format!(
+                "similarity {active_similarity} / coverage {active_coverage}"
+            )),
+            dim_mismatch: None,
+        },
+        // `AdaptiveRankingStatus` is non-exhaustive: a core built ahead of this
+        // binding must degrade rather than fail to compile against it.
+        _ => AdaptiveRankingStatus {
+            status: "unknown".into(),
+            built: None,
+            active: None,
+            dim_mismatch: None,
         },
     }
 }
