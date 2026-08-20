@@ -6,7 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-21
+
 ### Added
+
+- Experimental, opt-in `CatalogDefinition` trace events for changed tool, skill, and fact definitions. Events carry the public definition fields, effective searchable description, override state, and a canonical SHA-256 content hash; unchanged definitions are suppressed.
 
 - **Per-entry searchable-description projections (ADR-0021).** `Tool`, `Skill`, and `Fact` each gained `experimental_searchable_description: Option<String>`, an override for the description component BM25 and dense retrieval actually rank — so retrieval text can be tuned without touching the model-facing `description`, the schemas, or the payload. The override replaces *only* that component: the name stays indexed (whole and identifier-split) and skill/fact tags stay indexed, including when the override is the empty string, so optimizing a description can never make an entry undiscoverable by its own identifier. For a tool, supplying the override additionally opts that entry out of schema indexing — input and output schemas stay model-facing but stop contributing tokens. `None` leaves the stable ADR-0004 projection untouched: tools still rank description plus schema tokens, skills and facts still rank their authored description. Schema exclusion is per-entry opt-in, not a new default.
 
