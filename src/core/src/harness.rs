@@ -25,7 +25,7 @@ use crate::embedding::{Embedded, Embedder, EmbedderError};
 use crate::indexing::searchable_text;
 use crate::tool::Tool;
 use crate::trace::NoopSink;
-use crate::usage::{Capability, Intent, IntentGraph, dense_verdict};
+use crate::usage::{Capability, ClusterPolicy, Intent, IntentGraph, dense_verdict};
 
 const TURNS: &str = include_str!("../tests/fixtures/turns-30.json");
 const CATALOG: &str = include_str!("../tests/fixtures/catalog-30.json");
@@ -212,7 +212,8 @@ pub(crate) struct ClusterVerdict {
 
 impl ClusterVerdict {
     fn of(it: &Intent, query: &[f32]) -> Self {
-        let verdict = dense_verdict(it, query);
+        let policy = ClusterPolicy::default();
+        let verdict = dense_verdict(it, query, policy);
         Self {
             id: it.id.clone(),
             members: it.members.len(),
@@ -220,7 +221,7 @@ impl ClusterVerdict {
             covered: verdict.is_some_and(|v| v.covered),
             centroid_cos: verdict.map_or(f32::NAN, |v| v.centroid_cos),
             coverage: it
-                .coverage(query)
+                .coverage(query, policy)
                 .map(|c| (c.qualifying, c.required, c.fraction)),
         }
     }

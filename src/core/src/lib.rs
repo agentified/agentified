@@ -122,5 +122,5 @@ pub use trace::{
     FnSink, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace, SearchStage, SkillHitTrace,
     TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
 };
-pub use usage::{Intent, IntentGraph, IntentGraphError};
+pub use usage::{ClusterPolicy, Intent, IntentGraph, IntentGraphError};
 pub use usage_learner::{ObservationPolicy, OriginFilter, Provenance, UsageLearner};

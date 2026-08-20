@@ -48,29 +48,78 @@ pub(crate) const SUPPORT_FULL: u32 = 3;
 /// Like `BM25_K1` / `RRF_K`, this is fixed tuning, not a public knob (ADR-0004).
 pub(crate) const USAGE_WEIGHT: f32 = 0.5;
 
-/// Minimum cosine between a query and a cluster centroid to count as a match.
+/// Default for [`ClusterPolicy::similarity`].
 pub(crate) const TAU_COSINE: f32 = 0.70;
 
-/// Minimum cosine between a query and a **single cluster member** for that
-/// member to count toward [`Intent::coverage`].
-///
-/// Deliberately the same value as [`TAU_COSINE`], which is also the prefilter:
-/// admission is then provably *the old centroid rule AND coverage* — a strict
-/// subset — so nothing rejected today starts being accepted. The anti-collapse
-/// work is done by the fraction, not by a higher bar; raising this is a separate
-/// change with its own evidence. Fixed tuning, not a public knob (ADR-0004).
-pub(crate) const TAU_MEMBER: f32 = TAU_COSINE;
-
-/// Fraction of a cluster's vector-bearing members a query must match before it
-/// joins — a **majority**, floored at 2 members.
-///
-/// Matching one member is single-link chaining: A joins because of B, and the
-/// cluster grows into whatever B happened to bridge to. Matching an average is
-/// worse, because the average of two intents resembles neither. Counting members
-/// is what distinguishes "close to this whole cluster" from "close to one thing
-/// in it", and a fraction rather than a count keeps the test comparable across
-/// clusters of different sizes. Fixed tuning, not a public knob (ADR-0004).
+/// Default for [`ClusterPolicy::coverage`].
 pub(crate) const COVERAGE_FRACTION: f32 = 0.5;
+
+/// How similar a query must be to a cluster, and to how much of it, before it
+/// joins — the two numbers that draw every cluster boundary.
+///
+/// **Configurable, and recorded on the graph that was clustered under it.**
+/// The threshold is model-dependent: an endpoint catalog can carry any embedding
+/// model, and a cosine of 0.70 does not mean the same thing on two of them. It is
+/// corpus-dependent too — a narrow catalog and a broad one want different
+/// granularity. Recording it is what keeps that safe: two producers at different
+/// settings would otherwise disagree about what a cluster means while both
+/// claiming the same protocol version (ADR-0014).
+///
+/// `#[non_exhaustive]` so a later dimension is additive, which is also why the
+/// builders exist — such a struct cannot be written as a literal outside this
+/// crate at all, `..Default::default()` included.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ClusterPolicy {
+    /// Minimum cosine between a query and a **single cluster member** for that
+    /// member to count toward [`Intent::coverage`]. Also the centroid prefilter,
+    /// which is what makes admission provably *the centroid rule AND coverage* —
+    /// a strict subset, never looser. Default `0.70`.
+    pub similarity: f32,
+    /// Fraction of a cluster's vector-bearing members a query must match before
+    /// it joins — a majority by default, floored at two members.
+    ///
+    /// Matching one member is single-link chaining: A joins because of B, and the
+    /// cluster grows into whatever B happened to bridge to. Matching an average is
+    /// worse, because the average of two intents resembles neither. Counting
+    /// members is what distinguishes "close to this whole cluster" from "close to
+    /// one thing in it", and a fraction rather than a count keeps the test
+    /// comparable across clusters of different sizes. Default `0.5`.
+    pub coverage: f32,
+}
+
+impl Default for ClusterPolicy {
+    fn default() -> Self {
+        Self {
+            similarity: TAU_COSINE,
+            coverage: COVERAGE_FRACTION,
+        }
+    }
+}
+
+impl ClusterPolicy {
+    /// Set how similar a query must be to a single member.
+    #[must_use]
+    pub fn with_similarity(mut self, similarity: f32) -> Self {
+        self.similarity = similarity;
+        self
+    }
+
+    /// Set the share of members it must be that similar to.
+    #[must_use]
+    pub fn with_coverage(mut self, coverage: f32) -> Self {
+        self.coverage = coverage;
+        self
+    }
+
+    /// Whether both values are in `(0, 1]` — the range a cosine and a fraction
+    /// can mean anything in.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        (0.0 < self.similarity && self.similarity <= 1.0)
+            && (0.0 < self.coverage && self.coverage <= 1.0)
+    }
+}
 
 /// How many of a cluster's most recent members keep their query vector in memory.
 ///
@@ -756,14 +805,14 @@ impl Intent {
     }
 
     /// How much of this cluster `query` actually matches: the count of members it
-    /// clears [`TAU_MEMBER`] against, the count it needs, and the mean cosine over
+    /// clears [`ClusterPolicy::similarity`] against, the count it needs, and the mean cosine over
     /// those it cleared.
     ///
     /// `None` when the cluster holds no comparable member vector at all — a
     /// lexically-grown cluster, or one reloaded from the wire. That is "no dense
     /// evidence available", **not** "rejected": the caller falls back to the
     /// centroid bar rather than treating an unanswerable question as a no.
-    pub(crate) fn coverage(&self, query: &[f32]) -> Option<Coverage> {
+    pub(crate) fn coverage(&self, query: &[f32], policy: ClusterPolicy) -> Option<Coverage> {
         let mut total = 0u32;
         let mut qualifying = 0u32;
         let mut sum = 0.0f32;
@@ -775,7 +824,7 @@ impl Intent {
             }
             total += 1;
             let c = cosine(query, v);
-            if c >= TAU_MEMBER {
+            if c >= policy.similarity {
                 qualifying += 1;
                 sum += c;
             }
@@ -785,7 +834,7 @@ impl Intent {
         }
         Some(Coverage {
             qualifying,
-            required: required_matches(total),
+            required: required_matches(total, policy.coverage),
             fraction: qualifying as f32 / total as f32,
             mean_cos: if qualifying == 0 {
                 0.0
@@ -935,6 +984,12 @@ pub struct IntentGraph {
     /// centroids offline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The policy in force now — what every admission decision is measured
+    /// against. Comes from configuration, never from the wire: it describes how
+    /// this process is clustering, not how the loaded graph was clustered. The
+    /// recorded counterpart arrives in the next commit.
+    #[serde(skip)]
+    active_policy: ClusterPolicy,
     /// Scratch for the search path → learner handoff; never serialized.
     #[serde(skip)]
     pending: PendingQuery,
@@ -1114,6 +1169,7 @@ impl IntentGraph {
             rev: 0,
             intents: Vec::new(),
             model: None,
+            active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
         }
@@ -1441,7 +1497,7 @@ impl IntentGraph {
         self.intents
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| dense_verdict(it, vector).map(|v| (i, v)))
+            .filter_map(|(i, it)| dense_verdict(it, vector, self.active_policy).map(|v| (i, v)))
             .filter(|(_, v)| v.admitted)
             .max_by(|a, b| {
                 rank_verdicts(&a.1, &b.1)
@@ -1657,7 +1713,7 @@ impl IntentGraph {
         let Some((intent, verdict)) = self
             .intents
             .iter()
-            .filter_map(|it| dense_verdict(it, query_vec).map(|v| (it, v)))
+            .filter_map(|it| dense_verdict(it, query_vec, self.active_policy).map(|v| (it, v)))
             .filter(|(_, v)| v.admitted)
             .max_by(|a, b| rank_verdicts(&a.1, &b.1).then_with(|| b.0.id.cmp(&a.0.id)))
         else {
@@ -1776,7 +1832,7 @@ fn arm_from(
 /// rather than recomputing them beside it, where the two could drift.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Coverage {
-    /// Members whose cosine cleared [`TAU_MEMBER`].
+    /// Members whose cosine cleared [`ClusterPolicy::similarity`].
     pub(crate) qualifying: u32,
     /// Members that had to clear it — see [`required_matches`].
     pub(crate) required: u32,
@@ -1796,8 +1852,8 @@ pub(crate) struct Coverage {
 /// single-link chaining, at exactly the size where one bad admission defines what
 /// the cluster becomes. The cap is cold start: a cluster with one member must
 /// still be able to gain its second.
-fn required_matches(n: u32) -> u32 {
-    let by_fraction = (COVERAGE_FRACTION * n as f32).ceil() as u32;
+fn required_matches(n: u32, coverage: f32) -> u32 {
+    let by_fraction = (coverage * n as f32).ceil() as u32;
     n.min(by_fraction.max(2))
 }
 
@@ -1829,16 +1885,20 @@ pub(crate) struct DenseVerdict {
 /// shape the lexical tier uses, where `bag` prefilters `lexical_score`. Because
 /// the prefilter threshold is [`TAU_COSINE`] itself, admission here is the old
 /// rule *and* coverage, never looser.
-pub(crate) fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> {
+pub(crate) fn dense_verdict(
+    it: &Intent,
+    query: &[f32],
+    policy: ClusterPolicy,
+) -> Option<DenseVerdict> {
     let centroid = it.centroid.as_deref()?;
     if centroid.len() != query.len() {
         return None; // a different embedding model — not comparable
     }
     let centroid_cos = cosine(query, centroid);
-    if centroid_cos < TAU_COSINE {
+    if centroid_cos < policy.similarity {
         return None;
     }
-    Some(match it.coverage(query) {
+    Some(match it.coverage(query, policy) {
         Some(cov) => DenseVerdict {
             admitted: cov.qualifying >= cov.required,
             covered: true,
@@ -1853,7 +1913,7 @@ pub(crate) fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> 
         // the cluster diversifies. A cluster with no recorded spread has
         // `cohesion == 1.0`, so this is the pre-coverage rule unchanged.
         None => DenseVerdict {
-            admitted: centroid_cos >= TAU_COSINE / it.cohesion.max(f32::MIN_POSITIVE),
+            admitted: centroid_cos >= policy.similarity / it.cohesion.max(f32::MIN_POSITIVE),
             covered: false,
             score: centroid_cos,
             mean_cos: centroid_cos,
@@ -1969,6 +2029,7 @@ mod tests {
             rev: 0,
             intents,
             model: None,
+            active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
         }
@@ -3627,6 +3688,60 @@ mod tests {
         assert!(IntentGraph::from_json(json).is_err());
     }
 
+    // ---- the cluster policy -------------------------------------------------
+
+    #[test]
+    fn the_default_policy_is_the_constants_it_replaced() {
+        let p = ClusterPolicy::default();
+        assert_eq!(p.similarity, TAU_COSINE);
+        assert_eq!(p.coverage, COVERAGE_FRACTION);
+        assert!(p.is_valid());
+    }
+
+    #[test]
+    fn a_stricter_policy_refuses_what_the_default_admits() {
+        // The policy has to be read at the decision point, not just stored. A
+        // refactor that threaded the parameter through and then ignored it would
+        // pass every other test in this file, because they all run at the default.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(0, 1)));
+
+        let query = topic_vec(0, 2); // ~0.98 against both members
+        assert!(
+            dense_verdict(&it, &query, ClusterPolicy::default()).is_some_and(|v| v.admitted),
+            "the default must admit a same-topic query"
+        );
+        assert!(
+            !dense_verdict(&it, &query, ClusterPolicy::default().with_similarity(0.995))
+                .is_some_and(|v| v.admitted),
+            "a threshold above the members' own similarity must refuse it"
+        );
+    }
+
+    #[test]
+    fn a_looser_coverage_admits_what_a_majority_refuses() {
+        // The other knob, on its own: a query matching one member of three is a
+        // third of the cluster — refused by a majority, admitted at a third.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.absorb_member("c", Some(&topic_vec(2, 0)));
+
+        let query = topic_vec(0, 1); // ~0.98 to `a`, ~0.67 to the rest
+        let at = |coverage| {
+            dense_verdict(
+                &it,
+                &query,
+                ClusterPolicy::default().with_coverage(coverage),
+            )
+            .is_some_and(|v| v.admitted)
+        };
+        assert!(!at(0.5), "one of three is not a majority");
+        // The floor of two members still applies, so a third of three is two.
+        assert_eq!(required_matches(3, 0.34), 2);
+    }
+
     // ---- dense clustering must not collapse ---------------------------------
 
     /// A deterministic stand-in for a real sentence embedding, composed of three
@@ -3784,7 +3899,7 @@ mod tests {
         // cold start — a one-member cluster must still be able to gain a second.
         for (members, want) in [(1, 1), (2, 2), (3, 2), (4, 2), (5, 3), (10, 5), (16, 8)] {
             assert_eq!(
-                required_matches(members),
+                required_matches(members, COVERAGE_FRACTION),
                 want,
                 "{members} members should require {want}"
             );
@@ -3844,10 +3959,12 @@ mod tests {
         );
         // And the refilled tier discriminates again: same topic in, distinct out.
         assert!(
-            dense_verdict(&g.intents[0], &topic_vec(0, 2)).is_some_and(|v| v.admitted && v.covered)
+            dense_verdict(&g.intents[0], &topic_vec(0, 2), ClusterPolicy::default())
+                .is_some_and(|v| v.admitted && v.covered)
         );
         assert!(
-            !dense_verdict(&g.intents[0], &topic_vec(1, 0)).is_some_and(|v| v.admitted),
+            !dense_verdict(&g.intents[0], &topic_vec(1, 0), ClusterPolicy::default())
+                .is_some_and(|v| v.admitted),
             "a distinct topic must not be admitted once coverage can see the members"
         );
     }
