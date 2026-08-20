@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-21
+
+### Added
+
+- Preserve a tool's experimental searchable-description projection while ingesting Vercel AI SDK definitions, allowing protocol-v2 retrieval text to differ from the model-facing description.
+
 ## [0.4.0] - 2026-08-17
 
 ### Added

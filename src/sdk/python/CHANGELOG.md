@@ -6,8 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-21
+
 ### Added
 
+- Experimental catalog-definition telemetry. `experimental_catalog_definitions=True` publishes change-sensitive `catalog_definition` runtime events; OpenTelemetry export additionally requires `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true` and EventRecord content capture. Definitions use RFC 8785 canonical hashes, omit unsafe numeric schemas, and preserve critical identity fields when payloads are bounded.
 - `experimental_searchable_description` on `Tool`, `Skill`, and `Fact` (ADR-0021): an override for the description component BM25 and embeddings actually rank, so retrieval text can be tuned without changing the `description` the model reads or the `body` it receives. Names stay indexed, skill and fact tags stay indexed, and for a tool the override additionally opts that entry out of schema indexing — schemas stay model-facing but stop contributing tokens. Omit it and nothing changes: tools still rank description plus schema tokens, skills and facts still rank their authored description. Experimental, so it may change or be removed without a major-version bump.
 
   Unlike the Rust core — where the equivalent public field is source-breaking for struct literals — this is additive here. The field is appended last on each dataclass with a `None` default, so every keyword construction is untouched. The one caveat is positional construction of `ExecutableTool`, whose `execute` sits last after the inherited fields and so shifts by one; construct it by keyword, as the SDK and its own docs do everywhere.
