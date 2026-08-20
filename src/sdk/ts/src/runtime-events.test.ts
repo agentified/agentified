@@ -290,6 +290,43 @@ describe("public runtime events", () => {
     subscription.unsubscribe();
   });
 
+  it("preserves catalog identity while trimming an oversized schema", async () => {
+    const runtime = ratel({ events: { experimentalCatalogDefinitions: true } });
+    const received: RuntimeEvent[] = [];
+    const subscription = runtime.events.subscribe((batch) => received.push(...batch));
+    const properties = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => [
+        `field_${index}`,
+        { type: "string", description: "x".repeat(4_096) },
+      ]),
+    );
+
+    await runtime.tools.register({
+      id: "oversized",
+      name: "oversized_tool",
+      description: "Oversized schema",
+      inputSchema: { type: "object", properties },
+      outputSchema: { type: "object" },
+      execute: () => undefined,
+    });
+    await subscription.flush();
+
+    const definition = received.find((event) => event.type === "catalog_definition");
+    expect(definition).toMatchObject({
+      kind: "tool",
+      id: "oversized",
+      name: "oversized_tool",
+      payload_truncated: true,
+      content_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(definition).not.toHaveProperty("input_schema");
+    expect(definition).toHaveProperty("output_schema");
+    expect(Buffer.byteLength(JSON.stringify(definition), "utf8")).toBeLessThanOrEqual(
+      RUNTIME_EVENT_MAX_PAYLOAD_BYTES,
+    );
+    subscription.unsubscribe();
+  });
+
   it("keeps experimental catalog definitions off the runtime stream by default", async () => {
     const runtime = ratel();
     const received: RuntimeEvent[] = [];

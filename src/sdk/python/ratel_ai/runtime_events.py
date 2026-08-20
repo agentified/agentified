@@ -61,6 +61,16 @@ RUNTIME_EVENT_MAX_QUERY_BYTES = 4 * 1_024
 RUNTIME_EVENT_MAX_HITS = 100
 
 _REQUIRED_ENVELOPE_FIELDS = {"v", "event_id", "ts", "session_id", "source_id", "type"}
+_CATALOG_CRITICAL_FIELDS = ("kind", "id", "name", "content_hash")
+_CATALOG_SCHEMA_FIELDS = ("input_schema", "output_schema")
+_CATALOG_DEFINITION_FIELDS = {
+    *_CATALOG_CRITICAL_FIELDS,
+    *_CATALOG_SCHEMA_FIELDS,
+    "description",
+    "tags",
+    "searchable_description",
+    "searchable_description_overridden",
+}
 
 
 def new_runtime_event_id(now_ms: int | None = None) -> str:
@@ -335,6 +345,10 @@ def _normalize_runtime_event(event: RuntimeEvent) -> RuntimeEvent:
     if _serialized_size(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES:
         return normalized
 
+    _trim_catalog_schemas(normalized)
+    if _serialized_size(normalized) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES:
+        return normalized
+
     for key in tuple(normalized):
         if key not in _REQUIRED_ENVELOPE_FIELDS and not _is_product_fact_field(key):
             del normalized[key]
@@ -344,13 +358,42 @@ def _normalize_runtime_event(event: RuntimeEvent) -> RuntimeEvent:
 
     bounded = {key: normalized[key] for key in normalized if key in _REQUIRED_ENVELOPE_FIELDS}
     bounded["payload_truncated"] = True
-    for key, value in normalized.items():
+    for key, value in _prioritized_product_fact_items(normalized):
         if key in _REQUIRED_ENVELOPE_FIELDS or not _is_product_fact_field(key):
             continue
         bounded[key] = _sanitize_bounded_value(value)
         if _serialized_size(bounded) > RUNTIME_EVENT_MAX_PAYLOAD_BYTES:
             del bounded[key]
     return bounded
+
+
+def _trim_catalog_schemas(value: RuntimeEvent) -> None:
+    if value.get("type") != "catalog_definition":
+        return
+    fields = sorted(
+        (key for key in _CATALOG_SCHEMA_FIELDS if key in value),
+        key=lambda key: _serialized_size({key: value[key]}),
+        reverse=True,
+    )
+    for key in fields:
+        del value[key]
+        value["payload_truncated"] = True
+        if _serialized_size(value) <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES:
+            break
+
+
+def _prioritized_product_fact_items(value: RuntimeEvent) -> list[tuple[str, Any]]:
+    items = [
+        (key, item)
+        for key, item in value.items()
+        if key not in _REQUIRED_ENVELOPE_FIELDS and _is_product_fact_field(key)
+    ]
+    if value.get("type") != "catalog_definition":
+        return items
+    return [
+        *((key, value[key]) for key in _CATALOG_CRITICAL_FIELDS if key in value),
+        *((key, item) for key, item in items if key not in _CATALOG_CRITICAL_FIELDS),
+    ]
 
 
 def _sanitize_value(value: Any, key: str = "") -> Any:
@@ -390,6 +433,7 @@ def _serialized_size(value: Any) -> int:
 
 def _is_product_fact_field(key: str) -> bool:
     return key.endswith(("_id", "_ids", "_ms", "_count", "_score", "_scores")) or key in {
+        *_CATALOG_DEFINITION_FIELDS,
         "query",
         "target",
         "origin",

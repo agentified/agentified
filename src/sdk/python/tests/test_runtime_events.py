@@ -210,6 +210,43 @@ async def test_publishes_catalog_definitions_independently_of_otel_capture_mode(
 
 
 @pytest.mark.asyncio
+async def test_preserves_catalog_identity_while_trimming_an_oversized_schema() -> None:
+    tools = ToolCatalog()
+    events = RuntimeEvents([tools], experimental_catalog_definitions=True)
+    received: list[dict[str, object]] = []
+    subscription = events.subscribe(lambda batch: received.extend(batch))
+    properties = {
+        f"field_{index}": {"type": "string", "description": "x" * 4_096}
+        for index in range(100)
+    }
+
+    await tools.register(
+        ExecutableTool(
+            id="oversized",
+            name="oversized_tool",
+            description="Oversized schema",
+            input_schema={"type": "object", "properties": properties},
+            output_schema={"type": "object"},
+            execute=lambda _args: None,
+        )
+    )
+    await subscription.flush()
+
+    definition = next(event for event in received if event["type"] == "catalog_definition")
+    assert definition["kind"] == "tool"
+    assert definition["id"] == "oversized"
+    assert definition["name"] == "oversized_tool"
+    assert definition["payload_truncated"] is True
+    assert len(str(definition["content_hash"])) == 64
+    assert "input_schema" not in definition
+    assert definition["output_schema"] == {"type": "object"}
+    assert len(json.dumps(definition, separators=(",", ":")).encode()) <= (
+        RUNTIME_EVENT_MAX_PAYLOAD_BYTES
+    )
+    subscription.unsubscribe()
+
+
+@pytest.mark.asyncio
 async def test_catalog_definitions_are_disabled_by_default() -> None:
     tools = ToolCatalog()
     events = RuntimeEvents([tools])
