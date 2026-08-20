@@ -3197,4 +3197,251 @@ mod tests {
             .collect();
         assert_eq!(&g.intents[0].bag, &fresh);
     }
+
+    // ---- dense clustering must not collapse ---------------------------------
+
+    /// A deterministic stand-in for a real sentence embedding, composed of three
+    /// disjoint axis groups: a **shared** component every query in the domain
+    /// carries, a **topic** component for what the query wants, and a small
+    /// **phrasing** component for how it is worded.
+    ///
+    /// The existing dense fixtures use orthogonal basis vectors — cosine 0.0
+    /// between topics — and that is precisely why they never caught this. Real
+    /// embeddings of same-domain English do not look like that: measured on the
+    /// checked-in incident fixture, bge-small puts distinct-intent query pairs at
+    /// a median cosine of 0.64 and same-intent pairs at 0.69. The distributions
+    /// overlap almost entirely, and *that* is the geometry the clustering rule
+    /// has to survive.
+    ///
+    /// Tuned to reproduce it: ~0.98 within a topic, **~0.65 across topics** —
+    /// below `TAU_COSINE`, so no two members are individually similar enough to
+    /// merge, yet the drifting centroid merges them anyway. That gap is the bug.
+    fn topic_vec(topic: usize, phrasing: usize) -> Vec<f32> {
+        const TOPICS: usize = 4;
+        const PHRASINGS: usize = 4;
+        let mut v = vec![0.0f32; 1 + TOPICS + PHRASINGS];
+        v[0] = 0.806; // shared: every query here is about tasks
+        v[1 + topic] = 0.574; // what the query wants
+        v[1 + TOPICS + phrasing] = 0.141; // how it happens to be worded
+        normalize(v)
+    }
+
+    /// Grow a graph by observing `(topic, phrasing)` pairs through the dense tier.
+    fn cluster_topics(pairs: &[(usize, usize)]) -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        for (i, (topic, phrasing)) in pairs.iter().enumerate() {
+            let q = format!("t{topic} p{phrasing} q{i}");
+            g.note_query_vector(&q, &topic_vec(*topic, *phrasing), "m");
+            g.observe_live(&q, Capability::Tool, &format!("tool_{topic}"), T0, true);
+        }
+        g
+    }
+
+    #[test]
+    fn genuine_paraphrases_still_share_one_cluster() {
+        // The guard in the other direction. Splitting is only a fix if real
+        // paraphrases still merge — a graph of singletons has learned nothing,
+        // and "cluster count went up" on its own proves neither.
+        let g = cluster_topics(&[(0, 0), (0, 1), (0, 2), (0, 3)]);
+
+        assert_eq!(
+            g.intents.len(),
+            1,
+            "four phrasings of one intent must stay together, got {:?}",
+            g.intents.iter().map(|i| &i.members).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_diffuse_cluster_does_not_absorb_a_distinct_query() {
+        // The mechanism in isolation. Two topics in one cluster, then a third
+        // query that is BELOW tau against every single member — and yet above
+        // tau against their centroid, because averaging two topics cancels what
+        // distinguishes them and leaves the shared component pointing at
+        // everything in the domain.
+        let mut it = intent("i0", &["a", "b"], &[("t", 1.0)]);
+        it.absorb_vector(&topic_vec(0, 0));
+        it.absorb_vector(&topic_vec(1, 0));
+
+        let outsider = topic_vec(2, 0);
+        let centroid_cos = cosine(&outsider, it.centroid.as_deref().unwrap());
+        assert!(
+            centroid_cos >= TAU_COSINE,
+            "fixture must reproduce the bug: the centroid should admit the \
+             outsider, got {centroid_cos}"
+        );
+
+        let mut g = IntentGraph::empty();
+        g.intents.push(it);
+        g.note_query_vector("outsider", &outsider, "m");
+        g.observe_live("outsider", Capability::Tool, "other", T0, true);
+
+        assert_eq!(
+            g.intents.len(),
+            2,
+            "a query no member recognizes must seed its own cluster, not join on \
+             the average"
+        );
+    }
+
+    #[test]
+    fn the_cohesion_bar_is_non_decreasing_in_cluster_diversity() {
+        // The property that makes the rule self-limiting rather than
+        // self-accelerating: as a cluster takes on distinct topics, `‖mean‖`
+        // falls, so the bar derived from it (`TAU_COSINE / cohesion`) rises.
+        // Under the pre-accumulator arithmetic this ran the other way.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        let mut previous = f32::INFINITY;
+        for topic in 0..4 {
+            it.absorb_vector(&topic_vec(topic, 0));
+            let bar = TAU_COSINE / norm(it.mean.as_deref().unwrap());
+            assert!(
+                bar >= previous || previous.is_infinite(),
+                "absorbing topic {topic} lowered the bar from {previous} to {bar}"
+            );
+            previous = bar;
+        }
+        // Concretely: once spread across four topics, the bar has risen past the
+        // similarity a same-domain query actually carries, so a fifth distinct
+        // topic can no longer reach it — the cluster has stopped growing on its
+        // own rather than accelerating.
+        let cross_topic = cosine(&topic_vec(0, 0), &topic_vec(1, 0));
+        assert!(
+            previous > cross_topic,
+            "the bar ({previous}) must outrun the similarity a distinct topic \
+             carries ({cross_topic}), or the cluster keeps absorbing"
+        );
+    }
+
+    // ---- the reported incident, against real embeddings ---------------------
+
+    /// Query-side bge-small embeddings of the 12 queries from Experiment E4 of
+    /// the 2026-08-11 misranking investigation.
+    ///
+    /// The crate's only checked-in real-embedding fixture, and it earns the
+    /// exception: every other dense fixture pins geometry we invented, so it can
+    /// only prove the rule works on the geometry we claim exists. This one is a
+    /// literal regression vector for the reported incident. It downloads nothing
+    /// at test time (see `crate::fusion` — core tests run on every build without
+    /// a model), and the queries are the report's own examples, not customer data.
+    const INCIDENT_FIXTURE: &str = include_str!("../tests/fixtures/incident-queries.json");
+
+    fn incident_queries() -> Vec<(String, String, Vec<f32>)> {
+        let doc: serde_json::Value = serde_json::from_str(INCIDENT_FIXTURE).unwrap();
+        doc["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                (
+                    q["query"].as_str().unwrap().to_string(),
+                    q["tool"].as_str().unwrap().to_string(),
+                    q["vector"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|x| x.as_f64().unwrap() as f32)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn incident_graph() -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        for (query, tool, vector) in incident_queries() {
+            g.note_query_vector(&query, &vector, "bge-small");
+            g.observe_live(&query, Capability::Tool, &tool, T0, true);
+        }
+        g
+    }
+
+    #[test]
+    fn the_incident_queries_do_not_collapse_into_one_cluster() {
+        // Reproduced from the fixture: matching on the centroid puts 11 of these
+        // 12 into a single cluster, which is what let the most-invoked write op
+        // ride into every task-phrased search.
+        let g = incident_graph();
+        let sizes: Vec<usize> = g.intents.iter().map(|i| i.members.len()).collect();
+
+        assert!(
+            g.intents.len() >= 5,
+            "12 queries across four intents collapsed into {} clusters, sizes {sizes:?}",
+            g.intents.len()
+        );
+        assert!(
+            sizes.iter().all(|n| *n <= 5),
+            "no cluster should hold most of the corpus, sizes {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn a_read_query_and_a_write_query_do_not_arm_the_same_cluster() {
+        // The user-visible failure, structurally: "find tasks related to
+        // authentication" served create_task because it armed the same cluster a
+        // create-phrased query arms — one cluster holding both intents boosts
+        // whatever it saw invoked most onto every query it recognizes.
+        let g = incident_graph();
+        let qs = incident_queries();
+        let pick = |text: &str| {
+            let (q, _, v) = qs
+                .iter()
+                .find(|(q, _, _)| q == text)
+                .expect("query is in the fixture");
+            g.arm(q, Some(v), Capability::Tool, &all_known)
+                .expect("the fixture's own query must match the cluster it grew")
+                .intent_id
+        };
+
+        assert_ne!(
+            pick("find tasks related to authentication"),
+            pick("create a task for the login bug"),
+            "a read intent and a write intent armed the same cluster"
+        );
+    }
+
+    /// Regenerate [`INCIDENT_FIXTURE`] against the real model. Ignored: it is a
+    /// tool, not a test, and it needs the model on disk.
+    ///
+    /// `cargo test -p ratel-ai-core --lib regenerate_incident_fixture -- --ignored`
+    #[test]
+    #[ignore]
+    fn regenerate_incident_fixture() {
+        use crate::embedding::embedder_with_telemetry;
+        use crate::embedding_config::EmbeddingModel;
+
+        let embedder =
+            embedder_with_telemetry(&EmbeddingModel::Default, &crate::trace::NoopSink).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(INCIDENT_FIXTURE).unwrap();
+        let rows: Vec<String> = doc["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                let (intent, tool, text) = (
+                    q["intent"].as_str().unwrap(),
+                    q["tool"].as_str().unwrap(),
+                    q["query"].as_str().unwrap(),
+                );
+                let nums: Vec<String> = embedder
+                    .embed_query(text)
+                    .unwrap()
+                    .iter()
+                    .map(|x| format!("{x:.6}"))
+                    .collect();
+                format!(
+                    "    {{ \"intent\": \"{intent}\", \"tool\": \"{tool}\", \"query\": \"{text}\", \"vector\": [{}] }}",
+                    nums.join(",")
+                )
+            })
+            .collect();
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/incident-queries.json"),
+            format!(
+                "{{\n  \"note\": {},\n  \"model\": {},\n  \"revision\": {},\n  \"queries\": [\n{}\n  ]\n}}\n",
+                doc["note"], doc["model"], doc["revision"], rows.join(",\n")
+            ),
+        )
+        .unwrap();
+    }
 }
