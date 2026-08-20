@@ -118,10 +118,14 @@ impl FactRegistry {
         let fact_id = fact.id.clone();
         let definition = self
             .experimental_catalog_definitions
-            .then(|| TraceEvent::catalog_definition_for_fact(&fact));
+            .then(|| TraceEvent::catalog_definition_for_fact(&fact))
+            .flatten();
         let definition_changed = definition.as_ref().is_some_and(|definition| {
             self.facts.get(&fact_id).is_none_or(|existing| {
-                TraceEvent::catalog_definition_for_fact(existing).catalog_definition_hash()
+                let existing_definition = TraceEvent::catalog_definition_for_fact(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
                     != definition.catalog_definition_hash()
             })
         });
@@ -135,8 +139,8 @@ impl FactRegistry {
             kind: ChurnKind::Add,
             fact_id,
         });
-        if definition_changed {
-            self.sink.record(definition.expect("definition is enabled"));
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
         }
     }
 

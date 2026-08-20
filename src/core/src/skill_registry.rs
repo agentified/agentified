@@ -361,10 +361,14 @@ impl SkillRegistry {
         let skill_id = skill.id.clone();
         let definition = self
             .experimental_catalog_definitions
-            .then(|| TraceEvent::catalog_definition_for_skill(&skill));
+            .then(|| TraceEvent::catalog_definition_for_skill(&skill))
+            .flatten();
         let definition_changed = definition.as_ref().is_some_and(|definition| {
             self.skills.get(&skill_id).is_none_or(|existing| {
-                TraceEvent::catalog_definition_for_skill(existing).catalog_definition_hash()
+                let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
                     != definition.catalog_definition_hash()
             })
         });
@@ -379,8 +383,8 @@ impl SkillRegistry {
             kind: ChurnKind::Add,
             skill_id,
         });
-        if definition_changed {
-            self.sink.record(definition.expect("definition is enabled"));
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
         }
     }
 
@@ -466,10 +470,14 @@ impl SkillRegistry {
         for (id, skill) in &next {
             let definition = self
                 .experimental_catalog_definitions
-                .then(|| TraceEvent::catalog_definition_for_skill(skill));
+                .then(|| TraceEvent::catalog_definition_for_skill(skill))
+                .flatten();
             let definition_changed = definition.as_ref().is_some_and(|definition| {
                 self.skills.get(id).is_none_or(|existing| {
-                    TraceEvent::catalog_definition_for_skill(existing).catalog_definition_hash()
+                    let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                    existing_definition
+                        .as_ref()
+                        .and_then(TraceEvent::catalog_definition_hash)
                         != definition.catalog_definition_hash()
                 })
             });
@@ -494,8 +502,8 @@ impl SkillRegistry {
                 kind: ChurnKind::Add,
                 skill_id: id.clone(),
             });
-            if definition_changed {
-                self.sink.record(definition.expect("definition is enabled"));
+            if definition_changed && let Some(definition) = definition {
+                self.sink.record(definition);
             }
         }
 

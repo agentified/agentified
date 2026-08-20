@@ -234,6 +234,15 @@ fn registration_emits_complete_catalog_definitions_for_every_kind() {
 #[test]
 fn catalog_definitions_match_shared_rfc8785_vectors() {
     let fixtures = catalog_canonicalization_vectors();
+    for vector in fixtures["catalog_definition_canonicalization"]["canonicalizer_only_vectors"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(
+            serde_json_canonicalizer::to_string(&vector["input"]).unwrap(),
+            vector["canonical"].as_str().unwrap()
+        );
+    }
     let vectors = fixtures["catalog_definition_canonicalization"]["vectors"]
         .as_array()
         .unwrap();
@@ -267,6 +276,51 @@ fn catalog_definitions_match_shared_rfc8785_vectors() {
             })
             .unwrap();
         assert_eq!(hash, vector["sha256"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn catalog_definitions_skip_shared_unsafe_integer_vectors_and_recover() {
+    let fixtures = catalog_canonicalization_vectors();
+    let vectors = fixtures["catalog_definition_canonicalization"]["rejected_vectors"]
+        .as_array()
+        .unwrap();
+
+    for vector in vectors {
+        let input = &vector["input"];
+        let tool = |input: &Value| Tool {
+            id: input["id"].as_str().unwrap().into(),
+            name: input["name"].as_str().unwrap().into(),
+            description: input["description"].as_str().unwrap().into(),
+            experimental_searchable_description: None,
+            input_schema: input["input_schema"].clone(),
+            output_schema: input["output_schema"].clone(),
+        };
+        let sink = Arc::new(MemorySink::with_source("unsafe", "ratel"));
+        let mut registry = ToolRegistry::with_trace_sink(sink.clone());
+        registry.experimental_enable_catalog_definitions();
+
+        registry.register(tool(input));
+
+        assert_eq!(registry.len(), 1);
+        assert!(
+            sink.drain()
+                .into_iter()
+                .all(|event| !matches!(event.event, TraceEvent::CatalogDefinition { .. }))
+        );
+
+        let mut safe = input.clone();
+        safe["input_schema"] = json!({
+            "type": "integer",
+            "minimum": -9_007_199_254_740_991_i64,
+            "maximum": 9_007_199_254_740_991_u64,
+        });
+        registry.register(tool(&safe));
+        assert!(
+            sink.drain()
+                .into_iter()
+                .any(|event| matches!(event.event, TraceEvent::CatalogDefinition { .. }))
+        );
     }
 }
 

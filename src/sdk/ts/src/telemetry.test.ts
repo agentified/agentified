@@ -39,26 +39,38 @@ let logExporter: InMemoryLogRecordExporter;
 const CAPTURE_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT";
 const EXPERIMENTAL_CATALOG_DEFINITIONS_ENV = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS";
 
+interface CatalogDefinitionFixtureInput {
+  kind: "tool";
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  input_schema: ExecutableTool["inputSchema"];
+  output_schema: ExecutableTool["outputSchema"];
+  searchable_description: string;
+  searchable_description_overridden: boolean;
+}
+
 interface CatalogCanonicalizationFixture {
   catalog_definition_canonicalization: {
     algorithm: string;
+    canonicalizer_only_vectors: Array<{
+      name: string;
+      input: unknown;
+      canonical: string;
+    }>;
     vectors: Array<{
       name: string;
-      input: {
-        kind: "tool";
-        id: string;
-        name: string;
-        description: string;
-        tags: string[];
-        input_schema: ExecutableTool["inputSchema"];
-        output_schema: ExecutableTool["outputSchema"];
-        searchable_description: string;
-        searchable_description_overridden: boolean;
-      };
+      input: CatalogDefinitionFixtureInput;
       canonical: string;
       input_schema_canonical: string;
       output_schema_canonical: string;
       sha256: string;
+    }>;
+    rejected_vectors: Array<{
+      name: string;
+      reason: "unsafe_integer";
+      input: CatalogDefinitionFixtureInput;
     }>;
   };
 }
@@ -285,6 +297,9 @@ describe("execute_tool span", () => {
     process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
     const catalog = new ToolCatalog();
 
+    for (const vector of catalogCanonicalization.canonicalizer_only_vectors) {
+      expect(canonicalize(vector.input), vector.name).toBe(vector.canonical);
+    }
     for (const vector of catalogCanonicalization.vectors) {
       expect(canonicalize(vector.input), vector.name).toBe(vector.canonical);
       await catalog.register({
@@ -309,6 +324,40 @@ describe("execute_tool span", () => {
         "ratel.catalog.content_hash": vector.sha256,
       });
     }
+  });
+
+  it("skips shared unsafe-integer definitions and emits after a safe edit", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+
+    for (const vector of catalogCanonicalization.rejected_vectors) {
+      const definition = vector.input;
+      await catalog.register({
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.input_schema,
+        outputSchema: definition.output_schema,
+        execute: () => undefined,
+      });
+    }
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(0);
+
+    for (const vector of catalogCanonicalization.rejected_vectors) {
+      const definition = vector.input;
+      await catalog.register({
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        inputSchema: { type: "integer", maximum: Number.MAX_SAFE_INTEGER },
+        outputSchema: definition.output_schema,
+        execute: () => undefined,
+      });
+    }
+    expect(logEventsNamed("ratel.catalog.definition")).toHaveLength(
+      catalogCanonicalization.rejected_vectors.length,
+    );
   });
 
   it.each([

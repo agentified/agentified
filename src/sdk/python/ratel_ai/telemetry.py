@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
@@ -124,6 +125,7 @@ except ModuleNotFoundError:
 
 _TRACER_NAME = "ratel-ai"
 _CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES = 64 * 1_024
+_MAX_SAFE_INTEGER = 2**53 - 1
 
 #: `ratel.search.target` values (mirror `SearchTarget` so catalog call sites stay
 #: decoupled from the telemetry vocabulary module).
@@ -172,6 +174,8 @@ def record_catalog_definitions(
             "searchable_description": searchable_description,
             "searchable_description_overridden": override is not None,
         }
+        if _has_unsafe_integer(content):
+            continue
         try:
             content_hash = hashlib.sha256(_canonical_json(content).encode()).hexdigest()
             if kind == "tool":
@@ -216,6 +220,20 @@ def _canonical_json(value: Any) -> str:
 
 def _catalog_schema_exceeds_attribute_limit(value: str) -> bool:
     return len(value.encode()) > _CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
+
+
+def _has_unsafe_integer(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return abs(value) > _MAX_SAFE_INTEGER
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer() and abs(value) > _MAX_SAFE_INTEGER
+    if isinstance(value, list):
+        return any(_has_unsafe_integer(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_unsafe_integer(item) for item in value.values())
+    return False
 
 
 def _tracer() -> Any:

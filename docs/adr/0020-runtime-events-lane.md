@@ -77,6 +77,10 @@ tool, skill, or fact definition when its canonical content changes and carries:
 
 Executors, validation functions, credentials, skill/fact bodies, and unlisted fields are omitted.
 The event is suitable for observation, cache hints, and snapshot triggers—not state recovery.
+Definitions containing an integral numeric value outside
+`[-9007199254740991, 9007199254740991]` remain registered but emit no definition event. A later
+safe edit is eligible again; the lossy telemetry path never rounds schema values or blocks catalog
+mutation.
 
 ### Envelope v2 and identity
 

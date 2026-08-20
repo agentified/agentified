@@ -497,10 +497,14 @@ impl ToolRegistry {
         let tool_id = tool.id.clone();
         let definition = self
             .experimental_catalog_definitions
-            .then(|| TraceEvent::catalog_definition_for_tool(&tool));
+            .then(|| TraceEvent::catalog_definition_for_tool(&tool))
+            .flatten();
         let definition_changed = definition.as_ref().is_some_and(|definition| {
             self.tools.get(&tool_id).is_none_or(|existing| {
-                TraceEvent::catalog_definition_for_tool(existing).catalog_definition_hash()
+                let existing_definition = TraceEvent::catalog_definition_for_tool(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
                     != definition.catalog_definition_hash()
             })
         });
@@ -515,8 +519,8 @@ impl ToolRegistry {
             kind: ChurnKind::Add,
             tool_id,
         });
-        if definition_changed {
-            self.sink.record(definition.expect("definition is enabled"));
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
         }
     }
 

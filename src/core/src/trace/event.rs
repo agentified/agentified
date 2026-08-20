@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{Fact, Skill, Tool};
 
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
 /// Catalog entry type carried by [`TraceEvent::CatalogDefinition`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -558,7 +560,7 @@ pub enum TraceEvent {
 }
 
 impl TraceEvent {
-    pub(crate) fn catalog_definition_for_tool(tool: &Tool) -> Self {
+    pub(crate) fn catalog_definition_for_tool(tool: &Tool) -> Option<Self> {
         Self::catalog_definition(
             CatalogKind::Tool,
             &tool.id,
@@ -571,7 +573,7 @@ impl TraceEvent {
         )
     }
 
-    pub(crate) fn catalog_definition_for_skill(skill: &Skill) -> Self {
+    pub(crate) fn catalog_definition_for_skill(skill: &Skill) -> Option<Self> {
         Self::catalog_definition(
             CatalogKind::Skill,
             &skill.id,
@@ -584,7 +586,7 @@ impl TraceEvent {
         )
     }
 
-    pub(crate) fn catalog_definition_for_fact(fact: &Fact) -> Self {
+    pub(crate) fn catalog_definition_for_fact(fact: &Fact) -> Option<Self> {
         Self::catalog_definition(
             CatalogKind::Fact,
             &fact.id,
@@ -614,7 +616,12 @@ impl TraceEvent {
         input_schema: Option<serde_json::Value>,
         output_schema: Option<serde_json::Value>,
         override_description: Option<&str>,
-    ) -> Self {
+    ) -> Option<Self> {
+        if input_schema.as_ref().is_some_and(has_unsafe_integer)
+            || output_schema.as_ref().is_some_and(has_unsafe_integer)
+        {
+            return None;
+        }
         let searchable_description = override_description.unwrap_or(description);
         let searchable_description_overridden = override_description.is_some();
         let content = CatalogDefinitionContent {
@@ -628,8 +635,8 @@ impl TraceEvent {
             searchable_description,
             searchable_description_overridden,
         };
-        let content_hash = catalog_definition_hash(&content);
-        Self::CatalogDefinition {
+        let content_hash = catalog_definition_hash(&content)?;
+        Some(Self::CatalogDefinition {
             kind,
             id: id.into(),
             name: name.into(),
@@ -640,14 +647,24 @@ impl TraceEvent {
             searchable_description: searchable_description.into(),
             searchable_description_overridden,
             content_hash,
-        }
+        })
     }
 }
 
-fn catalog_definition_hash(content: &CatalogDefinitionContent<'_>) -> String {
-    let canonical = serde_json_canonicalizer::to_vec(content)
-        .expect("catalog definition must satisfy RFC 8785 JSON constraints");
-    format!("{:x}", Sha256::digest(canonical))
+fn catalog_definition_hash(content: &CatalogDefinitionContent<'_>) -> Option<String> {
+    let canonical = serde_json_canonicalizer::to_vec(content).ok()?;
+    Some(format!("{:x}", Sha256::digest(canonical)))
+}
+
+fn has_unsafe_integer(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_f64()
+            .is_some_and(|number| number.fract() == 0.0 && number.abs() > MAX_SAFE_INTEGER),
+        serde_json::Value::Array(values) => values.iter().any(has_unsafe_integer),
+        serde_json::Value::Object(values) => values.values().any(has_unsafe_integer),
+        _ => false,
+    }
 }
 
 /// Per-event correlation fields supplied by the emitting integration.

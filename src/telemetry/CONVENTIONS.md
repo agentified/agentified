@@ -275,10 +275,12 @@ searchable description, and the override flag. RFC 8785 JSON Canonicalization Sc
 used for both the hash input and the `input_schema` / `output_schema` strings; the digest is
 lowercase SHA-256. Each schema attribute is limited to 65,536 UTF-8 bytes. An oversized schema is
 omitted whole, `ratel.catalog.schema_omitted` is true, and the hash still covers the complete
-definition. Non-I-JSON numbers such as NaN and infinity are rejected. This is a
-deduplication token, not a redaction: the OTel event remains content and is off unless both the
-experimental gate and an EventRecord content mode are enabled. Independently, ADR-0020's runtime
-vocabulary includes a `catalog_definition` event behind an explicit experimental SDK option.
+definition. A definition containing an integral numeric value outside
+`[-9007199254740991, 9007199254740991]` is registered but omitted from definition telemetry;
+later safe edits remain eligible for emission. This is a deduplication token, not a redaction: the
+OTel event remains content and is off unless both the experimental gate and an EventRecord content
+mode are enabled. Independently, ADR-0020's runtime vocabulary includes a `catalog_definition`
+event behind an explicit experimental SDK option.
 
 ### `ratel.auth.flow`: MCP auth (`auth_refresh`, `auth_needs`, `auth_flow_start/end`)
 

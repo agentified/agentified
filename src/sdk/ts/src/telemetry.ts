@@ -225,7 +225,13 @@ export function recordCatalogDefinitions(
     return;
   }
   for (const definition of definitions) {
-    const attributes = catalogDefinitionAttributes(kind, definition);
+    let attributes: Record<string, AnyValue> | undefined;
+    try {
+      attributes = catalogDefinitionAttributes(kind, definition);
+    } catch {
+      continue;
+    }
+    if (attributes === undefined) continue;
     const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
     if (emittedHashes.get(definition.id) === contentHash) continue;
     getLogger().emit({
@@ -239,7 +245,7 @@ export function recordCatalogDefinitions(
 function catalogDefinitionAttributes(
   kind: "tool" | "skill" | "fact",
   definition: CatalogDefinitionInput,
-): Record<string, AnyValue> {
+): Record<string, AnyValue> | undefined {
   const tags = definition.tags ?? [];
   const searchableDescription =
     definition.experimentalSearchableDescription ?? definition.description;
@@ -258,6 +264,7 @@ function catalogDefinitionAttributes(
     searchable_description: searchableDescription,
     searchable_description_overridden: searchableDescriptionOverridden,
   };
+  if (hasUnsafeInteger(content)) return undefined;
   const contentHash = createHash("sha256").update(canonicalJson(content), "utf8").digest("hex");
   const canonicalInputSchema = kind === "tool" ? canonicalJson(inputSchema) : undefined;
   const canonicalOutputSchema = kind === "tool" ? canonicalJson(outputSchema) : undefined;
@@ -292,6 +299,15 @@ function exceedsCatalogSchemaAttributeLimit(value: string | undefined): boolean 
   return (
     value !== undefined && Buffer.byteLength(value, "utf8") > CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
   );
+}
+
+function hasUnsafeInteger(value: unknown): boolean {
+  if (typeof value === "number") return Number.isInteger(value) && !Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.some(hasUnsafeInteger);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).some(hasUnsafeInteger);
+  }
+  return false;
 }
 
 function canonicalJson(value: unknown): string {

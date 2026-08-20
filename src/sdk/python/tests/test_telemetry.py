@@ -301,7 +301,10 @@ async def test_catalog_definitions_match_shared_rfc8785_vectors(
     fixtures = json.loads(
         (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
     )
-    vectors = fixtures["catalog_definition_canonicalization"]["vectors"]
+    canonicalization = fixtures["catalog_definition_canonicalization"]
+    for vector in canonicalization["canonicalizer_only_vectors"]:
+        assert rfc8785.dumps(vector["input"]) == vector["canonical"].encode()
+    vectors = canonicalization["vectors"]
     catalog = ToolCatalog()
 
     for vector in vectors:
@@ -354,26 +357,50 @@ async def test_catalog_definitions_reject_non_json_numbers(
 
 
 @pytest.mark.asyncio
-async def test_catalog_definition_capture_fails_open_for_u64_schema_values(
+async def test_catalog_definitions_skip_shared_unsafe_integers_and_emit_after_a_safe_edit(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
     monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    fixtures = json.loads(
+        (Path(__file__).parents[3] / "telemetry" / "conformance" / "fixtures.json").read_text()
+    )
+    vectors = fixtures["catalog_definition_canonicalization"]["rejected_vectors"]
     catalog = ToolCatalog()
 
-    await catalog.register(
-        ExecutableTool(
-            id="wide-integer",
-            name="wide-integer",
-            description="Accept a u64 schema value",
-            input_schema={"properties": {"value": {"maximum": 2**64 - 1}}},
-            output_schema={},
-            execute=lambda _args: "registered",
+    for vector in vectors:
+        definition = vector["input"]
+        input_schema = dict(definition["input_schema"])
+        for bound in ("minimum", "maximum"):
+            if bound in input_schema:
+                input_schema[bound] = float(input_schema[bound])
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema=input_schema,
+                output_schema=definition["output_schema"],
+                execute=lambda _args: "registered",
+            )
         )
-    )
 
-    assert await catalog.invoke("wide-integer", {}) == "registered"
+    assert await catalog.invoke(vectors[0]["input"]["id"], {}) == "registered"
     assert _log_events_named("ratel.catalog.definition") == []
+
+    for vector in vectors:
+        definition = vector["input"]
+        await catalog.register(
+            ExecutableTool(
+                id=definition["id"],
+                name=definition["name"],
+                description=definition["description"],
+                input_schema={"type": "integer", "maximum": 2**53 - 1},
+                output_schema=definition["output_schema"],
+                execute=lambda _args: "registered",
+            )
+        )
+    assert len(_log_events_named("ratel.catalog.definition")) == len(vectors)
 
 
 @pytest.mark.asyncio
