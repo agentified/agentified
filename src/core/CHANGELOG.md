@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Per-entry searchable-description projections (ADR-0021).** `Tool`, `Skill`, and `Fact` each gained `experimental_searchable_description: Option<String>`, an override for the description component BM25 and dense retrieval actually rank — so retrieval text can be tuned without touching the model-facing `description`, the schemas, or the payload. The override replaces *only* that component: the name stays indexed (whole and identifier-split) and skill/fact tags stay indexed, including when the override is the empty string, so optimizing a description can never make an entry undiscoverable by its own identifier. For a tool, supplying the override additionally opts that entry out of schema indexing — input and output schemas stay model-facing but stop contributing tokens. `None` leaves the stable ADR-0004 projection untouched: tools still rank description plus schema tokens, skills and facts still rank their authored description. Schema exclusion is per-entry opt-in, not a new default.
+
+  Existing RAT1 artifacts still warm: warming reuses a vector when the entry's stored `projection_hash` matches the text projected now, and the no-override arm of each projection is the previous implementation unchanged, so those hashes still match. What does change is `merge_embedding_artifacts`, which requires every part to share a `projection_version` — a hash of the projection sources, all three of which this release touched. A part built against 0.10.0 therefore no longer merges with one built against this version; rebuild the parts together. `fact_indexing.rs` is also now hashed alongside `indexing.rs` and `skill_indexing.rs`, which it should have been since facts shipped — a fact-projection change previously left that version stamp unmoved.
+
+### Changed
+
+- **Source-breaking: `Tool`, `Skill`, and `Fact` each gained a public field.** None of the three is `#[non_exhaustive]`, none derives `Default`, and none has a builder, so every downstream struct literal — `Tool { id, name, description, input_schema, output_schema }` and its skill/fact equivalents — stops compiling until it adds `experimental_searchable_description: None`. This crate's own quickstart and `examples/search_demo.rs` had to be edited, which is the proof: code written against the published docs breaks. **At 0.x a breaking change is a MINOR bump, never a patch — the next release is 0.11.0, not 0.10.1.**
+
 ## [0.10.0] - 2026-08-17
 
 ### Added
