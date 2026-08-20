@@ -116,4 +116,32 @@ mod tests {
         assert!(text.contains("path"), "input schema missing: {text}");
         assert!(text.contains("encoding"), "output schema missing: {text}");
     }
+
+    #[test]
+    fn searchable_text_preserves_schema_defined_property_order() {
+        let tool = read_file_tool();
+        let text = searchable_text(&tool);
+        let path_idx = text.find("path").expect("path token missing");
+        let encoding_idx = text.find("encoding").expect("encoding token missing");
+        assert!(
+            path_idx < encoding_idx,
+            "expected schema-defined order (path before encoding) in: {text}"
+        );
+    }
+
+    #[test]
+    fn searchable_text_omits_json_structure_keywords() {
+        let tool = read_file_tool();
+        let text = searchable_text(&tool);
+        // Tokens we explicitly skip: type names, structural keys, JSON syntax.
+        assert!(
+            !text.contains("\"type\""),
+            "raw type quoting leaked: {text}"
+        );
+        assert!(
+            !text.contains("\"properties\""),
+            "properties leaked: {text}"
+        );
+        assert!(!text.contains('{'), "JSON braces leaked: {text}");
+    }
 }
