@@ -227,6 +227,45 @@ fn warmed_registry_hits_are_byte_identical_to_a_fresh_registry() {
 }
 
 #[test]
+fn search_ranks_stronger_match_above_weaker() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "strong".into(),
+        name: "compress".into(),
+        description: "compress directories into compress archives quickly".into(),
+        experimental_searchable_description: None,
+        input_schema: empty_schema(),
+        output_schema: empty_schema(),
+    });
+    registry.register(Tool {
+        id: "weak".into(),
+        name: "convert".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: json!({
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "enum": ["compress", "expand"]
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("compress", 5);
+
+    assert!(
+        hits.len() >= 2,
+        "expected both tools to match, got {}",
+        hits.len()
+    );
+    assert_eq!(hits[0].tool_id, "strong");
+    assert_eq!(hits[1].tool_id, "weak");
+    assert!(hits[0].score > hits[1].score);
+}
+
+#[test]
 fn experimental_projection_ignores_a_schema_only_match() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
