@@ -489,6 +489,8 @@
       "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
       "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
       "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores.",
+      "`cohesion` MAY be absent, meaning 1.0. A consumer that matches on `centroid` without per-member vectors SHOULD scale the similarity it requires by it: a normalized centroid hides how far apart its members are, so a cluster that drifted apart otherwise reads as tight and keeps absorbing.",
+      "`vector_n` is provenance for learning only \u2014 it weights the next fold into `centroid`. Retrieval results MUST be identical whatever it contains.",
       "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains."
     ],
     "valid": [
@@ -711,6 +713,48 @@
             }
           ],
           "generator": "ratel-cloud@2026-07"
+        }
+      },
+      {
+        "name": "cohesion-and-fold-count",
+        "why": "A dense cluster records how tightly its members agree and how many embeddings the centroid averages. Normalizing the centroid divides the spread out, so a consumer with no per-member vectors has no other way to tell a tight cluster from one that drifted into the generic direction of its domain.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "cohesion": 0.914,
+              "vector_n": 2,
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cohesion-absent-defaults-to-tight",
+        "why": "Both fields are additive: a producer that does not track spread omits them, and a consumer reads cohesion 1.0 and one folded vector \u2014 the behaviour every graph written before they existed already has.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
         }
       },
       {
@@ -1083,6 +1127,47 @@
                 "gh_run_list": 0.8,
                 "gh_run_view": 0.2
               },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cohesion-out-of-range",
+        "because": "`cohesion` is the norm of a mean of unit vectors, so it lies in (0, 1]. A value above 1 is not expressible by any producer, and zero would mean the members cancelled out entirely.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "centroid": [0.8, 0.577, 0.161],
+              "cohesion": 1.4,
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cohesion-without-a-centroid",
+        "because": "`cohesion` describes how far apart the members a centroid averages are. Recorded without a centroid it describes nothing, which means the producer dropped a field rather than omitted one.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "cohesion": 0.5,
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
               "skills": {}
             }
           ]

@@ -170,6 +170,24 @@ export function validateGraph(doc) {
         errs.push(`${at}.seeded_support (${it.seeded_support}) exceeds support (${it.support})`);
       }
     }
+    // Optional spread of the members the centroid averages, in (0, 1]. It
+    // describes a centroid, so recording one without a centroid means the
+    // producer dropped a field. Absent means 1.0 (treat the cluster as tight).
+    if (it.cohesion !== undefined) {
+      if (!(typeof it.cohesion === 'number' && it.cohesion > 0 && it.cohesion <= 1)) {
+        errs.push(
+          `${at}.cohesion, when present, must be a number in (0, 1], got ${JSON.stringify(it.cohesion)}`,
+        );
+      } else if (it.cohesion !== 1 && it.centroid === undefined) {
+        errs.push(`${at}.cohesion is recorded without a centroid to describe`);
+      }
+    }
+    // Optional fold count behind the centroid. Absent means 1.
+    if (it.vector_n !== undefined && !(isInt(it.vector_n) && it.vector_n >= 1)) {
+      errs.push(
+        `${at}.vector_n, when present, must be an integer >= 1, got ${JSON.stringify(it.vector_n)}`,
+      );
+    }
     for (const key of ['tools', 'skills']) {
       const edges = it[key];
       if (!isObj(edges)) { errs.push(`${at}.${key} must be an object`); continue; }

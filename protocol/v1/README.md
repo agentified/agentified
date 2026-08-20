@@ -222,8 +222,15 @@ to delegate:
   merged. Absent `rev` is treated as 0.
 - **Additive evolution.** Within `v: 1`, new fields are optional and a consumer **MUST ignore
   fields it does not recognize** (the schema is `additionalProperties: true`). An older
-  consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`) loads
-  with a safe default.
+  consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`,
+  `cohesion`, `vector_n`) loads with a safe default.
+- **Cluster spread.** `centroid` is L2-normalized, which divides out how far apart the members
+  it averages actually are — and a cluster that drifted apart has a centroid sitting near the
+  generic direction of its domain, close to everything in it. `cohesion` carries that magnitude
+  back (`1.0` when every member points the same way, `sqrt(n)/n` for n mutually orthogonal
+  ones), so a consumer matching on `centroid` alone can raise the bar in proportion instead of
+  reading a diffuse cluster as a tight one. `vector_n` is the fold count behind the centroid,
+  for producers that keep learning; neither is required, and absent means `1.0` and `1`.
 - **Version safety.** A consumer **MUST reject an unrecognized `v`** with a clean error, never a
   crash or a silent degrade.
 

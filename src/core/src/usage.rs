@@ -100,6 +100,27 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// Wire default for [`Intent::cohesion`]: a graph produced before the field
+/// existed, or by a producer that does not track spread, is treated as perfectly
+/// tight — which reproduces the pre-cohesion bar exactly.
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn is_one_f32(x: &f32) -> bool {
+    *x == 1.0
+}
+
+/// Wire default for [`Intent::vector_n`]: a reloaded centroid counts as a single
+/// prior sample, the weight the pre-accumulator code gave it.
+fn one_u32() -> u32 {
+    1
+}
+
+fn is_one_u32(n: &u32) -> bool {
+    *n == 1
+}
+
 /// A cluster keeps full weight for this long after its last use, then decays.
 /// Recent work should not be discounted at all; only topics that have genuinely
 /// gone quiet fade (ADR-0014, blocker #3).
@@ -547,10 +568,28 @@ pub struct Intent {
     /// How many query vectors have been folded into `centroid` — the weight of
     /// the running mean in [`Self::absorb_vector`]. Distinct from `members.len()`
     /// because a cluster can gain members lexically (no vector), which must not
-    /// inflate the weight. Live-learning scratch: not serialized (a reloaded
-    /// centroid is treated as a single prior sample), so never part of identity.
-    #[serde(skip)]
+    /// inflate the weight.
+    ///
+    /// Carried on the wire so learning resumes at the right weight after a
+    /// round-trip. Without it the running mean restarted at one sample, and the
+    /// next single observation could drag a fifty-member cluster's centroid
+    /// halfway across — every save/load cycle made centroids plastic again.
+    /// Absent on the wire means one, the weight the pre-accumulator code gave a
+    /// reloaded centroid.
+    #[serde(default = "one_u32", skip_serializing_if = "is_one_u32")]
     vector_n: u32,
+    /// `‖mean‖` — how tightly this cluster's members agree. `1.0` when they all
+    /// point the same way, `sqrt(n)/n` for n mutually orthogonal ones.
+    ///
+    /// Normalizing the centroid divides this out, so it is the one thing the
+    /// stored centroid cannot tell a consumer, and it is what lets a cluster with
+    /// no retained member vectors still guard itself: the bar it must clear is
+    /// `TAU_COSINE / cohesion`, which rises as the cluster spreads. Without it a
+    /// diffuse cluster presents as tight and keeps absorbing.
+    ///
+    /// Absent on the wire means `1.0` — the pre-cohesion bar, unchanged.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one_f32")]
+    cohesion: f32,
     /// Running mean of the folded query vectors, kept **unnormalized** — the
     /// accumulator [`Self::centroid`] is derived from.
     ///
@@ -585,7 +624,11 @@ pub struct Intent {
     member_vectors: Vec<Option<Vec<f32>>>,
 }
 
-/// Identity is the evidence — members, centroid, support, edges. The derived
+/// Identity is the evidence — members, centroid, cohesion, support, edges.
+/// `cohesion` counts because it is read while ranking (it sets the bar a
+/// centroid-only cluster must clear); `vector_n` does not, because it only
+/// weights the *next* fold, the same reason `seeded_support` is excluded. The
+/// derived
 /// display fields are ignored, so a graph compares equal to its own round-trip
 /// whether or not labels have been materialized.
 impl PartialEq for Intent {
@@ -593,6 +636,7 @@ impl PartialEq for Intent {
         self.id == other.id
             && self.members == other.members
             && self.centroid == other.centroid
+            && self.cohesion == other.cohesion
             && self.support == other.support
             && self.tools == other.tools
             && self.skills == other.skills
@@ -672,6 +716,7 @@ impl Intent {
             }
         }
         let mean = self.mean.clone().expect("set on both arms above");
+        self.cohesion = norm(&mean);
         self.centroid = Some(normalize(mean));
     }
 
@@ -774,15 +819,27 @@ impl Intent {
     /// Restore the live accumulator after deserialization, where it is skipped
     /// on the wire.
     ///
-    /// A reloaded centroid arrives normalized, carrying no record of how many
-    /// members it averaged or how far apart they were. Seeding the accumulator
-    /// with it at weight 1 reproduces what the pre-accumulator code did
-    /// (`vector_n.max(1)`), so a round-trip does not change what the next
-    /// observation does to the centroid — and, unlike starting fresh, does not
-    /// discard the reloaded centroid outright.
+    /// A normalized centroid has had its magnitude divided out, so the
+    /// accumulator is rebuilt from the two scalars that survive the wire:
+    /// `mean = centroid × cohesion`, weighted by the fold count it was built
+    /// from. Both default to their identity values, so a graph written before
+    /// they existed — or by a producer that does not track them — reconstructs to
+    /// exactly the pre-accumulator behaviour.
     fn restore_accumulator(&mut self) {
-        self.mean = self.centroid.clone();
-        self.vector_n = u32::from(self.centroid.is_some());
+        match self.centroid.as_deref() {
+            Some(c) => {
+                self.mean = Some(c.iter().map(|x| x * self.cohesion).collect());
+                // A centroid exists, so at least one vector went into it. Leaving
+                // the weight at zero would let the next fold replace it outright
+                // rather than average with it.
+                self.vector_n = self.vector_n.max(1);
+            }
+            None => {
+                self.mean = None;
+                self.vector_n = 0;
+                self.cohesion = 1.0;
+            }
+        }
     }
 
     /// Rebuild the cache from `members` — after deserialization, where the
@@ -1006,6 +1063,18 @@ impl IntentGraph {
             // `seeded_support` counts a subset of `support`, so no producer can
             // emit a larger value. Equality is legal and is the normal state
             // right after a seeding pass.
+            if !(0.0 < it.cohesion && it.cohesion <= 1.0) {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} has cohesion {} outside (0, 1]",
+                    it.id, it.cohesion
+                )));
+            }
+            if it.cohesion != 1.0 && it.centroid.is_none() {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} records a cohesion but carries no centroid",
+                    it.id
+                )));
+            }
             if it.seeded_support > it.support {
                 return Err(IntentGraphError::Malformed(format!(
                     "intent {:?} has seeded_support {} exceeding support {}",
@@ -1160,6 +1229,7 @@ impl IntentGraph {
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
+                    cohesion: 1.0,
                     mean: None,
                     member_vectors: Vec::new(),
                 });
@@ -1307,6 +1377,7 @@ impl IntentGraph {
                 *s /= folded as f32;
             }
             let it = &mut self.intents[i];
+            it.cohesion = norm(&sum);
             it.centroid = Some(normalize(sum.clone()));
             // Reset the accumulator to what was actually rebuilt. Leaving the
             // stale fold count let the next single observation yank a whole
@@ -1745,11 +1816,14 @@ fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> {
             mean_cos: cov.mean_cos,
             centroid_cos,
         },
-        // No comparable member vector: no dense evidence to count, so the
-        // prefilter's verdict stands. This is the reloaded and producer-built
-        // case, and it reproduces the pre-coverage rule exactly.
+        // No comparable member vector: nothing to count, so fall back to the
+        // centroid — but scaled by how tight the cluster actually is. Normalizing
+        // divided that spread out, which is what let a diffuse cluster present as
+        // tight and keep absorbing; dividing it back in raises the bar exactly as
+        // the cluster diversifies. A cluster with no recorded spread has
+        // `cohesion == 1.0`, so this is the pre-coverage rule unchanged.
         None => DenseVerdict {
-            admitted: true,
+            admitted: centroid_cos >= TAU_COSINE / it.cohesion.max(f32::MIN_POSITIVE),
             covered: false,
             score: centroid_cos,
             mean_cos: centroid_cos,
@@ -1850,6 +1924,7 @@ mod tests {
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
+            cohesion: 1.0,
             mean: None,
             member_vectors: Vec::new(),
         };
@@ -3421,6 +3496,105 @@ mod tests {
             .flat_map(|m| tokenize(m))
             .collect();
         assert_eq!(&g.intents[0].bag, &fresh);
+    }
+
+    #[test]
+    fn a_tight_cluster_serializes_without_cohesion_or_fold_count() {
+        // Both fields default to their identity values, so a cluster that has
+        // nothing to say about spread must not say it — a graph written by this
+        // build stays byte-identical to one written before the fields existed.
+        let mut g = IntentGraph::empty();
+        g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "m");
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
+
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(!json.contains("cohesion"), "unexpected cohesion in {json}");
+        assert!(!json.contains("vector_n"), "unexpected vector_n in {json}");
+    }
+
+    #[test]
+    fn cohesion_and_the_fold_count_round_trip_and_rebuild_the_accumulator() {
+        // Normalizing the centroid divides the spread out, so without these two
+        // scalars a reloaded cluster cannot say how tightly its members agreed,
+        // and its running mean restarts at one sample.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.last_ts = T0;
+        let (cohesion, folded, mean) = (it.cohesion, it.vector_n, it.mean.clone().unwrap());
+        assert!(cohesion < 1.0, "two topics should not read as tight");
+
+        let g = graph(vec![it]);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(
+            json.contains("cohesion"),
+            "a diffuse cluster must record it"
+        );
+
+        let back = IntentGraph::from_json(&json).unwrap();
+        let reloaded = &back.intents[0];
+        assert!((reloaded.cohesion - cohesion).abs() < 1e-6);
+        assert_eq!(reloaded.vector_n, folded);
+        for (a, b) in reloaded.mean.as_ref().unwrap().iter().zip(&mean) {
+            assert!((a - b).abs() < 1e-6, "accumulator not rebuilt: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn a_reloaded_diffuse_cluster_raises_its_own_bar() {
+        // The payoff, and the reason cohesion is on the wire at all. Member
+        // vectors are not, so after a reload this cluster has no coverage to
+        // count — and the centroid alone would admit the outsider at 0.72. Scaled
+        // by how far apart the members actually are, the bar it has to clear is
+        // higher than that, so the cluster stops absorbing instead of drifting
+        // further.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.last_ts = T0;
+        let g = graph(vec![it]);
+
+        let outsider = topic_vec(2, 0);
+        let centroid_cos = cosine(&outsider, g.intents[0].centroid.as_deref().unwrap());
+        assert!(
+            centroid_cos >= TAU_COSINE,
+            "the unscaled centroid must still admit it, got {centroid_cos}"
+        );
+
+        let back = IntentGraph::from_json(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert!(
+            back.intents[0].member_vectors.iter().all(Option::is_none),
+            "member vectors do not cross the wire"
+        );
+        assert!(
+            back.arm("outsider", Some(&outsider), Capability::Tool, &all_known)
+                .is_none(),
+            "a cluster spread this wide must not arm on a query no member knows"
+        );
+    }
+
+    #[test]
+    fn a_graph_whose_cohesion_is_out_of_range_is_rejected() {
+        for bad in ["0.0", "-0.5", "1.5"] {
+            let json = format!(
+                r#"{{"v":1,"built_from_ts":1,"intents":[{{"id":"i0","label":"q","terms":[],
+                   "members":["q"],"support":1,"tools":{{}},"skills":{{}},
+                   "centroid":[1.0],"cohesion":{bad}}}]}}"#
+            );
+            assert!(
+                IntentGraph::from_json(&json).is_err(),
+                "cohesion {bad} is not a spread any producer can mean"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cohesion_without_a_centroid_is_rejected() {
+        // Cohesion describes a centroid's spread. Recorded without one it is
+        // unattached to anything, which means the producer lost a field.
+        let json = r#"{"v":1,"built_from_ts":1,"intents":[{"id":"i0","label":"q","terms":[],
+                       "members":["q"],"support":1,"tools":{},"skills":{},"cohesion":0.5}]}"#;
+        assert!(IntentGraph::from_json(json).is_err());
     }
 
     // ---- dense clustering must not collapse ---------------------------------
