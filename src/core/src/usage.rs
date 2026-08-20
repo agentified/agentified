@@ -51,6 +51,35 @@ pub(crate) const USAGE_WEIGHT: f32 = 0.5;
 /// Minimum cosine between a query and a cluster centroid to count as a match.
 pub(crate) const TAU_COSINE: f32 = 0.70;
 
+/// Minimum cosine between a query and a **single cluster member** for that
+/// member to count toward [`Intent::coverage`].
+///
+/// Deliberately the same value as [`TAU_COSINE`], which is also the prefilter:
+/// admission is then provably *the old centroid rule AND coverage* — a strict
+/// subset — so nothing rejected today starts being accepted. The anti-collapse
+/// work is done by the fraction, not by a higher bar; raising this is a separate
+/// change with its own evidence. Fixed tuning, not a public knob (ADR-0004).
+pub(crate) const TAU_MEMBER: f32 = TAU_COSINE;
+
+/// Fraction of a cluster's vector-bearing members a query must match before it
+/// joins — a **majority**, floored at 2 members.
+///
+/// Matching one member is single-link chaining: A joins because of B, and the
+/// cluster grows into whatever B happened to bridge to. Matching an average is
+/// worse, because the average of two intents resembles neither. Counting members
+/// is what distinguishes "close to this whole cluster" from "close to one thing
+/// in it", and a fraction rather than a count keeps the test comparable across
+/// clusters of different sizes. Fixed tuning, not a public knob (ADR-0004).
+pub(crate) const COVERAGE_FRACTION: f32 = 0.5;
+
+/// How many of a cluster's most recent members keep their query vector in memory.
+///
+/// Coverage over a bounded recent sample is the same statistical test as coverage
+/// over all 50, at a third of the memory: `Option<Vec<f32>>` at [`MEMBER_CAP`] and
+/// 384 dims is ~77 KB per cluster, this caps it near ~25 KB. Older members keep
+/// their text and tokens — only the vector is dropped.
+pub(crate) const VECTOR_RETAIN: usize = 16;
+
 /// Minimum Jaccard overlap between a query and a cluster's closest single
 /// member for a lexical match — `|q ∩ m| / |q ∪ m|`.
 ///
@@ -536,6 +565,24 @@ pub struct Intent {
     /// never part of identity.
     #[serde(skip)]
     mean: Option<Vec<f32>>,
+    /// Query vector of each member, positionally parallel to `members` and
+    /// `member_bags` — the evidence [`Self::coverage`] counts over.
+    ///
+    /// `None` for a member the lexical tier added (no embedding was in flight)
+    /// and for one whose vector has aged past [`VECTOR_RETAIN`]. The `Option` is
+    /// load-bearing rather than an empty-vector sentinel: [`cosine`] returns 0.0
+    /// for a zero-norm input, so a sentinel would be a member that can never
+    /// qualify yet still counts in the denominator, silently raising the bar in
+    /// proportion to how much a cluster grew lexically.
+    ///
+    /// Never serialized. Fifty 384-dim vectors per cluster is ~77 KB, and
+    /// `to_json` crosses the SDK boundary as a string on every save — that is
+    /// ~230 KB of JSON floats per cluster, on an artifact already documented as
+    /// carrying sensitive query text. A graph reloaded without them falls back to
+    /// the cohesion-scaled centroid bar until its members are re-observed or
+    /// `rebuild_intent_graph` refills them.
+    #[serde(skip)]
+    member_vectors: Vec<Option<Vec<f32>>>,
 }
 
 /// Identity is the evidence — members, centroid, support, edges. The derived
@@ -628,6 +675,81 @@ impl Intent {
         self.centroid = Some(normalize(mean));
     }
 
+    /// Add `member` and everything derived from it in one step: the text, its
+    /// token bag, its query vector, and the centroid fold.
+    ///
+    /// One method rather than four calls at the call site because the vector is
+    /// **optional while the tokens are not** — a member the lexical tier added has
+    /// no embedding. Pushed separately, the two vectors would fall out of step on
+    /// the first such member and [`Self::cap_members`] would then evict a
+    /// mismatched pair. Here the parallel arrays cannot diverge.
+    fn absorb_member(&mut self, member: &str, vector: Option<&[f32]>) {
+        self.members.push(member.to_string());
+        self.absorb_tokens(member);
+        self.member_vectors.push(vector.map(<[f32]>::to_vec));
+        if let Some(v) = vector {
+            self.absorb_vector(v);
+        }
+        self.retain_recent_vectors();
+        self.cap_members();
+    }
+
+    /// Drop all but the newest [`VECTOR_RETAIN`] member vectors, leaving their
+    /// members and token bags in place.
+    fn retain_recent_vectors(&mut self) {
+        let mut budget = VECTOR_RETAIN;
+        for slot in self.member_vectors.iter_mut().rev() {
+            if slot.is_none() {
+                continue;
+            }
+            if budget == 0 {
+                *slot = None;
+            } else {
+                budget -= 1;
+            }
+        }
+    }
+
+    /// How much of this cluster `query` actually matches: the count of members it
+    /// clears [`TAU_MEMBER`] against, the count it needs, and the mean cosine over
+    /// those it cleared.
+    ///
+    /// `None` when the cluster holds no comparable member vector at all — a
+    /// lexically-grown cluster, or one reloaded from the wire. That is "no dense
+    /// evidence available", **not** "rejected": the caller falls back to the
+    /// centroid bar rather than treating an unanswerable question as a no.
+    fn coverage(&self, query: &[f32]) -> Option<Coverage> {
+        let mut total = 0u32;
+        let mut qualifying = 0u32;
+        let mut sum = 0.0f32;
+        for v in self.member_vectors.iter().flatten() {
+            // A width mismatch means the member was embedded by a different model
+            // — not comparable, and the arm is paused on that mismatch anyway.
+            if v.len() != query.len() {
+                continue;
+            }
+            total += 1;
+            let c = cosine(query, v);
+            if c >= TAU_MEMBER {
+                qualifying += 1;
+                sum += c;
+            }
+        }
+        if total == 0 {
+            return None;
+        }
+        Some(Coverage {
+            qualifying,
+            required: required_matches(total),
+            fraction: qualifying as f32 / total as f32,
+            mean_cos: if qualifying == 0 {
+                0.0
+            } else {
+                sum / qualifying as f32
+            },
+        })
+    }
+
     /// Drop the oldest members past [`MEMBER_CAP`], keeping the token caches in
     /// step. Bounds per-cluster memory and lexical-match cost; the centroid is a
     /// cumulative mean, so trimming members does not disturb it.
@@ -635,6 +757,7 @@ impl Intent {
         while self.members.len() > MEMBER_CAP {
             self.members.remove(0);
             self.member_bags.remove(0);
+            self.member_vectors.remove(0);
         }
         // The union bag is derived from the surviving members.
         self.bag = self.member_bags.iter().flatten().cloned().collect();
@@ -671,6 +794,11 @@ impl Intent {
             .map(|m| tokenize(m).into_iter().collect())
             .collect();
         self.bag = self.members.iter().flat_map(|m| tokenize(m)).collect();
+        // Member vectors cannot be rebuilt — that needs an embedder, which the
+        // load path does not have. Size the array to match so the three stay
+        // parallel; the cluster matches on the centroid bar until a rebuild or
+        // fresh observations refill it.
+        self.member_vectors = vec![None; self.members.len()];
     }
 
     /// How well `q` matches this cluster: the **best Jaccard overlap with any
@@ -1033,6 +1161,7 @@ impl IntentGraph {
                     member_bags: Vec::new(),
                     vector_n: 0,
                     mean: None,
+                    member_vectors: Vec::new(),
                 });
                 self.intents.len() - 1
             }
@@ -1046,12 +1175,7 @@ impl IntentGraph {
             // same condition, and what stops a second invoke from folding the
             // same query vector in twice.
             if !it.members.iter().any(|m| m == query) {
-                it.members.push(query.to_string());
-                it.absorb_tokens(query);
-                if let Some(v) = vector.as_deref() {
-                    it.absorb_vector(v);
-                }
-                it.cap_members();
+                it.absorb_member(query, vector.as_deref());
             }
             // `|| support == 0` is load-bearing: a cluster moves as it learns, so
             // a later invoke from the same search can match a cluster the first
@@ -1220,17 +1344,10 @@ impl IntentGraph {
         self.intents
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| {
-                let c = it.centroid.as_deref()?;
-                if c.len() != vector.len() {
-                    return None; // a different embedding model — not comparable
-                }
-                Some((i, cosine(vector, c)))
-            })
-            .filter(|(_, sim)| *sim >= TAU_COSINE)
+            .filter_map(|(i, it)| dense_verdict(it, vector).map(|v| (i, v)))
+            .filter(|(_, v)| v.admitted)
             .max_by(|a, b| {
-                a.1.partial_cmp(&b.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                rank_verdicts(&a.1, &b.1)
                     .then_with(|| self.intents[b.0].id.cmp(&self.intents[a.0].id))
             })
             .map(|(i, _)| i)
@@ -1439,22 +1556,25 @@ impl IntentGraph {
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
     ) -> ArmOutcome {
-        let Some(best) = self
+        let Some((intent, verdict)) = self
             .intents
             .iter()
-            .filter_map(|it| {
-                let c = it.centroid.as_deref()?;
-                if c.len() != query_vec.len() {
-                    return None; // different embedding model — not comparable
-                }
-                Some((it, cosine(query_vec, c)))
-            })
-            .filter(|(_, sim)| *sim >= TAU_COSINE)
-            .max_by(pick_best)
+            .filter_map(|it| dense_verdict(it, query_vec).map(|v| (it, v)))
+            .filter(|(_, v)| v.admitted)
+            .max_by(|a, b| rank_verdicts(&a.1, &b.1).then_with(|| b.0.id.cmp(&a.0.id)))
         else {
             return ArmOutcome::NoMatch;
         };
-        arm_from(best.0, best.1, self.built_from_ts, kind, known)
+        // The reported similarity stays the centroid cosine: integrators already
+        // dashboard it, and swapping in a coverage fraction would silently change
+        // what the number means. The prefilter computed it anyway.
+        arm_from(
+            intent,
+            verdict.centroid_cos,
+            self.built_from_ts,
+            kind,
+            known,
+        )
     }
 
     /// Match `query` lexically against each cluster's members and return the best
@@ -1552,6 +1672,110 @@ fn arm_from(
     })
 }
 
+/// How much of a cluster a query matched — see [`Intent::coverage`].
+#[derive(Debug, Clone, Copy)]
+struct Coverage {
+    /// Members whose cosine cleared [`TAU_MEMBER`].
+    qualifying: u32,
+    /// Members that had to clear it — see [`required_matches`].
+    required: u32,
+    /// `qualifying / comparable members`, in `[0, 1]`. Comparable across clusters
+    /// of different sizes, which a raw count is not: a 50-member cluster would
+    /// otherwise outrank a 4-member one on count alone.
+    fraction: f32,
+    /// Mean cosine over the members that qualified. Breaks ties between clusters
+    /// a query covers equally.
+    mean_cos: f32,
+}
+
+/// How many of `n` comparable members a query must match to join.
+///
+/// `ceil(COVERAGE_FRACTION * n)`, floored at 2 and capped at `n`. The floor
+/// matters because a plain fraction drops the requirement to 1 at `n = 2` —
+/// single-link chaining, at exactly the size where one bad admission defines what
+/// the cluster becomes. The cap is cold start: a cluster with one member must
+/// still be able to gain its second.
+fn required_matches(n: u32) -> u32 {
+    let by_fraction = (COVERAGE_FRACTION * n as f32).ceil() as u32;
+    n.min(by_fraction.max(2))
+}
+
+/// One cluster's dense verdict for a query: whether it admits, how well it
+/// matched, and the centroid cosine to report on the trace.
+#[derive(Debug, Clone, Copy)]
+struct DenseVerdict {
+    admitted: bool,
+    /// Whether the verdict rests on member coverage rather than the centroid
+    /// alone. Clusters with real per-member evidence outrank those without, so a
+    /// legacy or freshly-loaded cluster cannot beat one that actually matched.
+    covered: bool,
+    /// Coverage fraction, or the centroid cosine when the cluster has no
+    /// comparable member vectors. Both are in `[0, 1]`, and they are only ever
+    /// compared within the same `covered` tier.
+    score: f32,
+    mean_cos: f32,
+    /// Always the centroid cosine — what `UsageBoost.similarity` reports, whose
+    /// meaning must not change under integrators.
+    centroid_cos: f32,
+}
+
+/// Score `query` against one cluster's dense tier, or `None` if the cluster is
+/// not comparable (no centroid, different embedding model) or fails the
+/// prefilter.
+///
+/// The centroid check is kept as a **prefilter**, one dot product, so the
+/// per-member scan only runs on clusters that could plausibly match — the same
+/// shape the lexical tier uses, where `bag` prefilters `lexical_score`. Because
+/// the prefilter threshold is [`TAU_COSINE`] itself, admission here is the old
+/// rule *and* coverage, never looser.
+fn dense_verdict(it: &Intent, query: &[f32]) -> Option<DenseVerdict> {
+    let centroid = it.centroid.as_deref()?;
+    if centroid.len() != query.len() {
+        return None; // a different embedding model — not comparable
+    }
+    let centroid_cos = cosine(query, centroid);
+    if centroid_cos < TAU_COSINE {
+        return None;
+    }
+    Some(match it.coverage(query) {
+        Some(cov) => DenseVerdict {
+            admitted: cov.qualifying >= cov.required,
+            covered: true,
+            score: cov.fraction,
+            mean_cos: cov.mean_cos,
+            centroid_cos,
+        },
+        // No comparable member vector: no dense evidence to count, so the
+        // prefilter's verdict stands. This is the reloaded and producer-built
+        // case, and it reproduces the pre-coverage rule exactly.
+        None => DenseVerdict {
+            admitted: true,
+            covered: false,
+            score: centroid_cos,
+            mean_cos: centroid_cos,
+            centroid_cos,
+        },
+    })
+}
+
+/// Order two dense verdicts: real coverage beats none, then how much of the
+/// cluster matched, then how well. Callers append an id tie-break so the winner
+/// never depends on iteration order.
+fn rank_verdicts(a: &DenseVerdict, b: &DenseVerdict) -> std::cmp::Ordering {
+    a.covered
+        .cmp(&b.covered)
+        .then_with(|| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| {
+            a.mean_cos
+                .partial_cmp(&b.mean_cos)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 /// L2 norm. For an accumulator of unit vectors this doubles as the cluster's
 /// **cohesion**: 1.0 when every member points the same way, `sqrt(n)/n` for n
 /// mutually orthogonal ones — the spread that normalizing throws away.
@@ -1627,6 +1851,7 @@ mod tests {
             member_bags: Vec::new(),
             vector_n: 0,
             mean: None,
+            member_vectors: Vec::new(),
         };
         it.rebuild_bag(); // the cache is derived from members — keep them in step
         it
@@ -3259,9 +3484,12 @@ mod tests {
         // tau against their centroid, because averaging two topics cancels what
         // distinguishes them and leaves the shared component pointing at
         // everything in the domain.
-        let mut it = intent("i0", &["a", "b"], &[("t", 1.0)]);
-        it.absorb_vector(&topic_vec(0, 0));
-        it.absorb_vector(&topic_vec(1, 0));
+        // Built by hand: with the rule in place two topics no longer merge
+        // through the live path, so a cluster this diffuse can only arrive from
+        // history — one grown under the old rule, or refilled by a rebuild.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
 
         let outsider = topic_vec(2, 0);
         let centroid_cos = cosine(&outsider, it.centroid.as_deref().unwrap());
@@ -3271,6 +3499,7 @@ mod tests {
              outsider, got {centroid_cos}"
         );
 
+        it.last_ts = T0; // hand-built, so stamp it current or eviction claims it
         let mut g = IntentGraph::empty();
         g.intents.push(it);
         g.note_query_vector("outsider", &outsider, "m");
@@ -3310,6 +3539,51 @@ mod tests {
             previous > cross_topic,
             "the bar ({previous}) must outrun the similarity a distinct topic \
              carries ({cross_topic}), or the cluster keeps absorbing"
+        );
+    }
+
+    #[test]
+    fn required_matches_floors_at_two_and_caps_at_the_cluster() {
+        // The floor is what stops single-link chaining at the size where it does
+        // the most damage: a plain 50% of two members is one, and one member is
+        // exactly how a cluster grows into something nobody asked for. The cap is
+        // cold start — a one-member cluster must still be able to gain a second.
+        for (members, want) in [(1, 1), (2, 2), (3, 2), (4, 2), (5, 3), (10, 5), (16, 8)] {
+            assert_eq!(
+                required_matches(members),
+                want,
+                "{members} members should require {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cluster_without_member_vectors_matches_on_the_centroid() {
+        // Member vectors never cross the wire, so a reloaded or producer-built
+        // cluster has none. That is "no dense evidence", not "reject": it must
+        // still match, reproducing the pre-coverage rule exactly, or every graph
+        // loaded from disk would silently stop arming.
+        let mut it = intent("i0", &["deploy the app"], &[("t", 1.0)]);
+        it.centroid = Some(normalize(vec![1.0, 0.0, 0.0]));
+        it.last_ts = T0;
+        assert!(
+            it.member_vectors.iter().all(Option::is_none),
+            "the helper rebuilds derived state, so no member carries a vector"
+        );
+        let g = graph(vec![it]);
+
+        let close = normalize(vec![0.95, 0.31, 0.0]); // ~0.95 to the centroid
+        assert!(
+            g.arm("deploy the app", Some(&close), Capability::Tool, &all_known)
+                .is_some(),
+            "a centroid-only cluster must still arm"
+        );
+
+        let far = vec![0.0, 1.0, 0.0];
+        assert!(
+            g.arm("deploy the app", Some(&far), Capability::Tool, &all_known)
+                .is_none(),
+            "and must still reject below tau"
         );
     }
 
