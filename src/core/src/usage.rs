@@ -522,6 +522,20 @@ pub struct Intent {
     /// centroid is treated as a single prior sample), so never part of identity.
     #[serde(skip)]
     vector_n: u32,
+    /// Running mean of the folded query vectors, kept **unnormalized** — the
+    /// accumulator [`Self::centroid`] is derived from.
+    ///
+    /// Held separately because normalizing destroys the one thing the magnitude
+    /// carries: `‖mean‖` is the cluster's cohesion. Folding the normalized
+    /// centroid back into itself instead (the earlier `c * k + v`) stretched the
+    /// accumulated history to full length at every step, so the centroid
+    /// over-weighted early members and the spread was lost outright.
+    ///
+    /// Live-learning scratch like [`Self::vector_n`]: never serialized, restored
+    /// from the centroid at weight 1 by [`Self::restore_accumulator`], and so
+    /// never part of identity.
+    #[serde(skip)]
+    mean: Option<Vec<f32>>,
 }
 
 /// Identity is the evidence — members, centroid, support, edges. The derived
@@ -567,33 +581,51 @@ impl Intent {
         (ranked.into_iter().map(|(id, _)| id).collect(), dropped)
     }
 
-    /// Fold `vector` into this cluster's centroid as a running mean over its
-    /// members, renormalized so cosine stays a plain dot product.
+    /// Fold `vector` into this cluster's running mean over its members, and
+    /// re-derive the centroid from it — renormalized so cosine stays a plain dot
+    /// product.
     ///
-    /// The mean of unit vectors falls inside the sphere, so skipping the
-    /// renormalize would depress every later similarity by the cluster's own
-    /// spread. A first vector — or one of a different width, meaning the
-    /// embedding model changed — replaces the centroid rather than being
-    /// averaged into a space it does not share.
+    /// **The mean is accumulated, never re-derived from the centroid.** A
+    /// normalized centroid has length 1 however far apart its members are, so
+    /// re-weighting it by the fold count (`c * k + v`) asserted that the
+    /// accumulated history had full length `k` — which is true only when every
+    /// member points the same way. That over-weighted early members and erased
+    /// the spread, and the error grew with exactly the diffuse clusters where it
+    /// mattered most.
+    ///
+    /// The update is the standard incremental mean, `m += (v - m) / n`. It stays
+    /// bounded at `‖m‖ <= 1`, where a raw running sum would grow without bound
+    /// and lose f32 precision as a long-lived cluster keeps folding.
+    ///
+    /// Weighted by vectors ALREADY folded (`vector_n`), not by `members.len()`:
+    /// a cluster can gain members lexically with no vector, and counting those
+    /// would pin the centroid to the first vector after such growth (it would
+    /// arrive with weight ~n).
+    ///
+    /// A first vector — or one of a different width, meaning the embedding model
+    /// changed — starts the mean fresh rather than blending across two spaces.
     fn absorb_vector(&mut self, vector: &[f32]) {
-        let merged: Vec<f32> = match self.centroid.as_deref() {
-            // Weight the running mean by vectors ALREADY folded (`vector_n`), not
-            // by `members.len()`: a cluster can gain members lexically with no
-            // vector, and counting those would pin the centroid to the first
-            // vector after such growth (it would arrive with weight ~n).
-            Some(c) if c.len() == vector.len() => {
-                let k = self.vector_n.max(1) as f32;
-                c.iter().zip(vector).map(|(c, v)| c * k + v).collect()
+        // A centroid set without going through the accumulator — a producer-built
+        // cluster, or any future path that writes one directly — would otherwise
+        // be thrown away by the fresh-start arm below. Adopt it first, at the
+        // same weight 1 a reloaded centroid gets.
+        if self.mean.is_none() && self.centroid.is_some() {
+            self.restore_accumulator();
+        }
+        let fresh = self.mean.as_deref().is_none_or(|m| m.len() != vector.len());
+        if fresh {
+            self.mean = Some(vector.to_vec());
+            self.vector_n = 1;
+        } else {
+            self.vector_n = self.vector_n.saturating_add(1);
+            let n = self.vector_n as f32;
+            let mean = self.mean.as_mut().expect("not fresh, so the mean is set");
+            for (m, v) in mean.iter_mut().zip(vector) {
+                *m += (v - *m) / n;
             }
-            // A first vector — or one of a different width (the embedding model
-            // changed) — starts the mean fresh rather than blending across spaces.
-            _ => {
-                self.vector_n = 0;
-                vector.to_vec()
-            }
-        };
-        self.vector_n = self.vector_n.saturating_add(1);
-        self.centroid = Some(normalize(merged));
+        }
+        let mean = self.mean.clone().expect("set on both arms above");
+        self.centroid = Some(normalize(mean));
     }
 
     /// Drop the oldest members past [`MEMBER_CAP`], keeping the token caches in
@@ -614,6 +646,20 @@ impl Intent {
         let tokens: std::collections::HashSet<String> = tokenize(member).into_iter().collect();
         self.bag.extend(tokens.iter().cloned());
         self.member_bags.push(tokens);
+    }
+
+    /// Restore the live accumulator after deserialization, where it is skipped
+    /// on the wire.
+    ///
+    /// A reloaded centroid arrives normalized, carrying no record of how many
+    /// members it averaged or how far apart they were. Seeding the accumulator
+    /// with it at weight 1 reproduces what the pre-accumulator code did
+    /// (`vector_n.max(1)`), so a round-trip does not change what the next
+    /// observation does to the centroid — and, unlike starting fresh, does not
+    /// discard the reloaded centroid outright.
+    fn restore_accumulator(&mut self) {
+        self.mean = self.centroid.clone();
+        self.vector_n = u32::from(self.centroid.is_some());
     }
 
     /// Rebuild the cache from `members` — after deserialization, where the
@@ -853,12 +899,13 @@ impl IntentGraph {
         Ok(())
     }
 
-    /// Rebuild every cluster's derived token cache. The cache is skipped on the
-    /// wire, so a deserialized graph must restore it before it can match
-    /// lexically.
+    /// Rebuild every cluster's derived state. The token cache and the centroid
+    /// accumulator are both skipped on the wire, so a deserialized graph must
+    /// restore them before it can match lexically or keep folding.
     fn rebuild_caches(&mut self) {
         for it in &mut self.intents {
             it.rebuild_bag();
+            it.restore_accumulator();
         }
     }
 
@@ -985,6 +1032,7 @@ impl IntentGraph {
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
+                    mean: None,
                 });
                 self.intents.len() - 1
             }
@@ -1130,7 +1178,19 @@ impl IntentGraph {
                     *s += x;
                 }
             }
-            self.intents[i].centroid = Some(normalize(sum));
+            let folded = vectors.len();
+            for s in &mut sum {
+                *s /= folded as f32;
+            }
+            let it = &mut self.intents[i];
+            it.centroid = Some(normalize(sum.clone()));
+            // Reset the accumulator to what was actually rebuilt. Leaving the
+            // stale fold count let the next single observation yank a whole
+            // cluster's centroid halfway across, no matter how many members it
+            // held — and since the count never crosses the wire, every
+            // save/load/rebuild cycle made centroids plastic again.
+            it.mean = Some(sum);
+            it.vector_n = folded as u32;
         }
         self.model = Some(fingerprint);
         // A rebuild rewrites every centroid and restamps the model — a change the
@@ -1492,14 +1552,21 @@ fn arm_from(
     })
 }
 
+/// L2 norm. For an accumulator of unit vectors this doubles as the cluster's
+/// **cohesion**: 1.0 when every member points the same way, `sqrt(n)/n` for n
+/// mutually orthogonal ones — the spread that normalizing throws away.
+fn norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+}
+
 /// Scale to unit length. A zero vector is returned unchanged — there is no
 /// direction to preserve, and dividing would produce NaNs that would poison
 /// every later comparison.
 fn normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
+    let n = norm(&v);
+    if n > 0.0 {
         for x in &mut v {
-            *x /= norm;
+            *x /= n;
         }
     }
     v
@@ -1559,6 +1626,7 @@ mod tests {
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
+            mean: None,
         };
         it.rebuild_bag(); // the cache is derived from members — keep them in step
         it
@@ -1668,6 +1736,122 @@ mod tests {
         assert!(
             (c[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
             "expected ~0.707 per axis, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn the_centroid_is_the_mean_of_its_members() {
+        // Three mutually orthogonal unit vectors: the true mean is
+        // `(e_x + e_y + e_z) / 3`, whose direction is `1/sqrt(3)` per axis.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        it.absorb_vector(&[1.0, 0.0, 0.0]);
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+        it.absorb_vector(&[0.0, 0.0, 1.0]);
+
+        let c = it.centroid.as_ref().unwrap();
+        let want = 1.0 / 3.0f32.sqrt();
+        for (axis, x) in c.iter().enumerate() {
+            assert!(
+                (x - want).abs() < 1e-6,
+                "axis {axis}: expected {want}, got {x} (centroid {c:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_accumulator_norm_falls_as_a_cluster_diversifies() {
+        // `‖mean‖` IS the cluster's spread: 1.0 when every member points the same
+        // way, `sqrt(n)/n` for n mutually orthogonal ones. It is the signal a
+        // diffuse cluster needs to price itself out of new members.
+        //
+        // The pre-accumulator code rebuilt the mean from the RENORMALIZED
+        // centroid — `c * k + v`, where `c` has length 1, so `c * k` has length
+        // `k` no matter how far apart the members actually were. That stretched
+        // the history back to full length at every step, and this sequence read
+        // 1.000 / 0.707 / 0.745 / 0.825: *rising* exactly as the cluster spread
+        // out, which is backwards.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        for n in 1..=4usize {
+            let mut v = vec![0.0f32; 4];
+            v[n - 1] = 1.0;
+            it.absorb_vector(&v);
+
+            let want = (n as f32).sqrt() / n as f32;
+            let got = norm(it.mean.as_deref().unwrap());
+            assert!(
+                (got - want).abs() < 1e-6,
+                "after {n} orthogonal vectors: expected ‖mean‖ {want}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reloaded_centroid_folds_as_a_single_prior_sample() {
+        // The accumulator is derived state and never crosses the wire, so a
+        // reloaded centroid arrives normalized with no record of how many members
+        // it averaged. Seeding the accumulator with it at weight 1 reproduces
+        // exactly what the pre-accumulator code did (`vector_n.max(1)`), so a
+        // round-trip does not change what the next observation does — and, more
+        // importantly, does not DISCARD the centroid by starting fresh.
+        let mut g = IntentGraph::empty();
+        g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "m");
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
+
+        let back = IntentGraph::from_json(&serde_json::to_string(&g).unwrap()).unwrap();
+        let mut it = back.intents[0].clone();
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        // Equal weight with the reloaded centroid → normalize(e_x + e_y).
+        let c = it.centroid.as_ref().unwrap();
+        assert!(
+            (c[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6
+                && (c[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "expected ~0.707 per axis, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn rebuild_centroids_resets_the_fold_count_to_what_it_rebuilt() {
+        // Rebuild rewrote the centroid but left the stale fold count. Combined
+        // with the count never crossing the wire, a loaded-then-rebuilt cluster
+        // resumed its running mean at k=1 — so the next single observation yanked
+        // a whole cluster's centroid halfway across, no matter how many members
+        // it actually held.
+        let mut g = graph(vec![intent("i0", &["a", "b", "c"], &[("t", 1.0)])]);
+        let along_x = vec![vec![1.0f32, 0.0, 0.0]; 3];
+        g.rebuild_centroids(vec![("i0".into(), along_x)], "m".into());
+
+        let mut it = g.intents[0].clone();
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        // Three members at e_x plus one at e_y → mean (0.75, 0.25, 0).
+        let c = it.centroid.as_ref().unwrap();
+        let want = normalize(vec![0.75, 0.25, 0.0]);
+        assert!(
+            (c[0] - want[0]).abs() < 1e-6 && (c[1] - want[1]).abs() < 1e-6,
+            "expected {want:?} (one new vector against three), got {c:?} \
+             — 0.707 per axis means the fold count was reset to 1"
+        );
+    }
+
+    #[test]
+    fn a_centroid_set_outside_the_accumulator_is_adopted_not_discarded() {
+        // The accumulator is the fold's source of truth, so a cluster carrying a
+        // centroid it never accumulated (a producer-built graph, a direct write)
+        // must be adopted rather than dropped on the next fold — otherwise the
+        // first live observation silently erases everything the producer knew.
+        let mut it = dense_intent("i0", vec![1.0, 0.0, 0.0]);
+        assert!(
+            it.mean.is_none(),
+            "centroid written directly, no accumulator"
+        );
+
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        let c = it.centroid.as_ref().unwrap();
+        assert!(
+            (c[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "expected the prior centroid at weight 1 → ~0.707 per axis, got {c:?}"
         );
     }
 
