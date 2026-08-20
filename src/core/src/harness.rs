@@ -352,6 +352,38 @@ pub(crate) fn shape(g: &IntentGraph, turns: usize) -> Shape {
     }
 }
 
+/// Share of turns sitting in a cluster whose majority label is their own.
+///
+/// The direct read on **homogeneity**, and a better one than F1 for that
+/// question: F1 folds precision and recall together, so a graph that merged
+/// everything scores well on recall for the same reason it is useless. Purity
+/// asks only whether a cluster is about one thing. Read it beside the cluster
+/// count — a graph of singletons is perfectly pure and has learned nothing.
+pub(crate) fn purity(g: &IntentGraph, turns: &[Turn]) -> f32 {
+    let label_of = |query: &str| {
+        turns
+            .iter()
+            .find(|t| t.query == query)
+            .map(|t| t.intent.clone())
+    };
+    let mut total = 0usize;
+    let mut majority = 0usize;
+    for it in &g.intents {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for member in &it.members {
+            if let Some(label) = label_of(member) {
+                *counts.entry(label).or_default() += 1;
+            }
+        }
+        total += it.members.len();
+        majority += counts.values().copied().max().unwrap_or(0);
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    majority as f32 / total as f32
+}
+
 /// Precision, recall and F1 over the "these two queries belong together"
 /// relation, scored against the fixture's intent labels.
 ///
@@ -535,6 +567,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(o, "| sizes | {:?} |", s.sizes);
     let _ = writeln!(o, "| largest share | {:.3} |", s.largest_share);
     let _ = writeln!(o, "| singleton rate | {:.3} |", s.singleton_rate);
+    let _ = writeln!(o, "| purity | {:.3} |", purity(graph, turns));
     let _ = writeln!(o, "| merge precision | {:.3} |", m.precision);
     let _ = writeln!(o, "| merge recall | {:.3} |", m.recall);
     let _ = writeln!(o, "| merge F1 | {:.3} |", m.f1);
@@ -646,8 +679,8 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     );
     let _ = writeln!(
         o,
-        "| similarity | coverage | clusters | largest | singletons | precision | recall | F1 |\n\
-         |---|---|---|---|---|---|---|---|"
+        "| similarity | coverage | clusters | largest | singletons | purity | precision | recall | F1 |\n\
+         |---|---|---|---|---|---|---|---|---|"
     );
     for similarity in [0.60f32, 0.70, 0.80, 0.90] {
         for coverage in [0.3f32, 0.5, 0.7] {
@@ -664,8 +697,14 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             };
             let _ = writeln!(
                 o,
-                "| {similarity:.2}{mark} | {coverage:.2} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
-                sh.clusters, sh.largest_share, sh.singleton_rate, mq.precision, mq.recall, mq.f1
+                "| {similarity:.2}{mark} | {coverage:.2} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
+                sh.clusters,
+                sh.largest_share,
+                sh.singleton_rate,
+                purity(&swept, turns),
+                mq.precision,
+                mq.recall,
+                mq.f1
             );
         }
     }
