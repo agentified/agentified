@@ -285,6 +285,31 @@ fn search_respects_top_k_bound() {
 }
 
 #[test]
+fn search_matches_output_schema_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "weather".into(),
+        name: "weather".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: empty_schema(),
+        output_schema: json!({
+            "properties": {
+                "temperature_celsius": {
+                    "type": "number",
+                    "description": "ambient temperature reading at the station"
+                }
+            }
+        }),
+    });
+
+    let hits = registry.search("ambient temperature reading", 5);
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "weather");
+}
+
+#[test]
 fn experimental_projection_does_not_match_output_schema_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
@@ -306,6 +331,41 @@ fn experimental_projection_does_not_match_output_schema_description() {
     let hits = registry.search("ambient temperature reading", 5);
 
     assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_nested_object_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "deploy".into(),
+        name: "deploy".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: json!({
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "infra": {
+                            "type": "object",
+                            "properties": {
+                                "region": {
+                                    "type": "string",
+                                    "description": "datacenter location identifier"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("datacenter location identifier", 5);
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "deploy");
 }
 
 #[test]
@@ -343,6 +403,39 @@ fn experimental_projection_does_not_match_nested_object_description() {
 }
 
 #[test]
+fn search_matches_array_items_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "batch".into(),
+        name: "batch".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: json!({
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sku": {
+                                "type": "string",
+                                "description": "unique product identifier"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("unique product identifier", 5);
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "batch");
+}
+
+#[test]
 fn experimental_projection_does_not_match_array_items_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
@@ -375,6 +468,31 @@ fn experimental_projection_does_not_match_array_items_description() {
 }
 
 #[test]
+fn search_matches_enum_value() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "convert".into(),
+        name: "convert".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: json!({
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "enum": ["yaml", "toml", "json"]
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("toml", 5);
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "convert");
+}
+
+#[test]
 fn experimental_projection_does_not_match_enum_value() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
@@ -396,6 +514,31 @@ fn experimental_projection_does_not_match_enum_value() {
     let hits = registry.search("toml", 5);
 
     assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_input_param_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "fetch".into(),
+        name: "fetch".into(),
+        description: String::new(),
+        experimental_searchable_description: None,
+        input_schema: json!({
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "remote http target to retrieve"
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("remote http target", 5);
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "fetch");
 }
 
 #[test]
