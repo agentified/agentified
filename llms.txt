@@ -191,6 +191,24 @@ queries that match a cluster), not by cluster count. The distributed walkthrough
 runnable demos are `examples/configurable-adaptive-ranking-ts` (phases A–E) and
 `examples/configurable-adaptive-ranking-python` (A–D).
 
+### Tuning how clusters are drawn
+
+`experimentalEnableAdaptiveRanking` takes `clusterSimilarity` (default `0.70`) and
+`clusterCoverage` (default `0.5`, a majority): how close a query must be to a single cluster
+member, and to how many of them, before it joins. Both in `(0, 1]`; a value outside is rejected
+rather than clamped.
+
+Worth tuning, because the defaults cannot be right everywhere. The threshold is
+**model-dependent** — a cosine of 0.70 does not mean the same thing on two embedding models, and
+an endpoint catalog can carry any of them — and **corpus-dependent**, since a narrow catalog and
+a broad one want different granularity. If clusters are swallowing unrelated questions, raise
+`clusterSimilarity`; if obvious paraphrases are landing apart, lower it.
+
+**Tuning does not re-cluster.** Existing boundaries stay exactly as they are — nothing can redraw
+them in place — so a change applies to later queries only. The graph records the policy it was
+clustered under and reports `"active: policy drift"` when the two differ. To actually re-derive
+boundaries, replay a trace log through `experimentalBuildIntentGraph`, or relearn from scratch.
+
 ### `replace` vs `suggest` mode
 
 Tool injection runs in two modes ([ADR-0004](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0004-retrieval-and-tool-selection.md)):

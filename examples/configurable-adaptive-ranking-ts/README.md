@@ -198,6 +198,17 @@ The full walkthrough is [`docs/baseline-capture-distributed.md`](../../docs/base
 | `origins` | `any` \| `agent` \| `baseline` | `baseline` |
 | `provenance` | `live` \| `seeded` | `seeded` |
 
+`experimentalEnableAdaptiveRanking` takes two more, which decide how clusters are drawn rather than which evidence enters them.
+
+| Option | Range | Default |
+|---|---|---|
+| `clusterSimilarity` | `(0, 1]` | `0.70` |
+| `clusterCoverage` | `(0, 1]` | `0.5` |
+
+`clusterSimilarity` is how close a query must be to a single cluster member; `clusterCoverage` is the share of members it must be that close to. Raise the first if clusters swallow unrelated questions; lower it if obvious paraphrases land apart. The right value is model- and corpus-dependent, which is why it is a knob at all.
+
+**Tuning does not re-cluster.** Existing boundaries stay as they are — nothing can redraw them in place — so a change applies to later queries only. The graph records the policy it was clustered under and reports `"active: policy drift"` when they differ; re-deriving boundaries means replaying a log through `experimentalBuildIntentGraph`, or relearning.
+
 Unknown values are rejected rather than silently defaulting: a policy is a deliberate configuration, and reading `"seedd"` as `"live"` would produce a graph with no provenance and no error.
 
 ## Watching it mature
