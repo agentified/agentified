@@ -261,6 +261,8 @@ export class ToolRegistry {
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,
       provenance: options.provenance,
+      clusterSimilarity: options.clusterSimilarity,
+      clusterCoverage: options.clusterCoverage,
     });
     this.#maybeWarnModelMismatch();
   }
@@ -333,6 +335,16 @@ export class ToolRegistry {
   #maybeWarnModelMismatch(): void {
     if (this.#adaptiveWarned || !this.#warnOnModelMismatch) return;
     const s = this.native.adaptiveRankingStatus();
+    if (s.status === "active: policy drift") {
+      this.#adaptiveWarned = true;
+      console.warn(
+        `ratel: intent graph clusters were drawn under ${s.built}, but ${s.active} is now ` +
+          `configured. Adaptive usage ranking is still ACTIVE — the new policy applies to ` +
+          `future queries only. Existing clusters are NOT redrawn, and rebuilding will not ` +
+          `redraw them; replay a trace log through experimentalBuildIntentGraph(), or relearn.`,
+      );
+      return;
+    }
     if (!s.status.startsWith("paused")) return;
     this.#adaptiveWarned = true;
     const how = s.dimMismatch
@@ -584,6 +596,8 @@ export class SkillRegistry {
     this.native.enableAdaptiveRanking(graph, {
       origins: options.origins,
       provenance: options.provenance,
+      clusterSimilarity: options.clusterSimilarity,
+      clusterCoverage: options.clusterCoverage,
     });
     this.#maybeWarnModelMismatch();
   }
@@ -621,6 +635,16 @@ export class SkillRegistry {
   #maybeWarnModelMismatch(): void {
     if (this.#adaptiveWarned || !this.#warnOnModelMismatch) return;
     const s = this.native.adaptiveRankingStatus();
+    if (s.status === "active: policy drift") {
+      this.#adaptiveWarned = true;
+      console.warn(
+        `ratel: intent graph clusters were drawn under ${s.built}, but ${s.active} is now ` +
+          `configured. Adaptive usage ranking is still ACTIVE — the new policy applies to ` +
+          `future queries only. Existing clusters are NOT redrawn, and rebuilding will not ` +
+          `redraw them; replay a trace log through experimentalBuildIntentGraph(), or relearn.`,
+      );
+      return;
+    }
     if (!s.status.startsWith("paused")) return;
     this.#adaptiveWarned = true;
     const how = s.dimMismatch

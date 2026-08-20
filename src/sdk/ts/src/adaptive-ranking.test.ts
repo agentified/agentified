@@ -658,6 +658,39 @@ describe("baseline seeding", () => {
   });
 });
 
+describe("cluster policy", () => {
+  it("reaches the graph and is recorded on it", async () => {
+    // The behavioural proof that the rule honours these values lives in the core
+    // tests, which can drive the dense tier directly. What this catalog can show
+    // — and what the plumbing actually gets wrong — is whether an option set
+    // here survives the field-by-field rebuild on the way to native at all.
+    const graph = new IntentGraph();
+    const catalog = await buildCatalog();
+    catalog.experimentalEnableAdaptiveRanking(graph, {
+      clusterSimilarity: 0.82,
+      clusterCoverage: 0.4,
+    });
+    catalog.search("why is the build broken", 5);
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    const recorded = JSON.parse(graph.toJson()).cluster_policy;
+    expect(recorded.similarity).toBeCloseTo(0.82);
+    expect(recorded.coverage).toBeCloseTo(0.4);
+  });
+
+  it("rejects a value outside (0, 1] rather than clamping it", async () => {
+    // A clamp would cluster at something the caller did not ask for, and
+    // boundaries once drawn are never redrawn.
+    const catalog = await buildCatalog();
+    expect(() =>
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { clusterSimilarity: 1.5 }),
+    ).toThrow(/in \(0, 1\]/);
+    expect(() =>
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { clusterCoverage: 0 }),
+    ).toThrow(/in \(0, 1\]/);
+  });
+});
+
 describe("policy on the live path", () => {
   it("can be restricted by origin", async () => {
     const catalog = await buildCatalog();

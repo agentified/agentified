@@ -56,6 +56,40 @@ pub struct ObservationPolicyOptions {
     pub origins: Option<String>,
     /// Whether learning is marked as seeded: `"live"` (default) or `"seeded"`.
     pub provenance: Option<String>,
+    /// Minimum cosine a query must clear against a single cluster member for
+    /// that member to count toward its match. Default `0.70`. In `(0, 1]`.
+    ///
+    /// Model-dependent — a cosine of 0.70 does not mean the same thing on two
+    /// embedding models — and corpus-dependent, since a narrow catalog and a
+    /// broad one want different granularity.
+    pub cluster_similarity: Option<f64>,
+    /// Share of a cluster's members a query must clear that threshold against
+    /// before it joins. Default `0.5`, a majority. In `(0, 1]`.
+    pub cluster_coverage: Option<f64>,
+}
+
+/// Read the cluster policy out of the options bag, rejecting a value outside
+/// `(0, 1]` rather than clamping it: a clamp would silently cluster at something
+/// the caller did not ask for, and boundaries once drawn are never redrawn.
+fn parse_cluster_policy(
+    options: &Option<ObservationPolicyOptions>,
+) -> napi::Result<core::ClusterPolicy> {
+    let mut policy = core::ClusterPolicy::default();
+    if let Some(o) = options {
+        if let Some(v) = o.cluster_similarity {
+            policy = policy.with_similarity(v as f32);
+        }
+        if let Some(v) = o.cluster_coverage {
+            policy = policy.with_coverage(v as f32);
+        }
+    }
+    if !policy.is_valid() {
+        return Err(napi::Error::from_reason(format!(
+            "clusterSimilarity {} / clusterCoverage {}: both must be in (0, 1]",
+            policy.similarity, policy.coverage
+        )));
+    }
+    Ok(policy)
 }
 
 /// Resolve the policy options, **rejecting** unknown values.
@@ -1649,8 +1683,17 @@ impl ToolRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
+        let cluster_policy = parse_cluster_policy(&options)?;
         self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -2553,8 +2596,17 @@ impl SkillRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
+        let cluster_policy = parse_cluster_policy(&options)?;
         self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),

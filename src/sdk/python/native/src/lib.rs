@@ -641,6 +641,29 @@ impl FactHit {
 }
 
 /// Map the core status enum to the tuple the Python facade renders.
+/// Read the cluster policy, rejecting a value outside `(0, 1]` rather than
+/// clamping it: a clamp would silently cluster at something the caller did not
+/// ask for, and boundaries once drawn are never redrawn.
+fn parse_cluster_policy(
+    similarity: Option<f64>,
+    coverage: Option<f64>,
+) -> PyResult<core::ClusterPolicy> {
+    let mut policy = core::ClusterPolicy::default();
+    if let Some(v) = similarity {
+        policy = policy.with_similarity(v as f32);
+    }
+    if let Some(v) = coverage {
+        policy = policy.with_coverage(v as f32);
+    }
+    if !policy.is_valid() {
+        return Err(PyValueError::new_err(format!(
+            "cluster_similarity {} / cluster_coverage {}: both must be in (0, 1]",
+            policy.similarity, policy.coverage
+        )));
+    }
+    Ok(policy)
+}
+
 fn map_adaptive_status(
     s: core::AdaptiveRankingStatus,
 ) -> (String, Option<String>, Option<String>, Option<bool>) {
@@ -1225,13 +1248,16 @@ impl ToolRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None, cluster_similarity=None, cluster_coverage=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
         provenance: Option<&str>,
+        cluster_similarity: Option<f64>,
+        cluster_coverage: Option<f64>,
     ) -> PyResult<()> {
+        let cluster_policy = parse_cluster_policy(cluster_similarity, cluster_coverage)?;
         self.usage_policy = parse_policy(
             origins,
             provenance,
@@ -1239,6 +1265,14 @@ impl ToolRegistry {
             core::Provenance::Live,
         )?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| PyValueError::new_err("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -1671,13 +1705,16 @@ impl SkillRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None, cluster_similarity=None, cluster_coverage=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
         provenance: Option<&str>,
+        cluster_similarity: Option<f64>,
+        cluster_coverage: Option<f64>,
     ) -> PyResult<()> {
+        let cluster_policy = parse_cluster_policy(cluster_similarity, cluster_coverage)?;
         self.usage_policy = parse_policy(
             origins,
             provenance,
@@ -1685,6 +1722,14 @@ impl SkillRegistry {
             core::Provenance::Live,
         )?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| PyValueError::new_err("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),

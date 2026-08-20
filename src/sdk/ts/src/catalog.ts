@@ -188,6 +188,30 @@ export interface ObservationPolicyOptions {
   origins?: OriginFilterOption;
   /** Whether learning is marked as seeded. Default `"live"`. */
   provenance?: ProvenanceOption;
+  /**
+   * Minimum cosine a query must clear against a single cluster member for that
+   * member to count toward its match. Default `0.70`. Must be in `(0, 1]`.
+   *
+   * Worth tuning: the right value is model-dependent — a cosine of 0.70 does not
+   * mean the same thing on two embedding models — and corpus-dependent, since a
+   * narrow catalog and a broad one want different granularity.
+   *
+   * Applies to **future** admissions only. Clusters already drawn are not
+   * redrawn, and nothing can redraw them in place; the graph keeps reporting the
+   * policy it was clustered under, and the difference shows up as
+   * `"active: policy drift"`. To re-derive boundaries, replay a trace log
+   * through {@link experimentalBuildIntentGraph} or relearn from scratch.
+   */
+  clusterSimilarity?: number;
+  /**
+   * Share of a cluster's members a query must clear `clusterSimilarity` against
+   * before it joins. Default `0.5`, a majority. Must be in `(0, 1]`.
+   *
+   * Matching one member is single-link chaining: a query joins because of one
+   * neighbour, and the cluster grows into whatever that neighbour bridged to.
+   * Same future-only caveat as {@link clusterSimilarity}.
+   */
+  clusterCoverage?: number;
 }
 
 /**

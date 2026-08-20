@@ -270,6 +270,8 @@ class ToolRegistry:
         graph: IntentGraph,
         origins: str | None = None,
         provenance: str | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
@@ -493,6 +495,8 @@ class SkillRegistry:
         graph: IntentGraph,
         origins: str | None = None,
         provenance: str | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
