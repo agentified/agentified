@@ -141,6 +141,27 @@ Per turn: the winning cluster's verdict, straight out of `dense_verdict` and
 **7 turns seeded a new cluster despite a cluster whose centroid alone would have admitted them.** That gap is the bug R1 closed.
 
 
+## Policy sweep
+
+The same 30 turns under a grid of policies. Cluster count alone cannot tell *split
+correctly* from *shattered*, so read it against merge F1 and the singleton rate — a
+setting that raises precision by shredding the graph shows up here as F1 falling.
+
+| similarity | coverage | clusters | largest | singletons | precision | recall | F1 |
+|---|---|---|---|---|---|---|---|
+| 0.60 | 0.30 | 3 | 0.700 | 0.333 | 0.163 | 0.920 | 0.276 |
+| 0.60 | 0.50 | 3 | 0.700 | 0.333 | 0.163 | 0.920 | 0.276 |
+| 0.60 | 0.70 | 5 | 0.600 | 0.400 | 0.181 | 0.780 | 0.293 |
+| 0.70 | 0.30 | 12 | 0.233 | 0.333 | 0.488 | 0.400 | 0.440 |
+| 0.70 **(default)** | 0.50 | 12 | 0.233 | 0.333 | 0.488 | 0.400 | 0.440 |
+| 0.70 | 0.70 | 14 | 0.167 | 0.357 | 0.538 | 0.280 | 0.368 |
+| 0.80 | 0.30 | 19 | 0.133 | 0.684 | 0.250 | 0.080 | 0.121 |
+| 0.80 | 0.50 | 19 | 0.133 | 0.684 | 0.250 | 0.080 | 0.121 |
+| 0.80 | 0.70 | 19 | 0.133 | 0.684 | 0.250 | 0.080 | 0.121 |
+| 0.90 | 0.30 | 24 | 0.133 | 0.958 | 0.333 | 0.060 | 0.102 |
+| 0.90 | 0.50 | 24 | 0.133 | 0.958 | 0.333 | 0.060 | 0.102 |
+| 0.90 | 0.70 | 24 | 0.133 | 0.958 | 0.333 | 0.060 | 0.102 |
+
 ## Arm contribution
 
 The cluster each query arms and the ids it promotes. Read this beside the served

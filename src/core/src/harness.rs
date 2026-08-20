@@ -160,14 +160,23 @@ impl Embedder for FixtureEmbedder {
 /// Replay `turns` through the real learning path, in order, and return the graph
 /// plus the verdicts each turn saw.
 pub(crate) fn replay(turns: &[Turn]) -> (IntentGraph, Vec<TurnRecord>) {
+    replay_under(turns, ClusterPolicy::default())
+}
+
+/// Replay under an explicit policy — the sweep's driver.
+pub(crate) fn replay_under(
+    turns: &[Turn],
+    policy: ClusterPolicy,
+) -> (IntentGraph, Vec<TurnRecord>) {
     let mut g = IntentGraph::empty();
+    g.set_cluster_policy(policy);
     let mut records = Vec::with_capacity(turns.len());
     for turn in turns {
         // Every candidate cluster's verdict, captured before the graph moves.
         let verdicts: Vec<ClusterVerdict> = g
             .intents
             .iter()
-            .map(|it| ClusterVerdict::of(it, &turn.vector))
+            .map(|it| ClusterVerdict::of(it, &turn.vector, policy))
             .collect();
         let before: Vec<String> = g.intents.iter().map(|i| i.id.clone()).collect();
 
@@ -211,8 +220,7 @@ pub(crate) struct ClusterVerdict {
 }
 
 impl ClusterVerdict {
-    fn of(it: &Intent, query: &[f32]) -> Self {
-        let policy = ClusterPolicy::default();
+    fn of(it: &Intent, query: &[f32], policy: ClusterPolicy) -> Self {
         let verdict = dense_verdict(it, query, policy);
         Self {
             id: it.id.clone(),
@@ -627,6 +635,40 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          admitted them.** That gap is the bug R1 closed.\n",
         near.len()
     );
+
+    // -- the calibration curve ----------------------------------------------
+    let _ = writeln!(o, "\n## Policy sweep\n");
+    let _ = writeln!(
+        o,
+        "The same 30 turns under a grid of policies. Cluster count alone cannot tell *split\n\
+         correctly* from *shattered*, so read it against merge F1 and the singleton rate — a\n\
+         setting that raises precision by shredding the graph shows up here as F1 falling.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| similarity | coverage | clusters | largest | singletons | precision | recall | F1 |\n\
+         |---|---|---|---|---|---|---|---|"
+    );
+    for similarity in [0.60f32, 0.70, 0.80, 0.90] {
+        for coverage in [0.3f32, 0.5, 0.7] {
+            let policy = ClusterPolicy::default()
+                .with_similarity(similarity)
+                .with_coverage(coverage);
+            let (swept, _) = replay_under(turns, policy);
+            let sh = shape(&swept, turns.len());
+            let mq = merge_quality(&swept, turns);
+            let mark = if policy == ClusterPolicy::default() {
+                " **(default)**"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                o,
+                "| {similarity:.2}{mark} | {coverage:.2} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
+                sh.clusters, sh.largest_share, sh.singleton_rate, mq.precision, mq.recall, mq.f1
+            );
+        }
+    }
 
     // -- what the arm contributed -------------------------------------------
     let _ = writeln!(o, "\n## Arm contribution\n");
