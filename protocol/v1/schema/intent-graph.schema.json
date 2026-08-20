@@ -25,6 +25,16 @@
       "minLength": 1,
       "description": "OPTIONAL fingerprint of the embedding model the centroids were built with. Present only for a graph that carries centroids; absent for a lexically-clustered graph. A consumer MUST NOT cosine a query against centroids built by a different model \u2014 it detects the swap (dimension or fingerprint) and pauses the usage arm until the graph is rebuilt. See ADR-0014."
     },
+    "cluster_policy": {
+      "type": "object",
+      "description": "OPTIONAL policy the graph's existing cluster boundaries were drawn under: `similarity` is the minimum cosine a query must clear against a single member, and `coverage` the share of a cluster's members it must clear it against. Both are configurable per catalog, so a graph MUST record what it was clustered under \u2014 without it, two producers at different settings disagree about what a cluster means while both claiming v: 1. Absent means the built-in defaults (0.70 / 0.5), which is historically exact: before the policy was configurable those were the only values a producer could have used. PROVENANCE ONLY: it describes boundaries already drawn, not what a consumer should cluster at next, and changing the policy does NOT redraw them. See ADR-0014.",
+      "required": ["similarity", "coverage"],
+      "additionalProperties": true,
+      "properties": {
+        "similarity": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "coverage": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
     "rev": {
       "type": "integer",
       "minimum": 0,

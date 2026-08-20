@@ -223,7 +223,15 @@ to delegate:
 - **Additive evolution.** Within `v: 1`, new fields are optional and a consumer **MUST ignore
   fields it does not recognize** (the schema is `additionalProperties: true`). An older
   consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`,
-  `cohesion`, `vector_n`) loads with a safe default.
+  `cohesion`, `vector_n`, `cluster_policy`) loads with a safe default.
+- **Cluster provenance.** The similarity a query must clear and the share of a cluster's members
+  it must clear it against are configurable per catalog, so `cluster_policy` records what a
+  graph's boundaries were actually drawn under — otherwise two producers at different settings
+  disagree about what a cluster means while both claiming `v: 1`. Absent means the built-in
+  defaults, which is historically exact: before the policy was configurable those were the only
+  values a producer could have used. It is provenance, not instruction — a consumer clustering at
+  different values MUST NOT assume the existing boundaries match them, because boundaries are
+  never redrawn in place.
 - **Cluster spread.** `centroid` is L2-normalized, which divides out how far apart the members
   it averages actually are — and a cluster that drifted apart has a centroid sitting near the
   generic direction of its domain, close to everything in it. `cohesion` carries that magnitude

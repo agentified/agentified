@@ -112,6 +112,14 @@ impl ClusterPolicy {
         self
     }
 
+    /// Whether this is the built-in policy. `skip_serializing_if` reads it, so a
+    /// graph that never moved off the defaults stays byte-identical on the wire
+    /// to one written before the field existed.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// Whether both values are in `(0, 1]` — the range a cosine and a fraction
     /// can mean anything in.
     #[must_use]
@@ -984,10 +992,24 @@ pub struct IntentGraph {
     /// centroids offline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The policy this graph's existing cluster boundaries were drawn under.
+    ///
+    /// Provenance, not configuration — it says how the clusters below came to be,
+    /// which is the whole reason the policy is safe to expose: without it, two
+    /// producers at different settings would disagree about what a cluster means
+    /// while both claiming the same protocol version (ADR-0014).
+    ///
+    /// Absent on the wire means the default, which is also historically exact:
+    /// before the policy was configurable the constants were the only value a
+    /// producer could have used. A graph still at the default therefore
+    /// serializes byte-identically to one written before the field existed.
+    #[serde(default, skip_serializing_if = "ClusterPolicy::is_default")]
+    pub cluster_policy: ClusterPolicy,
     /// The policy in force now — what every admission decision is measured
     /// against. Comes from configuration, never from the wire: it describes how
-    /// this process is clustering, not how the loaded graph was clustered. The
-    /// recorded counterpart arrives in the next commit.
+    /// *this process* is clustering, not how the loaded graph was clustered.
+    /// Those can differ, and [`Self::cluster_policy`] is what lets a consumer
+    /// see that they do.
     #[serde(skip)]
     active_policy: ClusterPolicy,
     /// Scratch for the search path → learner handoff; never serialized.
@@ -1037,13 +1059,17 @@ impl GraphModelStatus {
 impl Serialize for IntentGraph {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let len = 4 + usize::from(self.model.is_some());
+        let len =
+            4 + usize::from(self.model.is_some()) + usize::from(!self.cluster_policy.is_default());
         let mut out = serializer.serialize_struct("IntentGraph", len)?;
         out.serialize_field("v", &self.v)?;
         out.serialize_field("built_from_ts", &self.built_from_ts)?;
         out.serialize_field("rev", &self.rev)?;
         if let Some(model) = &self.model {
             out.serialize_field("model", model)?;
+        }
+        if !self.cluster_policy.is_default() {
+            out.serialize_field("cluster_policy", &self.cluster_policy)?;
         }
         out.serialize_field("intents", &self.labeled())?;
         out.end()
@@ -1080,6 +1106,9 @@ impl IntentGraph {
                 it.last_ts = anchor;
             }
         }
+        // Absent configuration, keep clustering the way this graph already was —
+        // a reload on its own must not move a boundary.
+        graph.active_policy = graph.cluster_policy;
         graph.rebuild_caches();
         Ok(graph)
     }
@@ -1089,6 +1118,15 @@ impl IntentGraph {
     /// set). Serde already catches shape errors (a missing `members`, a negative
     /// `rev`); these are the value-level rules it cannot express.
     fn validate(&self) -> Result<(), IntentGraphError> {
+        // The first graph-level rule; every check below it is per-intent. A
+        // cosine and a fraction both live in (0, 1], and a value outside that is
+        // not something any producer can have meant.
+        if !self.cluster_policy.is_valid() {
+            return Err(IntentGraphError::Malformed(format!(
+                "cluster_policy similarity {} / coverage {} outside (0, 1]",
+                self.cluster_policy.similarity, self.cluster_policy.coverage
+            )));
+        }
         let mut seen = std::collections::HashSet::with_capacity(self.intents.len());
         for it in &self.intents {
             if !seen.insert(it.id.as_str()) {
@@ -1169,6 +1207,7 @@ impl IntentGraph {
             rev: 0,
             intents: Vec::new(),
             model: None,
+            cluster_policy: ClusterPolicy::default(),
             active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
@@ -1248,6 +1287,7 @@ impl IntentGraph {
             return; // no words to cluster on and no embedding either
         }
         self.built_from_ts = self.built_from_ts.max(ts_ms);
+        let first_cluster = self.intents.is_empty();
 
         // Only fold the vector if it was produced by the graph's model. On a
         // model swap (fingerprint differs from `self.model`) we FREEZE: the
@@ -1331,6 +1371,13 @@ impl IntentGraph {
         // before eviction, while `idx` is still valid.
         if self.model.is_none() && self.intents[idx].centroid.is_some() {
             self.model = fingerprint;
+        }
+        // Stamped on the observation that creates the graph's first cluster, and
+        // frozen from then on. It records the policy these boundaries were drawn
+        // under, and boundaries are never redrawn in place — so a later policy
+        // change stays visible precisely because this does not follow it.
+        if first_cluster {
+            self.cluster_policy = self.active_policy;
         }
 
         // Evict clusters decayed past the floor — last, since it renumbers
@@ -2029,6 +2076,7 @@ mod tests {
             rev: 0,
             intents,
             model: None,
+            cluster_policy: ClusterPolicy::default(),
             active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
@@ -3740,6 +3788,98 @@ mod tests {
         assert!(!at(0.5), "one of three is not a majority");
         // The floor of two members still applies, so a third of three is two.
         assert_eq!(required_matches(3, 0.34), 2);
+    }
+
+    /// Build a graph whose boundaries were drawn under `policy`.
+    fn graph_clustered_at(policy: ClusterPolicy) -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        g.active_policy = policy;
+        g.note_query_vector("q0", &topic_vec(0, 0), "m");
+        g.observe_live("q0", Capability::Tool, "t", T0, true);
+        g
+    }
+
+    #[test]
+    fn a_graph_at_the_default_policy_omits_it_from_the_wire() {
+        // Absent means the default, which is historically exact: before the
+        // policy was configurable the constants were the only value a producer
+        // could have used. So a default graph must be byte-identical to one
+        // written before the field existed.
+        let json = serde_json::to_string(&graph_clustered_at(ClusterPolicy::default())).unwrap();
+        assert!(
+            !json.contains("cluster_policy"),
+            "unexpected policy in {json}"
+        );
+    }
+
+    #[test]
+    fn a_tuned_graph_records_the_policy_it_was_clustered_under() {
+        let tuned = ClusterPolicy::default()
+            .with_similarity(0.82)
+            .with_coverage(0.4);
+        let g = graph_clustered_at(tuned);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("cluster_policy"), "missing policy in {json}");
+
+        let back = IntentGraph::from_json(&json).unwrap();
+        assert_eq!(back.cluster_policy, tuned);
+        assert_eq!(
+            back.active_policy, tuned,
+            "a reload on its own must not move a boundary — the active policy \
+             starts as the one the graph was clustered under"
+        );
+    }
+
+    #[test]
+    fn the_recorded_policy_is_stamped_once_and_then_frozen() {
+        // It describes how the existing boundaries were drawn, and boundaries are
+        // never redrawn in place. If it followed later configuration it would
+        // report that the clusters are something they are not — and the mismatch
+        // it exists to expose could never be detected.
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_similarity(0.75));
+
+        g.active_policy = ClusterPolicy::default().with_similarity(0.95);
+        g.note_query_vector("q1", &topic_vec(3, 0), "m");
+        g.observe_live("q1", Capability::Tool, "t", T0, true);
+
+        assert_eq!(
+            g.cluster_policy.similarity, 0.75,
+            "the stamp must not follow"
+        );
+    }
+
+    #[test]
+    fn rebuild_does_not_restamp_the_policy() {
+        // Unlike the model, which a rebuild does overwrite. A rebuild replaces
+        // centroids without revisiting cluster boundaries, so the policy those
+        // boundaries came from is still the recorded one.
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_coverage(0.9));
+        g.active_policy = ClusterPolicy::default();
+
+        g.rebuild_centroids(
+            vec![("intent_0".into(), vec![topic_vec(0, 0)])],
+            "m2".into(),
+        );
+
+        assert_eq!(g.cluster_policy.coverage, 0.9);
+        assert_eq!(g.model.as_deref(), Some("m2"), "the model IS restamped");
+    }
+
+    #[test]
+    fn a_graph_whose_policy_is_out_of_range_is_rejected() {
+        for bad in [
+            r#"{"similarity":0.0,"coverage":0.5}"#,
+            r#"{"similarity":0.7,"coverage":1.5}"#,
+        ] {
+            let json = format!(
+                r#"{{"v":1,"built_from_ts":1,"cluster_policy":{bad},"intents":[{{"id":"i0",
+                   "label":"q","terms":[],"members":["q"],"support":1,"tools":{{}},"skills":{{}}}}]}}"#
+            );
+            assert!(
+                IntentGraph::from_json(&json).is_err(),
+                "a cosine and a fraction both live in (0, 1]: {bad}"
+            );
+        }
     }
 
     // ---- dense clustering must not collapse ---------------------------------

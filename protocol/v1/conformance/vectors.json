@@ -489,6 +489,7 @@
       "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
       "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
       "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores.",
+      "`cluster_policy` MAY be absent, meaning the built-in defaults. It is PROVENANCE: it records the similarity and coverage the graph's existing boundaries were drawn under, not what a consumer should cluster at next. A consumer clustering at different values MUST NOT assume the existing boundaries match them \u2014 boundaries are never redrawn in place.",
       "`cohesion` MAY be absent, meaning 1.0. A consumer that matches on `centroid` without per-member vectors SHOULD scale the similarity it requires by it: a normalized centroid hides how far apart its members are, so a cluster that drifted apart otherwise reads as tight and keeps absorbing.",
       "`vector_n` is provenance for learning only \u2014 it weights the next fold into `centroid`. Retrieval results MUST be identical whatever it contains.",
       "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains."
@@ -751,6 +752,47 @@
               "members": ["why is the build broken"],
               "centroid": [0.8, 0.577, 0.161],
               "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-recorded",
+        "why": "The similarity threshold and coverage fraction are configurable per catalog, so a graph records what its boundaries were drawn under. Without it two producers at different settings would disagree about what a cluster means while both claiming v: 1.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "cluster_policy": { "similarity": 0.82, "coverage": 0.4 },
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-absent-defaults",
+        "why": "Absent means the built-in defaults (0.70 / 0.5), which is historically exact \u2014 before the policy was configurable those were the only values a producer could have used. A graph still at the defaults is byte-identical to one written before the field existed.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
               "tools": { "gh_run_list": 0.8 },
               "skills": {}
             }
@@ -1167,6 +1209,27 @@
               "members": ["why is the build broken"],
               "cohesion": 0.5,
               "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-out-of-range",
+        "because": "`similarity` is a cosine and `coverage` a fraction; both live in (0, 1]. A coverage above 1 asks for more members than a cluster can have.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "cluster_policy": { "similarity": 0.7, "coverage": 1.4 },
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
               "tools": { "gh_run_list": 0.8 },
               "skills": {}
             }

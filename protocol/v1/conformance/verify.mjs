@@ -130,6 +130,23 @@ export function validateGraph(doc) {
   if (doc.rev !== undefined && !(isInt(doc.rev) && doc.rev >= 0)) {
     errs.push(`rev, when present, must be a non-negative integer, got ${JSON.stringify(doc.rev)}`);
   }
+  // Optional provenance: the policy the graph's existing boundaries were drawn
+  // under. A cosine and a fraction both live in (0, 1]. Absent means the
+  // built-in defaults, which is what every graph written before the policy was
+  // configurable was necessarily clustered at.
+  if (doc.cluster_policy !== undefined) {
+    const p = doc.cluster_policy;
+    if (!isObj(p)) {
+      errs.push(`cluster_policy, when present, must be an object, got ${JSON.stringify(p)}`);
+    } else {
+      for (const key of ['similarity', 'coverage']) {
+        const v = p[key];
+        if (!(typeof v === 'number' && v > 0 && v <= 1)) {
+          errs.push(`cluster_policy.${key} must be a number in (0, 1], got ${JSON.stringify(v)}`);
+        }
+      }
+    }
+  }
   if (!Array.isArray(doc.intents)) return errs.concat('intents must be an array');
 
   const seen = new Set();
