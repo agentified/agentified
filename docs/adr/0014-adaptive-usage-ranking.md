@@ -20,6 +20,11 @@ switched on — see [Seeding from a baseline capture](#seeding-from-a-baseline-c
 learning remains how ranking learns while serving; the "no build step" claim below is narrowed
 to the serving path, not the bootstrap.
 
+Amended 2026-08-20: the dense tier admits a query by **member coverage**, not by one cosine
+against the centroid — see [Two similarity tiers](#two-similarity-tiers). Not porting the
+lexical tier's per-member guard was a defect, and it collapsed 12 distinct queries into a
+single cluster in production.
+
 ## Context
 
 Every ranker in the engine scores **text similarity only** — BM25 over the flattened
@@ -111,17 +116,55 @@ Online clustering needs a query-to-cluster similarity at search time.
 
 | Method | similarity | reach |
 |---|---|---|
-| `Semantic` / `Hybrid` | cosine against `centroid` | groups phrasings that share no words |
+| `Semantic` / `Hybrid` | share of members a query clears `TAU_MEMBER` against, centroid as prefilter | groups phrasings that share no words |
 | `Bm25` | best Jaccard overlap with any single member | repeats and near-repeats only |
 
 On semantic/hybrid the marginal cost is zero — the dense arm already embedded the query for
 its own ranking. On `Bm25` no model is loaded at any point, so ADR-0011's model-free
 default is preserved. The Bm25 tier is genuinely weaker and is documented as such.
 
-**Lexical scoring is per member, never against their union.** A union only grows, so scoring
+**Both tiers score per member, never against an aggregate.** A union only grows, so scoring
 against it let a mature cluster recognize most of the vocabulary, absorb unrelated asks, and
 grow further — 100 distinct topics measured as 18 clusters, once as 1. Per-member Jaccard
 keeps a cluster exactly as discriminating on its 200th member as on its first.
+
+The dense tier shipped without that guard, and it has the same failure in a different
+costume. A mean of unit vectors keeps the component its members share and cancels the ones
+that distinguish them, so a diversifying cluster drifts toward the generic direction of its
+domain — close to everything in it. Absorbing made it more generic, which made it absorb
+more. Normalizing the centroid then divided out the very spread that would have shown this,
+so a diffuse cluster presented as a tight one. Measured on real embeddings of 12 distinct
+queries, it produced two clusters holding 11 and 1.
+
+A query is therefore admitted when it clears `TAU_MEMBER` against a **majority** of the
+cluster's vector-bearing members (`COVERAGE_FRACTION`, floored at two members and capped at
+the cluster). A count is what separates *close to this whole cluster* from *close to one
+thing in it*; a fraction keeps that test comparable across clusters of different sizes. The
+centroid stays as a prefilter at the same threshold, so admission is provably the old rule
+**and** coverage — a strict subset, never looser.
+
+Per-member vectors are held in memory only, capped at the newest `VECTOR_RETAIN` per cluster:
+fifty 384-dim vectors is ~230 KB of JSON per cluster crossing the SDK boundary on every save,
+on an artifact that already carries raw query text. A cluster with none — every graph off the
+wire — is *no dense evidence*, not a rejection, and falls back to the centroid scaled by the
+cluster's recorded `cohesion`, which rises as a cluster spreads.
+
+Rejected: **serializing the member vectors** (the size and privacy cost above); an
+**all-members denominator**, which makes a cluster holding 20 lexical members and 2 dense ones
+arithmetically unjoinable forever, and — since the lexical fallback is restricted to
+centroid-less clusters — silently unable to arm again; and a **split pass** over existing
+clusters, which the stored evidence cannot support (edges are cluster-level counts with no
+member attribution, so splitting either copies the full edge set into every child, amplifying
+the bad boost, or discards it and destroys the learning). Recency eviction is not a remedy
+either: an over-merged cluster absorbs nearly every turn, so its `last_ts` stays fresh and it
+is never approached.
+
+`TAU_MEMBER`, `COVERAGE_FRACTION`, and `VECTOR_RETAIN` are fixed tuning, not public knobs
+(ADR-0004), alongside `BM25_K1`, `RRF_K`, and `TAU_COSINE`. The `ObservationPolicy` added for
+baseline capture is not a precedent: it configures *which evidence enters the graph*, a
+decision only the host can make, where these configure ranking geometry. Decisively, the wire
+format does not record the constants a graph was clustered under, so two producers at
+different values would disagree about what a cluster means while both claiming `v: 1`.
 
 The cost is recall, and it is the right trade. Two queries sharing one word out of two are
 structurally identical whether they are the same question phrased differently or two
@@ -244,8 +287,17 @@ inspect it, and only then enable ranking.**
 - **Building embeds every distinct query up front**, so clusters form at the **dense** tier —
   the tier the live path would have grown them at. A model-free replay clusters lexically, and
   `rebuild_intent_graph` cannot repair that later: it replaces centroids without revisiting
-  cluster boundaries. Getting the tier right is therefore a property of the build, not
-  something a caller can fix afterwards.
+  cluster boundaries, and it cannot revisit them — edges carry no member attribution, so there
+  is nothing to split them on. Getting the tier right is therefore a property of the build,
+  not something a caller can fix afterwards.
+
+  A rebuild *is* the mitigation for a graph grown before coverage existed, or loaded from the
+  wire where per-member vectors cannot travel: it re-embeds every member — **query-side**,
+  since members are past queries and the document path would put them in a manifold live
+  queries never reach — and keeps those vectors, so the dense tier can tell the cluster's
+  members apart again. Boundaries and edges are untouched, and a cluster that over-merged then
+  covers any specific query poorly, so it stops boosting broadly. Re-clustering outright means
+  replaying the trace log through `build_intent_graph`, or dropping the graph and relearning.
 - **The pairing rule exists once.** The live learner and the offline replay share one
   `classify` step. They differ only in where pending state lives — a per-session learner holds
   a slot, a replay holds a map keyed by `session_id` — because a log interleaves sessions by

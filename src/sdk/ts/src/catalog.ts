@@ -583,6 +583,13 @@ export class ToolCatalog {
    * Re-embed the intent graph's members under the current model and replace its
    * centroids — call after changing the embedding model. Preserves members,
    * support, and edges. See {@link experimentalEnableAdaptiveRanking}.
+   *
+   * Also the repair for an **over-merged** graph. Clustering compares a query
+   * against a cluster's individual members, and those per-member vectors are
+   * held in memory rather than persisted, so a graph loaded from storage — or
+   * grown by an older version — matches on its centroid alone until a rebuild
+   * refills them. A rebuild does not move cluster boundaries; replaying a trace
+   * log, or relearning from scratch, is what re-clusters.
    */
   async experimentalRebuildIntentGraph(): Promise<void> {
     await this.registry.experimentalRebuildIntentGraph();

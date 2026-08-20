@@ -697,6 +697,13 @@ class ToolRegistry:
     async def experimental_rebuild_intent_graph(self) -> None:
         """Re-embed the graph's members under the current model; preserves learning.
 
+        Also the repair for an **over-merged** graph. Clustering compares a query
+        against a cluster's individual members, and those per-member vectors are
+        held in memory rather than persisted, so a graph loaded from storage --
+        or grown by an older version -- matches on its centroid alone until a
+        rebuild refills them. A rebuild does not move cluster boundaries;
+        replaying a trace log, or relearning from scratch, is what re-clusters.
+
         Call after changing the embedding model: a graph's centroids are only
         comparable to queries from the model that built them, so on a swap the
         usage arm pauses until this runs.
