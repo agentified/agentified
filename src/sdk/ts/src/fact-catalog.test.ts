@@ -59,6 +59,30 @@ describe("FactCatalog", () => {
     expect(catalog.search("composedonlyterm", 5)).toEqual([]);
   });
 
+  it("does not churn unchanged retrieval text when a definition overlay is applied", async () => {
+    const catalog = new FactCatalog({ trace: { kind: "memory", sessionId: "t" } });
+    await catalog.register([cancellation, address]);
+    catalog.drainTraceEvents();
+
+    await catalog.applyDefinitionOverrides(new Map());
+
+    expect(catalog.drainTraceEvents()).toEqual([]);
+
+    const overlay = new Map([
+      [cancellation.id, "override retrieval text"],
+      [address.id, address.description],
+    ]);
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(
+      (catalog.drainTraceEvents() as Array<{ type: string; fact_id?: string }>)
+        .filter((event) => event.type === "fact_churn")
+        .map((event) => event.fact_id),
+    ).toEqual([cancellation.id]);
+
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(catalog.drainTraceEvents()).toEqual([]);
+  });
+
   it("pinned() returns only always facts in registration order", async () => {
     const catalog = new FactCatalog();
     await catalog.register([

@@ -3,6 +3,11 @@ import type { NativeEventSubscription, SearchHit, Tool } from "../native/index.c
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import { isAsyncIterable, isPromiseLike } from "./async.js";
 import {
+  type DefinitionOverrideApplyOptions,
+  hasSameRetrievalDescription,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
+import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
@@ -356,7 +361,10 @@ export class ToolCatalog {
   private readonly registry: ToolRegistry;
   private readonly executors = new Map<string, Executor>();
   private readonly inputValidators = new Map<string, InputValidator>();
+  private readonly localTools = new Map<string, ExecutableTool>();
   private readonly tools = new Map<string, Tool>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -402,9 +410,48 @@ export class ToolCatalog {
         throw new Error(`tool ${tool.id} has no execute handler`);
       }
     }
+    const localBatch = batch.map(snapshotExecutableTool);
+    await this.registerEffective(
+      localBatch.map((tool) => this.applyDefinitionOverride(tool)),
+      localBatch,
+    );
+  }
+
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
+    this.overrideSearchableDescriptions = new Map(overrides);
+    const effective = [...this.localTools.values()].map((tool) =>
+      this.applyDefinitionOverride(tool),
+    );
+    if (adopt) this.registry.setUseDefinitionOverrides(effective);
+    const changed = effective.filter((tool) => {
+      const current = this.tools.get(tool.id);
+      return current === undefined || !hasSameRetrievalDescription(current, tool);
+    });
+    if (changed.length > 0) await this.registerEffective(changed, undefined, emitDefinitions);
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.tools.values()]);
+  }
+
+  private async registerEffective(
+    batch: readonly ExecutableTool[],
+    localBatch?: readonly ExecutableTool[],
+    emitDefinitions = true,
+  ): Promise<void> {
     this.registry.registerItems(
       batch.map(({ execute: _execute, validateInput: _validateInput, ...metadata }) => metadata),
+      emitDefinitions,
     );
+    if (localBatch) {
+      for (const tool of localBatch) this.localTools.set(tool.id, tool);
+    }
     for (const tool of batch) {
       const { execute, validateInput, ...metadata } = tool;
       this.executors.set(tool.id, execute);
@@ -416,6 +463,15 @@ export class ToolCatalog {
       this.tools.set(tool.id, metadata);
     }
     await this.ensureDenseReady();
+  }
+
+  private applyDefinitionOverride(tool: ExecutableTool): ExecutableTool {
+    return withDefinitionOverride(
+      "tool",
+      tool,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
+    );
   }
 
   private async ensureDenseReady(): Promise<void> {
@@ -488,9 +544,11 @@ export class ToolCatalog {
 
   /** Complete, deterministic, executor-free tool definition set. */
   snapshot(): ToolDefinition[] {
-    return [...this.tools.values()]
+    return [...this.localTools.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map((tool) => structuredClone(tool));
+      .map(({ execute: _execute, validateInput: _validateInput, ...tool }) =>
+        structuredClone(tool),
+      );
   }
 
   /** @internal Attach one public runtime-event subscriber. */
@@ -801,6 +859,12 @@ export class ToolCatalog {
       context === undefined ? fn(input) : fn(input, context),
     );
   }
+}
+
+function snapshotExecutableTool(tool: ExecutableTool): ExecutableTool {
+  const { execute, validateInput, ...metadata } = tool;
+  const snapshot = structuredClone(metadata);
+  return validateInput ? { ...snapshot, validateInput, execute } : { ...snapshot, execute };
 }
 
 /**

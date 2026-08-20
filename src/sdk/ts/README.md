@@ -21,6 +21,47 @@ Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` f
 
 Every tool, skill, and fact accepts an optional experimental `experimentalSearchableDescription`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
 
+## Definition overrides from an external source (experimental)
+
+Registration always owns the complete local definition and can publish it through experimental
+`ratel.catalog.definition` telemetry. An external source can override only the retrieval
+description, and only when the runtime explicitly opts in at attach time. The seam is a plain
+injected source — any implementation of `ExperimentalDefinitionOverlaySource` works; `@ratel-ai/cloud-sdk` is
+the first one, supplying an authenticated network client:
+
+```ts
+import { ratel, type ExperimentalDefinitionOverlaySource } from "@ratel-ai/sdk";
+
+const runtime = ratel();
+await runtime.tools.register(localTools);
+
+export async function attachOverrides(source: ExperimentalDefinitionOverlaySource) {
+  return runtime.catalog.experimentalAttachDefinitionOverrides({ source });
+}
+```
+
+Without that method call, local `experimentalSearchableDescription` values remain authoritative
+and no source is called. The attach promise includes the initial pull and applies the complete
+overlay to live tools, skills, and facts. Call the returned
+attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
+source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
+ETag. Source responses are runtime-validated before any catalog changes: statuses must be `200` or
+`304`, a `200` needs a non-empty ETag and complete override array, entry ids are capped at 512 UTF-8
+bytes, and retrieval descriptions are capped at 16 KiB. Invalid responses throw
+`DefinitionOverlayError` and retain the previously accepted ETag and definitions. Tool, skill, and
+fact changes share rollback; a failed catalog update restores all three. Concurrent
+`refresh()` calls share one in-flight request. Applying an identical or empty overlay does not
+re-index unchanged entries. Opting in is one-way for the life of the process; reverting means
+restarting the runtime. These APIs may change without a major-version bump.
+
+Removing an override restores the latest local value. If both sides define a Retrieval description
+for one entry, the override wins while attached and the SDK warns once for that continuous
+shadowing period; clearing and later reapplying the override starts a new period.
+
+The model-facing description, schemas, bodies, tags, and executors always remain local. Definition
+events emitted after opt-in carry `ratel.catalog.use_definition_overrides=true`, including one
+re-emission of otherwise unchanged definitions so the override owner can observe adoption.
+
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
 For semantic or hybrid retrieval, `register()` folds embedding in: it accepts one tool or a whole array and embeds on a libuv worker, so model loading, HTTP, and inference never block Node's event loop — and embedding errors surface right at `register()`:
@@ -419,7 +460,11 @@ const experiment = experimentalDefineExperiment(config, r.events);
 
 `catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
 consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
-recovery.
+recovery. It always contains the locally registered definitions, even while an opted-in definition
+overlay supplies the live Retrieval descriptions. Registration and `skills.replaceAll()` retain a
+deep snapshot of accepted serializable metadata, so later caller-object mutation changes neither
+snapshots nor override restoration; explicitly re-register to adopt a changed value. Tool executor
+and validator function identities are retained.
 
 ## Telemetry
 

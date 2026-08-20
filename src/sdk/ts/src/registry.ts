@@ -51,6 +51,7 @@ export class ToolRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -89,11 +90,24 @@ export class ToolRegistry {
    *
    * @internal
    */
-  registerItems(item: Tool | readonly Tool[]): void {
+  registerItems(item: Tool | readonly Tool[], emitDefinitions = true): void {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes);
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "tool",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
+  }
+
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Tool[] = []): void {
+    this.useDefinitionOverrides = true;
+    recordCatalogDefinitions("tool", items, this.emittedDefinitionHashes, true);
   }
 
   /**
@@ -391,6 +405,7 @@ export class SkillRegistry {
   #rebuildOnModelChange = false;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -426,7 +441,12 @@ export class SkillRegistry {
     assertNotArtifactBusy(this);
     const items = Array.isArray(item) ? item : [item];
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
+    recordCatalogDefinitions(
+      "skill",
+      items,
+      this.emittedDefinitionHashes,
+      this.useDefinitionOverrides,
+    );
   }
 
   /**
@@ -439,11 +459,24 @@ export class SkillRegistry {
    *
    * @internal
    */
-  replaceAllItems(items: readonly Skill[]): ReplaceOutcome {
+  replaceAllItems(items: readonly Skill[], emitDefinitions = true): ReplaceOutcome {
     assertNotArtifactBusy(this);
     const outcome = this.native.replaceAll([...items]);
-    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes);
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "skill",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
     return outcome;
+  }
+
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Skill[] = []): void {
+    this.useDefinitionOverrides = true;
+    recordCatalogDefinitions("skill", items, this.emittedDefinitionHashes, true);
   }
 
   /**
@@ -685,6 +718,7 @@ export class FactRegistry {
   private readonly native: NativeFactRegistry;
   private readonly eager: boolean;
   private readonly emittedDefinitionHashes = new Map<string, string>();
+  private useDefinitionOverrides = false;
 
   /**
    * Create a registry with an optional embedding model and retrieval method.
@@ -720,11 +754,24 @@ export class FactRegistry {
    *
    * @internal
    */
-  registerItems(item: Fact | readonly Fact[]): void {
+  registerItems(item: Fact | readonly Fact[], emitDefinitions = true): void {
     const items = Array.isArray(item) ? item : [item];
     for (const fact of items) assertValidFact(fact);
     this.native.registerMany([...items]);
-    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes);
+    if (emitDefinitions) {
+      recordCatalogDefinitions(
+        "fact",
+        items,
+        this.emittedDefinitionHashes,
+        this.useDefinitionOverrides,
+      );
+    }
+  }
+
+  /** @internal Mark subsequent definition events as override-owned and optionally re-emit adoption. */
+  setUseDefinitionOverrides(items: readonly Fact[] = []): void {
+    this.useDefinitionOverrides = true;
+    recordCatalogDefinitions("fact", items, this.emittedDefinitionHashes, true);
   }
 
   /**

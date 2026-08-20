@@ -52,6 +52,7 @@ import {
   RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
   RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
   RATEL_CATALOG_TAGS,
+  RATEL_CATALOG_USE_DEFINITION_OVERRIDES,
   RATEL_EVENT_ID,
   RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
   RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
@@ -217,6 +218,7 @@ export function recordCatalogDefinitions(
   kind: "tool" | "skill" | "fact",
   definitions: readonly CatalogDefinitionInput[],
   emittedHashes: Map<string, string>,
+  useDefinitionOverrides = false,
 ): void {
   if (
     process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV]?.toLowerCase() !== "true" ||
@@ -233,12 +235,16 @@ export function recordCatalogDefinitions(
     }
     if (attributes === undefined) continue;
     const contentHash = attributes[RATEL_CATALOG_CONTENT_HASH] as string;
-    if (emittedHashes.get(definition.id) === contentHash) continue;
+    const dedupeHash = useDefinitionOverrides ? `${contentHash}:overrides` : contentHash;
+    if (emittedHashes.get(definition.id) === dedupeHash) continue;
     getLogger().emit({
       eventName: RATEL_CATALOG_DEFINITION,
-      attributes,
+      attributes: {
+        ...attributes,
+        ...(useDefinitionOverrides ? { [RATEL_CATALOG_USE_DEFINITION_OVERRIDES]: true } : {}),
+      },
     });
-    emittedHashes.set(definition.id, contentHash);
+    emittedHashes.set(definition.id, dedupeHash);
   }
 }
 

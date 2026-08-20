@@ -27,6 +27,7 @@ from ratel_ai_telemetry import (
     RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
     RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
     RATEL_CATALOG_TAGS,
+    RATEL_CATALOG_USE_DEFINITION_OVERRIDES,
     RATEL_EVENT_ID,
     RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER,
     RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS,
@@ -155,6 +156,7 @@ def test_catalog_definition_attribute_vocabulary() -> None:
         RATEL_CATALOG_SCHEMA_OMITTED,
         RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
         RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
+        RATEL_CATALOG_USE_DEFINITION_OVERRIDES,
         RATEL_CATALOG_CONTENT_HASH,
     ] == [
         "ratel.catalog.kind",
@@ -167,6 +169,7 @@ def test_catalog_definition_attribute_vocabulary() -> None:
         "ratel.catalog.schema_omitted",
         "ratel.catalog.searchable_description",
         "ratel.catalog.searchable_description_overridden",
+        "ratel.catalog.use_definition_overrides",
         "ratel.catalog.content_hash",
     ]
 

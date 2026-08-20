@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `RATEL_CATALOG_USE_DEFINITION_OVERRIDES` for definition events emitted by runtimes using externally-sourced definition overrides.
+
 ## [0.3.0] - 2026-08-17
 
 ### Added
