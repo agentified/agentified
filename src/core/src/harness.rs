@@ -696,9 +696,10 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     );
     let _ = writeln!(
         o,
-        "| intent | query | cluster | similarity | promoted |\n|---|---|---|---|---|"
+        "| intent | query | cluster | similarity | promoted | raw order |\n|---|---|---|---|---|---|"
     );
     let mut listed: Vec<&str> = Vec::new();
+    let mut reordered = 0usize;
     for turn in turns {
         if listed.iter().any(|q| *q == turn.query) {
             continue;
@@ -708,18 +709,54 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             .arm(&turn.query, Some(&turn.vector), Capability::Tool, &|_| true)
             .into_arm()
         {
-            Some(a) => format!(
-                "| {} | {} | {} | {:.3} | {} |",
-                turn.intent,
-                turn.query,
-                a.intent_id,
-                a.similarity,
-                a.ids.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
-            ),
-            None => format!("| {} | {} | — | — | — |", turn.intent, turn.query),
+            Some(a) => {
+                // What these same edges would promote ordered by raw invocation
+                // count alone, so the cluster-frequency weight's effect is
+                // visible in the report rather than only asserted in a test.
+                let raw: Vec<&str> = graph
+                    .intents
+                    .iter()
+                    .find(|it| it.id == a.intent_id)
+                    .map(|it| {
+                        let mut e: Vec<(&String, &f32)> = it.tools.iter().collect();
+                        e.sort_by(|x, y| {
+                            y.1.partial_cmp(x.1)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| x.0.cmp(y.0))
+                        });
+                        e.into_iter().take(3).map(|(id, _)| id.as_str()).collect()
+                    })
+                    .unwrap_or_default();
+                let promoted: Vec<&str> = a.ids.iter().take(3).map(String::as_str).collect();
+                if raw != promoted {
+                    reordered += 1;
+                }
+                format!(
+                    "| {} | {} | {} | {:.3} | {} | {} |",
+                    turn.intent,
+                    turn.query,
+                    a.intent_id,
+                    a.similarity,
+                    promoted.join(", "),
+                    if raw == promoted {
+                        "= (same)".to_string()
+                    } else {
+                        raw.join(", ")
+                    }
+                )
+            }
+            None => format!("| {} | {} | — | — | — | — |", turn.intent, turn.query),
         };
         let _ = writeln!(o, "{row}");
     }
+
+    let _ = writeln!(
+        o,
+        "\n**{reordered} of {} arms are reordered by the cluster-frequency weight.** Watch this as\n\
+         fixtures grow: at this size it behaves as a principled tie-break rather than a ranking\n\
+         signal, and whether that changes is the question a bigger graph answers.\n",
+        listed.len()
+    );
 
     // -- served top-k --------------------------------------------------------
     let served = served_top3(graph, turns);
