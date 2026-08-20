@@ -766,6 +766,32 @@ async def test_the_cluster_policy_reaches_the_graph_and_is_recorded() -> None:
     assert recorded["coverage"] == pytest.approx(0.4)
 
 
+async def test_the_cluster_policy_changes_what_joins_a_cluster() -> None:
+    """The plumbing test above only proves the option arrives. This proves it is
+    acted on, which needs a real model: the option governs the DENSE tier, and a
+    BM25 catalog clusters lexically and never consults it."""
+    turns = [
+        ("why is the build broken", "gh_run_list"),
+        ("why is the build failing", "gh_run_list"),
+    ]
+
+    async def cluster_count(**policy: float) -> int:
+        catalog = await _semantic_catalog()
+        graph = IntentGraph()
+        catalog.experimental_enable_adaptive_ranking(graph, **policy)
+        for query, tool in turns:
+            await catalog.search_async(query, 5, method="semantic")
+            catalog.record_event(
+                {"type": "invoke_start", "tool_id": tool, "args_size_bytes": 0}
+            )
+        return graph.cluster_count
+
+    # Two phrasings of one question merge at the default and cannot at 1.0,
+    # where nothing short of an identical query clears the bar.
+    assert await cluster_count() == 1
+    assert await cluster_count(cluster_similarity=1.0) == 2
+
+
 async def test_a_cluster_policy_outside_the_unit_range_is_rejected() -> None:
     """Rejected, not clamped: a clamp would cluster at something the caller did
     not ask for, and boundaries once drawn are never redrawn."""
