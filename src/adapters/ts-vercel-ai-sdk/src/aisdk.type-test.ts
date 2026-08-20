@@ -2,7 +2,8 @@
 // so a drift in the AI SDK surface fails `tsc -p tsconfig.type-tests.json`
 // rather than at a host's call site.
 import { ratel } from "@ratel-ai/sdk";
-import type { ModelMessage, PrepareStepFunction, ToolSet } from "ai";
+import { type ModelMessage, type PrepareStepFunction, type ToolSet, tool } from "ai";
+import { z } from "zod";
 import { aiSdk } from "./aisdk.js";
 
 const view = ratel().adaptTo(aiSdk());
@@ -18,7 +19,18 @@ const prepare: PrepareStepFunction<ToolSet> = view.prepareStep;
 
 // `appendRecall` mutates-and-returns the same `ModelMessage[]`, asynchronously.
 const appended: Promise<ModelMessage[]> = view.appendRecall([]);
+const registerWithSearchableDescription = view.tools.register({
+  weather: Object.assign(
+    tool({
+      description: "Current weather",
+      inputSchema: z.object({}),
+      execute: async () => ({}),
+    }),
+    { experimentalSearchableDescription: "forecast conditions" },
+  ),
+});
 
 void toolset;
 void prepare;
 void appended;
+void registerWithSearchableDescription;

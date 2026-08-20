@@ -474,6 +474,7 @@ impl ToolRegistry {
     ///     id: "read_file".into(),
     ///     name: "read_file".into(),
     ///     description: desc.into(),
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// };
@@ -525,6 +526,7 @@ impl ToolRegistry {
     ///     id: "read_file".into(),
     ///     name: "read_file".into(),
     ///     description: "Read a file from disk".into(),
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// });
@@ -567,6 +569,7 @@ impl ToolRegistry {
     ///     id: "delete_file".into(),
     ///     name: "delete_file".into(),
     ///     description: "Delete a path from the filesystem".into(),
+    ///     experimental_searchable_description: None,
     ///     input_schema: serde_json::json!({}),
     ///     output_schema: serde_json::json!({}),
     /// });
@@ -1100,6 +1103,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             description: description.into(),
+            experimental_searchable_description: None,
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
         }
@@ -1178,6 +1182,58 @@ mod tests {
             .search_with_method("read something", 5, Origin::Direct, SearchMethod::Semantic)
             .unwrap();
         assert_eq!(hits.first().map(|h| h.tool_id.as_str()), Some("read_file"));
+    }
+
+    #[test]
+    fn semantic_uses_experimental_searchable_description_and_keeps_name() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        let mut overridden = tool("catalog", "read records");
+        overridden.experimental_searchable_description = Some("delete records".into());
+        reg.register(overridden);
+        reg.register(tool("reader", "read records"));
+        reg.build_embeddings().unwrap();
+
+        let override_hits = reg
+            .search_with_method("remove records", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            override_hits.first().map(|h| h.tool_id.as_str()),
+            Some("catalog")
+        );
+
+        let mut named = with_embedder(Arc::new(StubEmbedder));
+        let mut named_tool = tool("named", "unrelated records");
+        named_tool.name = "read_helper".into();
+        named_tool.experimental_searchable_description = Some("delete records".into());
+        named.register(named_tool);
+        named.register(tool("deleter", "delete records"));
+        named.build_embeddings().unwrap();
+        let name_hits = named
+            .search_with_method("read records", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(name_hits.first().map(|h| h.tool_id.as_str()), Some("named"));
+    }
+
+    #[test]
+    fn semantic_does_not_embed_schemas() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        let mut target = tool("catalog", "delete records");
+        target.experimental_searchable_description = Some("delete records".into());
+        target.input_schema = serde_json::json!({
+            "properties": {
+                "document": { "description": "read records" }
+            }
+        });
+        reg.register(target);
+        reg.build_embeddings().unwrap();
+
+        let hits = reg
+            .search_with_method("read records", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert!(
+            hits[0].score < 0.1,
+            "schema-only terms must not affect the dense vector"
+        );
     }
 
     #[test]

@@ -89,8 +89,9 @@ forgotten `await` can never leave a half-applied change.
 
 `replace_all` compares the incoming batch against the live corpus and touches the dense cache
 only where it must: a removed id's vector is dropped, an id whose indexed text
-(`name`/`description`/`tags`) changed is invalidated, and everything else keeps its vector —
-including an id whose `body`, `tools`, or `metadata` changed, since none of those are embedded.
+(`name`/effective searchable description/`tags`) changed is invalidated, and everything else
+keeps its vector — including an id whose `body`, `tools`, or `metadata` changed, since none of
+those are embedded.
 Reloading an unchanged catalog therefore costs **zero** embedding calls, which is the common
 case for a polling source.
 

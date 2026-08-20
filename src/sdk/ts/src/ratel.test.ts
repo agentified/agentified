@@ -448,6 +448,19 @@ describe("ratel().adaptTo(adapter)", () => {
     expect(Object.keys(a.modelTools()).sort()).toEqual([...CAPABILITY_IDS].sort());
   });
 
+  it("forwards an adapter registration experimentalSearchableDescription into ranking", async () => {
+    const a = ratel().adaptTo(referenceAdapter());
+    await a.tools.register({
+      tool: {
+        ...exec("composedonlyterm"),
+        experimentalSearchableDescription: "overrideonlyterm",
+      },
+    });
+
+    expect(a.tools.search("overrideonlyterm", 5).map((hit) => hit.toolId)).toEqual(["tool"]);
+    expect(a.tools.search("composedonlyterm", 5)).toEqual([]);
+  });
+
   it("routes the capability tools through the adapter's expose codec", async () => {
     const a = ratel().adaptTo(referenceAdapter());
     await a.tools.register({ read_file: exec("Read a file from local disk.") });

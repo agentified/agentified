@@ -15,6 +15,7 @@ fn tool(id: &str, description: &str) -> Tool {
         id: id.into(),
         name: id.into(),
         description: description.into(),
+        experimental_searchable_description: None,
         input_schema: json!({}),
         output_schema: json!({}),
     }
@@ -478,6 +479,7 @@ fn skill(id: &str, description: &str) -> ratel_ai_core::Skill {
         id: id.into(),
         name: id.into(),
         description: description.into(),
+        experimental_searchable_description: None,
         tags: Vec::new(),
         tools: Vec::new(),
         metadata: Default::default(),

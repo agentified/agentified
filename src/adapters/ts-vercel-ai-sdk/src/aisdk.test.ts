@@ -37,6 +37,21 @@ describe("aiSdk() identity", () => {
 });
 
 describe("ingest codec", () => {
+  it("forwards an app-supplied experimentalSearchableDescription", () => {
+    const native = Object.assign(
+      tool({
+        description: "composedonlyterm",
+        inputSchema: z.object({}),
+        execute: async () => ({ ok: true }),
+      }),
+      { experimentalSearchableDescription: "overrideonlyterm" },
+    );
+
+    const registration = aiSdk().ingest("tool", native);
+    if (registration === "passthrough") throw new Error("expected executable registration");
+    expect(registration.experimentalSearchableDescription).toBe("overrideonlyterm");
+  });
+
   it("passes through a function tool with no execute (provider/client-executed)", () => {
     const providerTool = tool({
       description: "provider-run search",

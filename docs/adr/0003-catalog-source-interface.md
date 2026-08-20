@@ -14,6 +14,9 @@ loader interface, auth, and sync semantics recorded here are accepted.
 Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md) to distinguish catalog-source
 pull from optional upward runtime facts and source-scoped catalog snapshot publication.
 
+Amended 2026-08-15 to cut catalog protocol v2 with an optional searchable-description override
+and a new frozen ETag projection while leaving v1 unchanged.
+
 ## Context
 
 An earlier plan scheduled a standalone `ratel-ai-server` binary as the rung between the
@@ -49,13 +52,15 @@ implementation of the already-published contract, not a new design.
 ### The wire contract
 
 [`protocol/`](../../protocol/README.md) is the normative catalog-source contract: pull-sync
-`GET /v1/catalog` with ETag/304, the `CatalogSkillWire` shape (the wire projection of the
-engine `Skill` struct, defined in [`protocol/v1`](../../protocol/v1/README.md)), Bearer auth,
+`GET /v2/catalog` with ETag/304, the `CatalogSkillWire` shape (the wire projection of the
+engine `Skill` struct, defined in [`protocol/v2`](../../protocol/v2/README.md)), Bearer auth,
 the `?scope=` selector, and language-agnostic **conformance vectors** (fixture catalogs with
 their expected ETag, scope-overlay cases, and `If-None-Match`/304 semantics) every source and
 loader MUST pass (so the contract, not the single closed implementation, stays normative). v1
-serves **skills
-only**; a skill's `tools` are ids resolved against the **client-owned** tool registry, so an
+remains frozen and served unchanged. v2 adds optional `searchableDescription`; omitted or
+`null` means the entry description remains the retrieval-description component, while a string
+replaces that component. Both versions serve **skills only**; a skill's `tools` are ids
+resolved against the **client-owned** tool registry, so an
 id with no local definition behaves as unknown-tool at invoke time while the skill stays
 searchable. The contract covers the commodity catalog rung only: the cloud's suggestion /
 analytics / ranking surfaces are deliberately off-protocol (private) until opened by an
@@ -68,15 +73,14 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
   prefix + metadata with soft revocation (`revoked_at`). Bare SHA-256 is correct for a
   192-bit random token; a lost key is rotated, not recovered. The cloud's `key_plaintext`
   column is not carried forward.
-- **Wire contract:** `Authorization: Bearer <key>` on every `/v1` request; missing/unknown/
-  revoked → `401`, key store unreachable → `503`; TLS required.
+- **Wire contract:** `Authorization: Bearer <key>` on every versioned catalog request;
+  missing, unknown, or revoked → `401`; key store unreachable → `503`; TLS required.
 - **Scope.** The served catalog is **scoped**: a project Bearer key authorizes a project, and
   an optional `?scope=<subject>` selector picks a subject layer within it. The scope model —
   the `tenant → project → subject` hierarchy, the overlay semantics, and the
   confidential-isolation policy — is [ADR-0010](0010-catalog-scope-model.md) (Proposed); the
-  wire mechanics of the `?scope=` selector are frozen in
-  [`protocol/v1`](../../protocol/v1/README.md). The engine stays scope-blind; the source
-  serves an already-scoped set.
+  wire mechanics of the `?scope=` selector are frozen in each protocol version. The engine
+  stays scope-blind; the source serves an already-scoped set.
 - **Two credentials, never conflated:** the source API key (this contract) and upstream OAuth
   tokens (`~/.ratel/oauth/`, owned by ratel-local, used by locally-run `invoke_tool` to reach
   upstream MCP tools). The source never sees either side's other credential.
@@ -91,9 +95,11 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
 | **Secrets** (upstream OAuth, source keys) | local machine / the source, always | **never** | ratel-local (oauth); the source (its keys, hash-only) |
 | **Config / host-wiring** | local machine, always | **never** | ratel-local, unchanged |
 
-- Catalog-source pull is conditional-GET, not a delta protocol. The ETag content projection
-  (`{id, name, description, tags, tools, metadata, body}`, sorted by id, timestamps excluded)
-  is frozen in `protocol/v1`; changing it is a v2.
+- Catalog-source pull is conditional-GET, not a delta protocol. v1's seven-field ETag
+  projection remains frozen. v2 freezes
+  `{id, name, description, searchableDescription, tags, tools, metadata, body}`, sorted by id,
+  with omitted and explicit-null `searchableDescription` both canonicalized to JSON `null`.
+  Changing the v2 projection requires v3.
 - A running agent is a read-only consumer of the catalog-source contract. The separate upward
   path in [ADR-0020](0020-runtime-events-lane.md) publishes append-only observations plus an
   atomic snapshot of the SDK's current definitions; it is not authoring/CRUD, a delta merge, or
@@ -118,7 +124,7 @@ explicit decision; `@ratel-ai/cloud` is also the developer's tap into those.
 
 - One artifact, smaller surface: no server crate/binary/release unit to build or maintain.
 - The road back is cheap for the skeleton, not the value: a future server that implements
-  `protocol/v1` gets catalog serving; the cloud's differentiated surfaces stay private unless
+  `protocol/v2` gets catalog serving; the cloud's differentiated surfaces stay private unless
   separately opened (the usage-ranking read model is the first candidate).
 - A leaked key table yields no usable credential (hash-only storage).
 - The only server-side implementer today is the closed cloud; the conformance vectors are

@@ -4,7 +4,9 @@
 import { Agent, type ToolsInput } from "@mastra/core/agent";
 import type { Config } from "@mastra/core/mastra";
 import type { InputProcessor, Processor } from "@mastra/core/processors";
+import { createTool } from "@mastra/core/tools";
 import { ratel } from "@ratel-ai/sdk";
+import { z } from "zod";
 import { mastra } from "./mastra.js";
 import { experimentalRatelSpanOutputProcessor } from "./observability.js";
 
@@ -27,6 +29,17 @@ const processor: Processor = view.recallProcessor();
 const inputProcessor: InputProcessor = view.recallProcessor();
 const spanOutputProcessor: MastraSpanOutputProcessor = experimentalRatelSpanOutputProcessor();
 const absentSpan = experimentalRatelSpanOutputProcessor().process();
+const registerWithSearchableDescription = view.tools.register({
+  weather: Object.assign(
+    createTool({
+      id: "weather",
+      description: "Current weather",
+      inputSchema: z.object({}),
+      execute: async () => ({}),
+    }),
+    { experimentalSearchableDescription: "forecast conditions" },
+  ),
+});
 
 // Both slot into a real Agent construction with no cast.
 const agent = new Agent({
@@ -43,4 +56,5 @@ void processor;
 void inputProcessor;
 void spanOutputProcessor;
 void absentSpan;
+void registerWithSearchableDescription;
 void agent;

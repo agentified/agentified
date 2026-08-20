@@ -150,7 +150,7 @@ class ToolRegistry:
 
     def _register_many(
         self,
-        tools: list[tuple[str, str, str, dict[str, Any], dict[str, Any]]],
+        tools: list[tuple[str, str, str, str | None, dict[str, Any], dict[str, Any]]],
     ) -> None:
         """Atomically convert, then register a tool metadata batch."""
 
@@ -395,6 +395,7 @@ class SkillRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 list[str],
                 dict[str, list[str]],
@@ -411,6 +412,7 @@ class SkillRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 list[str],
                 dict[str, list[str]],
@@ -583,6 +585,7 @@ class FactRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 dict[str, list[str]],
                 str,

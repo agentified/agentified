@@ -19,6 +19,8 @@
 
 Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` for ranked playbooks loaded on demand. Expose `searchCapabilitiesTool`, `invokeToolTool`, and `getSkillContentTool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog. **Experimental — facts:** the `experimental` namespace adds `experimental.FactCatalog` for constant grounding content (a shop's address, a brand's voice). See [Facts](#facts-experimental) below. This API may change without a major-version bump.
 
+Every tool, skill, and fact accepts an optional experimental `experimentalSearchableDescription`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
+
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
 For semantic or hybrid retrieval, `register()` folds embedding in: it accepts one tool or a whole array and embeds on a libuv worker, so model loading, HTTP, and inference never block Node's event loop — and embedding errors surface right at `register()`:

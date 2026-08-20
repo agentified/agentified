@@ -5,20 +5,26 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
     if !tool.name.is_empty() {
         push_identifier(&tool.name, &mut tokens);
     }
-    if !tool.description.is_empty() {
-        tokens.push(tool.description.clone());
+    if let Some(description) = &tool.experimental_searchable_description {
+        if !description.is_empty() {
+            tokens.push(description.clone());
+        }
+    } else {
+        if !tool.description.is_empty() {
+            tokens.push(tool.description.clone());
+        }
+        flatten(&tool.input_schema, &mut tokens);
+        flatten(&tool.output_schema, &mut tokens);
     }
-    flatten(&tool.input_schema, &mut tokens);
-    flatten(&tool.output_schema, &mut tokens);
     tokens.join(" ")
 }
 
 fn flatten(value: &serde_json::Value, tokens: &mut Vec<String>) {
-    if let Some(properties) = value.get("properties").and_then(|v| v.as_object()) {
-        for (key, sub) in properties {
+    if let Some(properties) = value.get("properties").and_then(|value| value.as_object()) {
+        for (key, value) in properties {
             push_identifier(key, tokens);
-            push_field_tokens(sub, tokens);
-            flatten(sub, tokens);
+            push_field_tokens(value, tokens);
+            flatten(value, tokens);
         }
     }
     if let Some(items) = value.get("items") {
@@ -54,14 +60,14 @@ pub(crate) fn split_identifier(s: &str) -> String {
     out
 }
 
-fn push_field_tokens(sub: &serde_json::Value, tokens: &mut Vec<String>) {
-    if let Some(desc) = sub.get("description").and_then(|v| v.as_str()) {
-        tokens.push(desc.to_string());
+fn push_field_tokens(value: &serde_json::Value, tokens: &mut Vec<String>) {
+    if let Some(description) = value.get("description").and_then(|value| value.as_str()) {
+        tokens.push(description.to_string());
     }
-    if let Some(values) = sub.get("enum").and_then(|v| v.as_array()) {
-        for v in values {
-            if let Some(s) = v.as_str() {
-                tokens.push(s.to_string());
+    if let Some(values) = value.get("enum").and_then(|value| value.as_array()) {
+        for value in values {
+            if let Some(value) = value.as_str() {
+                tokens.push(value.to_string());
             }
         }
     }
@@ -77,6 +83,7 @@ mod tests {
             id: "read_file".into(),
             name: "read_file".into(),
             description: "Read a file from disk".into(),
+            experimental_searchable_description: None,
             input_schema: json!({
                 "properties": {
                     "path": {
@@ -90,7 +97,14 @@ mod tests {
                     }
                 }
             }),
-            output_schema: json!({}),
+            output_schema: json!({
+                "properties": {
+                    "checksum": {
+                        "type": "string",
+                        "description": "sha256 digest of the returned bytes"
+                    }
+                }
+            }),
         }
     }
 
@@ -100,6 +114,14 @@ mod tests {
         let first = searchable_text(&tool);
         let second = searchable_text(&tool);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn stable_searchable_text_keeps_schemas() {
+        let tool = read_file_tool();
+        let text = searchable_text(&tool);
+        assert!(text.contains("path"), "input schema missing: {text}");
+        assert!(text.contains("checksum"), "output schema missing: {text}");
     }
 
     #[test]

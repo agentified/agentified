@@ -376,7 +376,7 @@ impl SkillRegistry {
     ///
     /// Cache handling is deliberately narrow, so a reload of a mostly-unchanged
     /// catalog costs no embeddings: a removed id's vector is dropped, an id whose
-    /// indexed text (`name`/`description`/`tags`) changed is invalidated for
+    /// indexed text (`name`/effective searchable description/`tags`) changed is invalidated for
     /// re-embedding, and everything else keeps the vector it already had —
     /// including an id whose `body`, `tools`, or `metadata` changed, since none
     /// of those are embedded.
@@ -396,6 +396,7 @@ impl SkillRegistry {
     ///         id: id.into(),
     ///         name: id.into(),
     ///         description: description.into(),
+    ///         experimental_searchable_description: None,
     ///         tags: vec![],
     ///         tools: vec![],
     ///         metadata: std::collections::HashMap::new(),
@@ -497,6 +498,7 @@ impl SkillRegistry {
     ///     id: "api-design".into(),
     ///     name: "api-design".into(),
     ///     description: "REST API design patterns: resource naming, pagination".into(),
+    ///     experimental_searchable_description: None,
     ///     tags: vec!["backend".into(), "api".into()],
     ///     tools: vec![],
     ///     metadata: std::collections::HashMap::new(),
@@ -953,6 +955,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
+            experimental_searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             tools: vec![],
             metadata: std::collections::HashMap::new(),
@@ -1168,6 +1171,24 @@ mod tests {
     }
 
     #[test]
+    fn experimental_searchable_description_replaces_skill_description_but_keeps_name_and_tags() {
+        let mut reg = SkillRegistry::new();
+        let mut overridden = skill(
+            "billing",
+            "billing_helper",
+            "orchestrate zeppelin manifests",
+            &["finance_ops"],
+        );
+        overridden.experimental_searchable_description = Some("reconcile overdue invoices".into());
+        reg.register(overridden);
+
+        assert_eq!(reg.search("overdue invoices", 5)[0].skill_id, "billing");
+        assert!(reg.search("zeppelin manifests", 5).is_empty());
+        assert_eq!(reg.search("billing", 5)[0].skill_id, "billing");
+        assert_eq!(reg.search("finance ops", 5)[0].skill_id, "billing");
+    }
+
+    #[test]
     fn search_on_empty_registry_returns_no_hits() {
         let reg = SkillRegistry::new();
         assert!(reg.search("anything", 5).is_empty());
@@ -1325,6 +1346,51 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_re_embeds_only_the_experimental_searchable_description_edit() {
+        let counter = Arc::new(CountingEmbedder::new());
+        let sink = Arc::new(MemorySink::new("test-session"));
+        let mut reg = with_embedder(counter.clone());
+        reg.set_trace_sink(sink.clone());
+        reg.register(skill("keep", "keep", "REST API design", &["api"]));
+        reg.register(skill("edit", "edit", "REST API design", &["api"]));
+        reg.build_embeddings().unwrap();
+        assert_eq!(counter.doc_calls(), 2);
+        sink.drain();
+
+        let mut edited = skill("edit", "edit", "REST API design", &["api"]);
+        edited.experimental_searchable_description = Some("HTML slides frontend".into());
+        let outcome = reg.replace_all(vec![
+            skill("keep", "keep", "REST API design", &["api"]),
+            edited,
+        ]);
+        assert_eq!(
+            outcome,
+            ReplaceOutcome {
+                added: 0,
+                removed: 0,
+                updated: 1,
+                unchanged: 1,
+            }
+        );
+        let churn: Vec<(ChurnKind, String)> = sink
+            .drain()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                TraceEvent::SkillChurn { kind, skill_id } => Some((kind, skill_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(churn, vec![(ChurnKind::Add, "edit".to_string())]);
+
+        reg.build_embeddings().unwrap();
+        assert_eq!(
+            counter.doc_calls(),
+            3,
+            "only the override-edited skill is re-embedded"
+        );
+    }
+
+    #[test]
     fn replace_all_drops_the_vector_of_a_removed_id() {
         // The dense guard is a count (`vectors.len() < corpus_len`), so leaving a
         // removed id's vector in the cache would let a *new*, unembedded id slip
@@ -1413,6 +1479,51 @@ mod tests {
         assert_eq!(
             hits.first().map(|h| h.skill_id.as_str()),
             Some("api-design")
+        );
+    }
+
+    #[test]
+    fn semantic_uses_experimental_searchable_description_and_keeps_name_and_tags() {
+        let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut overridden = skill("target", "catalog", "REST API design", &["general"]);
+        overridden.experimental_searchable_description = Some("frontend slides".into());
+        overridden_reg.register(overridden);
+        overridden_reg.register(skill("decoy", "decoy", "REST API design", &["general"]));
+        overridden_reg.build_embeddings().unwrap();
+        let override_hits = overridden_reg
+            .search_with_method("frontend slides", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            override_hits.first().map(|h| h.skill_id.as_str()),
+            Some("target")
+        );
+
+        let mut name_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut named = skill("named", "api_helper", "unrelated", &["general"]);
+        named.experimental_searchable_description = Some("frontend slides".into());
+        name_reg.register(named);
+        name_reg.register(skill("name-decoy", "decoy", "frontend slides", &[]));
+        name_reg.build_embeddings().unwrap();
+        let name_hits = name_reg
+            .search_with_method("REST API", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            name_hits.first().map(|h| h.skill_id.as_str()),
+            Some("named")
+        );
+
+        let mut tag_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut tagged = skill("tagged", "catalog", "unrelated", &["rest_ops"]);
+        tagged.experimental_searchable_description = Some("frontend slides".into());
+        tag_reg.register(tagged);
+        tag_reg.register(skill("tag-decoy", "decoy", "frontend slides", &[]));
+        tag_reg.build_embeddings().unwrap();
+        let tag_hits = tag_reg
+            .search_with_method("REST API", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            tag_hits.first().map(|h| h.skill_id.as_str()),
+            Some("tagged")
         );
     }
 

@@ -174,6 +174,22 @@ async def test_search_ranks_the_relevant_tool_first() -> None:
     assert hits[0].tool_id == "read_file"
 
 
+async def test_experimental_searchable_description_replaces_tool_description_for_ranking() -> None:
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="tool",
+            name="tool",
+            description="composedonlyterm",
+            experimental_searchable_description="overrideonlyterm",
+            execute=lambda args: {},
+        )
+    )
+
+    assert [hit.tool_id for hit in catalog.search("overrideonlyterm", 5)] == ["tool"]
+    assert catalog.search("composedonlyterm", 5) == []
+
+
 async def test_search_defaults_to_bm25_stage() -> None:
     # Semantic/hybrid load a real model (network) and are covered in Rust; this
     # stays offline and asserts the model-free default + selection plumbing.

@@ -232,6 +232,8 @@ class Tool:
     description: str
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
+    # Experimental (ADR-0021): retrieval-only description replacement.
+    experimental_searchable_description: str | None = None
 
 
 @dataclass
@@ -831,6 +833,7 @@ class ToolRegistry:
                         tool.id,
                         tool.name,
                         tool.description,
+                        tool.experimental_searchable_description,
                         tool.input_schema,
                         tool.output_schema,
                     )
