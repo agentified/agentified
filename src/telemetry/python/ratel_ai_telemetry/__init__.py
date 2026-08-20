@@ -110,6 +110,8 @@ RATEL_CATALOG_TAGS: Final = "ratel.catalog.tags"
 RATEL_CATALOG_INPUT_SCHEMA: Final = "ratel.catalog.input_schema"
 #: ratel.catalog.output_schema — canonical JSON tool output schema.
 RATEL_CATALOG_OUTPUT_SCHEMA: Final = "ratel.catalog.output_schema"
+#: ratel.catalog.schema_omitted — one or more oversized schema attributes were omitted.
+RATEL_CATALOG_SCHEMA_OMITTED: Final = "ratel.catalog.schema_omitted"
 #: ratel.catalog.searchable_description — effective searchable description.
 RATEL_CATALOG_SEARCHABLE_DESCRIPTION: Final = "ratel.catalog.searchable_description"
 #: whether the effective searchable description came from an explicit override.
@@ -453,6 +455,7 @@ __all__ = [
     "RATEL_CATALOG_KIND",
     "RATEL_CATALOG_NAME",
     "RATEL_CATALOG_OUTPUT_SCHEMA",
+    "RATEL_CATALOG_SCHEMA_OMITTED",
     "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
     "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
     "RATEL_CATALOG_TAGS",

@@ -223,6 +223,33 @@ describe("execute_tool span", () => {
     );
   });
 
+  it("omits oversized catalog schemas without dropping unrelated logs", async () => {
+    process.env[CAPTURE_ENV] = "EVENT_ONLY";
+    process.env[EXPERIMENTAL_CATALOG_DEFINITIONS_ENV] = "true";
+    const catalog = new ToolCatalog();
+
+    await catalog.register({
+      id: "oversized",
+      name: "oversized",
+      description: "Oversized schema",
+      inputSchema: { type: "string", description: "x".repeat(100_000) },
+      outputSchema: { type: "object" },
+      execute: () => undefined,
+    });
+    logs.getLogger("test").emit({ eventName: "unrelated", attributes: { ok: true } });
+
+    const [event] = logEventsNamed("ratel.catalog.definition");
+    expect(event?.attributes).toMatchObject({
+      "ratel.catalog.kind": "tool",
+      "ratel.catalog.id": "oversized",
+      "ratel.catalog.output_schema": '{"type":"object"}',
+      "ratel.catalog.schema_omitted": true,
+      "ratel.catalog.content_hash": expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(event?.attributes).not.toHaveProperty("ratel.catalog.input_schema");
+    expect(logEventsNamed("unrelated")).toHaveLength(1);
+  });
+
   it("does not emit experimental catalog definitions from the generic content gate alone", async () => {
     process.env[CAPTURE_ENV] = "EVENT_ONLY";
     const catalog = new ToolCatalog();

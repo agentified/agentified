@@ -265,6 +265,7 @@ definition hash is suppressed, while a changed definition emits again.
 | `ratel.catalog.tags` | string[] | empty when no tags were supplied |
 | `ratel.catalog.input_schema` | string | canonical JSON; tool definitions only |
 | `ratel.catalog.output_schema` | string | canonical JSON; tool definitions only |
+| `ratel.catalog.schema_omitted` | boolean | true when an oversized tool schema attribute was omitted |
 | `ratel.catalog.searchable_description` | string | effective search text after fallback |
 | `ratel.catalog.searchable_description_overridden` | boolean | true when an explicit override supplied the effective text |
 | `ratel.catalog.content_hash` | string | lowercase SHA-256 of the canonical complete definition |
@@ -272,7 +273,9 @@ definition hash is suppressed, while a changed definition emits again.
 The hash input includes kind, identity, authored fields, tags, nullable schemas, effective
 searchable description, and the override flag. RFC 8785 JSON Canonicalization Scheme bytes are
 used for both the hash input and the `input_schema` / `output_schema` strings; the digest is
-lowercase SHA-256. Non-I-JSON numbers such as NaN and infinity are rejected. This is a
+lowercase SHA-256. Each schema attribute is limited to 65,536 UTF-8 bytes. An oversized schema is
+omitted whole, `ratel.catalog.schema_omitted` is true, and the hash still covers the complete
+definition. Non-I-JSON numbers such as NaN and infinity are rejected. This is a
 deduplication token, not a redaction: the OTel event remains content and is off unless both the
 experimental gate and an EventRecord content mode are enabled. Independently, ADR-0020's runtime
 vocabulary includes a `catalog_definition` event behind an explicit experimental SDK option.

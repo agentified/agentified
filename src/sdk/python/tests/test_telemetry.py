@@ -251,6 +251,36 @@ async def test_catalog_definitions_are_gated_complete_and_deduplicated(
 
 
 @pytest.mark.asyncio
+async def test_catalog_definitions_omit_oversized_schemas_without_dropping_unrelated_logs(
+    exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CAPTURE_ENV, "EVENT_ONLY")
+    monkeypatch.setenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "true")
+    catalog = ToolCatalog()
+
+    await catalog.register(
+        ExecutableTool(
+            id="oversized",
+            name="oversized",
+            description="Oversized schema",
+            input_schema={"type": "string", "description": "x" * 100_000},
+            output_schema={"type": "object"},
+            execute=lambda _args: None,
+        )
+    )
+    _logs.get_logger("test").emit(event_name="unrelated", attributes={"ok": True})
+
+    event = _log_events_named("ratel.catalog.definition")[0]
+    assert event.attributes["ratel.catalog.kind"] == "tool"
+    assert event.attributes["ratel.catalog.id"] == "oversized"
+    assert event.attributes["ratel.catalog.output_schema"] == '{"type":"object"}'
+    assert event.attributes["ratel.catalog.schema_omitted"] is True
+    assert len(event.attributes["ratel.catalog.content_hash"]) == 64
+    assert "ratel.catalog.input_schema" not in event.attributes
+    assert len(_log_events_named("unrelated")) == 1
+
+
+@pytest.mark.asyncio
 async def test_catalog_definitions_require_experimental_gate(
     exporter: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

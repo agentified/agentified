@@ -87,6 +87,8 @@ pub const RATEL_CATALOG_TAGS: &str = "ratel.catalog.tags";
 pub const RATEL_CATALOG_INPUT_SCHEMA: &str = "ratel.catalog.input_schema";
 /// `ratel.catalog.output_schema` — canonical JSON tool output schema.
 pub const RATEL_CATALOG_OUTPUT_SCHEMA: &str = "ratel.catalog.output_schema";
+/// `ratel.catalog.schema_omitted` — one or more oversized schema attributes were omitted.
+pub const RATEL_CATALOG_SCHEMA_OMITTED: &str = "ratel.catalog.schema_omitted";
 /// `ratel.catalog.searchable_description` — effective searchable description.
 pub const RATEL_CATALOG_SEARCHABLE_DESCRIPTION: &str = "ratel.catalog.searchable_description";
 /// `ratel.catalog.searchable_description_overridden` — whether an override is set.
@@ -676,6 +678,7 @@ mod tests {
                 RATEL_CATALOG_TAGS,
                 RATEL_CATALOG_INPUT_SCHEMA,
                 RATEL_CATALOG_OUTPUT_SCHEMA,
+                RATEL_CATALOG_SCHEMA_OMITTED,
                 RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
                 RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
                 RATEL_CATALOG_CONTENT_HASH,
@@ -688,6 +691,7 @@ mod tests {
                 "ratel.catalog.tags",
                 "ratel.catalog.input_schema",
                 "ratel.catalog.output_schema",
+                "ratel.catalog.schema_omitted",
                 "ratel.catalog.searchable_description",
                 "ratel.catalog.searchable_description_overridden",
                 "ratel.catalog.content_hash",

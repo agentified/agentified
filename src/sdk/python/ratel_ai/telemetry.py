@@ -86,6 +86,9 @@ try:
     RATEL_CATALOG_OUTPUT_SCHEMA: str = getattr(
         _telemetry_vocabulary, "RATEL_CATALOG_OUTPUT_SCHEMA", "ratel.catalog.output_schema"
     )
+    RATEL_CATALOG_SCHEMA_OMITTED: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_SCHEMA_OMITTED", "ratel.catalog.schema_omitted"
+    )
     RATEL_CATALOG_SEARCHABLE_DESCRIPTION: str = getattr(
         _telemetry_vocabulary,
         "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
@@ -120,6 +123,7 @@ except ModuleNotFoundError:
     _ENABLED = False
 
 _TRACER_NAME = "ratel-ai"
+_CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES = 64 * 1_024
 
 #: `ratel.search.target` values (mirror `SearchTarget` so catalog call sites stay
 #: decoupled from the telemetry vocabulary module).
@@ -173,6 +177,12 @@ def record_catalog_definitions(
             if kind == "tool":
                 canonical_input_schema = _canonical_json(input_schema)
                 canonical_output_schema = _canonical_json(output_schema)
+                input_schema_omitted = _catalog_schema_exceeds_attribute_limit(
+                    canonical_input_schema
+                )
+                output_schema_omitted = _catalog_schema_exceeds_attribute_limit(
+                    canonical_output_schema
+                )
         except rfc8785.IntegerDomainError:
             # Catalog mutation already succeeded. Content telemetry is lossy and
             # must never turn a supported schema into a failed registration.
@@ -190,14 +200,22 @@ def record_catalog_definitions(
             RATEL_CATALOG_CONTENT_HASH: content_hash,
         }
         if kind == "tool":
-            attributes[RATEL_CATALOG_INPUT_SCHEMA] = canonical_input_schema
-            attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = canonical_output_schema
+            if not input_schema_omitted:
+                attributes[RATEL_CATALOG_INPUT_SCHEMA] = canonical_input_schema
+            if not output_schema_omitted:
+                attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = canonical_output_schema
+            if input_schema_omitted or output_schema_omitted:
+                attributes[RATEL_CATALOG_SCHEMA_OMITTED] = True
         _logger().emit(event_name=RATEL_CATALOG_DEFINITION, attributes=attributes)
         emitted_hashes[definition.id] = content_hash
 
 
 def _canonical_json(value: Any) -> str:
     return rfc8785.dumps(value).decode("utf-8")
+
+
+def _catalog_schema_exceeds_attribute_limit(value: str) -> bool:
+    return len(value.encode()) > _CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
 
 
 def _tracer() -> Any:

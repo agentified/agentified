@@ -132,6 +132,8 @@ export const RATEL_CATALOG_TAGS = "ratel.catalog.tags";
 export const RATEL_CATALOG_INPUT_SCHEMA = "ratel.catalog.input_schema";
 /** `ratel.catalog.output_schema` — canonical JSON tool output schema. */
 export const RATEL_CATALOG_OUTPUT_SCHEMA = "ratel.catalog.output_schema";
+/** `ratel.catalog.schema_omitted` — one or more oversized schema attributes were omitted. */
+export const RATEL_CATALOG_SCHEMA_OMITTED = "ratel.catalog.schema_omitted";
 /** `ratel.catalog.searchable_description` — effective searchable description. */
 export const RATEL_CATALOG_SEARCHABLE_DESCRIPTION = "ratel.catalog.searchable_description";
 /** Whether the effective searchable description came from an explicit override. */

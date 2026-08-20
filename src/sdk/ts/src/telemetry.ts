@@ -48,6 +48,7 @@ import {
   RATEL_CATALOG_KIND,
   RATEL_CATALOG_NAME,
   RATEL_CATALOG_OUTPUT_SCHEMA,
+  RATEL_CATALOG_SCHEMA_OMITTED,
   RATEL_CATALOG_SEARCHABLE_DESCRIPTION,
   RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN,
   RATEL_CATALOG_TAGS,
@@ -139,6 +140,7 @@ import { newRuntimeEventId } from "./runtime-events.js";
 const TRACER_NAME = "@ratel-ai/sdk";
 const LOGGER_NAME = "@ratel-ai/sdk";
 const ERROR_TYPE = "error.type";
+const CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES = 64 * 1_024;
 const RESERVED_EXPERIMENT_ATTRIBUTES = new Set([
   ERROR_TYPE,
   GEN_AI_TOOL_NAME,
@@ -257,6 +259,10 @@ function catalogDefinitionAttributes(
     searchable_description_overridden: searchableDescriptionOverridden,
   };
   const contentHash = createHash("sha256").update(canonicalJson(content), "utf8").digest("hex");
+  const canonicalInputSchema = kind === "tool" ? canonicalJson(inputSchema) : undefined;
+  const canonicalOutputSchema = kind === "tool" ? canonicalJson(outputSchema) : undefined;
+  const inputSchemaOmitted = exceedsCatalogSchemaAttributeLimit(canonicalInputSchema);
+  const outputSchemaOmitted = exceedsCatalogSchemaAttributeLimit(canonicalOutputSchema);
   return {
     [RATEL_CATALOG_KIND]: kind,
     [RATEL_CATALOG_ID]: definition.id,
@@ -265,14 +271,27 @@ function catalogDefinitionAttributes(
     [RATEL_CATALOG_TAGS]: tags,
     ...(kind === "tool"
       ? {
-          [RATEL_CATALOG_INPUT_SCHEMA]: canonicalJson(inputSchema),
-          [RATEL_CATALOG_OUTPUT_SCHEMA]: canonicalJson(outputSchema),
+          ...(inputSchemaOmitted
+            ? {}
+            : { [RATEL_CATALOG_INPUT_SCHEMA]: canonicalInputSchema as string }),
+          ...(outputSchemaOmitted
+            ? {}
+            : { [RATEL_CATALOG_OUTPUT_SCHEMA]: canonicalOutputSchema as string }),
+          ...(inputSchemaOmitted || outputSchemaOmitted
+            ? { [RATEL_CATALOG_SCHEMA_OMITTED]: true }
+            : {}),
         }
       : {}),
     [RATEL_CATALOG_SEARCHABLE_DESCRIPTION]: searchableDescription,
     [RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN]: searchableDescriptionOverridden,
     [RATEL_CATALOG_CONTENT_HASH]: contentHash,
   };
+}
+
+function exceedsCatalogSchemaAttributeLimit(value: string | undefined): boolean {
+  return (
+    value !== undefined && Buffer.byteLength(value, "utf8") > CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
+  );
 }
 
 function canonicalJson(value: unknown): string {
