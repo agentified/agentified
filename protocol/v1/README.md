@@ -224,6 +224,13 @@ to delegate:
   fields it does not recognize** (the schema is `additionalProperties: true`). An older
   consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`,
   `cohesion`, `vector_n`, `cluster_policy`) loads with a safe default.
+- **Edge weights are counts, not the serving order.** `tools` and `skills` map a capability id
+  to how many confirmed observations chose it. A consumer should not serve that order raw: a
+  capability invoked across many clusters ranks on volume rather than on answering the matched
+  question. Ratel scales each edge by `1 + ln(clusters / clusters naming it)`, counted over every
+  cluster's **raw** edges — counting only the ones a consumer's own catalog still defines would
+  make the order a property of that catalog rather than of the graph, so two consumers of one
+  document would disagree. Derived, so nothing about it crosses the wire.
 - **Cluster provenance.** The similarity a query must clear and the share of a cluster's members
   it must clear it against are configurable per catalog, so `cluster_policy` records what a
   graph's boundaries were actually drawn under — otherwise two producers at different settings

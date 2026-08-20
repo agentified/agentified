@@ -115,6 +115,32 @@ outranks one only history supports. The arm still promotes a low-ranked capabili
 BM25's rank-0 (it contributes from both arms), but it cannot conjure one the base ranker
 did not retrieve at all.
 
+### Which capability the arm promotes first
+
+An edge weight is a count of confirmed invocations, but serving that order raw lets a capability
+invoked across many different intents rank on volume rather than on answering *this* question —
+the mechanism behind the reported failure, where the most-invoked write op rode into every
+task-phrased search. Worse, where counts tie the order fell through to the id tie-break, so a
+write op could lead a read query on the strength of sorting earlier alphabetically.
+
+Each count is therefore scaled by `1 + ln(clusters / clusters naming that capability)`. The
+smoothing is load-bearing: plain `ln(N/cf)` sends a capability present in *every* cluster to
+exactly zero, pinning a genuine workhorse last in every arm. The floor of 1.0 stops ubiquity
+earning a promotion without making it earn a punishment, and it is why there is nothing here to
+configure — unlike the cluster policy, the smoothing is the whole of the tuning, and the
+statistic is derived from the graph's own edges rather than chosen.
+
+**Counted over the raw edge maps, before any registry filtering.** Which capabilities a consumer
+still defines is a property of its catalog, not of the graph; counting only survivors would make
+two agents sharing a graph rank the same cluster differently, and a tool that knows every id
+disagree with both. The corollary is that a capability the registry has dropped still counts
+toward how spread out the others are — the observations happened, and it is what keeps the
+numbers portable. Scoped per kind, since tools and skills are separate namespaces and a
+tools-only cluster is ordinary.
+
+The weight never reaches the arm's own RRF weight, which stays `W · min(1, support/3)`. It
+changes the order *within* the arm and nothing else.
+
 ### Two similarity tiers
 
 Online clustering needs a query-to-cluster similarity at search time.

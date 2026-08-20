@@ -23,8 +23,11 @@
 //!   cannot connect "why is the build broken" to "did CI pass".
 //!
 //! The wire shape is `protocol/v1/schema/intent-graph.schema.json`; this is its
-//! consumer. An edge weight is a plain count of confirmed invocations: it orders
-//! the arm and nothing more, since RRF then fuses on rank position.
+//! consumer. An edge weight is a plain count of confirmed invocations, and it is
+//! not on its own the order to serve: a capability invoked across many clusters
+//! ranks on volume rather than on answering the matched question, so each count
+//! is scaled by how few clusters name it ([`ClusterFrequency`]). Only the
+//! resulting order leaves the arm — RRF fuses on rank position.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
