@@ -311,7 +311,7 @@ impl ToolRegistry {
         for (id, cluster_members) in &members {
             let (vectors, fp) = self
                 .dense
-                .embed_texts_with_identity(cluster_members, self.sink.as_ref())?;
+                .embed_queries_with_identity(cluster_members, self.sink.as_ref())?;
             if !cluster_members.is_empty() {
                 fingerprint = Some(fp);
             }
@@ -2315,6 +2315,55 @@ mod tests {
         let events = model_mismatch_events(&sink);
         assert_eq!(events.len(), 1);
         assert!(events[0].2, "different width → dim_mismatch true");
+    }
+
+    /// Returns a different vector on the query side than the document side, so a
+    /// test can tell which side a caller reached for. The crate's other stubs are
+    /// symmetric; `RebuildRaceEmbedder` is the only precedent for this shape.
+    struct SidedEmbedder;
+
+    impl SidedEmbedder {
+        const DOC: [f32; 3] = [1.0, 0.0, 0.0];
+        const QUERY: [f32; 3] = [0.0, 1.0, 0.0];
+    }
+
+    impl Embedder for SidedEmbedder {
+        fn embed_doc(&self, _: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(Self::DOC.to_vec())
+        }
+        fn embed_query(&self, _: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(Self::QUERY.to_vec())
+        }
+        fn fingerprint(&self) -> String {
+            "sided".into()
+        }
+    }
+
+    #[test]
+    fn rebuild_embeds_graph_members_as_queries_not_documents() {
+        // A cluster's members are past QUERIES. Re-embedding them through the
+        // document path puts the rebuilt centroid in the doc-side manifold, while
+        // every live query arrives on the query side — an instructed model (the
+        // built-in one carries a query instruction and no doc prefix) then scores
+        // every comparison against a centroid the queries can never reach.
+        let mut reg = with_embedder(Arc::new(SidedEmbedder));
+        reg.register(tool("read_file", "read a file"));
+        reg.build_embeddings().unwrap();
+        reg.set_intent_graph(Some(graph_with_model(
+            "read_file",
+            vec![0.0, 0.0, 1.0],
+            "another-model",
+        )));
+
+        reg.rebuild_intent_graph().unwrap();
+
+        let graph = reg.graph.as_ref().unwrap().read().unwrap();
+        let centroid = graph.labeled()[0].centroid.clone().unwrap();
+        assert_eq!(
+            centroid,
+            SidedEmbedder::QUERY.to_vec(),
+            "members must be re-embedded query-side, got {centroid:?}"
+        );
     }
 
     #[test]

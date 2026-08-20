@@ -272,6 +272,29 @@ pub(crate) trait Embedder: Send + Sync {
         })
     }
 
+    /// Embed a batch of **queries** and return it with the resolved model
+    /// identity.
+    ///
+    /// Distinct from [`Self::embed_batch_with_identity`], which is the *document*
+    /// path and applies the doc-side prefix. An instructed model puts queries and
+    /// documents in different places, so text that will be compared against live
+    /// queries — past queries, for instance — has to be embedded here or it lands
+    /// in the wrong manifold. The default loops the single-query path; an
+    /// embedder with a cheaper batch route overrides it.
+    fn embed_query_batch_with_identity(
+        &self,
+        texts: &[String],
+    ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+        let mut value = Vec::with_capacity(texts.len());
+        let mut fingerprint = self.fingerprint();
+        for text in texts {
+            let embedded = self.embed_query_with_identity(text)?;
+            fingerprint = embedded.fingerprint;
+            value.push(embedded.value);
+        }
+        Ok(Embedded { value, fingerprint })
+    }
+
     /// Embed documents and return the complete batch with its resolved model
     /// identity. The cache validates and commits this result atomically.
     fn embed_batch_with_identity(
@@ -838,18 +861,25 @@ impl CandleEmbedder {
     /// softmax), and right-padding never leaks into real tokens, so each vector is
     /// **bit-for-bit identical** to the per-document path — chunking only bounds the
     /// activation memory a whole-corpus `rebuild` would otherwise allocate at once.
+    /// Documents get the doc-side prefix, mirroring `embed_doc`.
     fn embed_batch_inner(&self, texts: &[String]) -> candle_core::Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = if self.doc_prefix.is_empty() {
+            texts.to_vec()
+        } else {
+            texts
+                .iter()
+                .map(|t| format!("{}{}", self.doc_prefix, t))
+                .collect()
+        };
+        self.embed_batch_inner_unprefixed(&prefixed)
+    }
+
+    /// The chunked tensor path itself, on text that already carries whichever
+    /// side's prefix it needs.
+    fn embed_batch_inner_unprefixed(&self, texts: &[String]) -> candle_core::Result<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(EMBED_BATCH_CHUNK) {
-            // Documents get the doc-side prefix, mirroring `embed_doc`.
-            let inputs: Vec<String> = if self.doc_prefix.is_empty() {
-                chunk.to_vec()
-            } else {
-                chunk
-                    .iter()
-                    .map(|t| format!("{}{}", self.doc_prefix, t))
-                    .collect()
-            };
+            let inputs: Vec<String> = chunk.to_vec();
             let encodings = self
                 .tokenizer
                 .encode_batch(inputs, true)
@@ -937,6 +967,31 @@ impl Embedder for CandleEmbedder {
             .map_err(|e| EmbedderError::Inference {
                 source: e.to_string(),
             })
+    }
+
+    fn embed_query_batch_with_identity(
+        &self,
+        texts: &[String],
+    ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+        // The chunked tensor path, with the query-side prefix applied up front —
+        // `embed_batch_inner` prefixes doc-side, mirroring `embed_doc`.
+        let prefixed: Vec<String> = if self.query_prefix.is_empty() {
+            texts.to_vec()
+        } else {
+            texts
+                .iter()
+                .map(|t| format!("{}{}", self.query_prefix, t))
+                .collect()
+        };
+        let value =
+            self.embed_batch_inner_unprefixed(&prefixed)
+                .map_err(|e| EmbedderError::Inference {
+                    source: e.to_string(),
+                })?;
+        Ok(Embedded {
+            value,
+            fingerprint: self.fingerprint(),
+        })
     }
 
     fn fingerprint(&self) -> String {
@@ -1366,6 +1421,23 @@ impl Embedder for EndpointEmbedder {
             let prefixed: Vec<String> = texts
                 .iter()
                 .map(|t| format!("{}{}", self.doc_prefix, t))
+                .collect();
+            self.request(&prefixed)
+        }
+    }
+
+    fn embed_query_batch_with_identity(
+        &self,
+        texts: &[String],
+    ) -> Result<Embedded<Vec<Vec<f32>>>, EmbedderError> {
+        // One request, not one per query — the default's per-text loop would be
+        // an HTTP round-trip per member.
+        if self.query_prefix.is_empty() {
+            self.request(texts)
+        } else {
+            let prefixed: Vec<String> = texts
+                .iter()
+                .map(|t| format!("{}{}", self.query_prefix, t))
                 .collect();
             self.request(&prefixed)
         }

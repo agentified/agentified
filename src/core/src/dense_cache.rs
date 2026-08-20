@@ -209,6 +209,26 @@ impl DenseCache {
     /// Embed arbitrary texts under the active model, returning the vectors and
     /// the model fingerprint. Used to re-embed an intent graph's members when
     /// rebuilding its centroids after a model change.
+    /// Embed `texts` as **queries**, returning the vectors and the resolved
+    /// model identity.
+    ///
+    /// The query-side twin of [`Self::embed_texts_with_identity`]. An instructed
+    /// model prefixes queries and documents differently, so text that will later
+    /// be compared against live queries has to be embedded on this side or it
+    /// sits in a manifold the queries never reach.
+    pub(crate) fn embed_queries_with_identity(
+        &self,
+        texts: &[String],
+        sink: &dyn TraceSink,
+    ) -> Result<(Vec<Vec<f32>>, String), EmbedderError> {
+        if texts.is_empty() {
+            return Ok((Vec::new(), self.built_fingerprint().unwrap_or_default()));
+        }
+        let embedder = self.resolve_embedder(sink)?;
+        let embedded = embedder.embed_query_batch_with_identity(texts)?;
+        Ok((embedded.value, embedded.fingerprint))
+    }
+
     pub(crate) fn embed_texts_with_identity(
         &self,
         texts: &[String],

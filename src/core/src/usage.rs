@@ -1379,6 +1379,24 @@ impl IntentGraph {
             let it = &mut self.intents[i];
             it.cohesion = norm(&sum);
             it.centroid = Some(normalize(sum.clone()));
+            // Keep the per-member vectors, not just their mean. They are what
+            // `coverage` counts, they never cross the wire, and this is the only
+            // path that has them in hand — so a rebuild is also how a graph that
+            // came off disk, or was grown before coverage existed, gets a dense
+            // tier that can tell a cluster's members apart again.
+            //
+            // Only when the pairing is provably intact. The caller snapshots
+            // members, embeds without the graph lock, then re-locks, and a
+            // concurrent `observe` in that window can append a member and evict
+            // the oldest — shifting every position by one. The centroid does not
+            // care, being an order-insensitive mean, but these are matched to
+            // members by position. On any disagreement leave them alone: the
+            // cluster keeps the cohesion bar until fresh observations refill it,
+            // which is a degraded tier rather than a silently wrong one.
+            if vectors.len() == it.members.len() {
+                it.member_vectors = vectors.into_iter().map(Some).collect();
+                it.retain_recent_vectors();
+            }
             // Reset the accumulator to what was actually rebuilt. Leaving the
             // stale fold count let the next single observation yank a whole
             // cluster's centroid halfway across, no matter how many members it
@@ -3797,6 +3815,61 @@ mod tests {
             g.arm("deploy the app", Some(&far), Capability::Tool, &all_known)
                 .is_none(),
             "and must still reject below tau"
+        );
+    }
+
+    #[test]
+    fn rebuild_refills_the_member_vectors_it_is_the_repair_path_for() {
+        // Member vectors never cross the wire, so a graph off disk has none and
+        // falls back to the centroid bar. A rebuild already embeds every member —
+        // keeping those vectors rather than only their mean is what makes it the
+        // repair path for a graph grown before coverage existed.
+        let mut g = graph(vec![intent("i0", &["a", "b"], &[("t", 1.0)])]);
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_none),
+            "a wire-shaped cluster starts with none"
+        );
+
+        g.rebuild_centroids(
+            vec![("i0".into(), vec![topic_vec(0, 0), topic_vec(0, 1)])],
+            "m".into(),
+        );
+
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_some),
+            "the rebuild had them in hand and must keep them"
+        );
+        // And the refilled tier discriminates again: same topic in, distinct out.
+        assert!(
+            dense_verdict(&g.intents[0], &topic_vec(0, 2)).is_some_and(|v| v.admitted && v.covered)
+        );
+        assert!(
+            !dense_verdict(&g.intents[0], &topic_vec(1, 0)).is_some_and(|v| v.admitted),
+            "a distinct topic must not be admitted once coverage can see the members"
+        );
+    }
+
+    #[test]
+    fn rebuild_leaves_member_vectors_alone_when_the_pairing_shifted() {
+        // The caller snapshots members, embeds without the graph lock, then
+        // re-locks — and a concurrent observe in that window can append a member,
+        // shifting every position. The centroid is an order-insensitive mean and
+        // does not care; these are matched by position and would silently pair a
+        // member's text with its neighbour's vector.
+        let mut g = graph(vec![intent("i0", &["a", "b", "c"], &[("t", 1.0)])]);
+
+        g.rebuild_centroids(
+            vec![("i0".into(), vec![topic_vec(0, 0), topic_vec(0, 1)])],
+            "m".into(),
+        );
+
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_none),
+            "a degraded tier beats a silently wrong one"
+        );
+        assert!(
+            g.intents[0].centroid.is_some(),
+            "the centroid is order-insensitive and still rebuilds"
         );
     }
 

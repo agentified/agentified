@@ -246,7 +246,7 @@ impl SkillRegistry {
         for (id, cluster_members) in &members {
             let (vectors, fp) = self
                 .dense
-                .embed_texts_with_identity(cluster_members, self.sink.as_ref())?;
+                .embed_queries_with_identity(cluster_members, self.sink.as_ref())?;
             if !cluster_members.is_empty() {
                 fingerprint = Some(fp);
             }
