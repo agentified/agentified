@@ -46,6 +46,10 @@ pub(crate) struct Turn {
 pub(crate) struct CatalogEntry {
     pub id: String,
     pub description: String,
+    /// The tool's argument schema. Carried because the projection folds it in,
+    /// so a catalog without one cannot measure anything about how much of a
+    /// tool's ranking comes from its parameters rather than its description.
+    pub input_schema: serde_json::Value,
     pub vector: Vec<f32>,
 }
 
@@ -83,6 +87,7 @@ pub(crate) fn catalog() -> Vec<CatalogEntry> {
         .map(|t| CatalogEntry {
             id: t["id"].as_str().expect("id").into(),
             description: t["description"].as_str().expect("description").into(),
+            input_schema: t["input_schema"].clone(),
             vector: floats(&t["vector"]),
         })
         .collect()
@@ -95,7 +100,7 @@ pub(crate) fn tool_of(entry: &CatalogEntry) -> Tool {
         id: entry.id.clone(),
         name: entry.id.clone(),
         description: entry.description.clone(),
-        input_schema: serde_json::json!({}),
+        input_schema: entry.input_schema.clone(),
         output_schema: serde_json::json!({}),
     }
 }
@@ -266,21 +271,26 @@ fn regenerate_harness_fixtures() {
 
     let mut doc = json(CATALOG);
     for entry in doc["tools"].as_array_mut().expect("tools").iter_mut() {
-        let tool = Tool {
+        // Through `tool_of`, not a second `Tool` literal: the harness looks a
+        // vector up by the projection string, so the two must build the tool
+        // identically or every lookup misses.
+        let tool = tool_of(&CatalogEntry {
             id: entry["id"].as_str().expect("id").into(),
-            name: entry["id"].as_str().expect("id").into(),
             description: entry["description"].as_str().expect("description").into(),
-            input_schema: serde_json::json!({}),
-            output_schema: serde_json::json!({}),
-        };
-        // The projection the registry indexes, not the bare description — the
-        // harness looks vectors up by exactly this string.
+            input_schema: entry["input_schema"].clone(),
+            vector: Vec::new(),
+        });
         let v = embedder
             .embed_doc(&searchable_text(&tool))
             .expect("embed doc");
         entry["vector"] = serde_json::json!(v);
     }
-    write_fixture("catalog.json", &doc, "tools", &["id", "description"]);
+    write_fixture(
+        "catalog.json",
+        &doc,
+        "tools",
+        &["id", "description", "input_schema"],
+    );
 }
 
 /// Write a fixture with one entry per line, vectors at 6 significant figures —
