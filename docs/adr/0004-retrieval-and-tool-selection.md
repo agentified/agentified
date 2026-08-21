@@ -23,21 +23,24 @@ the tool list, or suggest alongside it).
 The durable decision is **what text represents a tool**, independent of the scorer that ranks
 it:
 
-- A private `searchable_text(&Tool) -> String` flattener emits **only semantic tokens**, in
-  order: tool name, description, then per property in schema-defined order its key,
-  description, and enum string values, recursing into nested objects and array `items`; the
-  same for the output schema. Structural tokens (`type`, `required`, `$ref`, braces, quotes)
-  are skipped. Schema-defined order is preserved via `serde_json`'s `preserve_order`, so the
-  projection is deterministic. `Tool` carries `input_schema` and `output_schema` as
-  `serde_json::Value`; both are walked.
+- A private `searchable_text(&Tool) -> String` flattener emits **only semantic tokens**.
+  Structural tokens (`type`, `required`, `$ref`, braces, quotes) are skipped, and
+  schema-defined order is preserved via `serde_json`'s `preserve_order`, so the projection is
+  deterministic.
+  > **Superseded by [ADR-0021](0021-searchable-text-indexes-names-not-schema-prose.md).** This
+  > ADR walked both schemas and emitted each property's key, **description** and **enum**
+  > values. Those inflated parameter-heavy write operations past read operations that answered
+  > the query; the projection now emits tool name, description, and input-schema property
+  > **names** only.
 - This flattened projection is the **contract**: telemetry, suggestions, and every retrieval
   layer build on it. Changing the flattening algorithm is a breaking change and warrants
-  supersession.
+  supersession — as ADR-0021 does.
 
 The scorers over that projection are selectable while the projection stays stable:
 
 - Current retrieval uses the [`bm25`](https://crates.io/crates/bm25) crate with its default
-  English tokenizer, tuned `k1 = 0.9`, `b = 0.4` (below the crate defaults, because tool
+  English tokenizer, tuned `k1 = 0.9`, `b = 0.75` since ADR-0021 (`b` was 0.4 while the
+  projection folded in whole schemas — below the crate defaults, because tool
   descriptions are short: term frequency saturates faster and length normalization matters
   less).
 - Semantic retrieval embeds the same projection with a configurable in-process model or
@@ -57,8 +60,10 @@ The scorers over that projection are selectable while the projection stays stabl
 
 ## Consequences
 
-- The tool author's vocabulary (description, parameter names, enum values) flows directly
-  into recall: documentation quality is the retrieval lever, and the integrator's knob.
+- The tool author's vocabulary flows directly into recall: documentation quality is the
+  retrieval lever, and the integrator's knob. Which parts — see
+  [ADR-0021](0021-searchable-text-indexes-names-not-schema-prose.md); enum values and property
+  descriptions no longer count, and `b` is 0.75.
 - The current `k1`/`b` are fixed tuning, reproducible for today's benchmarks; they are not a
   public knob. Revisiting them or any dense-ranking detail does not disturb the
   `searchable_text` contract.

@@ -28,7 +28,8 @@ is chosen per catalog (a construction-time default) or per call (an explicit ove
 override wins. Across the SDKs the identifier is the string `"bm25" | "semantic" | "hybrid"`,
 parallel to `SearchOrigin`.
 
-- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b = 0.4`) and stays
+- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b = 0.75` since
+  ADR-0021, which also narrowed the projection those scores are computed over) and stays
   the default. The legacy `search` / `search_with_origin` entry points keep their infallible
   `Vec<SearchHit>` signature and BM25 behavior byte-for-byte — upgrading callers need no code
   change. The index is cached per registry (`Bm25Cache`) and rebuilt in full on the first
