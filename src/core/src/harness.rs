@@ -50,6 +50,14 @@ pub(crate) struct CatalogEntry {
     /// so a catalog without one cannot measure anything about how much of a
     /// tool's ranking comes from its parameters rather than its description.
     pub input_schema: serde_json::Value,
+    /// The exact projection string this entry's vector was embedded from.
+    ///
+    /// Recorded because the lookup key and the lookup are both computed by the
+    /// *current* `searchable_text`, so they always agree — a change to the
+    /// projection leaves the stored vector describing text that no longer
+    /// exists, and nothing in the key would notice. This is the same guard RAT1
+    /// carries per entry as `projection_hash`.
+    pub projection: String,
     pub vector: Vec<f32>,
 }
 
@@ -88,6 +96,7 @@ pub(crate) fn catalog() -> Vec<CatalogEntry> {
             id: t["id"].as_str().expect("id").into(),
             description: t["description"].as_str().expect("description").into(),
             input_schema: t["input_schema"].clone(),
+            projection: t["projection"].as_str().unwrap_or_default().into(),
             vector: floats(&t["vector"]),
         })
         .collect()
@@ -278,18 +287,19 @@ fn regenerate_harness_fixtures() {
             id: entry["id"].as_str().expect("id").into(),
             description: entry["description"].as_str().expect("description").into(),
             input_schema: entry["input_schema"].clone(),
+            projection: String::new(),
             vector: Vec::new(),
         });
-        let v = embedder
-            .embed_doc(&searchable_text(&tool))
-            .expect("embed doc");
+        let projection = searchable_text(&tool);
+        let v = embedder.embed_doc(&projection).expect("embed doc");
+        entry["projection"] = serde_json::json!(projection);
         entry["vector"] = serde_json::json!(v);
     }
     write_fixture(
         "catalog.json",
         &doc,
         "tools",
-        &["id", "description", "input_schema"],
+        &["id", "description", "input_schema", "projection"],
     );
 }
 
@@ -818,6 +828,23 @@ mod tests {
 
     /// Every vector the harness will ask for must be in a fixture — a missing
     /// one panics mid-run, which is a worse failure than a fast assertion.
+    #[test]
+    fn every_doc_vector_was_embedded_from_the_current_projection() {
+        // The keys cannot catch this: both the map and the lookup are built by
+        // the same `searchable_text`, so they agree by construction even when the
+        // stored vector describes text that no longer exists. Changing the
+        // projection without regenerating would otherwise measure the old one.
+        for entry in catalog() {
+            let now = searchable_text(&tool_of(&entry));
+            assert_eq!(
+                entry.projection, now,
+                "{} was embedded from a different projection — regenerate the \
+                 harness fixtures",
+                entry.id
+            );
+        }
+    }
+
     #[test]
     fn the_fixtures_cover_every_lookup_the_harness_makes() {
         let e = FixtureEmbedder::new();

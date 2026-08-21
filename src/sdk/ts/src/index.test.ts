@@ -84,13 +84,18 @@ describe("ToolRegistry", () => {
     expect(hits[0].score).toBeGreaterThan(0);
   });
 
-  it("indexes content nested inside inputSchema property descriptions", async () => {
-    // Tool's only signal for "regular expression" lives inside inputSchema.properties.pattern.description.
-    // Verifies the binding forwards serde_json::Value across the FFI without dropping nested fields.
+  it("indexes property names nested inside inputSchema", async () => {
+    // The FFI regression this has always been: the binding must forward
+    // serde_json::Value across the boundary without dropping nested fields.
+    //
+    // Queried on a property NAME rather than a property description, which is
+    // no longer indexed (ADR-0021) — and which never isolated anything here
+    // anyway, since "regular expression" is in the tool's own description too.
+    // "pattern" appears nowhere but inside the schema.
     const registry = new ToolRegistry();
     await registry.register([readFile, writeFile, searchFiles]);
 
-    const hits = registry.search("regular expression", 3);
+    const hits = registry.search("pattern", 3);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].toolId).toBe("search_files");
   });

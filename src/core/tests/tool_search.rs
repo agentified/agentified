@@ -231,16 +231,16 @@ fn search_ranks_stronger_match_above_weaker() {
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
+    // The weak tool's only signal is a property NAME. It used to be an enum
+    // value, which is no longer indexed at all (ADR-0021) — the point of the
+    // test is the ranking, so it needs a signal that still exists.
     registry.register(Tool {
         id: "weak".into(),
         name: "convert".into(),
         description: String::new(),
         input_schema: json!({
             "properties": {
-                "format": {
-                    "type": "string",
-                    "enum": ["compress", "expand"]
-                }
+                "compress": { "type": "boolean" }
             }
         }),
         output_schema: empty_schema(),
@@ -280,8 +280,10 @@ fn search_respects_top_k_bound() {
     );
 }
 
+/// The output schema describes what comes BACK, not what the caller asked for,
+/// so none of it reaches the index (ADR-0021).
 #[test]
-fn search_matches_output_schema_description() {
+fn an_output_schema_description_is_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "weather".into(),
@@ -300,12 +302,17 @@ fn search_matches_output_schema_description() {
 
     let hits = registry.search("ambient temperature reading", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "weather");
+    assert!(
+        hits.is_empty(),
+        "output schema text must not be searchable, got {:?}",
+        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
+    );
 }
 
+/// Nested property NAMES still reach the index; the prose describing them does
+/// not, at any depth (ADR-0021).
 #[test]
-fn search_matches_nested_object_description() {
+fn a_nested_property_description_is_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "deploy".into(),
@@ -334,12 +341,17 @@ fn search_matches_nested_object_description() {
 
     let hits = registry.search("datacenter location identifier", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "deploy");
+    assert!(
+        hits.is_empty(),
+        "nested property descriptions must not be searchable, got {:?}",
+        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
+    );
 }
 
+/// The same through `items`: the property names inside an array's element shape
+/// are indexed, their descriptions are not (ADR-0021).
 #[test]
-fn search_matches_array_items_description() {
+fn an_array_item_description_is_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "batch".into(),
@@ -366,12 +378,17 @@ fn search_matches_array_items_description() {
 
     let hits = registry.search("unique product identifier", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "batch");
+    assert!(
+        hits.is_empty(),
+        "array item descriptions must not be searchable, got {:?}",
+        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
+    );
 }
 
+/// Enum values are data, not a description of what a tool is for — `"toml"` says
+/// nothing about `convert`'s purpose (ADR-0021).
 #[test]
-fn search_matches_enum_value() {
+fn an_enum_value_is_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "convert".into(),
@@ -390,12 +407,18 @@ fn search_matches_enum_value() {
 
     let hits = registry.search("toml", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "convert");
+    assert!(
+        hits.is_empty(),
+        "enum values must not be searchable, got {:?}",
+        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
+    );
 }
 
+/// A parameter's description is written to help a model fill the argument in,
+/// and is routinely longer than the tool's own description — it inflated
+/// parameter-heavy tools past ones that answered the query (ADR-0021).
 #[test]
-fn search_matches_input_param_description() {
+fn an_input_param_description_is_not_indexed() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "fetch".into(),
@@ -414,8 +437,11 @@ fn search_matches_input_param_description() {
 
     let hits = registry.search("remote http target", 5);
 
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].tool_id, "fetch");
+    assert!(
+        hits.is_empty(),
+        "parameter descriptions must not be searchable, got {:?}",
+        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
+    );
 }
 
 #[test]
