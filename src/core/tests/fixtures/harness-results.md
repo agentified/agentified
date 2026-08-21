@@ -267,11 +267,11 @@ signal, and whether that changes is the question a bigger graph answers.
 | find | find tasks related to authentication | find_task_by_branch, create_task_for_branch, create_task |
 | find | find tasks about the rate limiter | search_projects, list_blocked_tasks, search_my_tasks_by_keyword |
 | find | look up tasks about the login system | search_tasks, add_task_comment, find_task_by_branch |
-| exists | is there a task for the e2e suite | link_pr_to_task, create_task_relationship, search_tasks |
+| exists | is there a task for the e2e suite | link_pr_to_task, search_tasks, create_task_relationship |
 | exists | what tasks exist about authentication | check_task_duplicates, update_task, create_task_for_branch |
-| exists | are there any tasks about authentication | search_tasks, link_pr_to_task, create_task |
-| status | mark the migration task in progress | post_progress_comment, complete_task_with_review, link_pr_to_task |
-| status | mark task done | complete_task_with_review, link_pr_to_task, end_day_review_workflow |
+| exists | are there any tasks about authentication | search_tasks, link_pr_to_task, complete_task_with_review |
+| status | mark the migration task in progress | post_progress_comment, complete_task_with_review, update_task_status |
+| status | mark task done | complete_task_with_review, add_task_comment, end_day_review_workflow |
 | status | update the status of the deploy task | update_task_status, update_task, post_progress_comment |
 | find | search for tasks on the payments flow | search_tasks, search_tasks_with_comments, search_my_tasks_by_keyword |
 | exists | any tasks about authentication | link_pr_to_task, search_tasks, complete_task_with_review |
@@ -281,8 +281,8 @@ signal, and whether that changes is the question a bigger graph answers.
 | doc_read | show me the contents of the design doc | get_document_content, search_document_chunks, download_document |
 | doc_search | search the docs for the auth flow | search_document_chunks, search_my_tasks_by_keyword, search_projects |
 | doc_read | download the architecture pdf | download_document, get_document_content, search_document_chunks |
-| count | how many tasks are open | count_tasks, create_tasks_batch, search_tasks |
-| count | count the tasks in progress | count_tasks, post_progress_comment, create_tasks_batch |
+| count | how many tasks are open | count_tasks, search_tasks, create_tasks_batch |
+| count | count the tasks in progress | count_tasks, post_progress_comment, search_tasks |
 | filter | filter my tasks by status | filter_tasks, count_tasks, list_tasks_by_status |
 | filter | list tasks that are blocked | list_blocked_tasks, list_my_active_tasks, filter_tasks |
 | status | mark the e2e task complete | complete_task_with_review, link_pr_to_task, add_task_comment |
@@ -297,15 +297,15 @@ signal, and whether that changes is the question a bigger graph answers.
 | project | find the payments project | search_projects, find_task_by_branch, create_task |
 | project | which projects mention authentication | search_projects, create_task, filter_tasks |
 | review | what did I get done today | end_day_review_workflow, list_my_active_tasks, get_document_content |
-| review | close the task and ask for review | complete_task_with_review, end_day_review_workflow, search_tasks |
-| create | create tasks for all the failing checks | check_task_duplicates, create_task, create_tasks_batch |
-| create | add tasks for each migration step | add_task_comment, create_task_relationship, create_tasks_batch |
+| review | close the task and ask for review | complete_task_with_review, end_day_review_workflow, add_task_comment |
+| create | create tasks for all the failing checks | check_task_duplicates, create_tasks_batch, create_task |
+| create | add tasks for each migration step | add_task_comment, create_task_relationship, update_task_status |
 | find | search tasks authentication | search_my_tasks_by_keyword, search_tasks, search_tasks_with_comments |
 | find | show me existing tasks about auth | check_task_duplicates, update_task, create_task_for_branch |
 | find | list tasks concerning authentication | filter_tasks, list_my_active_tasks, list_blocked_tasks |
 | find | tasks related to authentication | create_task, create_task_relationship, create_task_for_branch |
 | exists | what tasks exist about the rate limiter | list_blocked_tasks, search_tasks_with_comments, search_my_tasks_by_keyword |
-| status | move the login task to in review | complete_task_with_review, end_day_review_workflow, update_task_status |
+| status | move the login task to in review | complete_task_with_review, end_day_review_workflow, add_task_comment |
 | doc_read | open the runbook | search_tasks_with_comments, search_document_chunks, end_day_review_workflow |
 | filter | what am I working on | create_task, update_task, end_day_review_workflow |
 

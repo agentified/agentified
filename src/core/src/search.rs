@@ -2,9 +2,19 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 
-// Tuned for short tool/skill descriptions; see ADR-0004.
+/// Term-frequency saturation. Below the crate default because tool text is
+/// short, so a term repeating adds little (ADR-0004).
 pub(crate) const BM25_K1: f32 = 0.9;
-pub(crate) const BM25_B: f32 = 0.4;
+/// Length normalisation, at the standard value.
+///
+/// It was 0.4, chosen when a tool's document was its description *plus* every
+/// schema property name, description and enum value — length differences then
+/// mostly reflected how many arguments a tool took, and penalising that hard
+/// would have been penalising the wrong thing. Since the projection stopped
+/// folding in schema prose (ADR-0021) a document is close to the tool's own
+/// description, so its length carries real information again and there is no
+/// reason to discount it below standard.
+pub(crate) const BM25_B: f32 = 0.75;
 
 /// A prebuilt BM25 index over `(id, searchable_text)` documents: build once
 /// per corpus state, query many times. Building tokenizes and stems the whole
