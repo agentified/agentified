@@ -194,7 +194,16 @@ pub(crate) fn replay_under(
             .collect();
         let before: Vec<String> = g.intents.iter().map(|i| i.id.clone()).collect();
 
-        g.note_query_vector(&turn.query, &turn.vector, "fixture");
+        // Under the embedder's *own* fingerprint, not a nickname. `usage_arm`
+        // compares the graph's recorded model against the registry's built
+        // fingerprint and pauses the arm on any difference — so a graph stamped
+        // "fixture" against an embedder reporting "fixture:bge-small-en-v1.5"
+        // serves with no usage arm at all, silently.
+        g.note_query_vector(
+            &turn.query,
+            &turn.vector,
+            &FixtureEmbedder::new().fingerprint(),
+        );
         g.observe_live(&turn.query, Capability::Tool, &turn.invoked, T0, true);
 
         let joined = g
@@ -473,10 +482,17 @@ pub(crate) fn served_top3(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<S
         let hits = reg
             .search_with_method(&turn.query, 3, Origin::Direct, SearchMethod::Hybrid)
             .expect("hybrid search");
+        // `fused` cannot check this: hybrid sets it unconditionally, so the
+        // assertion it replaces passed happily while the arm was paused by a
+        // model-fingerprint mismatch and the served numbers measured two arms.
         assert!(
-            hits.first().is_none_or(|h| h.fused),
-            "the usage arm must contribute, or the served numbers below measure \
-             only BM25 and dense and the comparison is vacuous"
+            matches!(
+                reg.adaptive_ranking_status(),
+                crate::AdaptiveRankingStatus::Active
+            ),
+            "the usage arm is not serving ({:?}), so these numbers measure only \
+             BM25 and dense and every comparison drawn from them is vacuous",
+            reg.adaptive_ranking_status()
         );
         out.push((
             turn.query.clone(),
