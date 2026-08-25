@@ -486,6 +486,93 @@ pub(crate) fn served_top3(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<S
     out
 }
 
+/// Every arm's own ranking for one query, carrying the scores the fusion throws
+/// away at `tool_registry.rs`'s `.map(|(id, _)| id)`.
+///
+/// Collected with **no graph attached**. With one attached, the `Bm25` and
+/// `Semantic` paths fuse the usage arm in and return RRF scores, so neither
+/// arm's own numbers would survive to be read here. The usage arm is taken
+/// straight off the graph instead, which is what lets an offline simulation
+/// reproduce the served order exactly rather than approximately.
+pub(crate) struct ArmRankings {
+    pub query: String,
+    pub intent: String,
+    /// `(id, raw BM25 score)`, best first. Unbounded and corpus-dependent —
+    /// which is exactly why no fixed threshold can be written against it.
+    pub bm25: Vec<(String, f32)>,
+    /// `(id, cosine)`, best first. Bounded by the geometry of the model, so this
+    /// is the arm a threshold can mean something on.
+    pub dense: Vec<(String, f32)>,
+    /// The usage arm's promoted ids and its fusion weight; absent when no
+    /// cluster matched the query.
+    pub usage: Option<(Vec<String>, f32)>,
+}
+
+impl ArmRankings {
+    /// The score the fusion currently ignores, per arm.
+    pub fn bm25_top(&self) -> Option<(&str, f32)> {
+        self.bm25.first().map(|(id, s)| (id.as_str(), *s))
+    }
+    pub fn dense_top(&self) -> Option<(&str, f32)> {
+        self.dense.first().map(|(id, s)| (id.as_str(), *s))
+    }
+}
+
+/// Each arm's full ranking, per distinct query, in fixture order.
+pub(crate) fn served_arms(g: &IntentGraph, turns: &[Turn]) -> Vec<ArmRankings> {
+    use crate::method::SearchMethod;
+    use crate::trace::Origin;
+
+    let entries = catalog();
+    let mut reg = crate::ToolRegistry::with_embedder_for_test(Arc::new(FixtureEmbedder::new()));
+    for entry in &entries {
+        reg.register(tool_of(entry));
+    }
+    reg.build_embeddings().expect("fixture vectors");
+    // The whole corpus, so nothing is truncated before the simulation sees it.
+    let depth = entries.len();
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for turn in turns {
+        if seen.iter().any(|q| q == &turn.query) {
+            continue;
+        }
+        seen.push(turn.query.clone());
+        let scored = |m: SearchMethod| -> Vec<(String, f32)> {
+            reg.search_with_method(&turn.query, depth, Origin::Direct, m)
+                .expect("arm search")
+                .into_iter()
+                .map(|h| (h.tool_id, h.score))
+                .collect()
+        };
+        out.push(ArmRankings {
+            query: turn.query.clone(),
+            intent: turn.intent.clone(),
+            bm25: scored(SearchMethod::Bm25),
+            dense: scored(SearchMethod::Semantic),
+            usage: g
+                .arm(&turn.query, Some(&turn.vector), Capability::Tool, &|id| {
+                    entries.iter().any(|e| e.id == id)
+                })
+                .into_arm()
+                .map(|a| (a.ids.clone(), a.weight())),
+        });
+    }
+    out
+}
+
+/// Median of an unsorted slice; `None` when empty. Used on cosine samples, where
+/// a mean would be dragged by the long left tail of unrelated tools.
+fn median(xs: &[f32]) -> Option<f32> {
+    if xs.is_empty() {
+        return None;
+    }
+    let mut v = xs.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(v[v.len() / 2])
+}
+
 /// Ops that write. The reported failure was a read-phrased query being served
 /// one of these.
 fn is_write(id: &str) -> bool {
@@ -778,8 +865,94 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         listed.len()
     );
 
-    // -- served top-k --------------------------------------------------------
+    // -- what each arm knew and the fusion ignored ---------------------------
+    let arms = served_arms(graph, turns);
     let served = served_top3(graph, turns);
+    let served_top1 = |q: &str| -> Option<&str> {
+        served
+            .iter()
+            .find(|(query, _)| query == q)
+            .and_then(|(_, hits)| hits.first().map(String::as_str))
+    };
+
+    let _ = writeln!(o, "\n## Arm scores\n");
+    let _ = writeln!(
+        o,
+        "Each arm's own top-1 and the score it was chosen on — the numbers `hybrid_search_traced`\n\
+         computes and then discards at `.map(|(id, _)| id)`. Rank position is all that survives\n\
+         into the fusion, so a cosine of 0.92 and one of 0.31 vote at identical strength.\n\
+         \n\
+         The roll-up below is the load-bearing measurement: if a low top cosine does **not**\n\
+         separate the queries that are served a write op from the ones that are not, then\n\
+         weighting the dense arm by that cosine cannot help, and no amount of tuning will\n\
+         change it.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| intent | query | bm25 top-1 | score | dense top-1 | cos | usage w | served top-1 |\n\
+         |---|---|---|---|---|---|---|---|"
+    );
+    let mut bm25_bad = 0usize;
+    let mut dense_bad = 0usize;
+    let mut reads = 0usize;
+    let mut cos_when_bad: Vec<f32> = Vec::new();
+    let mut cos_when_ok: Vec<f32> = Vec::new();
+    for a in &arms {
+        let read = is_read_intent(&a.intent);
+        if read {
+            reads += 1;
+            if a.bm25_top().is_some_and(|(id, _)| is_write(id)) {
+                bm25_bad += 1;
+            }
+            if a.dense_top().is_some_and(|(id, _)| is_write(id)) {
+                dense_bad += 1;
+            }
+            if let Some((_, cos)) = a.dense_top() {
+                if served_top1(&a.query).is_some_and(is_write) {
+                    cos_when_bad.push(cos);
+                } else {
+                    cos_when_ok.push(cos);
+                }
+            }
+        }
+        let (bid, bs) = a
+            .bm25_top()
+            .map_or(("—".into(), String::from("—")), |(id, s)| {
+                (id.to_string(), format!("{s:.3}"))
+            });
+        let (did, ds) = a
+            .dense_top()
+            .map_or(("—".into(), String::from("—")), |(id, s)| {
+                (id.to_string(), format!("{s:.3}"))
+            });
+        let _ = writeln!(
+            o,
+            "| {} | {} | {bid} | {bs} | {did} | {ds} | {} | {} |",
+            a.intent,
+            a.query,
+            a.usage
+                .as_ref()
+                .map_or("—".to_string(), |(_, w)| format!("{w:.3}")),
+            served_top1(&a.query).unwrap_or("—")
+        );
+    }
+    let fmt = |m: Option<f32>| m.map_or("—".to_string(), |v| format!("{v:.3}"));
+    let _ = writeln!(
+        o,
+        "\n**On the {reads} read-phrased queries, BM25's own top-1 was a write op {bm25_bad} times \
+         and the dense arm's {dense_bad} times.**\n\
+         \n\
+         **Median dense top-1 cosine when the served top-1 was a write op: {} ({} queries); \
+         when it was not: {} ({} queries).** A gap here is the evidence that the dense arm knows \
+         when it is guessing; no gap means it does not, and R10 is dead on this fixture whatever \
+         the ramp is set to.\n",
+        fmt(median(&cos_when_bad)),
+        cos_when_bad.len(),
+        fmt(median(&cos_when_ok)),
+        cos_when_ok.len(),
+    );
+
+    // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;
     let _ = writeln!(o, "## Served top-3 (hybrid: BM25 + dense + usage arm)\n");
     let _ = writeln!(o, "| intent | query | top-3 |\n|---|---|---|");

@@ -257,6 +257,72 @@ it enters the fusion at half weight against two full-weight arms.
 fixtures grow: at this size it behaves as a principled tie-break rather than a ranking
 signal, and whether that changes is the question a bigger graph answers.
 
+
+## Arm scores
+
+Each arm's own top-1 and the score it was chosen on — the numbers `hybrid_search_traced`
+computes and then discards at `.map(|(id, _)| id)`. Rank position is all that survives
+into the fusion, so a cosine of 0.92 and one of 0.31 vote at identical strength.
+
+The roll-up below is the load-bearing measurement: if a low top cosine does **not**
+separate the queries that are served a write op from the ones that are not, then
+weighting the dense arm by that cosine cannot help, and no amount of tuning will
+change it.
+
+| intent | query | bm25 top-1 | score | dense top-1 | cos | usage w | served top-1 |
+|---|---|---|---|---|---|---|---|
+| create | create a task for the login bug | create_task_for_branch | 2.768 | create_task | 0.696 | 0.167 | create_task_for_branch |
+| create | add a task to track the migration | add_task_comment | 4.555 | create_task | 0.751 | 0.500 | add_task_comment |
+| create | open a ticket for the flaky test | — | — | end_day_review_workflow | 0.499 | 0.167 | end_day_review_workflow |
+| find | find tasks related to authentication | create_task_for_branch | 4.179 | search_tasks | 0.708 | 0.500 | find_task_by_branch |
+| find | find tasks about the rate limiter | search_projects | 3.841 | search_tasks | 0.708 | 0.333 | search_projects |
+| find | look up tasks about the login system | add_task_comment | 0.429 | search_tasks | 0.648 | 0.500 | search_tasks |
+| exists | is there a task for the e2e suite | add_task_comment | 0.429 | create_task | 0.667 | 0.500 | link_pr_to_task |
+| exists | what tasks exist about authentication | update_document | 2.001 | create_task | 0.652 | 0.500 | check_task_duplicates |
+| exists | are there any tasks about authentication | add_task_comment | 0.429 | create_task | 0.646 | 0.500 | search_tasks |
+| status | mark the migration task in progress | post_progress_comment | 4.265 | post_progress_comment | 0.707 | 0.333 | post_progress_comment |
+| status | mark task done | complete_task_with_review | 3.293 | complete_task_with_review | 0.713 | 0.333 | complete_task_with_review |
+| status | update the status of the deploy task | update_task_status | 4.544 | update_task_status | 0.783 | 0.333 | update_task_status |
+| find | search for tasks on the payments flow | search_my_tasks_by_keyword | 2.587 | search_tasks | 0.708 | 0.500 | search_tasks |
+| exists | any tasks about authentication | add_task_comment | 0.429 | create_task | 0.644 | 0.500 | link_pr_to_task |
+| create | create a task for the signup bug | create_task_for_branch | 2.768 | create_task | 0.706 | 0.167 | create_task_for_branch |
+| doc_read | open the onboarding doc | — | — | create_task | 0.582 | 0.167 | create_task |
+| doc_search | find the section about rate limits in the docs | search_projects | 3.841 | search_document_chunks | 0.628 | 0.333 | search_projects |
+| doc_read | show me the contents of the design doc | get_document_content | 3.228 | get_document_content | 0.668 | 0.333 | get_document_content |
+| doc_search | search the docs for the auth flow | search_my_tasks_by_keyword | 2.206 | search_document_chunks | 0.645 | 0.500 | search_document_chunks |
+| doc_read | download the architecture pdf | download_document | 4.007 | download_document | 0.619 | 0.333 | download_document |
+| count | how many tasks are open | add_task_comment | 0.429 | create_tasks_batch | 0.709 | 0.333 | count_tasks |
+| count | count the tasks in progress | post_progress_comment | 4.265 | count_tasks | 0.802 | 0.333 | count_tasks |
+| filter | filter my tasks by status | filter_tasks | 5.002 | filter_tasks | 0.838 | 0.333 | filter_tasks |
+| filter | list tasks that are blocked | list_blocked_tasks | 5.783 | list_blocked_tasks | 0.849 | 0.333 | list_blocked_tasks |
+| status | mark the e2e task complete | complete_task_with_review | 7.080 | complete_task_with_review | 0.709 | 0.500 | complete_task_with_review |
+| create | add a task for the payments migration | add_task_comment | 4.555 | create_task | 0.708 | 0.167 | add_task_comment |
+| find | find open tasks about the auth flow | find_task_by_branch | 3.214 | find_task_by_branch | 0.678 | 0.500 | find_task_by_branch |
+| comment | post an update on the auth task | post_progress_comment | 6.135 | post_progress_comment | 0.724 | 0.333 | post_progress_comment |
+| comment | add a comment to the migration task | add_task_comment | 7.472 | add_task_comment | 0.820 | 0.500 | add_task_comment |
+| comment | leave a progress note on the deploy task | post_progress_comment | 4.265 | post_progress_comment | 0.713 | 0.167 | post_progress_comment |
+| link | link these two tasks as blocking | create_task_relationship | 7.199 | create_task_relationship | 0.752 | 0.333 | create_task_relationship |
+| link | attach the pull request to the task | link_pr_to_task | 7.087 | link_pr_to_task | 0.822 | 0.333 | link_pr_to_task |
+| link | what is blocking the release | list_blocked_tasks | 2.787 | list_blocked_tasks | 0.622 | 0.167 | list_blocked_tasks |
+| project | find the payments project | search_projects | 4.549 | search_projects | 0.635 | 0.167 | search_projects |
+| project | which projects mention authentication | search_projects | 2.096 | create_task | 0.593 | 0.500 | search_projects |
+| review | what did I get done today | get_document_content | 3.228 | end_day_review_workflow | 0.724 | 0.333 | end_day_review_workflow |
+| review | close the task and ask for review | complete_task_with_review | 6.984 | complete_task_with_review | 0.830 | 0.333 | complete_task_with_review |
+| create | create tasks for all the failing checks | check_task_duplicates | 3.882 | create_task | 0.708 | 0.167 | check_task_duplicates |
+| create | add tasks for each migration step | add_task_comment | 4.555 | create_task | 0.716 | 0.500 | add_task_comment |
+| find | search tasks authentication | search_my_tasks_by_keyword | 2.587 | search_tasks | 0.754 | 0.500 | search_my_tasks_by_keyword |
+| find | show me existing tasks about auth | update_document | 2.001 | create_task | 0.679 | 0.500 | check_task_duplicates |
+| find | list tasks concerning authentication | list_blocked_tasks | 2.996 | filter_tasks | 0.674 | 0.500 | filter_tasks |
+| find | tasks related to authentication | create_task_for_branch | 2.459 | create_task | 0.679 | 0.500 | create_task |
+| exists | what tasks exist about the rate limiter | update_document | 2.001 | search_tasks_with_comments | 0.647 | 0.333 | list_blocked_tasks |
+| status | move the login task to in review | complete_task_with_review | 4.093 | complete_task_with_review | 0.723 | 0.333 | complete_task_with_review |
+| doc_read | open the runbook | — | — | search_tasks_with_comments | 0.536 | 0.167 | search_tasks_with_comments |
+| filter | what am I working on | — | — | create_task | 0.631 | 0.333 | create_task |
+
+**On the 25 read-phrased queries, BM25's own top-1 was a write op 11 times and the dense arm's 9 times.**
+
+**Median dense top-1 cosine when the served top-1 was a write op: 0.644 (5 queries); when it was not: 0.678 (20 queries).** A gap here is the evidence that the dense arm knows when it is guessing; no gap means it does not, and R10 is dead on this fixture whatever the ramp is set to.
+
 ## Served top-3 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-3 |
