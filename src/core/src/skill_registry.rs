@@ -8,7 +8,7 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{FusionPolicy, RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
 use crate::skill::Skill;
@@ -103,6 +103,11 @@ pub struct SkillRegistry {
     /// today's behavior exactly. Shared behind a lock because the learner writes
     /// to the same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
+    /// How loudly each content arm votes into the fusion (see [`FusionPolicy`]).
+    /// Serving-time configuration only — unlike [`crate::ClusterPolicy`] it draws
+    /// no boundary and persists nothing, so there is nothing to record and
+    /// nothing to drift from. Default is flat `1.0` weights, exactly ADR-0011.
+    fusion: FusionPolicy,
 }
 
 impl Default for SkillRegistry {
@@ -121,6 +126,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            fusion: FusionPolicy::default(),
         }
     }
 
@@ -133,6 +139,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            fusion: FusionPolicy::default(),
         }
     }
 
@@ -148,6 +155,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
+            fusion: FusionPolicy::default(),
         }
     }
 
@@ -177,6 +185,22 @@ impl SkillRegistry {
     /// becomes an RRF score rather than a BM25 one.
     pub fn set_intent_graph(&mut self, graph: Option<Arc<RwLock<IntentGraph>>>) {
         self.graph = graph;
+    }
+
+    /// Set how loudly each content arm votes into hybrid fusion.
+    ///
+    /// Takes effect on the next search and changes nothing else: no boundary is
+    /// redrawn, no cache invalidated, nothing written. The default is flat `1.0`
+    /// weights, so a registry that never calls this ranks byte-identically to
+    /// one built before the policy existed.
+    pub fn set_fusion_policy(&mut self, policy: FusionPolicy) {
+        self.fusion = policy;
+    }
+
+    /// The policy in force for the next search.
+    #[must_use]
+    pub fn fusion_policy(&self) -> FusionPolicy {
+        self.fusion
     }
 
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
@@ -857,9 +881,18 @@ impl SkillRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
+        // The dense arm's weight comes off its own top cosine, read before the
+        // scores are dropped. Twin of `ToolRegistry::hybrid_search_traced`.
+        let dense_weight = self
+            .fusion
+            .dense_weight(dense_ranked.first().map(|(_, s)| *s));
         let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
         let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
+        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0)];
+        // Omitted rather than passed at zero — see the tool-side comment.
+        if dense_weight > 0.0 {
+            arms.push((&dense_ids, dense_weight));
+        }
         if let Some(arm) = &arm {
             arms.push((&arm.ids, arm.weight()));
         }
@@ -970,6 +1003,7 @@ mod tests {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
+            fusion: FusionPolicy::default(),
         }
     }
 
@@ -1897,5 +1931,65 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
+    }
+
+    // ---- the fusion policy ----
+
+    /// Graded cosines, so a test can put an arm's best hit below a floor.
+    /// `StubEmbedder`'s one-hot buckets only ever produce 0 or 1. Twin of
+    /// `tool_registry`'s `GradedEmbedder`.
+    struct GradedEmbedder;
+    impl Embedder for GradedEmbedder {
+        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            self.embed_query(text)
+        }
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
+            let t = text.to_lowercase();
+            let cos: f32 = if t.contains("q_anchor") {
+                1.0
+            } else if t.contains("m_far") {
+                0.4
+            } else {
+                0.0
+            };
+            Ok(vec![cos, (1.0 - cos * cos).sqrt()])
+        }
+    }
+
+    /// The skill path is a line-for-line twin of the tool path, so this pins the
+    /// wiring rather than re-proving the ramp: without it, a policy set on a
+    /// skill catalog would be silently inert.
+    #[test]
+    fn the_fusion_policy_reaches_the_skill_hybrid_path() {
+        let mut reg = with_embedder(Arc::new(GradedEmbedder));
+        reg.register(skill(
+            "lexical-hit",
+            "lexical-hit",
+            "widget report m_far",
+            &[],
+        ));
+        reg.register(skill(
+            "semantic-only",
+            "semantic-only",
+            "gadget summary m_far",
+            &[],
+        ));
+        reg.build_embeddings().unwrap();
+
+        let ids = |r: &SkillRegistry| -> Vec<String> {
+            r.search_with_method("q_anchor widget", 5, Origin::Direct, SearchMethod::Hybrid)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.skill_id)
+                .collect()
+        };
+
+        assert!(ids(&reg).contains(&"semantic-only".to_string()));
+        reg.set_fusion_policy(FusionPolicy::default().with_dense_confidence(0.5, 0.9));
+        let after = ids(&reg);
+        assert!(
+            !after.contains(&"semantic-only".to_string()),
+            "every doc sits at cosine 0.4, below the floor; got {after:?}"
+        );
     }
 }
