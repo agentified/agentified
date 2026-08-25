@@ -323,6 +323,36 @@ change it.
 
 **Median dense top-1 cosine when the served top-1 was a write op: 0.708 (2 queries); when it was not: 0.667 (23 queries).** A gap here is the evidence that the dense arm knows when it is guessing; no gap means it does not, and R10 is dead on this fixture whatever the ramp is set to.
 
+
+## Confidence sweep
+
+The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each
+weighting. `dense ramp a→b` is the shipped [`FusionPolicy`]; the flat rows are the
+competing hypothesis — one fixed weight pair for every query — and sit here rather than
+in a memory so the two are read against each other.
+
+`read→write` is the reported failure at top-1, lower is better; `moved` counts queries
+whose top-1 differs from the default row; `silent` counts queries where the dense arm
+was damped to zero and dropped out of the candidate set entirely.
+
+| weighting | read→write | moved | silent |
+|---|---|---|---|
+| flat 1.0 / 1.0 **(default)** | 2 | — | 0 |
+| flat 0.7 / 0.3 | 2 | 3 of 47 | 0 |
+| flat 0.5 / 0.5 | 2 | 2 of 47 | 0 |
+| flat 0.3 / 0.7 | 3 | 3 of 47 | 0 |
+| flat 0.1 / 0.9 | 2 | 7 of 47 | 0 |
+| dense ramp 0.30→0.60 | 2 | 0 of 47 | 0 |
+| dense ramp 0.40→0.70 | 2 | 1 of 47 | 0 |
+| dense ramp 0.50→0.80 | 2 | 2 of 47 | 1 |
+| dense ramp 0.60→0.90 | 2 | 2 of 47 | 4 |
+| dense ramp 0.65→0.75 | 2 | 3 of 47 | 14 |
+| bm25 decisiveness | 3 | 2 of 47 | 0 |
+
+**Read the `read→write` column against the default row, and nothing else.** A weighting
+that moves many top-1s without lowering it has changed the ranking, not improved it —
+which is exactly what the flat rows were assumed to do before they were measured.
+
 ## Served top-3 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-3 |

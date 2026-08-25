@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::embedding::{Embedded, Embedder, EmbedderError};
+use crate::fusion::FusionPolicy;
 use crate::indexing::searchable_text;
 use crate::tool::Tool;
 use crate::trace::NoopSink;
@@ -589,6 +590,104 @@ fn median(xs: &[f32]) -> Option<f32> {
     Some(v[v.len() / 2])
 }
 
+/// One weighting under test: how it is labelled in the report, and the
+/// `(bm25, dense)` weights it gives a query from that query's own arm scores.
+pub(crate) struct Weighting {
+    pub label: String,
+    pub weights: ArmWeights,
+}
+
+/// The `(bm25, dense)` weights one weighting gives a query.
+type ArmWeights = Box<dyn Fn(&ArmRankings) -> (f32, f32)>;
+
+impl Weighting {
+    fn flat(bm25: f32, dense: f32, label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            weights: Box::new(move |_| (bm25, dense)),
+        }
+    }
+
+    /// The shipped ramp, driven by [`FusionPolicy`] itself rather than a copy of
+    /// its arithmetic — a sweep that measures a reimplementation measures the
+    /// wrong thing.
+    fn dense_ramp(floor: f32, full: f32) -> Self {
+        let policy = FusionPolicy::default().with_dense_confidence(floor, full);
+        Self {
+            label: format!("dense ramp {floor:.2}→{full:.2}"),
+            weights: Box::new(move |a| (1.0, policy.dense_weight(a.dense_top().map(|(_, c)| c)))),
+        }
+    }
+
+    /// The scale-free BM25 candidate: how decisively its top hit beat its second.
+    /// Measured, not shipped — a raw BM25 score means nothing across corpora, and
+    /// this is the only shape that might. Floored at 0.2 rather than 0.0 because
+    /// an undecisive arm is not a wrong one, and BM25 is the arm with no other
+    /// way to be judged.
+    fn bm25_decisiveness() -> Self {
+        Self {
+            label: "bm25 decisiveness".to_string(),
+            weights: Box::new(|a| {
+                let w = match (a.bm25.first(), a.bm25.get(1)) {
+                    (Some((_, top)), Some((_, second))) if *second > 0.0 => {
+                        ((top / second - 1.0) / 0.5).clamp(0.2, 1.0)
+                    }
+                    _ => 1.0,
+                };
+                (w, 1.0)
+            }),
+        }
+    }
+}
+
+/// Recompute the fusion offline at one weighting and return each query's top-3.
+///
+/// Calls the engine's own [`rrf_fuse_weighted`] over the arms `served_arms`
+/// collected, so the only thing varying across a sweep is the weights.
+/// `the_offline_simulation_reproduces_the_real_served_order` pins it against the
+/// live search path: a simulation that drifts from the fusion it predicts is
+/// worse than no simulation, because it is still convincing.
+pub(crate) fn simulate(arms: &[ArmRankings], w: &Weighting) -> Vec<(String, Vec<String>)> {
+    use crate::fusion::{RRF_K, WeightedArm, rrf_fuse_weighted};
+
+    arms.iter()
+        .map(|a| {
+            let (wb, wd) = (w.weights)(a);
+            let bm25: Vec<String> = a.bm25.iter().map(|(id, _)| id.clone()).collect();
+            let dense: Vec<String> = a.dense.iter().map(|(id, _)| id.clone()).collect();
+            let mut lists: Vec<WeightedArm<'_>> = Vec::new();
+            // Zero means omit, matching `hybrid_search_traced` — at zero an arm's
+            // ids still enter the candidate set tied, and fill top-k alphabetically.
+            if wb > 0.0 {
+                lists.push((&bm25, wb));
+            }
+            if wd > 0.0 {
+                lists.push((&dense, wd));
+            }
+            if let Some((ids, uw)) = &a.usage {
+                lists.push((ids.as_slice(), *uw));
+            }
+            let mut fused = rrf_fuse_weighted(&lists, RRF_K);
+            fused.truncate(3);
+            (
+                a.query.clone(),
+                fused.into_iter().map(|(id, _)| id).collect(),
+            )
+        })
+        .collect()
+}
+
+/// Read-phrased queries whose top-1 is a write op — the reported failure,
+/// counted the same way the served table counts it.
+fn read_served_write(arms: &[ArmRankings], sim: &[(String, Vec<String>)]) -> usize {
+    arms.iter()
+        .zip(sim)
+        .filter(|(a, (_, hits))| {
+            is_read_intent(&a.intent) && hits.first().is_some_and(|h| is_write(h))
+        })
+        .count()
+}
+
 /// Ops that write. The reported failure was a read-phrased query being served
 /// one of these.
 fn is_write(id: &str) -> bool {
@@ -968,6 +1067,65 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         cos_when_ok.len(),
     );
 
+    // -- does acting on those scores help? -----------------------------------
+    let _ = writeln!(o, "\n## Confidence sweep\n");
+    let _ = writeln!(
+        o,
+        "The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each\n\
+         weighting. `dense ramp a→b` is the shipped [`FusionPolicy`]; the flat rows are the\n\
+         competing hypothesis — one fixed weight pair for every query — and sit here rather than\n\
+         in a memory so the two are read against each other.\n\
+         \n\
+         `read→write` is the reported failure at top-1, lower is better; `moved` counts queries\n\
+         whose top-1 differs from the default row; `silent` counts queries where the dense arm\n\
+         was damped to zero and dropped out of the candidate set entirely.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| weighting | read→write | moved | silent |\n|---|---|---|---|"
+    );
+    let variants: Vec<Weighting> = vec![
+        Weighting::flat(1.0, 1.0, "flat 1.0 / 1.0 **(default)**"),
+        Weighting::flat(0.7, 0.3, "flat 0.7 / 0.3"),
+        Weighting::flat(0.5, 0.5, "flat 0.5 / 0.5"),
+        Weighting::flat(0.3, 0.7, "flat 0.3 / 0.7"),
+        Weighting::flat(0.1, 0.9, "flat 0.1 / 0.9"),
+        Weighting::dense_ramp(0.30, 0.60),
+        Weighting::dense_ramp(0.40, 0.70),
+        Weighting::dense_ramp(0.50, 0.80),
+        Weighting::dense_ramp(0.60, 0.90),
+        Weighting::dense_ramp(0.65, 0.75),
+        Weighting::bm25_decisiveness(),
+    ];
+    let reference = simulate(&arms, &variants[0]);
+    for v in &variants {
+        let sim = simulate(&arms, v);
+        let moved = sim
+            .iter()
+            .zip(&reference)
+            .filter(|((_, a), (_, b))| a.first() != b.first())
+            .count();
+        let silent = arms.iter().filter(|a| (v.weights)(a).1 == 0.0).count();
+        let _ = writeln!(
+            o,
+            "| {} | {} | {} | {} |",
+            v.label,
+            read_served_write(&arms, &sim),
+            if v.label.contains("default") {
+                "—".to_string()
+            } else {
+                format!("{moved} of {}", arms.len())
+            },
+            silent
+        );
+    }
+    let _ = writeln!(
+        o,
+        "\n**Read the `read→write` column against the default row, and nothing else.** A weighting\n\
+         that moves many top-1s without lowering it has changed the ranking, not improved it —\n\
+         which is exactly what the flat rows were assumed to do before they were measured.\n"
+    );
+
     // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;
     let _ = writeln!(o, "## Served top-3 (hybrid: BM25 + dense + usage arm)\n");
@@ -1032,6 +1190,25 @@ mod tests {
                 entry.id
             );
         }
+    }
+
+    /// The sweep's whole authority rests on this. It recomputes fusion from arms
+    /// collected out-of-band, so nothing but this test stops it from quietly
+    /// predicting a ranking the engine does not produce — and a sweep that is
+    /// wrong but plausible is worse than none, because it still gets acted on.
+    #[test]
+    fn the_offline_simulation_reproduces_the_real_served_order() {
+        let turns = turns();
+        let (graph, _) = replay(&turns);
+        let arms = served_arms(&graph, &turns);
+        let flat = Weighting::flat(1.0, 1.0, "default");
+
+        assert_eq!(
+            simulate(&arms, &flat),
+            served_top3(&graph, &turns),
+            "the simulation at flat weights must be the live hybrid path, query \
+             for query and id for id"
+        );
     }
 
     #[test]
