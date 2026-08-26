@@ -358,7 +358,8 @@ which is exactly what the flat rows were assumed to do before they were measured
 
 `SearchHit::normalized` for the top 5 of each method, on a query where the arms
 disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;
-hybrid is min-max across the list, because RRF has no achievable maximum to divide by.
+hybrid is min-max across the full fused candidate set, because RRF has no achievable
+maximum to divide by.
 
 The first two are absolute — they compare across queries and do not move when
 `top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because
@@ -366,9 +367,10 @@ The first two are absolute — they compare across queries and do not move when
 query's discriminating mass is unanswerable by this catalog. That is the number
 saying so.
 
-The hybrid column pins 1.00 at the top and 0.00 at the bottom on every query, so
-its spread says nothing about whether the list is any good — note it reports 0.000
-for `search_tasks`, which is the answer that was actually invoked.
+The hybrid column still pins 1.00 at the top of whatever the query retrieved, so it
+says nothing about whether that top is any good. It is normalized before the cut,
+though, so the fifth row is not forced to 0.00 by being fifth and the same hit
+reports the same number at any `top_k`.
 
 | method | # | tool | raw | normalized |
 |---|---|---|---|---|
@@ -383,10 +385,10 @@ for `search_tasks`, which is the answer that was actually invoked.
 | semantic | 4 | search_my_tasks_by_keyword | 0.6663 | 0.833 |
 | semantic | 5 | find_task_by_branch | 0.6606 | 0.830 |
 | hybrid | 1 | find_task_by_branch | 0.0320 | 1.000 |
-| hybrid | 2 | create_task_for_branch | 0.0318 | 0.842 |
-| hybrid | 3 | create_task | 0.0318 | 0.810 |
-| hybrid | 4 | check_task_duplicates | 0.0310 | 0.204 |
-| hybrid | 5 | search_tasks | 0.0308 | 0.000 |
+| hybrid | 2 | create_task_for_branch | 0.0318 | 0.990 |
+| hybrid | 3 | create_task | 0.0318 | 0.988 |
+| hybrid | 4 | check_task_duplicates | 0.0310 | 0.950 |
+| hybrid | 5 | search_tasks | 0.0308 | 0.937 |
 
 Query: `find tasks related to authentication` · invoked: `search_tasks`
 

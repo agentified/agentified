@@ -109,14 +109,15 @@ pub struct SearchHit {
     /// - **raw BM25**: `score / Σ idf(query terms)`, clamped — the share of the
     ///   query's discriminating mass this hit actually captured
     ///   ([`crate::search::Bm25Index::query_ceiling`]).
-    /// - **RRF**: min-max across this result list, because rank arithmetic has
-    ///   no achievable maximum to divide by. Top is `1.0` and bottom `0.0`
-    ///   **by construction**, on every query.
+    /// - **RRF**: min-max across the full fused candidate set — not the returned
+    ///   slice — because rank arithmetic has no achievable maximum to divide by.
+    ///   `1.0` therefore means "top of everything the query retrieved", and the
+    ///   weakest *returned* hit is only `0.0` if nothing ranked below it.
     ///
     /// The first two are **absolute**: they compare across queries, and a list
     /// where nothing fits well stays low instead of being promoted to `1.0`.
-    /// The RRF rule is **relative** and does none of that — a `1.0` there says
-    /// "best of what came back", not "right".
+    /// The RRF rule is **relative** — a `1.0` there says "best of what the query
+    /// retrieved", not "right" — though it is at least stable across `top_k`.
     ///
     /// **None of them is a calibrated confidence.** Nothing here was fitted to
     /// whether the hit was the one the caller went on to invoke, so `0.8` does
@@ -170,9 +171,11 @@ fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
 ///
 /// RRF has neither. Its magnitude is `Σ 1/(60 + rank)`, so the only reachable
 /// maximum is "first in every arm", which says nothing about the match. Min-max
-/// against the list is what is left, and its cost is a top pinned at `1.0`.
-/// A zero range there (one hit, or every score tied) yields `1.0` throughout
-/// rather than dividing by zero: nothing in that list is worse than anything else.
+/// is what is left, and its cost is a top pinned at `1.0`. Callers must hand in
+/// the **full** candidate set rather than the slice they intend to return, or
+/// the bottom of that slice reads `0.0` however good it was.
+/// A zero range (one hit, or every score tied) yields `1.0` throughout rather
+/// than dividing by zero: nothing in that set is worse than anything else.
 fn normalize(ranked: &[(String, f32)], scale: Scale) -> Vec<f32> {
     match scale {
         Scale::Cosine => return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect(),
@@ -870,15 +873,19 @@ impl ToolRegistry {
     /// and `(score desc, id asc)` ordering have exactly one implementation.
     fn fuse_arms(arms: &[WeightedArm<'_>], top_k: usize) -> (Vec<SearchHit>, SearchStage) {
         let t = Instant::now();
-        let mut fused = rrf_fuse_weighted(arms, RRF_K);
-        fused.truncate(top_k);
+        let fused = rrf_fuse_weighted(arms, RRF_K);
         let stage = SearchStage {
             name: "rrf".into(),
             took_ms: t.elapsed().as_millis() as u64,
             top_score: fused.first().map(|(_, s)| *s as f64),
         };
-        // These came out of RRF, so their magnitude is ordering-only.
-        let hits = to_search_hits(fused, Scale::Rrf);
+        // Normalize across the WHOLE candidate set, then cut. Doing it after the
+        // cut would min-max against the k-th score, so the last hit a caller
+        // asked for would read 0.00 however good it was — and the same hit would
+        // report a different number at a different `top_k`. The candidate set is
+        // a property of the query; the cut is a property of the request.
+        let mut hits = to_search_hits(fused, Scale::Rrf);
+        hits.truncate(top_k);
         (hits, stage)
     }
 
@@ -3056,12 +3063,12 @@ mod tests {
         assert_eq!(hits[0].normalized, 1.0);
     }
 
-    /// Under the RRF rule the min moves with `top_k`, so the same hit normalizes
-    /// differently in a shorter list. Pinned because it is the property that
-    /// makes the fused number unsafe to compare across calls — and the reason
-    /// the BM25 and cosine rules are not built this way.
+    /// Normalizing before the cut is what keeps the fused number stable: the
+    /// candidate set belongs to the query, the cut belongs to the request. If
+    /// this regresses, the weakest hit a caller asked for reads 0.00 whatever
+    /// its score, and the same hit reports two different numbers at two `top_k`.
     #[test]
-    fn the_fused_normalized_score_depends_on_how_many_hits_were_asked_for() {
+    fn a_fused_hit_normalizes_the_same_at_any_top_k() {
         // Both arms must agree on the order, or symmetric rank swaps make the
         // fused scores tie and there is no spread to measure.
         let mut reg = with_embedder(Arc::new(StubEmbedder));
@@ -3075,21 +3082,20 @@ mod tests {
         };
         let (deep, shallow) = (hy(3), hy(2));
         assert!(deep.len() > shallow.len(), "need differing depths");
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
+            assert!(
+                (same.normalized - h.normalized).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.tool_id,
+                h.normalized,
+                same.normalized
+            );
+        }
+        // And the last hit of a short list is not forced to zero by being last.
         assert!(
-            shallow.iter().any(|h| {
-                deep.iter()
-                    .find(|d| d.tool_id == h.tool_id)
-                    .is_some_and(|d| (d.normalized - h.normalized).abs() > 1e-6)
-            }),
-            "a fused hit should normalize differently at a different top_k: \
-             k=2 {:?} vs k=3 {:?}",
-            shallow
-                .iter()
-                .map(|h| (h.tool_id.as_str(), h.normalized))
-                .collect::<Vec<_>>(),
-            deep.iter()
-                .map(|h| (h.tool_id.as_str(), h.normalized))
-                .collect::<Vec<_>>()
+            shallow.last().is_some_and(|h| h.normalized > 0.0),
+            "something ranked below it, so it is not the minimum"
         );
     }
 }
