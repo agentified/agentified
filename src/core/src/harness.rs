@@ -34,6 +34,11 @@ const CATALOG: &str = include_str!("../tests/fixtures/catalog.json");
 /// is evicted — the graph is a pure function of the fixture, not of wall clock.
 const T0: u64 = 1_753_000_000_000;
 
+/// How deep the served tables and the offline simulation cut. The arms still
+/// retrieve to `RETRIEVE_DEPTH` before fusion; this is only the final slice, and
+/// it is shared so the simulation and the live path cannot drift apart.
+const SERVED_K: usize = 5;
+
 // ---- fixtures ---------------------------------------------------------------
 
 pub(crate) struct Turn {
@@ -459,8 +464,8 @@ pub(crate) fn merge_quality(g: &IntentGraph, turns: &[Turn]) -> Merge {
     }
 }
 
-/// Served top-k through the real fusion — BM25, dense and the usage arm.
-pub(crate) fn served_top3(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<String>)> {
+/// Served top-[`SERVED_K`] through the real fusion — BM25, dense and the usage arm.
+pub(crate) fn served_topk(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<String>)> {
     use crate::method::SearchMethod;
     use crate::trace::Origin;
     use std::sync::RwLock;
@@ -480,7 +485,7 @@ pub(crate) fn served_top3(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<S
         }
         seen.push(turn.query.clone());
         let hits = reg
-            .search_with_method(&turn.query, 3, Origin::Direct, SearchMethod::Hybrid)
+            .search_with_method(&turn.query, SERVED_K, Origin::Direct, SearchMethod::Hybrid)
             .expect("hybrid search");
         // `fused` cannot check this: hybrid sets it unconditionally, so the
         // assertion it replaces passed happily while the arm was paused by a
@@ -647,7 +652,7 @@ impl Weighting {
     }
 }
 
-/// Recompute the fusion offline at one weighting and return each query's top-3.
+/// Recompute the fusion offline at one weighting and return each query's top-[`SERVED_K`].
 ///
 /// Calls the engine's own [`rrf_fuse_weighted`] over the arms `served_arms`
 /// collected, so the only thing varying across a sweep is the weights.
@@ -675,7 +680,7 @@ pub(crate) fn simulate(arms: &[ArmRankings], w: &Weighting) -> Vec<(String, Vec<
                 lists.push((ids.as_slice(), *uw));
             }
             let mut fused = rrf_fuse_weighted(&lists, RRF_K);
-            fused.truncate(3);
+            fused.truncate(SERVED_K);
             (
                 a.query.clone(),
                 fused.into_iter().map(|(id, _)| id).collect(),
@@ -989,7 +994,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
 
     // -- what each arm knew and the fusion ignored ---------------------------
     let arms = served_arms(graph, turns);
-    let served = served_top3(graph, turns);
+    let served = served_topk(graph, turns);
     let served_top1 = |q: &str| -> Option<&str> {
         served
             .iter()
@@ -1137,7 +1142,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(o, "\n## Normalized scores\n");
     let _ = writeln!(
         o,
-        "`SearchHit::normalized` for the top 3 of each method, on a query where the arms\n\
+        "`SearchHit::normalized` for the top {SERVED_K} of each method, on a query where the arms\n\
          disagree. BM25 and hybrid are min-max across the list; semantic is `(cos + 1) / 2`.\n\
          \n\
          Read the two shapes against each other. The min-max columns pin 1.00 at the top and\n\
@@ -1171,7 +1176,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             ("hybrid", SearchMethod::Hybrid),
         ] {
             for (i, h) in reg
-                .search_with_method(q, 3, Origin::Direct, method)
+                .search_with_method(q, SERVED_K, Origin::Direct, method)
                 .expect("search")
                 .iter()
                 .enumerate()
@@ -1203,8 +1208,11 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
 
     // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;
-    let _ = writeln!(o, "## Served top-3 (hybrid: BM25 + dense + usage arm)\n");
-    let _ = writeln!(o, "| intent | query | top-3 |\n|---|---|---|");
+    let _ = writeln!(
+        o,
+        "## Served top-{SERVED_K} (hybrid: BM25 + dense + usage arm)\n"
+    );
+    let _ = writeln!(o, "| intent | query | top-{SERVED_K} |\n|---|---|---|");
     for (query, hits) in &served {
         let intent = turns
             .iter()
@@ -1280,7 +1288,7 @@ mod tests {
 
         assert_eq!(
             simulate(&arms, &flat),
-            served_top3(&graph, &turns),
+            served_topk(&graph, &turns),
             "the simulation at flat weights must be the live hybrid path, query \
              for query and id for id"
         );
