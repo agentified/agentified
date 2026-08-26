@@ -102,22 +102,82 @@ pub struct SearchHit {
     /// (or the method is hybrid, always RRF), `false` for a plain BM25/semantic
     /// result. Lets a caller detect the scale their `score` is on.
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` for display, by a rule that follows the
+    /// scale `score` is actually on:
+    ///
+    /// - **raw BM25** and **RRF**: min-max across this result list. Top is
+    ///   `1.0` and bottom `0.0` **by construction**, on every query.
+    /// - **cosine**: `(score + 1) / 2`, an affine remap of the model's own
+    ///   range. Absolute, so it does not force a `1.0` at the top.
+    ///
+    /// **This is not a confidence.** Two of the three rules normalize against
+    /// the list rather than against anything meaning "good", so a `1.0` says
+    /// "best of what came back", not "right". It is not comparable across
+    /// queries (min-max rules), across methods (three different scales), or
+    /// across `top_k` values (the min moves). Ranking a hit against its own
+    /// siblings is the only thing it supports.
+    ///
+    /// A list of one, or one where every score ties, normalizes to `1.0`
+    /// throughout — there is no spread to express.
+    pub normalized: f32,
+}
+
+/// Which scale a ranked list's scores are on, which decides both
+/// [`SearchHit::fused`] and how [`SearchHit::normalized`] is derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    /// Raw Okapi BM25 — non-negative, unbounded, corpus-dependent.
+    Bm25,
+    /// Cosine of L2-normalized vectors — bounded, model-anchored.
+    Cosine,
+    /// Reciprocal Rank Fusion — rank arithmetic; magnitude is ordering only.
+    Rrf,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list: `rank` is
 /// the position, `fused` says whether these are RRF scores. One place so the two
 /// new fields cannot drift between the fused and raw paths.
-fn to_search_hits(ranked: Vec<(String, f32)>, fused: bool) -> Vec<SearchHit> {
+fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
+    let normalized = normalize(&ranked, scale);
     ranked
         .into_iter()
+        .zip(normalized)
         .enumerate()
-        .map(|(i, (tool_id, score))| SearchHit {
+        .map(|(i, ((tool_id, score), normalized))| SearchHit {
             tool_id,
             score,
             rank: i as u32,
-            fused,
+            fused: scale == Scale::Rrf,
+            normalized,
         })
         .collect()
+}
+
+/// Map each score onto `[0, 1]` by the rule its scale admits.
+///
+/// Cosine is bounded, so `(s + 1) / 2` is an affine remap that keeps the
+/// absolute level: a weak best match stays low instead of being promoted to
+/// `1.0`. Raw BM25 has no ceiling and RRF's magnitude is rank arithmetic, so
+/// neither has an absolute level to keep — min-max against the list is the only
+/// thing available, and its cost is that the top is always `1.0`.
+///
+/// A zero range (one hit, or every score tied) yields `1.0` throughout rather
+/// than dividing by zero: nothing here is worse than anything else.
+fn normalize(ranked: &[(String, f32)], scale: Scale) -> Vec<f32> {
+    if scale == Scale::Cosine {
+        return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect();
+    }
+    let (Some(max), Some(min)) = (
+        ranked.first().map(|(_, s)| *s),
+        ranked.last().map(|(_, s)| *s),
+    ) else {
+        return Vec::new();
+    };
+    let range = max - min;
+    if range <= 0.0 {
+        return vec![1.0; ranked.len()];
+    }
+    ranked.iter().map(|(_, s)| (s - min) / range).collect()
 }
 
 impl Embeddable for Tool {
@@ -798,7 +858,7 @@ impl ToolRegistry {
             top_score: fused.first().map(|(_, s)| *s as f64),
         };
         // These came out of RRF, so their magnitude is ordering-only.
-        let hits = to_search_hits(fused, true);
+        let hits = to_search_hits(fused, Scale::Rrf);
         (hits, stage)
     }
 
@@ -833,7 +893,7 @@ impl ToolRegistry {
             // No graph, or nothing matched: the original path, unchanged, with
             // raw BM25 scores. ADR-0011's byte-for-byte promise lives here.
             // Raw BM25 scores — not fused.
-            let hits = to_search_hits(self.bm25_index().search(query, top_k), false);
+            let hits = to_search_hits(self.bm25_index().search(query, top_k), Scale::Bm25);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -918,7 +978,7 @@ impl ToolRegistry {
             // to give the usage arm room to re-rank; with no arm to fuse, trim
             // back to what the caller asked for (the fused path does this in
             // `fuse_arms`).
-            let mut hits = to_search_hits(ranked, false);
+            let mut hits = to_search_hits(ranked, Scale::Cosine);
             hits.truncate(top_k);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
@@ -2845,5 +2905,103 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
+    }
+
+    // ---- the normalized score ----
+
+    #[test]
+    fn bm25_normalizes_min_max_across_the_list() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        let hits = reg.search("read a file", 5);
+        assert!(hits.len() >= 2, "need a spread to normalize");
+        assert_eq!(hits.first().map(|h| h.normalized), Some(1.0));
+        assert_eq!(hits.last().map(|h| h.normalized), Some(0.0));
+        // Recompute the middle from the raw scores the same list carries.
+        let (max, min) = (hits[0].score, hits[hits.len() - 1].score);
+        for h in &hits {
+            let want = (h.score - min) / (max - min);
+            assert!(
+                (h.normalized - want).abs() < 1e-6,
+                "{} {}",
+                h.tool_id,
+                h.normalized
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_normalizes_cosine_affinely_and_does_not_force_a_one() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+        let hits = reg
+            .search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        for h in &hits {
+            assert!(
+                (h.normalized - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} normalized {}",
+                h.tool_id,
+                h.score,
+                h.normalized
+            );
+        }
+        // StubEmbedder puts non-matching buckets at cosine 0.0, which is the
+        // point: an absolute rule reports 0.5, where min-max would report 0.0
+        // for the same hit and 1.0 for a hit that is merely least-bad.
+        assert!(
+            hits.iter().any(|h| (h.normalized - 0.5).abs() < 1e-6),
+            "expected an orthogonal hit at 0.5, got {:?}",
+            hits.iter()
+                .map(|h| (h.tool_id.as_str(), h.normalized))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hybrid_normalizes_min_max_because_rrf_has_no_absolute_level() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+        let hits = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Hybrid)
+            .unwrap();
+        assert!(hits.iter().all(|h| h.fused));
+        assert_eq!(hits.first().map(|h| h.normalized), Some(1.0));
+        assert_eq!(hits.last().map(|h| h.normalized), Some(0.0));
+    }
+
+    /// No spread is not the same as everything being worthless. Dividing by a
+    /// zero range would be a NaN, and reporting 0.0 would call a sole result bad.
+    #[test]
+    fn a_single_hit_or_an_all_tied_list_normalizes_to_one() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("only_one", "singular unrepeated vocabulary"));
+        let hits = reg.search("singular", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].normalized, 1.0);
+    }
+
+    /// The min moves with `top_k`, so the same hit normalizes differently in a
+    /// shorter list. Pinned because it is the property that makes this unsafe to
+    /// compare across calls, not an implementation detail we might quietly fix.
+    #[test]
+    fn the_normalized_score_depends_on_how_many_hits_were_asked_for() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("alpha", "shared token alpha extra extra extra"));
+        reg.register(tool("beta", "shared token beta"));
+        reg.register(tool(
+            "gamma",
+            "shared token gamma padding padding padding padding",
+        ));
+        let deep = reg.search("shared token", 3);
+        let shallow = reg.search("shared token", 2);
+        assert!(deep.len() > shallow.len(), "need differing depths");
+        let id = &shallow[shallow.len() - 1].tool_id;
+        let in_deep = deep.iter().find(|h| &h.tool_id == id).unwrap();
+        assert_eq!(shallow[shallow.len() - 1].normalized, 0.0);
+        assert!(
+            in_deep.normalized > 0.0,
+            "the same hit is 0.0 at k=2 and {} at k=5",
+            in_deep.normalized
+        );
     }
 }

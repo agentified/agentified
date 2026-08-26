@@ -353,6 +353,34 @@ was damped to zero and dropped out of the candidate set entirely.
 that moves many top-1s without lowering it has changed the ranking, not improved it —
 which is exactly what the flat rows were assumed to do before they were measured.
 
+
+## Normalized scores
+
+`SearchHit::normalized` for the top 3 of each method, on a query where the arms
+disagree. BM25 and hybrid are min-max across the list; semantic is `(cos + 1) / 2`.
+
+Read the two shapes against each other. The min-max columns pin 1.00 at the top and
+0.00 at the bottom on every query, so their spread says nothing about whether the
+list is any good. The affine column keeps the model's own level, so a query where
+nothing fits stays low instead of being promoted to 1.00 — and pays for it by being
+visually flat, which is exactly the trade.
+
+| method | # | tool | raw | normalized |
+|---|---|---|---|---|
+| bm25 | 1 | create_task_for_branch | 4.1786 | 1.000 |
+| bm25 | 2 | find_task_by_branch | 3.2140 | 0.441 |
+| bm25 | 3 | search_projects | 2.4532 | 0.000 |
+| semantic | 1 | search_tasks | 0.7080 | 0.854 |
+| semantic | 2 | create_task | 0.6782 | 0.839 |
+| semantic | 3 | filter_tasks | 0.6721 | 0.836 |
+| hybrid | 1 | find_task_by_branch | 0.0320 | 1.000 |
+| hybrid | 2 | create_task_for_branch | 0.0318 | 0.167 |
+| hybrid | 3 | create_task | 0.0318 | 0.000 |
+
+Query: `find tasks related to authentication` · invoked: `search_tasks`
+
+**The affine rule reaches almost nobody.** These rows have no intent graph attached. With adaptive ranking on, the usage arm fuses into the Bm25 and Semantic paths too, `score` becomes RRF, and all three methods fall back to min-max. The one rule that preserves an absolute level applies only when adaptive ranking is off.
+
 ## Served top-3 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-3 |

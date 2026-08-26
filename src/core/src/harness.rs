@@ -1133,6 +1133,74 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          which is exactly what the flat rows were assumed to do before they were measured.\n"
     );
 
+    // -- the normalized score, per method -------------------------------------
+    let _ = writeln!(o, "\n## Normalized scores\n");
+    let _ = writeln!(
+        o,
+        "`SearchHit::normalized` for the top 3 of each method, on a query where the arms\n\
+         disagree. BM25 and hybrid are min-max across the list; semantic is `(cos + 1) / 2`.\n\
+         \n\
+         Read the two shapes against each other. The min-max columns pin 1.00 at the top and\n\
+         0.00 at the bottom on every query, so their spread says nothing about whether the\n\
+         list is any good. The affine column keeps the model's own level, so a query where\n\
+         nothing fits stays low instead of being promoted to 1.00 — and pays for it by being\n\
+         visually flat, which is exactly the trade.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| method | # | tool | raw | normalized |\n|---|---|---|---|---|"
+    );
+    {
+        use crate::method::SearchMethod;
+        use crate::trace::Origin;
+
+        // No graph attached, deliberately. With one, the usage arm fuses into
+        // every method, `score` becomes RRF, and all three rows normalize
+        // min-max — the affine cosine rule would never appear. See the note
+        // below: that is what an integrator with adaptive ranking on gets.
+        let mut reg = crate::ToolRegistry::with_embedder_for_test(Arc::new(FixtureEmbedder::new()));
+        for entry in catalog() {
+            reg.register(tool_of(&entry));
+        }
+        reg.build_embeddings().expect("fixture vectors");
+
+        let q = "find tasks related to authentication";
+        for (label, method) in [
+            ("bm25", SearchMethod::Bm25),
+            ("semantic", SearchMethod::Semantic),
+            ("hybrid", SearchMethod::Hybrid),
+        ] {
+            for (i, h) in reg
+                .search_with_method(q, 3, Origin::Direct, method)
+                .expect("search")
+                .iter()
+                .enumerate()
+            {
+                let _ = writeln!(
+                    o,
+                    "| {label} | {} | {} | {:.4} | {:.3} |",
+                    i + 1,
+                    h.tool_id,
+                    h.score,
+                    h.normalized
+                );
+            }
+        }
+        let _ = writeln!(
+            o,
+            "\nQuery: `{q}` \u{b7} invoked: `{}`\n\n\
+             **The affine rule reaches almost nobody.** These rows have no intent graph \
+             attached. With adaptive ranking on, the usage arm fuses into the Bm25 and \
+             Semantic paths too, `score` becomes RRF, and all three methods fall back to \
+             min-max. The one rule that preserves an absolute level applies only when \
+             adaptive ranking is off.\n",
+            turns
+                .iter()
+                .find(|t| t.query == q)
+                .map_or("?", |t| t.invoked.as_str())
+        );
+    }
+
     // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;
     let _ = writeln!(o, "## Served top-3 (hybrid: BM25 + dense + usage arm)\n");
