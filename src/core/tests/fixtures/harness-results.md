@@ -327,7 +327,7 @@ change it.
 ## Confidence sweep
 
 The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each
-weighting. `dense ramp a→b` is the shipped [`FusionPolicy`]; the flat rows are the
+weighting. `dense ramp a→b` is the R10 proposal; the flat rows are the
 competing hypothesis — one fixed weight pair for every query — and sit here rather than
 in a memory so the two are read against each other.
 

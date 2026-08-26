@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::embedding::{Embedded, Embedder, EmbedderError};
-use crate::fusion::FusionPolicy;
 use crate::indexing::searchable_text;
 use crate::tool::Tool;
 use crate::trace::NoopSink;
@@ -608,14 +607,22 @@ impl Weighting {
         }
     }
 
-    /// The shipped ramp, driven by [`FusionPolicy`] itself rather than a copy of
-    /// its arithmetic — a sweep that measures a reimplementation measures the
-    /// wrong thing.
+    /// Scale the dense arm between silent at `floor` and full weight at `full`,
+    /// off its own top cosine — the R10 proposal.
+    ///
+    /// Lives here rather than in the engine because the sweep below is what
+    /// refused it: flat at every setting, and the cosine it gates on does not
+    /// separate a right answer from a wrong one on this fixture. Kept so the
+    /// refusal stays reproducible instead of becoming a remembered claim.
     fn dense_ramp(floor: f32, full: f32) -> Self {
-        let policy = FusionPolicy::default().with_dense_confidence(floor, full);
         Self {
             label: format!("dense ramp {floor:.2}→{full:.2}"),
-            weights: Box::new(move |a| (1.0, policy.dense_weight(a.dense_top().map(|(_, c)| c)))),
+            weights: Box::new(move |a| {
+                let w = a.dense_top().map_or(1.0, |(_, cos)| {
+                    ((cos - floor) / (full - floor)).clamp(0.0, 1.0)
+                });
+                (1.0, w)
+            }),
         }
     }
 
@@ -1072,7 +1079,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(
         o,
         "The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each\n\
-         weighting. `dense ramp a→b` is the shipped [`FusionPolicy`]; the flat rows are the\n\
+         weighting. `dense ramp a→b` is the R10 proposal; the flat rows are the\n\
          competing hypothesis — one fixed weight pair for every query — and sit here rather than\n\
          in a memory so the two are read against each other.\n\
          \n\

@@ -9,7 +9,7 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{FusionPolicy, RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
@@ -168,11 +168,6 @@ pub struct ToolRegistry {
     /// scores unchanged. Shared behind a lock because the learner writes to the
     /// same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
-    /// How loudly each content arm votes into the fusion (see [`FusionPolicy`]).
-    /// Serving-time configuration only — unlike [`crate::ClusterPolicy`] it draws
-    /// no boundary and persists nothing, so there is nothing to record and
-    /// nothing to drift from. Default is flat `1.0` weights, exactly ADR-0011.
-    fusion: FusionPolicy,
 }
 
 impl Default for ToolRegistry {
@@ -191,7 +186,6 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
-            fusion: FusionPolicy::default(),
         }
     }
 
@@ -206,7 +200,6 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
-            fusion: FusionPolicy::default(),
         }
     }
 
@@ -218,7 +211,6 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
-            fusion: FusionPolicy::default(),
         }
     }
 
@@ -234,7 +226,6 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
-            fusion: FusionPolicy::default(),
         }
     }
 
@@ -274,22 +265,6 @@ impl ToolRegistry {
     /// searches read it.
     pub fn set_intent_graph(&mut self, graph: Option<Arc<RwLock<IntentGraph>>>) {
         self.graph = graph;
-    }
-
-    /// Set how loudly each content arm votes into hybrid fusion.
-    ///
-    /// Takes effect on the next search and changes nothing else: no boundary is
-    /// redrawn, no cache invalidated, nothing written. The default is flat `1.0`
-    /// weights, so a registry that never calls this ranks byte-identically to
-    /// one built before the policy existed.
-    pub fn set_fusion_policy(&mut self, policy: FusionPolicy) {
-        self.fusion = policy;
-    }
-
-    /// The policy in force for the next search.
-    #[must_use]
-    pub fn fusion_policy(&self) -> FusionPolicy {
-        self.fusion
     }
 
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
@@ -1032,21 +1007,10 @@ impl ToolRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
-        // 4. RRF fusion → final top_k. The dense arm's weight is read off its own
-        //    top cosine *before* the scores are dropped — this is the only point
-        //    in the pipeline where they still exist.
-        let dense_weight = self
-            .fusion
-            .dense_weight(dense_ranked.first().map(|(_, s)| *s));
+        // 4. RRF fusion → final top_k.
         let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
         let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0)];
-        // A silent arm is omitted, never passed at weight zero: at zero its ids
-        // still join the candidate set tied at `0.0`, where the alphabetical
-        // tie-break would fill top_k with them (see `rrf_fuse_weighted`).
-        if dense_weight > 0.0 {
-            arms.push((&dense_ids, dense_weight));
-        }
+        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
         if let Some(arm) = &arm {
             arms.push((&arm.ids, arm.weight()));
         }
@@ -2881,127 +2845,5 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
-    }
-
-    // ---- the fusion policy ----
-
-    /// Unit vectors on a circle so a test can pick an exact cosine. Keyed on
-    /// markers that are deliberately *not* the tokens BM25 matches on, so the two
-    /// arms can be steered independently — `StubEmbedder`'s one-hot buckets only
-    /// produce cosines of exactly 0 or 1, which cannot express "weak but present".
-    struct GradedEmbedder;
-    impl GradedEmbedder {
-        fn vec_for(text: &str) -> Vec<f32> {
-            let t = text.to_lowercase();
-            let cos: f32 = if t.contains("q_anchor") {
-                1.0
-            } else if t.contains("m_near") {
-                0.8
-            } else if t.contains("m_far") {
-                0.4
-            } else {
-                0.0
-            };
-            vec![cos, (1.0 - cos * cos).sqrt()]
-        }
-    }
-    impl Embedder for GradedEmbedder {
-        fn embed_doc(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Ok(GradedEmbedder::vec_for(text))
-        }
-        fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbedderError> {
-            Ok(GradedEmbedder::vec_for(text))
-        }
-    }
-
-    /// `widget` is BM25's handle on `lexical_hit`; the `m_*` marker is the dense
-    /// arm's handle on both. `q_anchor` puts the query at cosine 1.0 with itself.
-    fn graded_catalog(marker: &str) -> ToolRegistry {
-        let mut reg = with_embedder(Arc::new(GradedEmbedder));
-        reg.register(tool("lexical_hit", &format!("widget report {marker}")));
-        reg.register(tool("semantic_only", &format!("gadget summary {marker}")));
-        reg.build_embeddings().unwrap();
-        reg
-    }
-
-    fn hybrid_ids(reg: &ToolRegistry, q: &str) -> Vec<String> {
-        reg.search_with_method(q, 5, Origin::Direct, SearchMethod::Hybrid)
-            .unwrap()
-            .into_iter()
-            .map(|h| h.tool_id)
-            .collect()
-    }
-
-    #[test]
-    fn the_default_policy_leaves_hybrid_exactly_as_it_was() {
-        let mut reg = graded_catalog("m_far");
-        let before = hybrid_ids(&reg, "q_anchor widget");
-        assert!(reg.fusion_policy().is_default());
-
-        reg.set_fusion_policy(FusionPolicy::default().without_dense_confidence());
-        assert_eq!(
-            hybrid_ids(&reg, "q_anchor widget"),
-            before,
-            "an explicitly-disabled policy must rank identically to no policy"
-        );
-    }
-
-    /// The recall consequence, stated plainly: a tool only the dense arm found
-    /// leaves the candidate set entirely when that arm goes quiet. Intended, and
-    /// the reason the weight is a ramp rather than a switch.
-    #[test]
-    fn a_dense_arm_below_the_floor_stops_contributing_candidates() {
-        let mut reg = graded_catalog("m_far"); // every doc at cosine 0.4
-        let q = "q_anchor widget";
-        assert!(
-            hybrid_ids(&reg, q).contains(&"semantic_only".to_string()),
-            "the dense arm is what recalls this tool at all"
-        );
-
-        reg.set_fusion_policy(FusionPolicy::default().with_dense_confidence(0.5, 0.9));
-        let ids = hybrid_ids(&reg, q);
-        assert!(
-            !ids.contains(&"semantic_only".to_string()),
-            "0.4 is below the 0.5 floor, so the arm should be silent; got {ids:?}"
-        );
-        assert_eq!(
-            ids,
-            vec!["lexical_hit".to_string()],
-            "and what remains is exactly BM25's own ranking"
-        );
-    }
-
-    #[test]
-    fn a_dense_arm_above_the_floor_keeps_voting() {
-        let mut reg = graded_catalog("m_near"); // every doc at cosine 0.8
-        reg.set_fusion_policy(FusionPolicy::default().with_dense_confidence(0.5, 0.9));
-        assert!(
-            hybrid_ids(&reg, "q_anchor widget").contains(&"semantic_only".to_string()),
-            "0.8 is well inside the ramp — damped, not silenced"
-        );
-    }
-
-    /// The policy gates an arm on its *best* hit, not per-hit. One strong match
-    /// keeps the whole arm audible, weak neighbours included — the alternative
-    /// would be a per-id score cutoff, which is a different (and unmade) decision.
-    #[test]
-    fn one_confident_hit_keeps_the_whole_arm_audible() {
-        let mut reg = with_embedder(Arc::new(GradedEmbedder));
-        reg.register(tool("lexical_hit", "widget report q_anchor")); // cosine 1.0
-        reg.register(tool("semantic_only", "gadget summary m_far")); // cosine 0.4
-        reg.build_embeddings().unwrap();
-        reg.set_fusion_policy(FusionPolicy::default().with_dense_confidence(0.5, 0.9));
-
-        assert!(
-            hybrid_ids(&reg, "q_anchor widget").contains(&"semantic_only".to_string()),
-            "the arm's top cosine is 1.0, so nothing in it is silenced"
-        );
-    }
-
-    #[test]
-    fn the_policy_is_readable_back() {
-        let mut reg = with_embedder(Arc::new(StubEmbedder));
-        reg.set_fusion_policy(FusionPolicy::default().with_dense_confidence(0.55, 0.85));
-        assert_eq!(reg.fusion_policy().dense_confidence(), Some((0.55, 0.85)));
     }
 }
