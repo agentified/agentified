@@ -357,21 +357,26 @@ which is exactly what the flat rows were assumed to do before they were measured
 ## Normalized scores
 
 `SearchHit::normalized` for the top 5 of each method, on a query where the arms
-disagree. BM25 and hybrid are min-max across the list; semantic is `(cos + 1) / 2`.
+disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;
+hybrid is min-max across the list, because RRF has no achievable maximum to divide by.
 
-Read the two shapes against each other. The min-max columns pin 1.00 at the top and
-0.00 at the bottom on every query, so their spread says nothing about whether the
-list is any good. The affine column keeps the model's own level, so a query where
-nothing fits stays low instead of being promoted to 1.00 — and pays for it by being
-visually flat, which is exactly the trade.
+The first two are absolute — they compare across queries and do not move when
+`top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because
+`authent` carries the query's largest IDF and appears in no document, so half the
+query's discriminating mass is unanswerable by this catalog. That is the number
+saying so.
+
+The hybrid column pins 1.00 at the top and 0.00 at the bottom on every query, so
+its spread says nothing about whether the list is any good — note it reports 0.000
+for `search_tasks`, which is the answer that was actually invoked.
 
 | method | # | tool | raw | normalized |
 |---|---|---|---|---|
-| bm25 | 1 | create_task_for_branch | 4.1786 | 1.000 |
-| bm25 | 2 | find_task_by_branch | 3.2140 | 0.565 |
-| bm25 | 3 | search_projects | 2.4532 | 0.222 |
-| bm25 | 4 | create_task_relationship | 2.1402 | 0.081 |
-| bm25 | 5 | check_task_duplicates | 1.9600 | 0.000 |
+| bm25 | 1 | create_task_for_branch | 4.1786 | 0.516 |
+| bm25 | 2 | find_task_by_branch | 3.2140 | 0.397 |
+| bm25 | 3 | search_projects | 2.4532 | 0.303 |
+| bm25 | 4 | create_task_relationship | 2.1402 | 0.264 |
+| bm25 | 5 | check_task_duplicates | 1.9600 | 0.242 |
 | semantic | 1 | search_tasks | 0.7080 | 0.854 |
 | semantic | 2 | create_task | 0.6782 | 0.839 |
 | semantic | 3 | filter_tasks | 0.6721 | 0.836 |

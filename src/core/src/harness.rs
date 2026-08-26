@@ -1143,13 +1143,18 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(
         o,
         "`SearchHit::normalized` for the top {SERVED_K} of each method, on a query where the arms\n\
-         disagree. BM25 and hybrid are min-max across the list; semantic is `(cos + 1) / 2`.\n\
+         disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;\n\
+         hybrid is min-max across the list, because RRF has no achievable maximum to divide by.\n\
          \n\
-         Read the two shapes against each other. The min-max columns pin 1.00 at the top and\n\
-         0.00 at the bottom on every query, so their spread says nothing about whether the\n\
-         list is any good. The affine column keeps the model's own level, so a query where\n\
-         nothing fits stays low instead of being promoted to 1.00 — and pays for it by being\n\
-         visually flat, which is exactly the trade.\n"
+         The first two are absolute — they compare across queries and do not move when\n\
+         `top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because\n\
+         `authent` carries the query's largest IDF and appears in no document, so half the\n\
+         query's discriminating mass is unanswerable by this catalog. That is the number\n\
+         saying so.\n\
+         \n\
+         The hybrid column pins 1.00 at the top and 0.00 at the bottom on every query, so\n\
+         its spread says nothing about whether the list is any good — note it reports 0.000\n\
+         for `search_tasks`, which is the answer that was actually invoked.\n"
     );
     let _ = writeln!(
         o,

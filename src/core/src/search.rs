@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
+use bm25::{DefaultTokenizer, Document, Language, SearchEngine, SearchEngineBuilder, Tokenizer};
 
 /// Term-frequency saturation. Below the crate default because tool text is
 /// short, so a term repeating adds little (ADR-0004).
@@ -27,6 +28,18 @@ pub(crate) struct Bm25Index {
     /// documents (its `avgdl` fit has no corpus to fit).
     engine: Option<SearchEngine<String>>,
     doc_count: usize,
+    /// How many documents contain each stemmed token. The engine keeps this
+    /// internally but does not expose it, and [`Self::query_ceiling`] needs IDF
+    /// to say what a good score for a given query even *is*.
+    df: HashMap<String, usize>,
+}
+
+/// The tokenizer the engine is built with — same language, same defaults
+/// (normalize, stem, drop stopwords). Rebuilt here rather than borrowed because
+/// the crate keeps its own private; if the two ever diverge, `query_ceiling`
+/// would divide by a ceiling computed over different terms than the score.
+fn tokenizer() -> DefaultTokenizer {
+    DefaultTokenizer::new(Language::English)
 }
 
 impl Bm25Index {
@@ -45,7 +58,18 @@ impl Bm25Index {
             return Self {
                 engine: None,
                 doc_count,
+                df: HashMap::new(),
             };
+        }
+        let tk = tokenizer();
+        let mut df: HashMap<String, usize> = HashMap::new();
+        for (_, contents) in &pairs {
+            let mut seen = tk.tokenize(contents);
+            seen.sort_unstable();
+            seen.dedup();
+            for token in seen {
+                *df.entry(token).or_insert(0) += 1;
+            }
         }
         let engine = SearchEngineBuilder::<String>::with_documents(
             Language::English,
@@ -59,7 +83,42 @@ impl Bm25Index {
         Self {
             engine: Some(engine),
             doc_count,
+            df,
         }
+    }
+
+    /// The score a hypothetical *ideal* document would earn for `query` — the
+    /// yardstick that turns an unbounded BM25 score into a readable fraction.
+    ///
+    /// A term contributes `idf · tf(k1+1) / (tf + k1(1 - b + b·dl/avgdl))`. At
+    /// `tf = 1` and `dl = avgdl` the length factor collapses to `k1`, so the
+    /// fraction is `(k1+1)/(1+k1) = 1` and the term contributes its IDF
+    /// unchanged. Summing IDF over the query's distinct terms is therefore the
+    /// score of an average-length document containing each query term once.
+    ///
+    /// **Terms absent from the corpus still count.** A query word no document
+    /// contains has the highest IDF of all and contributes nothing to any real
+    /// score, so it drags every ratio down — correctly. That gap is the honest
+    /// reading "this catalog cannot fully answer you", and hiding it would make
+    /// a query the corpus has no vocabulary for look as answerable as one it does.
+    ///
+    /// Not a hard maximum: a short document repeating a term can exceed it, so
+    /// callers clamp.
+    pub(crate) fn query_ceiling(&self, query: &str) -> f32 {
+        let n = self.doc_count as f32;
+        if n == 0.0 {
+            return 0.0;
+        }
+        let mut terms = tokenizer().tokenize(query);
+        terms.sort_unstable();
+        terms.dedup();
+        terms
+            .iter()
+            .map(|t| {
+                let df = self.df.get(t).copied().unwrap_or(0) as f32;
+                (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+            })
+            .sum()
     }
 
     /// Top-`top_k` matches as `(id, score)`, best-first with ties broken by

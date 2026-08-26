@@ -105,29 +105,34 @@ pub struct SearchHit {
     /// `score` mapped onto `[0, 1]` for display, by a rule that follows the
     /// scale `score` is actually on:
     ///
-    /// - **raw BM25** and **RRF**: min-max across this result list. Top is
-    ///   `1.0` and bottom `0.0` **by construction**, on every query.
-    /// - **cosine**: `(score + 1) / 2`, an affine remap of the model's own
-    ///   range. Absolute, so it does not force a `1.0` at the top.
+    /// - **cosine**: `(score + 1) / 2`, an affine remap of the model's own range.
+    /// - **raw BM25**: `score / Σ idf(query terms)`, clamped — the share of the
+    ///   query's discriminating mass this hit actually captured
+    ///   ([`crate::search::Bm25Index::query_ceiling`]).
+    /// - **RRF**: min-max across this result list, because rank arithmetic has
+    ///   no achievable maximum to divide by. Top is `1.0` and bottom `0.0`
+    ///   **by construction**, on every query.
     ///
-    /// **This is not a confidence.** Two of the three rules normalize against
-    /// the list rather than against anything meaning "good", so a `1.0` says
-    /// "best of what came back", not "right". It is not comparable across
-    /// queries (min-max rules), across methods (three different scales), or
-    /// across `top_k` values (the min moves). Ranking a hit against its own
-    /// siblings is the only thing it supports.
+    /// The first two are **absolute**: they compare across queries, and a list
+    /// where nothing fits well stays low instead of being promoted to `1.0`.
+    /// The RRF rule is **relative** and does none of that — a `1.0` there says
+    /// "best of what came back", not "right".
     ///
-    /// A list of one, or one where every score ties, normalizes to `1.0`
-    /// throughout — there is no spread to express.
+    /// **None of them is a calibrated confidence.** Nothing here was fitted to
+    /// whether the hit was the one the caller went on to invoke, so `0.8` does
+    /// not mean "right 80% of the time".
+    ///
+    /// Under the RRF rule, a list of one — or one where every score ties —
+    /// normalizes to `1.0` throughout; there is no spread to express.
     pub normalized: f32,
 }
 
 /// Which scale a ranked list's scores are on, which decides both
 /// [`SearchHit::fused`] and how [`SearchHit::normalized`] is derived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Scale {
-    /// Raw Okapi BM25 — non-negative, unbounded, corpus-dependent.
-    Bm25,
+    /// Raw Okapi BM25, carrying the query's score ceiling to divide by.
+    Bm25 { ceiling: f32 },
     /// Cosine of L2-normalized vectors — bounded, model-anchored.
     Cosine,
     /// Reciprocal Rank Fusion — rank arithmetic; magnitude is ordering only.
@@ -155,17 +160,32 @@ fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
 
 /// Map each score onto `[0, 1]` by the rule its scale admits.
 ///
-/// Cosine is bounded, so `(s + 1) / 2` is an affine remap that keeps the
-/// absolute level: a weak best match stays low instead of being promoted to
-/// `1.0`. Raw BM25 has no ceiling and RRF's magnitude is rank arithmetic, so
-/// neither has an absolute level to keep — min-max against the list is the only
-/// thing available, and its cost is that the top is always `1.0`.
+/// Cosine is bounded, so `(s + 1) / 2` keeps the absolute level: a weak best
+/// match stays low instead of being promoted to `1.0`.
 ///
-/// A zero range (one hit, or every score tied) yields `1.0` throughout rather
-/// than dividing by zero: nothing here is worse than anything else.
+/// Raw BM25 has no ceiling in general, but it does have one *per query* — the
+/// score an average-length document containing every query term once would earn
+/// (`query_ceiling`). Dividing by that gives the same absolute property, and
+/// clamping handles the short-document-with-repeats case that can exceed it.
+///
+/// RRF has neither. Its magnitude is `Σ 1/(60 + rank)`, so the only reachable
+/// maximum is "first in every arm", which says nothing about the match. Min-max
+/// against the list is what is left, and its cost is a top pinned at `1.0`.
+/// A zero range there (one hit, or every score tied) yields `1.0` throughout
+/// rather than dividing by zero: nothing in that list is worse than anything else.
 fn normalize(ranked: &[(String, f32)], scale: Scale) -> Vec<f32> {
-    if scale == Scale::Cosine {
-        return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect();
+    match scale {
+        Scale::Cosine => return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect(),
+        // A ceiling of zero means no query term appears anywhere in the corpus,
+        // so every score is zero too and there is nothing to divide.
+        Scale::Bm25 { ceiling } if ceiling > 0.0 => {
+            return ranked
+                .iter()
+                .map(|(_, s)| (s / ceiling).clamp(0.0, 1.0))
+                .collect();
+        }
+        Scale::Bm25 { .. } => return vec![0.0; ranked.len()],
+        Scale::Rrf => {}
     }
     let (Some(max), Some(min)) = (
         ranked.first().map(|(_, s)| *s),
@@ -893,7 +913,13 @@ impl ToolRegistry {
             // No graph, or nothing matched: the original path, unchanged, with
             // raw BM25 scores. ADR-0011's byte-for-byte promise lives here.
             // Raw BM25 scores — not fused.
-            let hits = to_search_hits(self.bm25_index().search(query, top_k), Scale::Bm25);
+            let index = self.bm25_index();
+            let hits = to_search_hits(
+                index.search(query, top_k),
+                Scale::Bm25 {
+                    ceiling: index.query_ceiling(query),
+                },
+            );
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -2909,24 +2935,74 @@ mod tests {
 
     // ---- the normalized score ----
 
+    /// The BM25 rule divides by the query's own ceiling, so the top is *not*
+    /// pinned to 1.0 and the value survives a change of `top_k`.
     #[test]
-    fn bm25_normalizes_min_max_across_the_list() {
+    fn bm25_normalizes_against_the_query_ceiling_not_the_list() {
         let reg = catalog(Arc::new(StubEmbedder));
         let hits = reg.search("read a file", 5);
         assert!(hits.len() >= 2, "need a spread to normalize");
-        assert_eq!(hits.first().map(|h| h.normalized), Some(1.0));
-        assert_eq!(hits.last().map(|h| h.normalized), Some(0.0));
-        // Recompute the middle from the raw scores the same list carries.
-        let (max, min) = (hits[0].score, hits[hits.len() - 1].score);
-        for h in &hits {
-            let want = (h.score - min) / (max - min);
+        assert!(
+            hits.iter().all(|h| (0.0..=1.0).contains(&h.normalized)),
+            "must be clamped into [0, 1]"
+        );
+        // Nothing is pinned to zero: the last hit still matched something, and
+        // min-max would have reported it as 0.00 regardless.
+        assert!(
+            hits.last().is_some_and(|h| h.normalized > 0.0),
+            "the weakest hit still captured part of the query"
+        );
+        // Monotone with the raw score, since one shared ceiling divides them all.
+        for pair in hits.windows(2) {
             assert!(
-                (h.normalized - want).abs() < 1e-6,
-                "{} {}",
-                h.tool_id,
-                h.normalized
+                pair[0].normalized >= pair[1].normalized,
+                "{} {} then {} {}",
+                pair[0].tool_id,
+                pair[0].normalized,
+                pair[1].tool_id,
+                pair[1].normalized
             );
         }
+    }
+
+    /// The property min-max could not give: the same hit reports the same number
+    /// whether it was asked for alone or among others.
+    #[test]
+    fn a_bm25_hit_normalizes_the_same_at_any_top_k() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("alpha", "shared token alpha extra extra extra"));
+        reg.register(tool("beta", "shared token beta"));
+        reg.register(tool("gamma", "shared token gamma padding padding padding"));
+        let deep = reg.search("shared token", 3);
+        let shallow = reg.search("shared token", 2);
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
+            assert!(
+                (same.normalized - h.normalized).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.tool_id,
+                h.normalized,
+                same.normalized
+            );
+        }
+    }
+
+    /// A query word no document contains still counts toward the ceiling, so a
+    /// catalog with no vocabulary for the question reports a lower number.
+    /// Suppressing that would make an unanswerable query look answerable.
+    #[test]
+    fn an_unmatchable_query_word_lowers_the_score() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("reader", "read a file"));
+        let plain = reg.search("read", 5);
+        let with_unknown = reg.search("read quetzalcoatl", 5);
+        assert_eq!(plain[0].tool_id, with_unknown[0].tool_id);
+        assert!(
+            with_unknown[0].normalized < plain[0].normalized,
+            "{} vs {}",
+            with_unknown[0].normalized,
+            plain[0].normalized
+        );
     }
 
     #[test]
@@ -2980,28 +3056,40 @@ mod tests {
         assert_eq!(hits[0].normalized, 1.0);
     }
 
-    /// The min moves with `top_k`, so the same hit normalizes differently in a
-    /// shorter list. Pinned because it is the property that makes this unsafe to
-    /// compare across calls, not an implementation detail we might quietly fix.
+    /// Under the RRF rule the min moves with `top_k`, so the same hit normalizes
+    /// differently in a shorter list. Pinned because it is the property that
+    /// makes the fused number unsafe to compare across calls — and the reason
+    /// the BM25 and cosine rules are not built this way.
     #[test]
-    fn the_normalized_score_depends_on_how_many_hits_were_asked_for() {
+    fn the_fused_normalized_score_depends_on_how_many_hits_were_asked_for() {
+        // Both arms must agree on the order, or symmetric rank swaps make the
+        // fused scores tie and there is no spread to measure.
         let mut reg = with_embedder(Arc::new(StubEmbedder));
-        reg.register(tool("alpha", "shared token alpha extra extra extra"));
-        reg.register(tool("beta", "shared token beta"));
-        reg.register(tool(
-            "gamma",
-            "shared token gamma padding padding padding padding",
-        ));
-        let deep = reg.search("shared token", 3);
-        let shallow = reg.search("shared token", 2);
+        reg.register(tool("aa", "shared token read"));
+        reg.register(tool("bb", "shared token read padding padding padding"));
+        reg.register(tool("cc", "shared token remove"));
+        reg.build_embeddings().unwrap();
+        let hy = |k| {
+            reg.search_with_method("shared token read", k, Origin::Direct, SearchMethod::Hybrid)
+                .unwrap()
+        };
+        let (deep, shallow) = (hy(3), hy(2));
         assert!(deep.len() > shallow.len(), "need differing depths");
-        let id = &shallow[shallow.len() - 1].tool_id;
-        let in_deep = deep.iter().find(|h| &h.tool_id == id).unwrap();
-        assert_eq!(shallow[shallow.len() - 1].normalized, 0.0);
         assert!(
-            in_deep.normalized > 0.0,
-            "the same hit is 0.0 at k=2 and {} at k=5",
-            in_deep.normalized
+            shallow.iter().any(|h| {
+                deep.iter()
+                    .find(|d| d.tool_id == h.tool_id)
+                    .is_some_and(|d| (d.normalized - h.normalized).abs() > 1e-6)
+            }),
+            "a fused hit should normalize differently at a different top_k: \
+             k=2 {:?} vs k=3 {:?}",
+            shallow
+                .iter()
+                .map(|h| (h.tool_id.as_str(), h.normalized))
+                .collect::<Vec<_>>(),
+            deep.iter()
+                .map(|h| (h.tool_id.as_str(), h.normalized))
+                .collect::<Vec<_>>()
         );
     }
 }
