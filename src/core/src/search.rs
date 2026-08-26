@@ -52,6 +52,16 @@ impl Bm25Index {
     where
         I: IntoIterator<Item = (String, String)>,
     {
+        Self::build_with(docs, BM25_K1, BM25_B)
+    }
+
+    /// [`Self::build`] with explicit `k1`/`b`, so the harness can measure what a
+    /// tuning change costs instead of the constants being taken on faith.
+    /// Production always goes through `build`.
+    pub(crate) fn build_with<I>(docs: I, k1: f32, b: f32) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
         let pairs: Vec<(String, String)> = docs.into_iter().collect();
         let doc_count = pairs.len();
         if doc_count == 0 {
@@ -77,8 +87,8 @@ impl Bm25Index {
                 .into_iter()
                 .map(|(id, contents)| Document { id, contents }),
         )
-        .k1(BM25_K1)
-        .b(BM25_B)
+        .k1(k1)
+        .b(b)
         .build();
         Self {
             engine: Some(engine),

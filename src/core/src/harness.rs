@@ -1138,6 +1138,87 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          which is exactly what the flat rows were assumed to do before they were measured.\n"
     );
 
+    // -- what the length penalty costs -----------------------------------------
+    let _ = writeln!(o, "\n## BM25 length penalty (`b`)\n");
+    let _ = writeln!(
+        o,
+        "The lexical arm alone, over the same 47 queries, at the old `b = 0.4` and the standard\n\
+         `b = 0.75` it was raised to (ADR-0021). `b` scales how hard a long document is\n\
+         penalised: at 0 length is ignored, at 1 it is fully normalised.\n\
+         \n\
+         `top-1 correct` counts the queries whose BM25 top-1 is the tool the turn actually\n\
+         invoked. `write on read` counts read-phrased queries whose BM25 top-1 is a write op.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| b | top-1 correct | write on read | top-1 changed |\n|---|---|---|---|"
+    );
+    {
+        let docs: Vec<(String, String)> = catalog()
+            .iter()
+            .map(|e| (e.id.clone(), searchable_text(&tool_of(e))))
+            .collect();
+        let mut queries: Vec<&Turn> = Vec::new();
+        for t in turns {
+            if !queries.iter().any(|q| q.query == t.query) {
+                queries.push(t);
+            }
+        }
+        let mut reference: Vec<String> = Vec::new();
+        for b in [0.4f32, 0.75] {
+            let index =
+                crate::search::Bm25Index::build_with(docs.clone(), crate::search::BM25_K1, b);
+            let tops: Vec<String> = queries
+                .iter()
+                .map(|t| {
+                    index
+                        .search(&t.query, 1)
+                        .first()
+                        .map(|(id, _)| id.clone())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let correct = queries
+                .iter()
+                .zip(&tops)
+                .filter(|(t, top)| &t.invoked == *top)
+                .count();
+            let bad = queries
+                .iter()
+                .zip(&tops)
+                .filter(|(t, top)| is_read_intent(&t.intent) && is_write(top))
+                .count();
+            let changed = if reference.is_empty() {
+                "—".to_string()
+            } else {
+                format!(
+                    "{} of {}",
+                    tops.iter().zip(&reference).filter(|(a, b)| a != b).count(),
+                    tops.len()
+                )
+            };
+            let mark = if (b - crate::search::BM25_B).abs() < f32::EPSILON {
+                " **(current)**"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                o,
+                "| {b:.2}{mark} | {correct} of {} | {bad} of {} | {changed} |",
+                queries.len(),
+                queries.iter().filter(|t| is_read_intent(&t.intent)).count()
+            );
+            if reference.is_empty() {
+                reference = tops;
+            }
+        }
+    }
+    let _ = writeln!(
+        o,
+        "\nThe lexical arm alone is weak either way — it is one of three, and the served numbers\n\
+         below are what fusion makes of it.\n"
+    );
+
     // -- the normalized score, per method -------------------------------------
     let _ = writeln!(o, "\n## Normalized scores\n");
     let _ = writeln!(

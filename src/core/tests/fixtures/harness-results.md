@@ -354,6 +354,24 @@ that moves many top-1s without lowering it has changed the ranking, not improved
 which is exactly what the flat rows were assumed to do before they were measured.
 
 
+## BM25 length penalty (`b`)
+
+The lexical arm alone, over the same 47 queries, at the old `b = 0.4` and the standard
+`b = 0.75` it was raised to (ADR-0021). `b` scales how hard a long document is
+penalised: at 0 length is ignored, at 1 it is fully normalised.
+
+`top-1 correct` counts the queries whose BM25 top-1 is the tool the turn actually
+invoked. `write on read` counts read-phrased queries whose BM25 top-1 is a write op.
+
+| b | top-1 correct | write on read | top-1 changed |
+|---|---|---|---|
+| 0.40 | 12 of 47 | 8 of 25 | — |
+| 0.75 **(current)** | 12 of 47 | 11 of 25 | 8 of 47 |
+
+The lexical arm alone is weak either way — it is one of three, and the served numbers
+below are what fusion makes of it.
+
+
 ## Normalized scores
 
 `SearchHit::normalized` for the top 5 of each method, on a query where the arms
