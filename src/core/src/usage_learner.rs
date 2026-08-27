@@ -72,6 +72,24 @@ struct Pending {
     counted: bool,
 }
 
+/// The ids a caller plausibly *considered*, given which one they took: every id
+/// ranked at or above it, inclusive.
+///
+/// The denominator has to mean "weighed and passed over", not "returned". A tool
+/// listed fifth when the caller took the first was very likely never read, and
+/// counting it as refused would penalise it for our own ranking — the position
+/// bias that makes an impression signal circular if it is fed back raw.
+///
+/// The invoked id absent from the list means the caller went outside what was
+/// surfaced, so nothing here was passed over in its favour: no impressions.
+fn considered(surfaced: &[String], invoked: &str) -> Vec<String> {
+    surfaced
+        .iter()
+        .position(|id| id == invoked)
+        .map(|cut| surfaced[..=cut].to_vec())
+        .unwrap_or_default()
+}
+
 /// Which searches may open an observation window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -283,12 +301,15 @@ pub(crate) fn replay_log_into(
         // it an observation; later ones add edges for the same question.
         let first_confirmation = !entry.1;
         entry.1 = true;
-        // Impressions belong to the search, not to each invoke that follows it.
+        // Impressions belong to the search, not to each invoke that follows it,
+        // and only the ids at or above the invoked one were plausibly weighed.
         let surfaced: Vec<String> = if entry.3 {
             Vec::new()
         } else {
-            entry.3 = true;
-            entry.2.iter().map(|id| (*id).to_string()).collect()
+            let all: Vec<String> = entry.2.iter().map(|id| (*id).to_string()).collect();
+            let considered = considered(&all, capability_id);
+            entry.3 = !considered.is_empty();
+            considered
         };
         // Stash this query's vector right before the observation reads it. The
         // slot holds one entry, so with sessions interleaved anything set
@@ -457,11 +478,15 @@ impl UsageLearner {
         let query = entry.query.clone();
         // Impressions belong to the search, not to each invoke that follows it:
         // one search and three invokes is three edges but one impression each.
-        let surfaced: Vec<String> = if entry.counted {
+        let surfaced = if entry.counted {
             Vec::new()
         } else {
-            entry.counted = true;
-            entry.surfaced.clone()
+            let considered = considered(&entry.surfaced, capability_id);
+            // Only a confirming invoke inside the surfaced list counts the
+            // window; one that went outside it leaves the window open, so a
+            // later invoke that did come from the list can still count.
+            entry.counted = !considered.is_empty();
+            considered
         };
         drop(pending);
         if let Ok(mut graph) = self.graph.write() {
@@ -679,7 +704,10 @@ mod tests {
     #[test]
     fn one_search_and_three_invokes_count_one_impression_each() {
         let (l, graph) = learner();
-        l.record(search_showing("why is the build broken", &["a", "b"]));
+        l.record(search_showing(
+            "why is the build broken",
+            &["a", "b", "gh_run_list"],
+        ));
         l.record(invoke("gh_run_list"));
         l.record(invoke("gh_run_view"));
         l.record(invoke("read_file"));
@@ -690,6 +718,70 @@ mod tests {
         assert_eq!(it.surfaced.get("a"), Some(&1), "but one search showed them");
         assert_eq!(it.surfaced.get("b"), Some(&1));
         assert_eq!(it.support, 1);
+    }
+
+    /// The denominator must mean "weighed and passed over", not "returned". A
+    /// tool listed below the one the caller took was very likely never read, and
+    /// counting it as refused would penalise it for where *we* ranked it — the
+    /// position bias that makes an impression signal circular.
+    #[test]
+    fn only_the_ids_ranked_above_the_invoked_one_count_as_seen() {
+        let (l, graph) = learner();
+        l.record(search_showing(
+            "why is the build broken",
+            &["docker_build", "gh_run_list", "read_file", "delete_file"],
+        ));
+        l.record(invoke("gh_run_list"));
+
+        let g = graph.read().unwrap();
+        let it = &g.intents[0];
+        assert_eq!(it.surfaced.get("docker_build"), Some(&1), "ranked above it");
+        assert_eq!(it.surfaced.get("gh_run_list"), Some(&1), "the one taken");
+        assert_eq!(it.surfaced.get("read_file"), None, "ranked below, unread");
+        assert_eq!(it.surfaced.get("delete_file"), None);
+    }
+
+    /// Taking the top hit means nothing was passed over, so nothing is penalised
+    /// — the case that keeps a well-ranked tool from accumulating a denominator
+    /// simply by being right often.
+    #[test]
+    fn invoking_the_top_hit_counts_only_itself() {
+        let (l, graph) = learner();
+        l.record(search_showing(
+            "why is the build broken",
+            &["gh_run_list", "docker_build"],
+        ));
+        l.record(invoke("gh_run_list"));
+
+        let g = graph.read().unwrap();
+        assert_eq!(
+            g.intents[0].surfaced.keys().collect::<Vec<_>>(),
+            vec!["gh_run_list"]
+        );
+    }
+
+    /// An invoke of something the search never returned proves nothing about
+    /// what it did return, so the window stays open for one that did.
+    #[test]
+    fn an_invoke_outside_the_surfaced_list_counts_no_impressions() {
+        let (l, graph) = learner();
+        l.record(search_showing(
+            "why is the build broken",
+            &["docker_build", "gh_run_list"],
+        ));
+        l.record(invoke("something_else"));
+        {
+            let g = graph.read().unwrap();
+            assert!(g.intents[0].surfaced.is_empty(), "nothing was passed over");
+            assert!(g.intents[0].tools.contains_key("something_else"));
+        }
+        l.record(invoke("gh_run_list"));
+        let g = graph.read().unwrap();
+        assert_eq!(
+            g.intents[0].surfaced.get("docker_build"),
+            Some(&1),
+            "the window was still open for an invoke from the list"
+        );
     }
 
     /// Impressions are counted at confirm, not at search, so an abandoned search
@@ -752,7 +844,10 @@ mod tests {
     fn asking_twice_counts_the_impressions_twice() {
         let (l, graph) = learner();
         for _ in 0..2 {
-            l.record(search_showing("why is the build broken", &["docker_build"]));
+            l.record(search_showing(
+                "why is the build broken",
+                &["docker_build", "gh_run_list"],
+            ));
             l.record(invoke("gh_run_list"));
         }
         let g = graph.read().unwrap();
@@ -771,7 +866,7 @@ mod tests {
             search_showing("why is the build broken", &["docker_build", "gh_run_list"]),
             invoke("gh_run_list"),
             invoke("gh_run_view"),
-            search_showing("why is the build broken", &["docker_build"]),
+            search_showing("why is the build broken", &["docker_build", "gh_run_list"]),
             invoke("gh_run_list"),
         ];
 

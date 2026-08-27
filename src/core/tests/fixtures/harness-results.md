@@ -204,15 +204,15 @@ table below: the arm can change completely without the served ranking moving, be
 it enters the fusion at half weight against two full-weight arms.
 
 `raw order` is what invocation counts alone would promote, so the cluster-frequency
-weight's effect is visible rather than only asserted. `ratio order` is what
-`(invoked + 1) / (surfaced + 2)` would promote instead of the count — the proposed use
-of impressions, measured without shipping it. `= (same)` means unchanged from
-`promoted`.
+weight's effect is visible rather than only asserted. `damped` is the same arm over a
+graph that recorded impressions, so the `passed_over` penalty applies — the left
+column's graph recorded none, which is why the two can differ at all. `= (same)`
+means unchanged from `promoted`.
 
-| intent | query | cluster | similarity | promoted | raw order | ratio order |
+| intent | query | cluster | similarity | promoted | raw order | damped |
 |---|---|---|---|---|---|---|
 | create | create a task for the login bug | intent_18 | 0.734 | create_tasks_batch | = (same) | = (same) |
-| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
 | create | open a ticket for the flaky test | intent_1 | 1.000 | create_task | = (same) | = (same) |
 | find | find tasks related to authentication | intent_2 | 0.966 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | find tasks about the rate limiter | intent_8 | 0.931 | search_document_chunks, search_tasks | = (same) | = (same) |
@@ -223,7 +223,7 @@ of impressions, measured without shipping it. `= (same)` means unchanged from
 | status | mark the migration task in progress | intent_5 | 0.945 | update_task | = (same) | = (same) |
 | status | mark task done | intent_5 | 0.945 | update_task | = (same) | = (same) |
 | status | update the status of the deploy task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) | = (same) |
-| find | search for tasks on the payments flow | intent_3 | 0.926 | search_tasks, create_task | = (same) | create_task, search_tasks |
+| find | search for tasks on the payments flow | intent_3 | 0.926 | search_tasks, create_task | = (same) | = (same) |
 | exists | any tasks about authentication | intent_2 | 0.950 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | create | create a task for the signup bug | intent_18 | 0.715 | create_tasks_batch | = (same) | = (same) |
 | doc_read | open the onboarding doc | intent_7 | 1.000 | get_document_content | = (same) | = (same) |
@@ -239,7 +239,7 @@ of impressions, measured without shipping it. `= (same)` means unchanged from
 | create | add a task for the payments migration | intent_15 | 0.744 | search_projects | = (same) | = (same) |
 | find | find open tasks about the auth flow | intent_2 | 0.888 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | comment | post an update on the auth task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) | = (same) |
-| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
 | comment | leave a progress note on the deploy task | intent_12 | 1.000 | post_progress_comment | = (same) | = (same) |
 | link | link these two tasks as blocking | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
 | link | attach the pull request to the task | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
@@ -249,7 +249,7 @@ of impressions, measured without shipping it. `= (same)` means unchanged from
 | review | what did I get done today | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) | list_my_active_tasks, end_day_review_workflow |
 | review | close the task and ask for review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | update_task_status, complete_task_with_review |
 | create | create tasks for all the failing checks | intent_18 | 1.000 | create_tasks_batch | = (same) | = (same) |
-| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
 | find | search tasks authentication | intent_2 | 0.921 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | show me existing tasks about auth | intent_2 | 0.889 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | list tasks concerning authentication | intent_2 | 0.942 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
@@ -263,11 +263,10 @@ of impressions, measured without shipping it. `= (same)` means unchanged from
 fixtures grow: at this size it behaves as a principled tie-break rather than a ranking
 signal, and whether that changes is the question a bigger graph answers.
 
-**The invoked/surfaced ratio would reorder 20 of 47, and change which id
-leads in 8.** Only the leader count can reach a served result: the arm
-enters at half weight or less, so a swap further down its list is absorbed by two
-full-weight arms. That number, not the reorder count, is what ranking on impressions
-would be buying.
+**The impression penalty reorders 19 of 47, and changes which id leads
+in 4.** Only the leader count can reach a served result: the arm enters
+at half weight or less, so a swap further down its list is absorbed by two full-weight
+arms. Whether those leaders survive the fusion is the served table below.
 
 
 ## Arm scores
@@ -585,6 +584,22 @@ question.
 
 **The ratio would lead a different tool in 4 of 20 clusters.** That count is the whole question: at zero, ranking on impressions changes nothing and is not worth the risk; the larger it is, the more the current order is volume rather than fit — and the more a bad ratio could do damage. Neither reading is available from invocation counts alone.
 
+
+## Served, with and without the impression penalty
+
+The same 47 queries served end to end through all three arms, over two graphs grown
+from the same turns: one that recorded no impressions, so `passed_over` is `1.0`
+everywhere, and one that did.
+
+`top-1 correct` is against the tool the turn actually invoked — the fixture's only
+ground truth. `write on read` is the reported failure, and a proxy. Both must be read
+together: a change that fixes the proxy while lowering accuracy has moved the ranking,
+not improved it.
+
+| graph | top-1 correct | write on read | top-1 changed |
+|---|---|---|---|
+| no impressions | 35 of 47 | 2 of 25 | — |
+| with the penalty | 35 of 47 | 2 of 25 | 0 of 47 |
 ## Served top-5 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-5 |

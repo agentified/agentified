@@ -743,6 +743,26 @@ fn read_served_write(arms: &[ArmRankings], sim: &[(String, Vec<String>)]) -> usi
         .count()
 }
 
+/// Served top-1 against the tool the turn actually invoked, and the reported
+/// failure count beside it. The label is the only ground truth the fixture has;
+/// the write-op count is a proxy that predates it.
+pub(crate) fn served_quality(served: &[(String, Vec<String>)], turns: &[Turn]) -> (usize, usize) {
+    let mut correct = 0;
+    let mut write_on_read = 0;
+    for (query, hits) in served {
+        let Some(turn) = turns.iter().find(|t| &t.query == query) else {
+            continue;
+        };
+        if hits.first() == Some(&turn.invoked) {
+            correct += 1;
+        }
+        if is_read_intent(&turn.intent) && hits.first().is_some_and(|h| is_write(h)) {
+            write_on_read += 1;
+        }
+    }
+    (correct, write_on_read)
+}
+
 /// Ops that write. The reported failure was a read-phrased query being served
 /// one of these.
 fn is_write(id: &str) -> bool {
@@ -967,25 +987,15 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     // its searches surfaced. Clustering is identical — same turns, same order,
     // same policy — so a cluster id from `graph` names the same cluster here.
     let with_impressions = replay_with_impressions(turns);
-    let ratio_order = |intent_id: &str| -> Vec<String> {
-        let Some(it) = with_impressions.intents.iter().find(|i| i.id == intent_id) else {
-            return Vec::new();
-        };
-        let cf = with_impressions.cluster_frequency(Capability::Tool);
-        let mut e: Vec<(&String, f32)> = it
-            .tools
-            .iter()
-            .map(|(id, invoked)| {
-                let surfaced = it.surfaced.get(id).copied().unwrap_or(0) as f32;
-                (id, (invoked + 1.0) / (surfaced + 2.0) * cf.weight(id))
-            })
-            .collect();
-        e.sort_by(|x, y| {
-            y.1.partial_cmp(&x.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| x.0.cmp(y.0))
-        });
-        e.into_iter().take(3).map(|(id, _)| id.clone()).collect()
+    // The real thing: `Intent::ranked` already applies the impression penalty, so
+    // arming the impressions graph *is* the damped order. Recomputing the formula
+    // here would measure a copy of it.
+    let damped_order = |query: &str, vector: &[f32]| -> Vec<String> {
+        with_impressions
+            .arm(query, Some(vector), Capability::Tool, &|_| true)
+            .into_arm()
+            .map(|a| a.ids.into_iter().take(3).collect())
+            .unwrap_or_default()
     };
 
     // -- what the arm contributed -------------------------------------------
@@ -997,14 +1007,14 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          it enters the fusion at half weight against two full-weight arms.\n\
          \n\
          `raw order` is what invocation counts alone would promote, so the cluster-frequency\n\
-         weight's effect is visible rather than only asserted. `ratio order` is what\n\
-         `(invoked + 1) / (surfaced + 2)` would promote instead of the count — the proposed use\n\
-         of impressions, measured without shipping it. `= (same)` means unchanged from\n\
-         `promoted`.\n"
+         weight's effect is visible rather than only asserted. `damped` is the same arm over a\n\
+         graph that recorded impressions, so the `passed_over` penalty applies — the left\n\
+         column's graph recorded none, which is why the two can differ at all. `= (same)`\n\
+         means unchanged from `promoted`.\n"
     );
     let _ = writeln!(
         o,
-        "| intent | query | cluster | similarity | promoted | raw order | ratio order |\n\
+        "| intent | query | cluster | similarity | promoted | raw order | damped |\n\
          |---|---|---|---|---|---|---|"
     );
     let mut listed: Vec<&str> = Vec::new();
@@ -1042,7 +1052,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
                 if raw != promoted {
                     reordered += 1;
                 }
-                let by_ratio = ratio_order(&a.intent_id);
+                let by_ratio = damped_order(&turn.query, &turn.vector);
                 let by_ratio: Vec<&str> = by_ratio.iter().map(String::as_str).collect();
                 if by_ratio != promoted {
                     ratio_reordered += 1;
@@ -1082,11 +1092,10 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          fixtures grow: at this size it behaves as a principled tie-break rather than a ranking\n\
          signal, and whether that changes is the question a bigger graph answers.\n\
          \n\
-         **The invoked/surfaced ratio would reorder {ratio_reordered} of {}, and change which id\n\
-         leads in {ratio_new_leader}.** Only the leader count can reach a served result: the arm\n\
-         enters at half weight or less, so a swap further down its list is absorbed by two\n\
-         full-weight arms. That number, not the reorder count, is what ranking on impressions\n\
-         would be buying.\n",
+         **The impression penalty reorders {ratio_reordered} of {}, and changes which id leads\n\
+         in {ratio_new_leader}.** Only the leader count can reach a served result: the arm enters\n\
+         at half weight or less, so a swap further down its list is absorbed by two full-weight\n\
+         arms. Whether those leaders survive the fusion is the served table below.\n",
         listed.len(),
         listed.len()
     );
@@ -1467,6 +1476,52 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          counts alone.\n",
         with_impressions.intents.len()
     );
+
+    // -- does the penalty reach a served result? ------------------------------
+    let _ = writeln!(o, "\n## Served, with and without the impression penalty\n");
+    let _ = writeln!(
+        o,
+        "The same 47 queries served end to end through all three arms, over two graphs grown\n\
+         from the same turns: one that recorded no impressions, so `passed_over` is `1.0`\n\
+         everywhere, and one that did.\n\
+         \n\
+         `top-1 correct` is against the tool the turn actually invoked — the fixture's only\n\
+         ground truth. `write on read` is the reported failure, and a proxy. Both must be read\n\
+         together: a change that fixes the proxy while lowering accuracy has moved the ranking,\n\
+         not improved it.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| graph | top-1 correct | write on read | top-1 changed |\n|---|---|---|---|"
+    );
+    let plain = served_topk(graph, turns);
+    let damped = served_topk(&with_impressions, turns);
+    let reads = turns
+        .iter()
+        .filter(|t| is_read_intent(&t.intent))
+        .map(|t| t.query.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let moved = plain
+        .iter()
+        .zip(&damped)
+        .filter(|((_, a), (_, b))| a.first() != b.first())
+        .count();
+    for (label, served, changed) in [
+        ("no impressions", &plain, "—".to_string()),
+        (
+            "with the penalty",
+            &damped,
+            format!("{moved} of {}", plain.len()),
+        ),
+    ] {
+        let (correct, bad) = served_quality(served, turns);
+        let _ = writeln!(
+            o,
+            "| {label} | {correct} of {} | {bad} of {reads} | {changed} |",
+            served.len()
+        );
+    }
 
     // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;

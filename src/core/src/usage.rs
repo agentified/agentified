@@ -181,6 +181,11 @@ fn is_one_u32(n: &u32) -> bool {
     *n == 1
 }
 
+/// Pseudo-counts smoothing [`Intent::passed_over`]. Large enough that one
+/// unlucky impression does not halve an edge: shown once and skipped reads
+/// `3/4`, shown nine times and skipped reads `3/12`.
+const IMPRESSION_PRIOR: f32 = 3.0;
+
 /// A cluster keeps full weight for this long after its last use, then decays.
 /// Recent work should not be discounted at all; only topics that have genuinely
 /// gone quiet fade (ADR-0014, blocker #3).
@@ -779,12 +784,41 @@ impl Intent {
         let mut ranked: Vec<(String, f32)> = edges
             .iter()
             .filter(|(id, _)| known(id.as_str()))
-            .map(|(id, w)| (id.clone(), *w * cf.weight(id)))
+            .map(|(id, w)| (id.clone(), *w * cf.weight(id) * self.passed_over(kind, id)))
             .collect();
         let dropped = (edges.len() - ranked.len()) as u32;
         let len = ranked.len();
         sort_and_truncate(&mut ranked, len);
         (ranked.into_iter().map(|(id, _)| id).collect(), dropped)
+    }
+
+    /// How much to damp an edge for having been shown and refused — `1.0` for
+    /// none at all, falling toward `0` as a capability is offered more often than
+    /// it is taken.
+    ///
+    /// `min(1, (invoked + k) / (considered + k))`. Three properties earn the
+    /// shape:
+    ///
+    /// - **Neutral without evidence.** A cluster that recorded no impressions —
+    ///   every graph written before they existed, and every caller that does not
+    ///   report its hits — gets `k/k = 1` exactly, so its ranking is unchanged.
+    ///   The absence of the data is the off switch; there is no flag.
+    /// - **It only ever penalises.** Clamped at `1`, so an impression can never
+    ///   promote. The failure mode is damping something it should not have, not
+    ///   inventing a winner, which is the whole point of a negative signal.
+    /// - **Volume survives.** It multiplies the invocation count rather than
+    ///   replacing it, so nine invocations still outweigh one. The count says how
+    ///   much evidence there is; this says how much of it was offered and refused.
+    ///
+    /// Only tool edges carry impressions ([`Intent::surfaced`]), so skills are
+    /// always undamped.
+    fn passed_over(&self, kind: Capability, id: &str) -> f32 {
+        if kind != Capability::Tool {
+            return 1.0;
+        }
+        let considered = self.surfaced.get(id).copied().unwrap_or(0) as f32;
+        let invoked = self.tools.get(id).copied().unwrap_or(0.0);
+        ((invoked + IMPRESSION_PRIOR) / (considered + IMPRESSION_PRIOR)).min(1.0)
     }
 
     /// Fold `vector` into this cluster's running mean over its members, and
@@ -2615,6 +2649,105 @@ mod tests {
 
         assert_eq!(g.intents[0].support, 2);
         assert_eq!(g.intents[0].seeded_support, 1);
+    }
+
+    // ---- damping an edge that was shown and refused ----
+
+    /// The property that makes this shippable without a flag: a graph that
+    /// recorded no impressions ranks exactly as it did before they existed.
+    #[test]
+    fn a_cluster_with_no_impressions_is_not_damped_at_all() {
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "a", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "b", T0, false);
+        g.observe_live("why is the build broken", Capability::Tool, "b", T0, false);
+        let before: Vec<String> = g
+            .arm("why is the build broken", None, Capability::Tool, &|_| true)
+            .into_arm()
+            .expect("armed")
+            .ids;
+        assert_eq!(before, vec!["b".to_string(), "a".to_string()]);
+        assert!(g.intents[0].surfaced.is_empty(), "nothing recorded");
+    }
+
+    /// A capability shown constantly and taken rarely falls behind one shown
+    /// rarely and taken every time — the reinforcement loop the report names,
+    /// which invocation counts alone cannot see.
+    #[test]
+    fn a_capability_shown_far_more_often_than_it_is_taken_falls_behind() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        // `loud` is invoked more, so counts alone rank it first...
+        for _ in 0..5 {
+            g.observe_surfacing(q, Capability::Tool, "loud", T0, true, &["loud".into()]);
+        }
+        // ...but on four more searches it was ranked above `quiet` and skipped.
+        for _ in 0..4 {
+            g.observe_surfacing(
+                q,
+                Capability::Tool,
+                "quiet",
+                T0,
+                true,
+                &["loud".into(), "quiet".into()],
+            );
+        }
+        let it = &g.intents[0];
+        assert!(
+            it.tools["loud"] > it.tools["quiet"],
+            "counts still favour loud: {:?}",
+            it.tools
+        );
+        assert_eq!(
+            g.arm(q, None, Capability::Tool, &|_| true)
+                .into_arm()
+                .expect("armed")
+                .ids,
+            vec!["quiet".to_string(), "loud".to_string()],
+            "but loud was passed over eight times"
+        );
+    }
+
+    /// Clamped at 1, so an impression can only ever cost an edge weight. A
+    /// capability taken every time it is offered is exactly as strong as one
+    /// nobody recorded impressions for.
+    #[test]
+    fn always_being_taken_is_the_same_as_no_impressions_at_all() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        g.observe_surfacing(q, Capability::Tool, "a", T0, true, &["a".into()]);
+        assert_eq!(g.intents[0].passed_over(Capability::Tool, "a"), 1.0);
+        assert_eq!(g.intents[0].passed_over(Capability::Tool, "unknown"), 1.0);
+    }
+
+    /// One unlucky impression must not halve an edge — that is what the prior
+    /// buys, and without it a single search would swing the order.
+    #[test]
+    fn the_prior_absorbs_a_single_refusal() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        g.observe_surfacing(
+            q,
+            Capability::Tool,
+            "taken",
+            T0,
+            true,
+            &["skipped".into(), "taken".into()],
+        );
+        let damped = g.intents[0].passed_over(Capability::Tool, "skipped");
+        assert!(
+            (damped - 0.75).abs() < 1e-6,
+            "shown once, never taken: {damped}"
+        );
+    }
+
+    /// Skill edges carry no impressions, so the skill arm is untouched.
+    #[test]
+    fn a_skill_edge_is_never_damped() {
+        let mut g = IntentGraph::empty();
+        let q = "write a changelog";
+        g.observe_surfacing(q, Capability::Skill, "s", T0, true, &["t".into()]);
+        assert_eq!(g.intents[0].passed_over(Capability::Skill, "s"), 1.0);
     }
 
     // ---- impressions on the wire ----
