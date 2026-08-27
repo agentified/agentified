@@ -963,20 +963,54 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         }
     }
 
+    // The same turns replayed search-then-invoke, so every cluster carries what
+    // its searches surfaced. Clustering is identical — same turns, same order,
+    // same policy — so a cluster id from `graph` names the same cluster here.
+    let with_impressions = replay_with_impressions(turns);
+    let ratio_order = |intent_id: &str| -> Vec<String> {
+        let Some(it) = with_impressions.intents.iter().find(|i| i.id == intent_id) else {
+            return Vec::new();
+        };
+        let cf = with_impressions.cluster_frequency(Capability::Tool);
+        let mut e: Vec<(&String, f32)> = it
+            .tools
+            .iter()
+            .map(|(id, invoked)| {
+                let surfaced = it.surfaced.get(id).copied().unwrap_or(0) as f32;
+                (id, (invoked + 1.0) / (surfaced + 2.0) * cf.weight(id))
+            })
+            .collect();
+        e.sort_by(|x, y| {
+            y.1.partial_cmp(&x.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| x.0.cmp(y.0))
+        });
+        e.into_iter().take(3).map(|(id, _)| id.clone()).collect()
+    };
+
     // -- what the arm contributed -------------------------------------------
     let _ = writeln!(o, "\n## Arm contribution\n");
     let _ = writeln!(
         o,
         "The cluster each query arms and the ids it promotes. Read this beside the served\n\
          table below: the arm can change completely without the served ranking moving, because\n\
-         it enters the fusion at half weight against two full-weight arms.\n"
+         it enters the fusion at half weight against two full-weight arms.\n\
+         \n\
+         `raw order` is what invocation counts alone would promote, so the cluster-frequency\n\
+         weight's effect is visible rather than only asserted. `ratio order` is what\n\
+         `(invoked + 1) / (surfaced + 2)` would promote instead of the count — the proposed use\n\
+         of impressions, measured without shipping it. `= (same)` means unchanged from\n\
+         `promoted`.\n"
     );
     let _ = writeln!(
         o,
-        "| intent | query | cluster | similarity | promoted | raw order |\n|---|---|---|---|---|---|"
+        "| intent | query | cluster | similarity | promoted | raw order | ratio order |\n\
+         |---|---|---|---|---|---|---|"
     );
     let mut listed: Vec<&str> = Vec::new();
     let mut reordered = 0usize;
+    let mut ratio_reordered = 0usize;
+    let mut ratio_new_leader = 0usize;
     for turn in turns {
         if listed.iter().any(|q| *q == turn.query) {
             continue;
@@ -1008,8 +1042,18 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
                 if raw != promoted {
                     reordered += 1;
                 }
+                let by_ratio = ratio_order(&a.intent_id);
+                let by_ratio: Vec<&str> = by_ratio.iter().map(String::as_str).collect();
+                if by_ratio != promoted {
+                    ratio_reordered += 1;
+                    // The one that can reach the fusion: the arm's rank-0 id is
+                    // what a low-ranked capability is promoted past.
+                    if by_ratio.first() != promoted.first() {
+                        ratio_new_leader += 1;
+                    }
+                }
                 format!(
-                    "| {} | {} | {} | {:.3} | {} | {} |",
+                    "| {} | {} | {} | {:.3} | {} | {} | {} |",
                     turn.intent,
                     turn.query,
                     a.intent_id,
@@ -1019,10 +1063,15 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
                         "= (same)".to_string()
                     } else {
                         raw.join(", ")
+                    },
+                    if by_ratio == promoted {
+                        "= (same)".to_string()
+                    } else {
+                        by_ratio.join(", ")
                     }
                 )
             }
-            None => format!("| {} | {} | — | — | — | — |", turn.intent, turn.query),
+            None => format!("| {} | {} | — | — | — | — | — |", turn.intent, turn.query),
         };
         let _ = writeln!(o, "{row}");
     }
@@ -1031,7 +1080,14 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         o,
         "\n**{reordered} of {} arms are reordered by the cluster-frequency weight.** Watch this as\n\
          fixtures grow: at this size it behaves as a principled tie-break rather than a ranking\n\
-         signal, and whether that changes is the question a bigger graph answers.\n",
+         signal, and whether that changes is the question a bigger graph answers.\n\
+         \n\
+         **The invoked/surfaced ratio would reorder {ratio_reordered} of {}, and change which id\n\
+         leads in {ratio_new_leader}.** Only the leader count can reach a served result: the arm\n\
+         enters at half weight or less, so a swap further down its list is absorbed by two\n\
+         full-weight arms. That number, not the reorder count, is what ranking on impressions\n\
+         would be buying.\n",
+        listed.len(),
         listed.len()
     );
 
@@ -1355,7 +1411,6 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         o,
         "| cluster | tool | surfaced | invoked | ratio |\n|---|---|---|---|---|"
     );
-    let with_impressions = replay_with_impressions(turns);
     let mut shown_never_used = 0usize;
     let mut disagreements = 0usize;
     for it in &with_impressions.intents {

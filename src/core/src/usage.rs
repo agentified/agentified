@@ -1634,7 +1634,7 @@ impl IntentGraph {
     /// still counts toward how spread out *other* capabilities are. That is the
     /// graph-faithful answer — the observations happened — and it is what keeps
     /// the numbers portable.
-    fn cluster_frequency(&self, kind: Capability) -> ClusterFrequency<'_> {
+    pub(crate) fn cluster_frequency(&self, kind: Capability) -> ClusterFrequency<'_> {
         let mut seen_in: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut clusters = 0usize;
         for it in &self.intents {
@@ -2047,7 +2047,7 @@ impl ClusterFrequency<'_> {
     /// An id this index has never seen scores the maximum rather than dividing
     /// by zero; that only happens if a caller mixes an index of one kind with
     /// edges of another, which the type makes awkward and the callers do not do.
-    fn weight(&self, id: &str) -> f32 {
+    pub(crate) fn weight(&self, id: &str) -> f32 {
         let seen = self.seen_in.get(id).copied().unwrap_or(1).max(1);
         1.0 + (self.clusters.max(1) as f32 / seen as f32).ln()
     }

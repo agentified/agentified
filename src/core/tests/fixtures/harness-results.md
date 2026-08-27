@@ -203,59 +203,71 @@ The cluster each query arms and the ids it promotes. Read this beside the served
 table below: the arm can change completely without the served ranking moving, because
 it enters the fusion at half weight against two full-weight arms.
 
-| intent | query | cluster | similarity | promoted | raw order |
-|---|---|---|---|---|---|
-| create | create a task for the login bug | intent_18 | 0.734 | create_tasks_batch | = (same) |
-| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) |
-| create | open a ticket for the flaky test | intent_1 | 1.000 | create_task | = (same) |
-| find | find tasks related to authentication | intent_2 | 0.966 | search_tasks, create_task, search_document_chunks | = (same) |
-| find | find tasks about the rate limiter | intent_8 | 0.931 | search_document_chunks, search_tasks | = (same) |
-| find | look up tasks about the login system | intent_2 | 0.831 | search_tasks, create_task, search_document_chunks | = (same) |
-| exists | is there a task for the e2e suite | intent_4 | 0.957 | update_task, search_tasks, create_task | create_task, search_tasks, update_task |
-| exists | what tasks exist about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks | = (same) |
-| exists | are there any tasks about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks | = (same) |
-| status | mark the migration task in progress | intent_5 | 0.945 | update_task | = (same) |
-| status | mark task done | intent_5 | 0.945 | update_task | = (same) |
-| status | update the status of the deploy task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) |
-| find | search for tasks on the payments flow | intent_3 | 0.926 | search_tasks, create_task | = (same) |
-| exists | any tasks about authentication | intent_2 | 0.950 | search_tasks, create_task, search_document_chunks | = (same) |
-| create | create a task for the signup bug | intent_18 | 0.715 | create_tasks_batch | = (same) |
-| doc_read | open the onboarding doc | intent_7 | 1.000 | get_document_content | = (same) |
-| doc_search | find the section about rate limits in the docs | intent_8 | 0.927 | search_document_chunks, search_tasks | = (same) |
-| doc_read | show me the contents of the design doc | intent_9 | 0.923 | download_document, get_document_content | = (same) |
-| doc_search | search the docs for the auth flow | intent_2 | 0.822 | search_tasks, create_task, search_document_chunks | = (same) |
-| doc_read | download the architecture pdf | intent_9 | 0.923 | download_document, get_document_content | = (same) |
-| count | how many tasks are open | intent_10 | 0.941 | count_tasks | = (same) |
-| count | count the tasks in progress | intent_10 | 0.941 | count_tasks | = (same) |
-| filter | filter my tasks by status | intent_11 | 0.924 | filter_tasks, list_tasks_by_status | = (same) |
-| filter | list tasks that are blocked | intent_11 | 0.924 | filter_tasks, list_tasks_by_status | = (same) |
-| status | mark the e2e task complete | intent_4 | 0.957 | update_task, search_tasks, create_task | create_task, search_tasks, update_task |
-| create | add a task for the payments migration | intent_15 | 0.744 | search_projects | = (same) |
-| find | find open tasks about the auth flow | intent_2 | 0.888 | search_tasks, create_task, search_document_chunks | = (same) |
-| comment | post an update on the auth task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) |
-| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) |
-| comment | leave a progress note on the deploy task | intent_12 | 1.000 | post_progress_comment | = (same) |
-| link | link these two tasks as blocking | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) |
-| link | attach the pull request to the task | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) |
-| link | what is blocking the release | intent_14 | 1.000 | list_blocked_tasks | = (same) |
-| project | find the payments project | intent_15 | 1.000 | search_projects | = (same) |
-| project | which projects mention authentication | intent_2 | 0.829 | search_tasks, create_task, search_document_chunks | = (same) |
-| review | what did I get done today | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) |
-| review | close the task and ask for review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) |
-| create | create tasks for all the failing checks | intent_18 | 1.000 | create_tasks_batch | = (same) |
-| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) |
-| find | search tasks authentication | intent_2 | 0.921 | search_tasks, create_task, search_document_chunks | = (same) |
-| find | show me existing tasks about auth | intent_2 | 0.889 | search_tasks, create_task, search_document_chunks | = (same) |
-| find | list tasks concerning authentication | intent_2 | 0.942 | search_tasks, create_task, search_document_chunks | = (same) |
-| find | tasks related to authentication | intent_2 | 0.961 | search_tasks, create_task, search_document_chunks | = (same) |
-| exists | what tasks exist about the rate limiter | intent_8 | 0.927 | search_document_chunks, search_tasks | = (same) |
-| status | move the login task to in review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) |
-| doc_read | open the runbook | intent_19 | 1.000 | get_document_content | = (same) |
-| filter | what am I working on | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) |
+`raw order` is what invocation counts alone would promote, so the cluster-frequency
+weight's effect is visible rather than only asserted. `ratio order` is what
+`(invoked + 1) / (surfaced + 2)` would promote instead of the count — the proposed use
+of impressions, measured without shipping it. `= (same)` means unchanged from
+`promoted`.
+
+| intent | query | cluster | similarity | promoted | raw order | ratio order |
+|---|---|---|---|---|---|---|
+| create | create a task for the login bug | intent_18 | 0.734 | create_tasks_batch | = (same) | = (same) |
+| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| create | open a ticket for the flaky test | intent_1 | 1.000 | create_task | = (same) | = (same) |
+| find | find tasks related to authentication | intent_2 | 0.966 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| find | find tasks about the rate limiter | intent_8 | 0.931 | search_document_chunks, search_tasks | = (same) | = (same) |
+| find | look up tasks about the login system | intent_2 | 0.831 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| exists | is there a task for the e2e suite | intent_4 | 0.957 | update_task, search_tasks, create_task | create_task, search_tasks, update_task | = (same) |
+| exists | what tasks exist about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| exists | are there any tasks about authentication | intent_2 | 0.956 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| status | mark the migration task in progress | intent_5 | 0.945 | update_task | = (same) | = (same) |
+| status | mark task done | intent_5 | 0.945 | update_task | = (same) | = (same) |
+| status | update the status of the deploy task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) | = (same) |
+| find | search for tasks on the payments flow | intent_3 | 0.926 | search_tasks, create_task | = (same) | create_task, search_tasks |
+| exists | any tasks about authentication | intent_2 | 0.950 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| create | create a task for the signup bug | intent_18 | 0.715 | create_tasks_batch | = (same) | = (same) |
+| doc_read | open the onboarding doc | intent_7 | 1.000 | get_document_content | = (same) | = (same) |
+| doc_search | find the section about rate limits in the docs | intent_8 | 0.927 | search_document_chunks, search_tasks | = (same) | = (same) |
+| doc_read | show me the contents of the design doc | intent_9 | 0.923 | download_document, get_document_content | = (same) | = (same) |
+| doc_search | search the docs for the auth flow | intent_2 | 0.822 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| doc_read | download the architecture pdf | intent_9 | 0.923 | download_document, get_document_content | = (same) | = (same) |
+| count | how many tasks are open | intent_10 | 0.941 | count_tasks | = (same) | = (same) |
+| count | count the tasks in progress | intent_10 | 0.941 | count_tasks | = (same) | = (same) |
+| filter | filter my tasks by status | intent_11 | 0.924 | filter_tasks, list_tasks_by_status | = (same) | = (same) |
+| filter | list tasks that are blocked | intent_11 | 0.924 | filter_tasks, list_tasks_by_status | = (same) | = (same) |
+| status | mark the e2e task complete | intent_4 | 0.957 | update_task, search_tasks, create_task | create_task, search_tasks, update_task | = (same) |
+| create | add a task for the payments migration | intent_15 | 0.744 | search_projects | = (same) | = (same) |
+| find | find open tasks about the auth flow | intent_2 | 0.888 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| comment | post an update on the auth task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) | = (same) |
+| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| comment | leave a progress note on the deploy task | intent_12 | 1.000 | post_progress_comment | = (same) | = (same) |
+| link | link these two tasks as blocking | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
+| link | attach the pull request to the task | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
+| link | what is blocking the release | intent_14 | 1.000 | list_blocked_tasks | = (same) | = (same) |
+| project | find the payments project | intent_15 | 1.000 | search_projects | = (same) | = (same) |
+| project | which projects mention authentication | intent_2 | 0.829 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| review | what did I get done today | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) | list_my_active_tasks, end_day_review_workflow |
+| review | close the task and ask for review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | update_task_status, complete_task_with_review |
+| create | create tasks for all the failing checks | intent_18 | 1.000 | create_tasks_batch | = (same) | = (same) |
+| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) | create_tasks_batch, create_task, add_task_comment |
+| find | search tasks authentication | intent_2 | 0.921 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| find | show me existing tasks about auth | intent_2 | 0.889 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| find | list tasks concerning authentication | intent_2 | 0.942 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| find | tasks related to authentication | intent_2 | 0.961 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
+| exists | what tasks exist about the rate limiter | intent_8 | 0.927 | search_document_chunks, search_tasks | = (same) | = (same) |
+| status | move the login task to in review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | update_task_status, complete_task_with_review |
+| doc_read | open the runbook | intent_19 | 1.000 | get_document_content | = (same) | = (same) |
+| filter | what am I working on | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) | list_my_active_tasks, end_day_review_workflow |
 
 **2 of 47 arms are reordered by the cluster-frequency weight.** Watch this as
 fixtures grow: at this size it behaves as a principled tie-break rather than a ranking
 signal, and whether that changes is the question a bigger graph answers.
+
+**The invoked/surfaced ratio would reorder 20 of 47, and change which id
+leads in 8.** Only the leader count can reach a served result: the arm
+enters at half weight or less, so a swap further down its list is absorbed by two
+full-weight arms. That number, not the reorder count, is what ranking on impressions
+would be buying.
 
 
 ## Arm scores
