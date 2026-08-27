@@ -245,6 +245,14 @@ pub(crate) struct Observation<'a> {
     /// rather than live serving traffic. Recorded on
     /// [`Intent::seeded_support`]; never reaches ranking.
     pub seeded: bool,
+    /// Tool ids the search that led here put in front of the caller, counted
+    /// into [`Intent::surfaced`]. Empty for a skill search, for an observation
+    /// whose window already counted its impressions, and for any caller that
+    /// does not track them.
+    ///
+    /// This is the *denominator* of an edge, never an edge: an id appearing
+    /// only here gets no entry in `tools` and cannot be promoted by the arm.
+    pub surfaced: &'a [String],
 }
 
 /// Which edge map of a cluster to rank.
@@ -381,6 +389,30 @@ impl IntentGraph {
             ts_ms,
             first_confirmation,
             seeded: false,
+            surfaced: &[],
+        });
+    }
+
+    /// [`Self::observe_live`] plus the ids the search surfaced. Separate rather
+    /// than a sixth parameter so the dozens of existing call sites keep reading
+    /// as the behaviour they assert.
+    pub(crate) fn observe_surfacing(
+        &mut self,
+        query: &str,
+        kind: Capability,
+        capability_id: &str,
+        ts_ms: u64,
+        first_confirmation: bool,
+        surfaced: &[String],
+    ) {
+        self.observe(Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms,
+            first_confirmation,
+            seeded: false,
+            surfaced,
         });
     }
 }
@@ -605,6 +637,24 @@ pub struct Intent {
     /// magnitude is discarded by the fusion.
     #[serde(default)]
     pub skills: BTreeMap<String, f32>,
+    /// Tool id → how many of this cluster's searches put it in front of the
+    /// caller, counting only searches the caller then acted on.
+    ///
+    /// **Provenance only — nothing in ranking reads it.** It is the denominator
+    /// `tools` never had: a tool shown twelve times and invoked once looks
+    /// identical to one shown once and invoked once when only invocations are
+    /// counted. Recording that is not the same as ranking on it, and ADR-0014's
+    /// rule that edges come from invocations and never from retrievals is
+    /// unchanged — an id here with no entry in `tools` has no edge, contributes
+    /// nothing to the arm, and cannot be promoted.
+    ///
+    /// Tools only. Skill ids live in a different id space and folding both into
+    /// one map would let them collide.
+    ///
+    /// Absent on the wire means none were recorded, which is what every graph
+    /// written before this field existed says.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaced: BTreeMap<String, u32>,
     /// Tokens of each member, positionally parallel to `members`.
     ///
     /// Matching scores a query against **individual members**, not their union:
@@ -1193,6 +1243,15 @@ impl IntentGraph {
                     it.id
                 )));
             }
+            // A zero impression count says "this was surfaced no times", which
+            // is what absence already says. Rejecting it keeps one meaning per
+            // state, the same reason a zero-weight edge is rejected above.
+            if it.surfaced.values().any(|n| *n == 0) {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} has a zero impression count",
+                    it.id
+                )));
+            }
         }
         Ok(())
     }
@@ -1287,6 +1346,7 @@ impl IntentGraph {
             ts_ms,
             first_confirmation,
             seeded,
+            surfaced,
         } = obs;
         // A query vector is available only when the search path was
         // semantic/hybrid AND the slot still belongs to this query.
@@ -1330,6 +1390,7 @@ impl IntentGraph {
                     last_ts: 0,
                     tools: BTreeMap::new(),
                     skills: BTreeMap::new(),
+                    surfaced: BTreeMap::new(),
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
@@ -1367,6 +1428,15 @@ impl IntentGraph {
                 }
             }
             it.last_ts = it.last_ts.max(ts_ms);
+            // What the search put in front of the caller, counted once per
+            // window by the caller (an empty slice on every later invoke of the
+            // same search). Deliberately not gated on `first_confirmation`:
+            // that token is claimed by whichever of the tool and skill learners
+            // invokes first, so gating here would drop the tool impressions
+            // whenever a skill invoke won the race.
+            for id in surfaced {
+                *it.surfaced.entry(id.clone()).or_insert(0) += 1;
+            }
             let edges = match kind {
                 Capability::Tool => &mut it.tools,
                 Capability::Skill => &mut it.skills,
@@ -2168,6 +2238,7 @@ mod tests {
             last_ts: 0,
             tools: tools.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: BTreeMap::new(),
+            surfaced: BTreeMap::new(),
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
@@ -2481,6 +2552,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         assert_eq!(g.intents[0].support, 1);
         assert_eq!(g.intents[0].seeded_support, 1);
@@ -2508,6 +2580,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: first,
             seeded: true,
+            surfaced: &[],
         };
         g.observe(obs("gh_run_list", true));
         g.observe(obs("gh_run_view", false));
@@ -2530,6 +2603,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         g.observe_live(
             "why is the build broken",
@@ -2541,6 +2615,86 @@ mod tests {
 
         assert_eq!(g.intents[0].support, 2);
         assert_eq!(g.intents[0].seeded_support, 1);
+    }
+
+    // ---- impressions on the wire ----
+
+    #[test]
+    fn a_graph_that_saw_no_impressions_omits_the_field() {
+        // Empty-skip keeps a graph grown by a caller that does not report hits
+        // byte-identical to one produced before the field existed, so every
+        // wire fixture written against v1 still matches.
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(!json.contains("surfaced"), "absent means none; got {json}");
+    }
+
+    #[test]
+    fn impressions_round_trip_through_the_wire_form() {
+        let mut g = IntentGraph::empty();
+        g.observe_surfacing(
+            "why is the build broken",
+            Capability::Tool,
+            "gh_run_list",
+            T0,
+            true,
+            &["gh_run_list".to_string(), "docker_build".to_string()],
+        );
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("surfaced"), "got {json}");
+
+        let back = IntentGraph::from_json(&json).expect("round trip");
+        assert_eq!(back.intents[0].surfaced.get("docker_build"), Some(&1));
+        assert_eq!(back.intents[0].surfaced.get("gh_run_list"), Some(&1));
+    }
+
+    /// The rule the whole design turns on: a surfaced id is a denominator, not
+    /// an edge. If this ever fails, retrievals have become evidence and
+    /// ADR-0014's central decision has been reversed by accident.
+    #[test]
+    fn a_surfaced_id_alone_never_reaches_the_arm() {
+        let mut g = IntentGraph::empty();
+        g.observe_surfacing(
+            "why is the build broken",
+            Capability::Tool,
+            "gh_run_list",
+            T0,
+            true,
+            &["docker_build".to_string()],
+        );
+        assert_eq!(g.intents[0].surfaced.get("docker_build"), Some(&1));
+        assert!(
+            !g.intents[0].tools.contains_key("docker_build"),
+            "shown is not used"
+        );
+        let arm = g
+            .arm("why is the build broken", None, Capability::Tool, &|_| true)
+            .into_arm()
+            .expect("the invoked tool armed it");
+        assert!(
+            !arm.ids.iter().any(|id| id == "docker_build"),
+            "a surfaced-only id must never be promoted, got {:?}",
+            arm.ids
+        );
+    }
+
+    #[test]
+    fn a_graph_with_a_zero_impression_count_is_rejected() {
+        // Absence already means "surfaced no times", so a stored zero is a
+        // second spelling of the same state — rejected for the same reason a
+        // zero-weight edge is.
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        let json = serde_json::to_string(&g).unwrap().replace(
+            r#""tools":{"t":1.0}"#,
+            r#""tools":{"t":1.0},"surfaced":{"t":0}"#,
+        );
+        assert!(json.contains(r#""surfaced":{"t":0}"#), "fixture: {json}");
+        assert!(matches!(
+            IntentGraph::from_json(&json),
+            Err(IntentGraphError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -2566,6 +2720,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains(r#""seeded_support":1"#), "got {json}");

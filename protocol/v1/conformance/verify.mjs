@@ -205,6 +205,21 @@ export function validateGraph(doc) {
         `${at}.vector_n, when present, must be an integer >= 1, got ${JSON.stringify(it.vector_n)}`,
       );
     }
+    // Optional impression counts: tool id -> how many searches showed it. A
+    // denominator for the edges below, never an edge itself. Absent means none.
+    if (it.surfaced !== undefined) {
+      if (!isObj(it.surfaced)) {
+        errs.push(`${at}.surfaced, when present, must be an object`);
+      } else {
+        for (const [id, n] of Object.entries(it.surfaced)) {
+          if (!(isInt(n) && n >= 1)) {
+            errs.push(
+              `${at}.surfaced["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`,
+            );
+          }
+        }
+      }
+    }
     for (const key of ['tools', 'skills']) {
       const edges = it[key];
       if (!isObj(edges)) { errs.push(`${at}.${key} must be an object`); continue; }

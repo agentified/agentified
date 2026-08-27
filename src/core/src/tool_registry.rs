@@ -1802,6 +1802,7 @@ mod tests {
             ts_ms: 1,
             first_confirmation: true,
             seeded: false,
+            surfaced: &[],
         });
 
         assert_eq!(graph.len(), 1);

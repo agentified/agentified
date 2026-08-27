@@ -492,7 +492,8 @@
       "`cluster_policy` MAY be absent, meaning the built-in defaults. It is PROVENANCE: it records the similarity and coverage the graph's existing boundaries were drawn under, not what a consumer should cluster at next. A consumer clustering at different values MUST NOT assume the existing boundaries match them \u2014 boundaries are never redrawn in place.",
       "`cohesion` MAY be absent, meaning 1.0. A consumer that matches on `centroid` without per-member vectors SHOULD scale the similarity it requires by it: a normalized centroid hides how far apart its members are, so a cluster that drifted apart otherwise reads as tight and keeps absorbing.",
       "`vector_n` is provenance for learning only \u2014 it weights the next fold into `centroid`. Retrieval results MUST be identical whatever it contains.",
-      "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains."
+      "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains.",
+      "`surfaced` is provenance only — it counts how many of a cluster's searches put each TOOL in front of the caller, so a consumer can tell a capability that is shown constantly and rarely used from one shown rarely and always used. A consumer MUST NOT let it affect ranking, and MUST NOT treat an id present in `surfaced` but absent from `tools` as an edge: what retrieval returned is not evidence, only what was invoked is. Skill ids are never recorded here."
     ],
     "valid": [
       {
@@ -915,6 +916,64 @@
             }
           ]
         }
+      },
+      {
+        "name": "impressions-recorded",
+        "why": "A cluster records how many of its searches put each tool in front of the caller, beside how many invoked it. `docker_build` was shown nine times and never invoked, so it has an impression count and NO edge — the case that is invisible when only invocations are counted.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced": {
+                "docker_build": 9,
+                "gh_run_list": 6
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impressions-absent-means-none",
+        "why": "Every graph written before impressions existed omits the map, and so does a producer that does not track what its searches returned. Absent means not-recorded, which is not the same as shown-zero-times.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "skills": {}
+            }
+          ]
+        }
       }
     ],
     "invalid": [
@@ -1258,6 +1317,66 @@
               "seeded_support": 3,
               "tools": {
                 "gh_run_list": 0.8
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impression-count-zero",
+        "because": "Absence already means \"surfaced no times\", so a stored zero is a second spelling of one state. Counts are >= 1 — the same rule that rejects a zero-weight edge.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced": {
+                "docker_build": 0
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impression-count-not-an-integer",
+        "because": "Impressions count searches, not weight. A fractional value has no meaning and signals a producer conflating the denominator with an edge.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced": {
+                "docker_build": 2.5
               },
               "skills": {}
             }

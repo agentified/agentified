@@ -126,6 +126,12 @@
         },
         "skills": {
           "$ref": "#/$defs/edges"
+        },
+        "surfaced": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "OPTIONAL map of tool id -> how many of this cluster's searches put that tool in front of the caller, counting only searches the caller then acted on. It is the denominator `tools` has never had: a tool shown twelve times and invoked once is indistinguishable from one shown once and invoked once when only invocations are counted. TOOLS ONLY \u2014 skill ids live in a different id space and are never recorded here. PROVENANCE ONLY: a consumer MUST NOT let it affect ranking, and a consumer that does not understand it MUST ignore it. An id present here but absent from `tools` has NO edge and MUST NOT be promoted \u2014 recording what a search returned is not the same as making it evidence. Absent means none were recorded.",
+          "$comment": "Counts are >= 1: absence already means \"surfaced no times\", so a stored zero is a second spelling of the same state."
         }
       }
     },
