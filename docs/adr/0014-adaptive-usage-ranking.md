@@ -30,6 +30,10 @@ against the centroid — see [Two similarity tiers](#two-similarity-tiers). Not 
 lexical tier's per-member guard was a defect, and it collapsed 12 distinct queries into a
 single cluster in production.
 
+Amended 2026-08-27: a cluster **records what its searches surfaced** — see [Impressions are
+recorded, not consumed](#impressions-are-recorded-not-consumed). Edges still come from
+invocations only; the decision below is unchanged and nothing reads the new map.
+
 ## Context
 
 Every ranker in the engine scores **text similarity only** — BM25 over the flattened
@@ -241,6 +245,43 @@ is consumable by the other. **The tier is chosen from what the graph carries, no
 caller's search method**: a semantic catalog handed a centroid-less graph matches it
 lexically rather than seeing nothing. Without that fallback the in-process learner's own
 output would be invisible to the very methods it is meant to improve.
+
+### Impressions are recorded, not consumed
+
+`Intent::surfaced` counts, per cluster, how many of its searches put each **tool** in front of
+the caller — counting only searches the caller then acted on, so an abandoned search still
+teaches nothing. Tools only: skill ids are a different id space.
+
+**It is the denominator the edge map never had.** `tools` records that a capability was chosen;
+nothing recorded how often it was offered and passed over. Those look identical: a tool shown
+twelve times and invoked once is indistinguishable from one shown once and invoked once. On the
+harness fixture `create_task` is the most-surfaced tool in the catalog, shown for 30 of 47
+queries and invoked 6 times, while `create_task_for_branch` is shown 9 times and invoked never —
+and none of that is expressible in `tools`. It is also the evidence the misranking
+investigation's row #6 asks for, and the loop it names (search → nothing → create, which teaches
+`create_task` and unteaches nothing) is invisible without it.
+
+**Nothing consumes it.** The arm's order is still `tools` scaled by inverse cluster frequency.
+An id in `surfaced` with no entry in `tools` has no edge, contributes nothing, and cannot be
+promoted — pinned by a test, beside the one pinning that retrieval never becomes an edge.
+
+**This does not reverse "edges come from invocations, never from retrievals."** That decision
+rejects promoting a retrieved id to evidence, and it still holds: recording how often an
+*existing* edge was offered is a denominator for evidence already gathered, not new evidence.
+The distinction is load-bearing, because the objection to the rejected design — that it
+memorizes the ranker's own output and reinforces it — inverts here: an impression can only ever
+count *against* a tool the ranker surfaced.
+
+Ranking on it is a separate decision, deliberately not taken, and two things must be answered
+first. **Position bias**: a tool ranked first is invoked more for being first, so the ratio
+partly measures where we ranked it, and feeding that back is circular; the standard mitigation
+counts only impressions above the invoked item's rank, which is untried here. And **it may not
+address the failure it was proposed for**: where a tool is genuinely dominant its ratio stays
+high, so this guards against riding on volume, not against a real majority.
+
+Recorded with the same wire treatment as `seeded_support` — optional, absent means none, no
+version bump — and marked PROVENANCE ONLY in `protocol/v1`, so a consumer that does not
+understand it ignores it and one that does may not rank on it.
 
 ### Embedding-model changes
 
@@ -469,7 +510,9 @@ LLM-extracted intents populate the same `members` field.
   cos 0.78 and ranks the correct capability *below* where no boost at all would leave it.
   Real match similarities occupy 0.70–0.90, so a ramp normalized to 1.0 spends its range
   where nothing lives. Similarity is a gate; the arms combine additively.
-- **Recording retrieved capabilities as edges**: self-reinforcing, adds no information.
+- **Recording retrieved capabilities as edges**: self-reinforcing, adds no information. Still
+  rejected — and distinct from `Intent::surfaced`, which counts retrievals as a *denominator*
+  for edges invocations already wrote, promotes nothing, and is read by nothing.
 - **An LLM for intent extraction or labeling in the OSS path**: labels are cosmetic —
   identical retrieval results if every label were `intent_17`. The crate is encoder-only
   (`candle_transformers::models::bert`); adding a generation path, and a download or an
