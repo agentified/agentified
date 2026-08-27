@@ -412,6 +412,167 @@ Query: `find tasks related to authentication` · invoked: `search_tasks`
 
 **The affine rule reaches almost nobody.** These rows have no intent graph attached. With adaptive ranking on, the usage arm fuses into the Bm25 and Semantic paths too, `score` becomes RRF, and all three methods fall back to min-max. The one rule that preserves an absolute level applies only when adaptive ranking is off.
 
+
+## Impressions
+
+`Intent::surfaced` against `Intent::tools`, per cluster: how many of a cluster's
+searches put each tool in front of the caller, beside how many invoked it. Recorded
+only; nothing in ranking reads it.
+
+`ratio` is `(invoked + 1) / (surfaced + 2)` — Laplace-smoothed, so a tool shown once
+and invoked once does not outrank one shown fifty times and invoked forty. Read it
+against the `invoked` column, which is the order the arm actually serves today: where
+the two disagree is where a tool is riding on volume rather than on answering the
+question.
+
+| cluster | tool | surfaced | invoked | ratio |
+|---|---|---|---|---|
+| intent_0 | create_task | 6 | 4 | 0.625 |
+| intent_0 | create_tasks_batch | 2 | 1 | 0.500 |
+| intent_0 | post_progress_comment | 1 | 0 | 0.333 |
+| intent_0 | search_tasks_with_comments | 1 | 0 | 0.333 |
+| intent_0 | add_task_comment | 6 | 1 | 0.250 |
+| intent_0 | create_task_for_branch | 2 | 0 | 0.250 |
+| intent_0 | update_task_status | 3 | 0 | 0.200 |
+| intent_0 | link_pr_to_task | 4 | 0 | 0.167 |
+| intent_0 | create_task_relationship | 5 | 0 | 0.143 |
+| intent_1 | create_task | 0 | 1 | 1.000 |
+| intent_1 | check_task_duplicates | 1 | 0 | 0.333 |
+| intent_1 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_1 | end_day_review_workflow | 1 | 0 | 0.333 |
+| intent_1 | search_my_tasks_by_keyword | 1 | 0 | 0.333 |
+| intent_1 | search_tasks_with_comments | 1 | 0 | 0.333 |
+| intent_2 | search_tasks | 12 | 9 | 0.714 |
+| intent_2 | search_document_chunks | 2 | 1 | 0.500 |
+| intent_2 | search_projects | 3 | 1 | 0.400 |
+| intent_2 | count_tasks | 1 | 0 | 0.333 |
+| intent_2 | list_blocked_tasks | 1 | 0 | 0.333 |
+| intent_2 | list_my_active_tasks | 1 | 0 | 0.333 |
+| intent_2 | search_tasks_with_comments | 1 | 0 | 0.333 |
+| intent_2 | create_task | 9 | 2 | 0.273 |
+| intent_2 | add_task_comment | 2 | 0 | 0.250 |
+| intent_2 | create_task_relationship | 2 | 0 | 0.250 |
+| intent_2 | filter_tasks | 2 | 0 | 0.250 |
+| intent_2 | complete_task_with_review | 3 | 0 | 0.200 |
+| intent_2 | search_my_tasks_by_keyword | 3 | 0 | 0.200 |
+| intent_2 | update_task | 3 | 0 | 0.200 |
+| intent_2 | find_task_by_branch | 4 | 0 | 0.167 |
+| intent_2 | link_pr_to_task | 4 | 0 | 0.167 |
+| intent_2 | check_task_duplicates | 6 | 0 | 0.125 |
+| intent_2 | create_task_for_branch | 6 | 0 | 0.125 |
+| intent_3 | create_task | 1 | 1 | 0.667 |
+| intent_3 | search_tasks | 3 | 2 | 0.600 |
+| intent_3 | list_blocked_tasks | 1 | 0 | 0.333 |
+| intent_3 | search_document_chunks | 1 | 0 | 0.333 |
+| intent_3 | search_my_tasks_by_keyword | 3 | 0 | 0.200 |
+| intent_3 | search_projects | 3 | 0 | 0.200 |
+| intent_3 | search_tasks_with_comments | 3 | 0 | 0.200 |
+| intent_4 | update_task | 0 | 1 | 1.000 |
+| intent_4 | create_task | 3 | 1 | 0.400 |
+| intent_4 | search_tasks | 3 | 1 | 0.400 |
+| intent_4 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_4 | create_task_relationship | 2 | 0 | 0.250 |
+| intent_4 | add_task_comment | 3 | 0 | 0.200 |
+| intent_4 | link_pr_to_task | 3 | 0 | 0.200 |
+| intent_5 | update_task | 1 | 2 | 1.000 |
+| intent_5 | end_day_review_workflow | 1 | 0 | 0.333 |
+| intent_5 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_5 | post_progress_comment | 1 | 0 | 0.333 |
+| intent_5 | search_tasks | 1 | 0 | 0.333 |
+| intent_5 | update_task_status | 1 | 0 | 0.333 |
+| intent_5 | add_task_comment | 2 | 0 | 0.250 |
+| intent_5 | complete_task_with_review | 2 | 0 | 0.250 |
+| intent_6 | post_progress_comment | 2 | 1 | 0.500 |
+| intent_6 | update_task | 2 | 1 | 0.500 |
+| intent_6 | add_task_comment | 1 | 0 | 0.333 |
+| intent_6 | create_task | 1 | 0 | 0.333 |
+| intent_6 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_6 | update_document | 1 | 0 | 0.333 |
+| intent_6 | update_task_status | 2 | 0 | 0.250 |
+| intent_7 | get_document_content | 1 | 1 | 0.667 |
+| intent_7 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_7 | create_task | 1 | 0 | 0.333 |
+| intent_7 | download_document | 1 | 0 | 0.333 |
+| intent_7 | update_document | 1 | 0 | 0.333 |
+| intent_8 | search_document_chunks | 1 | 1 | 0.667 |
+| intent_8 | search_tasks | 1 | 1 | 0.667 |
+| intent_8 | list_my_active_tasks | 1 | 0 | 0.333 |
+| intent_8 | search_projects | 1 | 0 | 0.333 |
+| intent_8 | list_blocked_tasks | 2 | 0 | 0.250 |
+| intent_8 | search_my_tasks_by_keyword | 2 | 0 | 0.250 |
+| intent_8 | search_tasks_with_comments | 2 | 0 | 0.250 |
+| intent_9 | download_document | 2 | 1 | 0.500 |
+| intent_9 | get_document_content | 2 | 1 | 0.500 |
+| intent_9 | create_task | 1 | 0 | 0.333 |
+| intent_9 | end_day_review_workflow | 1 | 0 | 0.333 |
+| intent_9 | search_document_chunks | 2 | 0 | 0.250 |
+| intent_9 | update_document | 2 | 0 | 0.250 |
+| intent_10 | count_tasks | 2 | 2 | 0.750 |
+| intent_10 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_10 | create_task_relationship | 1 | 0 | 0.333 |
+| intent_10 | list_tasks_by_status | 1 | 0 | 0.333 |
+| intent_10 | post_progress_comment | 1 | 0 | 0.333 |
+| intent_10 | create_tasks_batch | 2 | 0 | 0.250 |
+| intent_10 | search_tasks | 2 | 0 | 0.250 |
+| intent_11 | filter_tasks | 2 | 1 | 0.500 |
+| intent_11 | list_tasks_by_status | 2 | 1 | 0.500 |
+| intent_11 | count_tasks | 1 | 0 | 0.333 |
+| intent_11 | create_task | 1 | 0 | 0.333 |
+| intent_11 | create_task_relationship | 1 | 0 | 0.333 |
+| intent_11 | list_blocked_tasks | 1 | 0 | 0.333 |
+| intent_11 | list_my_active_tasks | 1 | 0 | 0.333 |
+| intent_11 | update_task_status | 1 | 0 | 0.333 |
+| intent_12 | post_progress_comment | 1 | 1 | 0.667 |
+| intent_12 | add_task_comment | 1 | 0 | 0.333 |
+| intent_12 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_12 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_12 | update_task_status | 1 | 0 | 0.333 |
+| intent_13 | create_task_relationship | 2 | 1 | 0.500 |
+| intent_13 | link_pr_to_task | 2 | 1 | 0.500 |
+| intent_13 | add_task_comment | 1 | 0 | 0.333 |
+| intent_13 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_13 | create_task | 1 | 0 | 0.333 |
+| intent_13 | list_blocked_tasks | 1 | 0 | 0.333 |
+| intent_13 | find_task_by_branch | 2 | 0 | 0.250 |
+| intent_14 | list_blocked_tasks | 1 | 1 | 0.667 |
+| intent_14 | create_task_relationship | 1 | 0 | 0.333 |
+| intent_14 | download_document | 1 | 0 | 0.333 |
+| intent_14 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_14 | update_document | 1 | 0 | 0.333 |
+| intent_15 | search_projects | 1 | 1 | 0.667 |
+| intent_15 | create_task | 1 | 0 | 0.333 |
+| intent_15 | create_task_for_branch | 1 | 0 | 0.333 |
+| intent_15 | filter_tasks | 1 | 0 | 0.333 |
+| intent_15 | find_task_by_branch | 1 | 0 | 0.333 |
+| intent_16 | list_my_active_tasks | 1 | 1 | 0.667 |
+| intent_16 | end_day_review_workflow | 2 | 1 | 0.500 |
+| intent_16 | create_tasks_batch | 1 | 0 | 0.333 |
+| intent_16 | get_document_content | 1 | 0 | 0.333 |
+| intent_16 | post_progress_comment | 1 | 0 | 0.333 |
+| intent_16 | create_task | 2 | 0 | 0.250 |
+| intent_16 | update_task | 2 | 0 | 0.250 |
+| intent_17 | update_task_status | 1 | 1 | 0.667 |
+| intent_17 | complete_task_with_review | 2 | 1 | 0.500 |
+| intent_17 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_17 | add_task_comment | 2 | 0 | 0.250 |
+| intent_17 | end_day_review_workflow | 2 | 0 | 0.250 |
+| intent_17 | search_tasks | 2 | 0 | 0.250 |
+| intent_18 | create_tasks_batch | 1 | 1 | 0.667 |
+| intent_18 | check_task_duplicates | 1 | 0 | 0.333 |
+| intent_18 | complete_task_with_review | 1 | 0 | 0.333 |
+| intent_18 | create_task | 1 | 0 | 0.333 |
+| intent_18 | create_task_for_branch | 1 | 0 | 0.333 |
+| intent_19 | get_document_content | 0 | 1 | 1.000 |
+| intent_19 | create_task | 1 | 0 | 0.333 |
+| intent_19 | end_day_review_workflow | 1 | 0 | 0.333 |
+| intent_19 | search_document_chunks | 1 | 0 | 0.333 |
+| intent_19 | search_projects | 1 | 0 | 0.333 |
+| intent_19 | search_tasks_with_comments | 1 | 0 | 0.333 |
+
+**106 (cluster, tool) pairs were surfaced and never invoked** — evidence that exists nowhere in `tools`, because only invocations write edges.
+
+**The ratio would lead a different tool in 4 of 20 clusters.** That count is the whole question: at zero, ranking on impressions changes nothing and is not worth the risk; the larger it is, the more the current order is volume rather than fit — and the more a bad ratio could do damage. Neither reading is available from invocation counts alone.
+
 ## Served top-5 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-5 |

@@ -507,6 +507,49 @@ pub(crate) fn served_topk(g: &IntentGraph, turns: &[Turn]) -> Vec<(String, Vec<S
     out
 }
 
+/// Replay the turns as production sees them: search first, then invoke, so each
+/// turn's impressions are the list the ranker actually served **at that point in
+/// the graph's life**, not the list it would serve once fully grown.
+///
+/// Deliberately separate from [`replay`] rather than folded into it. Every other
+/// section reports numbers from that function, and impressions must not be able
+/// to move them — a search per turn also costs more than the sections that do not
+/// need one.
+pub(crate) fn replay_with_impressions(turns: &[Turn]) -> IntentGraph {
+    use crate::method::SearchMethod;
+    use crate::trace::Origin;
+    use std::sync::RwLock;
+
+    let shared = Arc::new(RwLock::new(IntentGraph::empty()));
+    let mut reg = crate::ToolRegistry::with_embedder_for_test(Arc::new(FixtureEmbedder::new()));
+    for entry in catalog() {
+        reg.register(tool_of(&entry));
+    }
+    reg.build_embeddings().expect("fixture vectors");
+    reg.set_intent_graph(Some(shared.clone()));
+
+    let fingerprint = FixtureEmbedder::new().fingerprint();
+    for turn in turns {
+        let served: Vec<String> = reg
+            .search_with_method(&turn.query, SERVED_K, Origin::Direct, SearchMethod::Hybrid)
+            .expect("hybrid search")
+            .into_iter()
+            .map(|h| h.tool_id)
+            .collect();
+        let mut g = shared.write().expect("graph lock");
+        g.note_query_vector(&turn.query, &turn.vector, &fingerprint);
+        g.observe_surfacing(
+            &turn.query,
+            Capability::Tool,
+            &turn.invoked,
+            T0,
+            true,
+            &served,
+        );
+    }
+    shared.read().expect("graph lock").clone()
+}
+
 /// Every arm's own ranking for one query, carrying the scores the fusion throws
 /// away at `tool_registry.rs`'s `.map(|(id, _)| id)`.
 ///
@@ -1293,6 +1336,82 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
                 .map_or("?", |t| t.invoked.as_str())
         );
     }
+
+    // -- what was shown, against what was used --------------------------------
+    let _ = writeln!(o, "\n## Impressions\n");
+    let _ = writeln!(
+        o,
+        "`Intent::surfaced` against `Intent::tools`, per cluster: how many of a cluster's\n\
+         searches put each tool in front of the caller, beside how many invoked it. Recorded\n\
+         only; nothing in ranking reads it.\n\
+         \n\
+         `ratio` is `(invoked + 1) / (surfaced + 2)` — Laplace-smoothed, so a tool shown once\n\
+         and invoked once does not outrank one shown fifty times and invoked forty. Read it\n\
+         against the `invoked` column, which is the order the arm actually serves today: where\n\
+         the two disagree is where a tool is riding on volume rather than on answering the\n\
+         question.\n"
+    );
+    let _ = writeln!(
+        o,
+        "| cluster | tool | surfaced | invoked | ratio |\n|---|---|---|---|---|"
+    );
+    let with_impressions = replay_with_impressions(turns);
+    let mut shown_never_used = 0usize;
+    let mut disagreements = 0usize;
+    for it in &with_impressions.intents {
+        // Every id either arm knows about, so a tool shown and never invoked is
+        // visible rather than silently absent — that is the whole point.
+        let mut ids: Vec<&String> = it.surfaced.keys().chain(it.tools.keys()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let ratio = |id: &str| {
+            let s = it.surfaced.get(id).copied().unwrap_or(0) as f32;
+            let i = it.tools.get(id).copied().unwrap_or(0.0);
+            (i + 1.0) / (s + 2.0)
+        };
+        let mut rows: Vec<&String> = ids.clone();
+        rows.sort_by(|a, b| {
+            ratio(b)
+                .partial_cmp(&ratio(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(b))
+        });
+        let by_invoked = {
+            let mut v: Vec<&String> = ids.clone();
+            v.sort_by(|a, b| {
+                it.tools
+                    .get(*b)
+                    .unwrap_or(&0.0)
+                    .partial_cmp(it.tools.get(*a).unwrap_or(&0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.cmp(b))
+            });
+            v
+        };
+        if rows.first() != by_invoked.first() {
+            disagreements += 1;
+        }
+        for id in &rows {
+            let s = it.surfaced.get(*id).copied().unwrap_or(0);
+            let i = it.tools.get(*id).copied().unwrap_or(0.0);
+            if i == 0.0 {
+                shown_never_used += 1;
+            }
+            let _ = writeln!(o, "| {} | {id} | {s} | {i:.0} | {:.3} |", it.id, ratio(id));
+        }
+    }
+    let _ = writeln!(
+        o,
+        "\n**{shown_never_used} (cluster, tool) pairs were surfaced and never invoked** — evidence \
+         that exists nowhere in `tools`, because only invocations write edges.\n\
+         \n\
+         **The ratio would lead a different tool in {disagreements} of {} clusters.** That count \
+         is the whole question: at zero, ranking on impressions changes nothing and is not worth \
+         the risk; the larger it is, the more the current order is volume rather than fit — and \
+         the more a bad ratio could do damage. Neither reading is available from invocation \
+         counts alone.\n",
+        with_impressions.intents.len()
+    );
 
     // -- served top-k --------------------------------------------------------
     let mut write_to_read = 0usize;
