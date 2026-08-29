@@ -207,14 +207,14 @@ export function validateGraph(doc) {
     }
     // Optional impression counts: tool id -> how many searches showed it. A
     // denominator for the edges below, never an edge itself. Absent means none.
-    if (it.surfaced !== undefined) {
-      if (!isObj(it.surfaced)) {
+    if (it.surfaced_tools !== undefined) {
+      if (!isObj(it.surfaced_tools)) {
         errs.push(`${at}.surfaced, when present, must be an object`);
       } else {
-        for (const [id, n] of Object.entries(it.surfaced)) {
+        for (const [id, n] of Object.entries(it.surfaced_tools)) {
           if (!(isInt(n) && n >= 1)) {
             errs.push(
-              `${at}.surfaced["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`,
+              `${at}.surfaced_tools["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`,
             );
           }
         }

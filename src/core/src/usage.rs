@@ -659,7 +659,7 @@ pub struct Intent {
     /// Absent on the wire means none were recorded, which is what every graph
     /// written before this field existed says.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub surfaced: BTreeMap<String, u32>,
+    pub surfaced_tools: BTreeMap<String, u32>,
     /// Tokens of each member, positionally parallel to `members`.
     ///
     /// Matching scores a query against **individual members**, not their union:
@@ -816,7 +816,7 @@ impl Intent {
         if kind != Capability::Tool {
             return 1.0;
         }
-        let considered = self.surfaced.get(id).copied().unwrap_or(0) as f32;
+        let considered = self.surfaced_tools.get(id).copied().unwrap_or(0) as f32;
         let invoked = self.tools.get(id).copied().unwrap_or(0.0);
         ((invoked + IMPRESSION_PRIOR) / (considered + IMPRESSION_PRIOR)).min(1.0)
     }
@@ -1280,7 +1280,7 @@ impl IntentGraph {
             // A zero impression count says "this was surfaced no times", which
             // is what absence already says. Rejecting it keeps one meaning per
             // state, the same reason a zero-weight edge is rejected above.
-            if it.surfaced.values().any(|n| *n == 0) {
+            if it.surfaced_tools.values().any(|n| *n == 0) {
                 return Err(IntentGraphError::Malformed(format!(
                     "intent {:?} has a zero impression count",
                     it.id
@@ -1424,7 +1424,7 @@ impl IntentGraph {
                     last_ts: 0,
                     tools: BTreeMap::new(),
                     skills: BTreeMap::new(),
-                    surfaced: BTreeMap::new(),
+                    surfaced_tools: BTreeMap::new(),
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
@@ -1469,7 +1469,7 @@ impl IntentGraph {
             // invokes first, so gating here would drop the tool impressions
             // whenever a skill invoke won the race.
             for id in surfaced {
-                *it.surfaced.entry(id.clone()).or_insert(0) += 1;
+                *it.surfaced_tools.entry(id.clone()).or_insert(0) += 1;
             }
             let edges = match kind {
                 Capability::Tool => &mut it.tools,
@@ -2272,7 +2272,7 @@ mod tests {
             last_ts: 0,
             tools: tools.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: BTreeMap::new(),
-            surfaced: BTreeMap::new(),
+            surfaced_tools: BTreeMap::new(),
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
@@ -2667,7 +2667,7 @@ mod tests {
             .expect("armed")
             .ids;
         assert_eq!(before, vec!["b".to_string(), "a".to_string()]);
-        assert!(g.intents[0].surfaced.is_empty(), "nothing recorded");
+        assert!(g.intents[0].surfaced_tools.is_empty(), "nothing recorded");
     }
 
     /// A capability shown constantly and taken rarely falls behind one shown
@@ -2760,7 +2760,10 @@ mod tests {
         let mut g = IntentGraph::empty();
         g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         let json = serde_json::to_string(&g).unwrap();
-        assert!(!json.contains("surfaced"), "absent means none; got {json}");
+        assert!(
+            !json.contains("surfaced_tools"),
+            "absent means none; got {json}"
+        );
     }
 
     #[test]
@@ -2775,11 +2778,11 @@ mod tests {
             &["gh_run_list".to_string(), "docker_build".to_string()],
         );
         let json = serde_json::to_string(&g).unwrap();
-        assert!(json.contains("surfaced"), "got {json}");
+        assert!(json.contains("surfaced_tools"), "got {json}");
 
         let back = IntentGraph::from_json(&json).expect("round trip");
-        assert_eq!(back.intents[0].surfaced.get("docker_build"), Some(&1));
-        assert_eq!(back.intents[0].surfaced.get("gh_run_list"), Some(&1));
+        assert_eq!(back.intents[0].surfaced_tools.get("docker_build"), Some(&1));
+        assert_eq!(back.intents[0].surfaced_tools.get("gh_run_list"), Some(&1));
     }
 
     /// The rule the whole design turns on: a surfaced id is a denominator, not
@@ -2796,7 +2799,7 @@ mod tests {
             true,
             &["docker_build".to_string()],
         );
-        assert_eq!(g.intents[0].surfaced.get("docker_build"), Some(&1));
+        assert_eq!(g.intents[0].surfaced_tools.get("docker_build"), Some(&1));
         assert!(
             !g.intents[0].tools.contains_key("docker_build"),
             "shown is not used"
@@ -2821,9 +2824,12 @@ mod tests {
         g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
         let json = serde_json::to_string(&g).unwrap().replace(
             r#""tools":{"t":1.0}"#,
-            r#""tools":{"t":1.0},"surfaced":{"t":0}"#,
+            r#""tools":{"t":1.0},"surfaced_tools":{"t":0}"#,
         );
-        assert!(json.contains(r#""surfaced":{"t":0}"#), "fixture: {json}");
+        assert!(
+            json.contains(r#""surfaced_tools":{"t":0}"#),
+            "fixture: {json}"
+        );
         assert!(matches!(
             IntentGraph::from_json(&json),
             Err(IntentGraphError::Malformed(_))

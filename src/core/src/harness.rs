@@ -1425,11 +1425,11 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     for it in &with_impressions.intents {
         // Every id either arm knows about, so a tool shown and never invoked is
         // visible rather than silently absent — that is the whole point.
-        let mut ids: Vec<&String> = it.surfaced.keys().chain(it.tools.keys()).collect();
+        let mut ids: Vec<&String> = it.surfaced_tools.keys().chain(it.tools.keys()).collect();
         ids.sort_unstable();
         ids.dedup();
         let ratio = |id: &str| {
-            let s = it.surfaced.get(id).copied().unwrap_or(0) as f32;
+            let s = it.surfaced_tools.get(id).copied().unwrap_or(0) as f32;
             let i = it.tools.get(id).copied().unwrap_or(0.0);
             (i + 1.0) / (s + 2.0)
         };
@@ -1456,7 +1456,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             disagreements += 1;
         }
         for id in &rows {
-            let s = it.surfaced.get(*id).copied().unwrap_or(0);
+            let s = it.surfaced_tools.get(*id).copied().unwrap_or(0);
             let i = it.tools.get(*id).copied().unwrap_or(0.0);
             if i == 0.0 {
                 shown_never_used += 1;

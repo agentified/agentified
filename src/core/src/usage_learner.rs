@@ -692,8 +692,8 @@ mod tests {
             vec!["gh_run_list"],
             "docker_build was shown, not used"
         );
-        assert_eq!(it.surfaced.get("docker_build"), Some(&1));
-        assert_eq!(it.surfaced.get("gh_run_list"), Some(&1));
+        assert_eq!(it.surfaced_tools.get("docker_build"), Some(&1));
+        assert_eq!(it.surfaced_tools.get("gh_run_list"), Some(&1));
         assert_eq!(it.support, 1, "still one question");
     }
 
@@ -715,8 +715,12 @@ mod tests {
         let g = graph.read().unwrap();
         let it = &g.intents[0];
         assert_eq!(it.tools.len(), 3, "three capabilities were used");
-        assert_eq!(it.surfaced.get("a"), Some(&1), "but one search showed them");
-        assert_eq!(it.surfaced.get("b"), Some(&1));
+        assert_eq!(
+            it.surfaced_tools.get("a"),
+            Some(&1),
+            "but one search showed them"
+        );
+        assert_eq!(it.surfaced_tools.get("b"), Some(&1));
         assert_eq!(it.support, 1);
     }
 
@@ -735,10 +739,22 @@ mod tests {
 
         let g = graph.read().unwrap();
         let it = &g.intents[0];
-        assert_eq!(it.surfaced.get("docker_build"), Some(&1), "ranked above it");
-        assert_eq!(it.surfaced.get("gh_run_list"), Some(&1), "the one taken");
-        assert_eq!(it.surfaced.get("read_file"), None, "ranked below, unread");
-        assert_eq!(it.surfaced.get("delete_file"), None);
+        assert_eq!(
+            it.surfaced_tools.get("docker_build"),
+            Some(&1),
+            "ranked above it"
+        );
+        assert_eq!(
+            it.surfaced_tools.get("gh_run_list"),
+            Some(&1),
+            "the one taken"
+        );
+        assert_eq!(
+            it.surfaced_tools.get("read_file"),
+            None,
+            "ranked below, unread"
+        );
+        assert_eq!(it.surfaced_tools.get("delete_file"), None);
     }
 
     /// Taking the top hit means nothing was passed over, so nothing is penalised
@@ -755,7 +771,7 @@ mod tests {
 
         let g = graph.read().unwrap();
         assert_eq!(
-            g.intents[0].surfaced.keys().collect::<Vec<_>>(),
+            g.intents[0].surfaced_tools.keys().collect::<Vec<_>>(),
             vec!["gh_run_list"]
         );
     }
@@ -772,13 +788,16 @@ mod tests {
         l.record(invoke("something_else"));
         {
             let g = graph.read().unwrap();
-            assert!(g.intents[0].surfaced.is_empty(), "nothing was passed over");
+            assert!(
+                g.intents[0].surfaced_tools.is_empty(),
+                "nothing was passed over"
+            );
             assert!(g.intents[0].tools.contains_key("something_else"));
         }
         l.record(invoke("gh_run_list"));
         let g = graph.read().unwrap();
         assert_eq!(
-            g.intents[0].surfaced.get("docker_build"),
+            g.intents[0].surfaced_tools.get("docker_build"),
             Some(&1),
             "the window was still open for an invoke from the list"
         );
@@ -813,7 +832,7 @@ mod tests {
         l.record(invoke("gh_run_list"));
 
         let g = graph.read().unwrap();
-        assert!(g.intents[0].surfaced.is_empty());
+        assert!(g.intents[0].surfaced_tools.is_empty());
         assert_eq!(g.intents[0].tools.len(), 1, "the invoke still counted");
     }
 
@@ -835,7 +854,10 @@ mod tests {
         l.record(invoke("gh_release_create"));
 
         let g = graph.read().unwrap();
-        assert_eq!(g.intents[0].surfaced.get("gh_release_create"), Some(&1));
+        assert_eq!(
+            g.intents[0].surfaced_tools.get("gh_release_create"),
+            Some(&1)
+        );
     }
 
     /// Two searches of the same question count two sets of impressions, matching
@@ -851,7 +873,7 @@ mod tests {
             l.record(invoke("gh_run_list"));
         }
         let g = graph.read().unwrap();
-        assert_eq!(g.intents[0].surfaced.get("docker_build"), Some(&2));
+        assert_eq!(g.intents[0].surfaced_tools.get("docker_build"), Some(&2));
     }
 
     /// The live sink and the replay loop keep pending state in two different
@@ -903,11 +925,14 @@ mod tests {
         );
 
         assert_eq!(
-            offline.intents[0].surfaced,
-            live.read().unwrap().intents[0].surfaced,
+            offline.intents[0].surfaced_tools,
+            live.read().unwrap().intents[0].surfaced_tools,
             "the two windows disagree about what was surfaced"
         );
-        assert_eq!(offline.intents[0].surfaced.get("docker_build"), Some(&2));
+        assert_eq!(
+            offline.intents[0].surfaced_tools.get("docker_build"),
+            Some(&2)
+        );
     }
 
     #[test]
