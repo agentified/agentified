@@ -9,7 +9,7 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted};
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
@@ -128,18 +128,6 @@ pub struct SearchHit {
     pub normalized: f32,
 }
 
-/// Which scale a ranked list's scores are on, which decides both
-/// [`SearchHit::fused`] and how [`SearchHit::normalized`] is derived.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Scale {
-    /// Raw Okapi BM25, carrying the query's score ceiling to divide by.
-    Bm25 { ceiling: f32 },
-    /// Cosine of L2-normalized vectors — bounded, model-anchored.
-    Cosine,
-    /// Reciprocal Rank Fusion — rank arithmetic; magnitude is ordering only.
-    Rrf,
-}
-
 /// Build hits from an already-ranked, best-first `(id, score)` list: `rank` is
 /// the position, `fused` says whether these are RRF scores. One place so the two
 /// new fields cannot drift between the fused and raw paths.
@@ -157,50 +145,6 @@ fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
             normalized,
         })
         .collect()
-}
-
-/// Map each score onto `[0, 1]` by the rule its scale admits.
-///
-/// Cosine is bounded, so `(s + 1) / 2` keeps the absolute level: a weak best
-/// match stays low instead of being promoted to `1.0`.
-///
-/// Raw BM25 has no ceiling in general, but it does have one *per query* — the
-/// score an average-length document containing every query term once would earn
-/// (`query_ceiling`). Dividing by that gives the same absolute property, and
-/// clamping handles the short-document-with-repeats case that can exceed it.
-///
-/// RRF has neither. Its magnitude is `Σ 1/(60 + rank)`, so the only reachable
-/// maximum is "first in every arm", which says nothing about the match. Min-max
-/// is what is left, and its cost is a top pinned at `1.0`. Callers must hand in
-/// the **full** candidate set rather than the slice they intend to return, or
-/// the bottom of that slice reads `0.0` however good it was.
-/// A zero range (one hit, or every score tied) yields `1.0` throughout rather
-/// than dividing by zero: nothing in that set is worse than anything else.
-fn normalize(ranked: &[(String, f32)], scale: Scale) -> Vec<f32> {
-    match scale {
-        Scale::Cosine => return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect(),
-        // A ceiling of zero means no query term appears anywhere in the corpus,
-        // so every score is zero too and there is nothing to divide.
-        Scale::Bm25 { ceiling } if ceiling > 0.0 => {
-            return ranked
-                .iter()
-                .map(|(_, s)| (s / ceiling).clamp(0.0, 1.0))
-                .collect();
-        }
-        Scale::Bm25 { .. } => return vec![0.0; ranked.len()],
-        Scale::Rrf => {}
-    }
-    let (Some(max), Some(min)) = (
-        ranked.first().map(|(_, s)| *s),
-        ranked.last().map(|(_, s)| *s),
-    ) else {
-        return Vec::new();
-    };
-    let range = max - min;
-    if range <= 0.0 {
-        return vec![1.0; ranked.len()];
-    }
-    ranked.iter().map(|(_, s)| (s - min) / range).collect()
 }
 
 impl Embeddable for Tool {

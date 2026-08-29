@@ -8,7 +8,7 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted};
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
 use crate::skill::Skill;
@@ -39,19 +39,27 @@ pub struct SkillHit {
     /// Whether [`score`](Self::score) is an RRF score (ordering-only) rather than
     /// the raw method score — the skill-side twin of [`crate::SearchHit::fused`].
     pub fused: bool,
+    /// [`score`](Self::score) mapped onto `[0, 1]` for display — the skill-side
+    /// twin of [`crate::SearchHit::normalized`], by the same three rules and
+    /// with the same caveats. See it for what each rule means and why this is
+    /// not a confidence.
+    pub normalized: f32,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list — the
 /// skill-side twin of [`crate::tool_registry`]'s `to_search_hits`.
-fn to_skill_hits(ranked: Vec<(String, f32)>, fused: bool) -> Vec<SkillHit> {
+fn to_skill_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SkillHit> {
+    let normalized = normalize(&ranked, scale);
     ranked
         .into_iter()
+        .zip(normalized)
         .enumerate()
-        .map(|(i, (skill_id, score))| SkillHit {
+        .map(|(i, ((skill_id, score), normalized))| SkillHit {
             skill_id,
             score,
             rank: i as u32,
-            fused,
+            fused: scale == Scale::Rrf,
+            normalized,
         })
         .collect()
 }
@@ -348,15 +356,18 @@ impl SkillRegistry {
     /// the `rrf` stage — one implementation for all three engines.
     fn fuse_arms(arms: &[WeightedArm<'_>], top_k: usize) -> (Vec<SkillHit>, SearchStage) {
         let t = Instant::now();
-        let mut fused = rrf_fuse_weighted(arms, RRF_K);
-        fused.truncate(top_k);
+        let fused = rrf_fuse_weighted(arms, RRF_K);
         let stage = SearchStage {
             name: "rrf".into(),
             took_ms: t.elapsed().as_millis() as u64,
             top_score: fused.first().map(|(_, s)| *s as f64),
         };
-        // Ordering-only RRF scores.
-        let hits = to_skill_hits(fused, true);
+        // Ordering-only RRF scores. Normalize across the WHOLE candidate set,
+        // then cut — after the cut, min-max would pin the last hit a caller
+        // asked for to 0.00 however good it was, and the same hit would read
+        // differently at a different `top_k`. Twin of `ToolRegistry::fuse_arms`.
+        let mut hits = to_skill_hits(fused, Scale::Rrf);
+        hits.truncate(top_k);
         (hits, stage)
     }
 
@@ -694,7 +705,15 @@ impl SkillRegistry {
             // No graph, or nothing matched: the original path with raw BM25
             // scores, unchanged.
             // Raw BM25 scores — not fused.
-            let hits = to_skill_hits(self.bm25_index().search(query, top_k), false);
+            let hits = {
+                let index = self.bm25_index();
+                to_skill_hits(
+                    index.search(query, top_k),
+                    Scale::Bm25 {
+                        ceiling: index.query_ceiling(query),
+                    },
+                )
+            };
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -776,7 +795,7 @@ impl SkillRegistry {
             // to give the usage arm room to re-rank; with no arm to fuse, trim
             // back to what the caller asked for (the fused path does this in
             // `fuse_arms`).
-            let mut hits = to_skill_hits(ranked, false);
+            let mut hits = to_skill_hits(ranked, Scale::Cosine);
             hits.truncate(top_k);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
@@ -1897,5 +1916,89 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
+    }
+
+    // ---- the normalized score ----
+
+    fn hits_for(reg: &SkillRegistry, q: &str, m: SearchMethod, k: usize) -> Vec<SkillHit> {
+        reg.search_with_method(q, k, Origin::Direct, m)
+            .expect("search")
+    }
+
+    /// The skill twin of `bm25_normalizes_against_the_query_ceiling_not_the_list`:
+    /// divided by the query's own ceiling, so the top is not pinned to 1.0.
+    #[test]
+    fn a_skill_bm25_hit_normalizes_against_the_query_ceiling() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("alpha", "alpha", "shared token alpha", &[]));
+        reg.register(skill(
+            "beta",
+            "beta",
+            "shared token beta padding padding",
+            &[],
+        ));
+        let hits = hits_for(&reg, "shared token", SearchMethod::Bm25, 5);
+        assert!(hits.len() >= 2);
+        assert!(hits.iter().all(|h| (0.0..=1.0).contains(&h.normalized)));
+        assert!(
+            hits.last().is_some_and(|h| h.normalized > 0.0),
+            "the weakest hit still captured part of the query"
+        );
+        for pair in hits.windows(2) {
+            assert!(pair[0].normalized >= pair[1].normalized);
+        }
+    }
+
+    /// The property the truncate order decides. `fuse_arms` normalized AFTER the
+    /// cut until this landed, which pinned the last returned hit to 0.00 and made
+    /// the value move with `top_k` — the same bug fixed on the tool side.
+    #[test]
+    fn a_skill_hit_normalizes_the_same_at_any_top_k() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("aa", "aa", "shared token api", &[]));
+        reg.register(skill(
+            "bb",
+            "bb",
+            "shared token api padding padding padding",
+            &[],
+        ));
+        reg.register(skill("cc", "cc", "shared token frontend", &[]));
+        reg.build_embeddings().unwrap();
+        let deep = hits_for(&reg, "shared token api", SearchMethod::Hybrid, 3);
+        let shallow = hits_for(&reg, "shared token api", SearchMethod::Hybrid, 2);
+        assert!(deep.len() > shallow.len(), "need differing depths");
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.skill_id == h.skill_id).unwrap();
+            assert!(
+                (same.normalized - h.normalized).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.skill_id,
+                h.normalized,
+                same.normalized
+            );
+        }
+        assert!(
+            shallow.last().is_some_and(|h| h.normalized > 0.0),
+            "something ranked below it, so it is not the minimum"
+        );
+    }
+
+    /// Cosine is remapped affinely, so an orthogonal hit reads 0.5 rather than
+    /// being promoted to 1.0 for being least-bad.
+    #[test]
+    fn a_skill_semantic_hit_normalizes_cosine_affinely() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("api-docs", "api-docs", "rest api reference", &[]));
+        reg.register(skill("slides", "slides", "frontend slides deck", &[]));
+        reg.build_embeddings().unwrap();
+        for h in hits_for(&reg, "api", SearchMethod::Semantic, 5) {
+            assert!(
+                (h.normalized - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} normalized {}",
+                h.skill_id,
+                h.score,
+                h.normalized
+            );
+        }
     }
 }
