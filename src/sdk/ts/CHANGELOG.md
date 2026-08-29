@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `SearchHit.normalized` and `SkillHit.normalized`: `score` mapped onto `[0, 1]` for display. The raw `score` is on three incomparable scales — unbounded BM25, bounded cosine, and an RRF sum whose magnitude is rank arithmetic — so it has never been displayable, and normalizing it yourself is how a rank position gets read as certainty. Each method now carries the rule its own scale admits: `(cos + 1) / 2` for cosine, `score / Σ idf(query terms)` for raw BM25, and min-max across the full candidate set for RRF. The first two are absolute and compare across queries; the RRF rule does not, because rank fusion has no achievable maximum — a `1.0` there means "best of what came back", not "right". **It is not a confidence:** nothing was fitted to whether the hit was the one you went on to use, so `0.8` does not mean "right 80% of the time".
+
 ## [0.11.0] - 2026-08-17
 
 ### Added

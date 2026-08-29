@@ -578,14 +578,22 @@ pub struct SearchHit {
     /// scale their `score` is on.
     #[pyo3(get)]
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` for display, by a rule that follows the scale
+    /// `score` is actually on: `(cos + 1) / 2` for cosine, `score / Σ idf(query
+    /// terms)` for raw BM25, and min-max across the full candidate set for RRF.
+    /// The first two compare across queries; the RRF rule does not — a `1.0`
+    /// there means "best of what came back", not "right". **Not a confidence:**
+    /// nothing here was fitted to whether the hit was the one you went on to use.
+    #[pyo3(get)]
+    pub normalized: f64,
 }
 
 #[pymethods]
 impl SearchHit {
     fn __repr__(&self) -> String {
         format!(
-            "SearchHit(tool_id={:?}, score={}, rank={}, fused={})",
-            self.tool_id, self.score, self.rank, self.fused
+            "SearchHit(tool_id={:?}, score={}, rank={}, fused={}, normalized={})",
+            self.tool_id, self.score, self.rank, self.fused, self.normalized
         )
     }
 }
@@ -607,14 +615,18 @@ pub struct SkillHit {
     /// `true` when `score` is an RRF score — as on [`SearchHit::fused`].
     #[pyo3(get)]
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` — as on [`SearchHit::normalized`], by the
+    /// same three rules and with the same caveats.
+    #[pyo3(get)]
+    pub normalized: f64,
 }
 
 #[pymethods]
 impl SkillHit {
     fn __repr__(&self) -> String {
         format!(
-            "SkillHit(skill_id={:?}, score={}, rank={}, fused={})",
-            self.skill_id, self.score, self.rank, self.fused
+            "SkillHit(skill_id={:?}, score={}, rank={}, fused={}, normalized={})",
+            self.skill_id, self.score, self.rank, self.fused, self.normalized
         )
     }
 }
@@ -961,6 +973,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -994,6 +1007,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }
@@ -1036,6 +1050,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }
@@ -1460,6 +1475,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -1492,6 +1508,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }
@@ -1530,6 +1547,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }

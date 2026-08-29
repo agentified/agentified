@@ -43,6 +43,20 @@ class SearchHit:
         lets you detect which scale `score` is on.
         """
 
+    @property
+    def normalized(self) -> float:
+        """`score` mapped onto [0, 1] for display.
+
+        The rule follows the scale `score` is actually on: `(cos + 1) / 2` for
+        cosine, `score / sum of idf(query terms)` for raw BM25, and min-max
+        across the full candidate set for RRF. The first two compare across
+        queries; the RRF rule does not — a 1.0 there means "best of what came
+        back", not "right".
+
+        **Not a confidence.** Nothing here was fitted to whether the hit was the
+        one you went on to use, so 0.8 does not mean "right 80% of the time".
+        """
+
 class IntentGraph:
     """A shared usage-ranking intent graph (ADR-0014).
 
@@ -350,6 +364,12 @@ class SkillHit:
     @property
     def fused(self) -> bool:
         """Whether `score` is an RRF score — as on `SearchHit.fused`."""
+
+    @property
+    def normalized(self) -> float:
+        """`score` mapped onto [0, 1] — as on `SearchHit.normalized`, by the same
+        three rules and with the same caveats.
+        """
 
 class SkillRegistry:
     """Private native metadata registry over the skill corpus.

@@ -780,6 +780,7 @@ impl Task for ToolSearchTask {
                         score: hit.score as f64,
                         rank: hit.rank,
                         fused: hit.fused,
+                        normalized: f64::from(hit.normalized),
                     })
                     .collect()
             })
@@ -904,6 +905,7 @@ impl Task for SkillSearchTask {
                         score: hit.score as f64,
                         rank: hit.rank,
                         fused: hit.fused,
+                        normalized: f64::from(hit.normalized),
                     })
                     .collect()
             })
@@ -1064,6 +1066,13 @@ pub struct SearchHit {
     /// method score: the usage arm fused into this search, or the method is
     /// hybrid. Uniform across one result list; lets a caller detect the scale.
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` for display, by a rule that follows the scale
+    /// `score` is actually on: `(cos + 1) / 2` for cosine, `score / Σ idf(query
+    /// terms)` for raw BM25, and min-max across the full candidate set for RRF.
+    /// The first two compare across queries; the RRF rule does not — a `1.0`
+    /// there means "best of what came back", not "right". **Not a confidence:**
+    /// nothing here was fitted to whether the hit was the one you went on to use.
+    pub normalized: f64,
 }
 
 /// Destination for the local trace stream (ADR-0007): `"noop"` discards,
@@ -1395,6 +1404,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -1416,6 +1426,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -1462,6 +1473,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }
@@ -2202,6 +2214,9 @@ pub struct SkillHit {
     pub rank: u32,
     /// `true` when `score` is an RRF score — as on `SearchHit.fused`.
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` — as on `SearchHit.normalized`, by the same
+    /// three rules and with the same caveats.
+    pub normalized: f64,
 }
 
 /// What a `SkillRegistry.replaceAll` changed, counted by id. `updated` covers
@@ -2344,6 +2359,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -2362,6 +2378,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect()
     }
@@ -2407,6 +2424,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                normalized: f64::from(hit.normalized),
             })
             .collect())
     }
