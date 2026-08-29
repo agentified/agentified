@@ -653,13 +653,19 @@ pub struct Intent {
     /// unchanged — an id here with no entry in `tools` has no edge, contributes
     /// nothing to the arm, and cannot be promoted.
     ///
-    /// Tools only. Skill ids live in a different id space and folding both into
-    /// one map would let them collide.
+    /// Paired with [`Self::tools`], the edge map it is the denominator for.
+    /// [`Self::surfaced_skills`] is the skill-side twin — two maps rather than
+    /// one, because tool and skill ids are different id spaces and would collide.
     ///
     /// Absent on the wire means none were recorded, which is what every graph
     /// written before this field existed says.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub surfaced_tools: BTreeMap<String, u32>,
+    /// Skill id → how many of this cluster's searches put it in front of the
+    /// caller. The skill-side twin of [`Self::surfaced_tools`]; see it for what
+    /// the count means and why nothing in ranking treats it as an edge.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaced_skills: BTreeMap<String, u32>,
     /// Tokens of each member, positionally parallel to `members`.
     ///
     /// Matching scores a query against **individual members**, not their union:
@@ -810,15 +816,28 @@ impl Intent {
     ///   replacing it, so nine invocations still outweigh one. The count says how
     ///   much evidence there is; this says how much of it was offered and refused.
     ///
-    /// Only tool edges carry impressions ([`Intent::surfaced`]), so skills are
-    /// always undamped.
+    /// Reads the impression map matching `kind`, so tools and skills are damped
+    /// by their own evidence and never by each other's.
     fn passed_over(&self, kind: Capability, id: &str) -> f32 {
-        if kind != Capability::Tool {
-            return 1.0;
-        }
-        let considered = self.surfaced_tools.get(id).copied().unwrap_or(0) as f32;
-        let invoked = self.tools.get(id).copied().unwrap_or(0.0);
+        let considered = self.surfaced(kind).get(id).copied().unwrap_or(0) as f32;
+        let invoked = self.edges(kind).get(id).copied().unwrap_or(0.0);
         ((invoked + IMPRESSION_PRIOR) / (considered + IMPRESSION_PRIOR)).min(1.0)
+    }
+
+    /// The impression map for `kind` — the denominator twin of [`Self::edges`].
+    fn surfaced(&self, kind: Capability) -> &BTreeMap<String, u32> {
+        match kind {
+            Capability::Tool => &self.surfaced_tools,
+            Capability::Skill => &self.surfaced_skills,
+        }
+    }
+
+    /// The impression map for `kind`, mutably.
+    fn surfaced_mut(&mut self, kind: Capability) -> &mut BTreeMap<String, u32> {
+        match kind {
+            Capability::Tool => &mut self.surfaced_tools,
+            Capability::Skill => &mut self.surfaced_skills,
+        }
     }
 
     /// Fold `vector` into this cluster's running mean over its members, and
@@ -1280,7 +1299,12 @@ impl IntentGraph {
             // A zero impression count says "this was surfaced no times", which
             // is what absence already says. Rejecting it keeps one meaning per
             // state, the same reason a zero-weight edge is rejected above.
-            if it.surfaced_tools.values().any(|n| *n == 0) {
+            if it
+                .surfaced_tools
+                .values()
+                .chain(it.surfaced_skills.values())
+                .any(|n| *n == 0)
+            {
                 return Err(IntentGraphError::Malformed(format!(
                     "intent {:?} has a zero impression count",
                     it.id
@@ -1425,6 +1449,7 @@ impl IntentGraph {
                     tools: BTreeMap::new(),
                     skills: BTreeMap::new(),
                     surfaced_tools: BTreeMap::new(),
+                    surfaced_skills: BTreeMap::new(),
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
@@ -1468,8 +1493,9 @@ impl IntentGraph {
             // that token is claimed by whichever of the tool and skill learners
             // invokes first, so gating here would drop the tool impressions
             // whenever a skill invoke won the race.
+            let impressions = it.surfaced_mut(kind);
             for id in surfaced {
-                *it.surfaced_tools.entry(id.clone()).or_insert(0) += 1;
+                *impressions.entry(id.clone()).or_insert(0) += 1;
             }
             let edges = match kind {
                 Capability::Tool => &mut it.tools,
@@ -2273,6 +2299,7 @@ mod tests {
             tools: tools.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: BTreeMap::new(),
             surfaced_tools: BTreeMap::new(),
+            surfaced_skills: BTreeMap::new(),
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
@@ -2741,13 +2768,60 @@ mod tests {
         );
     }
 
-    /// Skill edges carry no impressions, so the skill arm is untouched.
+    /// The skill arm is damped by its own evidence, on the same rule. Before the
+    /// maps were split this returned 1.0 unconditionally, which made the penalty
+    /// tool-only in everything but name.
     #[test]
-    fn a_skill_edge_is_never_damped() {
+    fn a_skill_shown_far_more_often_than_it_is_taken_falls_behind() {
         let mut g = IntentGraph::empty();
         let q = "write a changelog";
-        g.observe_surfacing(q, Capability::Skill, "s", T0, true, &["t".into()]);
-        assert_eq!(g.intents[0].passed_over(Capability::Skill, "s"), 1.0);
+        for _ in 0..5 {
+            g.observe_surfacing(q, Capability::Skill, "loud", T0, true, &["loud".into()]);
+        }
+        for _ in 0..4 {
+            g.observe_surfacing(
+                q,
+                Capability::Skill,
+                "quiet",
+                T0,
+                true,
+                &["loud".into(), "quiet".into()],
+            );
+        }
+        let it = &g.intents[0];
+        assert!(it.skills["loud"] > it.skills["quiet"], "{:?}", it.skills);
+        assert_eq!(
+            g.arm(q, None, Capability::Skill, &|_| true)
+                .into_arm()
+                .expect("armed")
+                .ids,
+            vec!["quiet".to_string(), "loud".to_string()],
+            "loud was passed over four times"
+        );
+    }
+
+    /// The two id spaces never damp each other: an id in one map must not reach
+    /// the other's denominator, however identically it is spelled.
+    #[test]
+    fn a_tool_and_a_skill_of_the_same_name_are_damped_separately() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        // The tool is offered and refused; the skill is always taken.
+        for _ in 0..6 {
+            g.observe_surfacing(q, Capability::Tool, "other", T0, true, &["build".into()]);
+        }
+        g.observe_surfacing(q, Capability::Skill, "build", T0, false, &["build".into()]);
+
+        let it = &g.intents[0];
+        assert!(
+            it.passed_over(Capability::Tool, "build") < 0.5,
+            "the tool was shown six times and never taken"
+        );
+        assert_eq!(
+            it.passed_over(Capability::Skill, "build"),
+            1.0,
+            "the skill of the same name was always taken"
+        );
     }
 
     // ---- impressions on the wire ----

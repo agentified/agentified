@@ -493,7 +493,7 @@
       "`cohesion` MAY be absent, meaning 1.0. A consumer that matches on `centroid` without per-member vectors SHOULD scale the similarity it requires by it: a normalized centroid hides how far apart its members are, so a cluster that drifted apart otherwise reads as tight and keeps absorbing.",
       "`vector_n` is provenance for learning only \u2014 it weights the next fold into `centroid`. Retrieval results MUST be identical whatever it contains.",
       "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains.",
-      "`surfaced_tools` is provenance only — it counts how many of a cluster's searches put each TOOL in front of the caller, so a consumer can tell a capability that is shown constantly and rarely used from one shown rarely and always used. A consumer MUST NOT let it affect ranking, and MUST NOT treat an id present in `surfaced_tools` but absent from `tools` as an edge: what retrieval returned is not evidence, only what was invoked is. Skill ids are never recorded here."
+      "`surfaced_tools` and `surfaced_skills` are provenance only — it counts how many of a cluster's searches put each capability in front of the caller, so a consumer can tell a capability that is shown constantly and rarely used from one shown rarely and always used. A consumer MUST NOT let it affect ranking, and MUST NOT treat an id present in an impression map but absent from the matching edge map as an edge: what retrieval returned is not evidence, only what was invoked is. The two maps exist because tool and skill ids are different id spaces: an id in one MUST NOT be read against the other."
     ],
     "valid": [
       {
@@ -974,6 +974,43 @@
             }
           ]
         }
+      },
+      {
+        "name": "impressions-both-id-spaces",
+        "why": "A cluster reached by a capability search records what BOTH catalogs put in front of the caller, in two maps. One map would let a tool id and a skill id of the same name collide and damp each other — which is why `tools` and `skills` are separate too.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_tools": {
+                "docker_build": 9,
+                "gh_run_list": 6
+              },
+              "surfaced_skills": {
+                "release-notes": 7,
+                "triage-ci": 4
+              },
+              "skills": {
+                "triage-ci": 3.0
+              }
+            }
+          ]
+        }
       }
     ],
     "invalid": [
@@ -1379,6 +1416,38 @@
                 "docker_build": 2.5
               },
               "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "skill-impression-count-zero",
+        "because": "The skill map obeys the same rule as the tool one: absence already means \"surfaced no times\", so a stored zero is a second spelling of one state.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_skills": {
+                "release-notes": 0
+              },
+              "skills": {
+                "triage-ci": 3.0
+              }
             }
           ]
         }

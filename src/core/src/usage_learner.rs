@@ -57,19 +57,37 @@ use crate::usage::{Capability, IntentGraph, Observation};
 /// one fanned-out question once between them, not once each.
 struct Pending {
     query: String,
-    /// Tool ids this search put in front of the caller, from
-    /// `TraceEvent::Search`'s `hits`. Empty for a skill search — skill ids are a
-    /// different id space and `Intent::surfaced` holds tools only.
-    surfaced: Vec<String>,
-    /// Whether these impressions have already been counted. One search followed
-    /// by three invokes must add three edges but one impression each, so the
-    /// first confirm takes them and the rest see an empty slice.
+    /// What the question surfaced, **kept per capability kind**. One logical
+    /// question emits a `Search` and a `SkillSearch`, and a single learner can
+    /// see both, so one slot would let the second overwrite the first and land
+    /// skill ids in a cluster's tool map.
+    tools: Surfaced,
+    skills: Surfaced,
+}
+
+/// One kind's impressions for one search window.
+#[derive(Default)]
+struct Surfaced {
+    /// Ids the search put in front of the caller, from the event's `hits`.
+    ids: Vec<String>,
+    /// Whether they have already been counted. One search followed by three
+    /// invokes must add three edges but one impression each, so the first
+    /// confirm takes them and the rest see an empty slice.
     ///
     /// Per-window rather than the graph's `first_confirmation` credit: that
     /// token is claimed by whichever of the tool and skill learners invokes
     /// first, so gating on it would drop the tool impressions whenever a skill
     /// invoke won the race.
     counted: bool,
+}
+
+impl Pending {
+    fn slot(&mut self, kind: Capability) -> &mut Surfaced {
+        match kind {
+            Capability::Tool => &mut self.tools,
+            Capability::Skill => &mut self.skills,
+        }
+    }
 }
 
 /// The ids a caller plausibly *considered*, given which one they took: every id
@@ -185,7 +203,10 @@ pub(crate) enum Step<'a> {
     /// classifier.
     Remember {
         query: &'a str,
-        /// Tool ids the caller was shown. Empty for a skill search.
+        /// Which id space `surfaced` holds — a `Search` surfaces tools, a
+        /// `SkillSearch` skills, and a window keeps them apart.
+        kind: Capability,
+        /// Ids the caller was shown, best-first.
         surfaced: Vec<&'a str>,
     },
     /// This invocation closes one, confirming `capability_id` of `kind`.
@@ -207,16 +228,19 @@ pub(crate) fn classify(event: &TraceEvent, policy: ObservationPolicy) -> Step<'_
             ..
         } if accepts(policy, *origin) => Step::Remember {
             query,
+            kind: Capability::Tool,
             surfaced: hits.iter().map(|h| h.tool_id.as_str()).collect(),
         },
-        // Skill hits are skill ids; `Intent::surfaced` holds tool ids, and one
-        // map for both would let them collide. The window still opens.
-        TraceEvent::SkillSearch { query, origin, .. } if accepts(policy, *origin) => {
-            Step::Remember {
-                query,
-                surfaced: Vec::new(),
-            }
-        }
+        TraceEvent::SkillSearch {
+            query,
+            origin,
+            hits,
+            ..
+        } if accepts(policy, *origin) => Step::Remember {
+            query,
+            kind: Capability::Skill,
+            surfaced: hits.iter().map(|h| h.skill_id.as_str()).collect(),
+        },
         // The invocation the agent CHOSE to make. A trace records which tool was
         // called, never whether calling it was right, so completion is not a
         // second signal: filtering on `invoke_end` would drop good choices that
@@ -264,28 +288,41 @@ pub(crate) fn replay_log_into(
     // replay it is not rare: sessions interleave by construction and popular
     // questions repeat verbatim, so a shared slot loses the second session's
     // observation every time. Replay knows the session, so it can be exact.
-    // `(query, already_credited, surfaced, impressions_counted)`.
-    let mut pending: HashMap<&str, (&str, bool, Vec<&str>, bool)> = HashMap::new();
+    /// One session's open window: the query its next invoke attributes to,
+    /// whether that question has been credited, and what it surfaced per kind.
+    #[derive(Default)]
+    struct Window<'a> {
+        query: &'a str,
+        credited: bool,
+        tools: (Vec<&'a str>, bool),
+        skills: (Vec<&'a str>, bool),
+    }
+
+    let mut pending: HashMap<&str, Window<'_>> = HashMap::new();
 
     for env in envelopes {
         let session = env.session_id.as_str();
         let (kind, capability_id) = match classify(&env.event, policy) {
-            Step::Remember { query, surfaced } => {
+            Step::Remember {
+                query,
+                kind,
+                surfaced,
+            } => {
                 // Re-arming with the same text is idempotent: a capability
-                // search fans one question to both catalogs, and both of those
-                // land before any invoke, so the turn still credits once. The
-                // tool search carries the ids and the skill search carries
-                // none, so whichever lands second must not blank them.
-                match pending.get_mut(session) {
-                    Some(entry) if entry.0 == query => {
-                        if !surfaced.is_empty() {
-                            entry.2 = surfaced;
-                            entry.3 = false;
-                        }
-                    }
-                    _ => {
-                        pending.insert(session, (query, false, surfaced, false));
-                    }
+                // search fans one question to both catalogs, and both land
+                // before any invoke, so the turn still credits once. Each fills
+                // its OWN slot — one slot would let the skill search's ids
+                // overwrite the tool search's and land in the wrong map.
+                let entry = pending.entry(session).or_default();
+                if entry.query != query {
+                    *entry = Window {
+                        query,
+                        ..Window::default()
+                    };
+                }
+                match kind {
+                    Capability::Tool => entry.tools = (surfaced, false),
+                    Capability::Skill => entry.skills = (surfaced, false),
                 }
                 continue;
             }
@@ -296,19 +333,27 @@ pub(crate) fn replay_log_into(
         let Some(entry) = pending.get_mut(session) else {
             continue; // an invoke with no accepted search before it proves nothing
         };
-        let query = entry.0;
+        if entry.query.is_empty() {
+            continue; // a slot created by `or_default` that no search ever filled
+        }
+        let query = entry.query;
         // The first confirming invoke of THIS session's question is what makes
         // it an observation; later ones add edges for the same question.
-        let first_confirmation = !entry.1;
-        entry.1 = true;
+        let first_confirmation = !entry.credited;
+        entry.credited = true;
         // Impressions belong to the search, not to each invoke that follows it,
-        // and only the ids at or above the invoked one were plausibly weighed.
-        let surfaced: Vec<String> = if entry.3 {
+        // to the id space the invoke is in, and only to the ids at or above the
+        // invoked one — the ones plausibly weighed.
+        let slot = match kind {
+            Capability::Tool => &mut entry.tools,
+            Capability::Skill => &mut entry.skills,
+        };
+        let surfaced: Vec<String> = if slot.1 {
             Vec::new()
         } else {
-            let all: Vec<String> = entry.2.iter().map(|id| (*id).to_string()).collect();
+            let all: Vec<String> = slot.0.iter().map(|id| (*id).to_string()).collect();
             let considered = considered(&all, capability_id);
-            entry.3 = !considered.is_empty();
+            slot.1 = !considered.is_empty();
             considered
         };
         // Stash this query's vector right before the observation reads it. The
@@ -440,23 +485,25 @@ impl UsageLearner {
     /// its own learner — the previous per-learner flag credited once *each*.
     /// Over-counting still needs a credit, then another search of the same text,
     /// then another credit — two real searches, which should count twice.
-    fn remember_query(&self, query: &str, surfaced: &[&str]) {
+    fn remember_query(&self, query: &str, kind: Capability, surfaced: &[&str]) {
         if let Ok(mut pending) = self.pending.lock() {
-            // A capability search reaches this learner once. But a `Search` and
-            // a `SkillSearch` for one question reach *different* learners, and
-            // only the tool one carries ids — so within a learner, a repeat of
-            // the same query with no ids must not blank what it already holds.
-            let keep = pending
-                .as_ref()
-                .filter(|p| p.query == query && surfaced.is_empty())
-                .map(|p| (p.surfaced.clone(), p.counted));
-            let (surfaced, counted) = keep
-                .unwrap_or_else(|| (surfaced.iter().map(|id| (*id).to_string()).collect(), false));
-            *pending = Some(Pending {
-                query: query.to_string(),
-                surfaced,
-                counted,
-            });
+            // A capability search reaches this learner twice — once as a
+            // `Search` and once as a `SkillSearch`, same text — so the second
+            // must fill its own slot rather than replace the window.
+            let same_question = pending.as_ref().is_some_and(|p| p.query == query);
+            if !same_question {
+                *pending = Some(Pending {
+                    query: query.to_string(),
+                    tools: Surfaced::default(),
+                    skills: Surfaced::default(),
+                });
+            }
+            if let Some(p) = pending.as_mut() {
+                *p.slot(kind) = Surfaced {
+                    ids: surfaced.iter().map(|id| (*id).to_string()).collect(),
+                    counted: false,
+                };
+            }
         }
         if let Ok(graph) = self.graph.read() {
             graph.arm_credit(query);
@@ -476,16 +523,19 @@ impl UsageLearner {
             return; // an invoke with no search before it proves nothing
         };
         let query = entry.query.clone();
-        // Impressions belong to the search, not to each invoke that follows it:
-        // one search and three invokes is three edges but one impression each.
-        let surfaced = if entry.counted {
+        // Impressions belong to the search, not to each invoke that follows it
+        // (one search and three invokes is three edges but one impression each),
+        // and to the id space the invoke is in — a tool invoke never counts what
+        // the skill search surfaced.
+        let slot = entry.slot(kind);
+        let surfaced = if slot.counted {
             Vec::new()
         } else {
-            let considered = considered(&entry.surfaced, capability_id);
+            let considered = considered(&slot.ids, capability_id);
             // Only a confirming invoke inside the surfaced list counts the
             // window; one that went outside it leaves the window open, so a
             // later invoke that did come from the list can still count.
-            entry.counted = !considered.is_empty();
+            slot.counted = !considered.is_empty();
             considered
         };
         drop(pending);
@@ -533,7 +583,11 @@ impl UsageLearner {
     /// turn's evidence.
     fn learn_from(&self, event: &TraceEvent, ts_ms: u64) {
         match classify(event, self.policy) {
-            Step::Remember { query, surfaced } => self.remember_query(query, &surfaced),
+            Step::Remember {
+                query,
+                kind,
+                surfaced,
+            } => self.remember_query(query, kind, &surfaced),
             Step::Confirm(kind, capability_id) => self.confirm(kind, capability_id, ts_ms),
             Step::Ignore => {}
         }
@@ -672,6 +726,31 @@ mod tests {
         }
     }
 
+    fn skill_search_showing(query: &str, hits: &[&str]) -> TraceEvent {
+        TraceEvent::SkillSearch {
+            query: query.into(),
+            origin: Origin::Agent,
+            top_k: 5,
+            hits: hits
+                .iter()
+                .enumerate()
+                .map(|(i, id)| crate::trace::SkillHitTrace {
+                    skill_id: (*id).into(),
+                    score: 10.0 - i as f64,
+                })
+                .collect(),
+            stages: Vec::new(),
+            took_ms: 0,
+        }
+    }
+
+    fn skill_invoke(skill_id: &str) -> TraceEvent {
+        TraceEvent::SkillInvoke {
+            skill_id: skill_id.into(),
+            took_ms: 0,
+        }
+    }
+
     /// The counterpart to `what_retrieval_returned_never_becomes_an_edge`, which
     /// still holds: a surfaced id is counted as a denominator and gets no edge.
     /// Both assertions matter — recording impressions is only safe while the
@@ -800,6 +879,83 @@ mod tests {
             g.intents[0].surfaced_tools.get("docker_build"),
             Some(&1),
             "the window was still open for an invoke from the list"
+        );
+    }
+
+    /// The skill twin of `a_surfaced_tool_that_is_never_invoked_gets_no_edge`.
+    /// A skill catalog learns from its own searches or the penalty is tool-only
+    /// in everything but name.
+    #[test]
+    fn a_surfaced_skill_that_is_never_invoked_gets_no_edge() {
+        let (l, graph) = learner();
+        l.record(skill_search_showing(
+            "write a changelog",
+            &["release-notes", "changelog"],
+        ));
+        l.record(skill_invoke("changelog"));
+
+        let g = graph.read().unwrap();
+        let it = &g.intents[0];
+        assert_eq!(
+            it.skills.keys().collect::<Vec<_>>(),
+            vec!["changelog"],
+            "release-notes was shown, not used"
+        );
+        assert_eq!(it.surfaced_skills.get("release-notes"), Some(&1));
+        assert!(
+            it.surfaced_tools.is_empty(),
+            "skill ids must never reach the tool map"
+        );
+    }
+
+    /// The two id spaces are why there are two maps. One logical question emits
+    /// a `Search` and a `SkillSearch`, and a single learner sees both — so the
+    /// second must not overwrite the first's slot.
+    #[test]
+    fn a_fanned_out_question_keeps_each_id_space_in_its_own_map() {
+        let (l, graph) = learner();
+        l.record(search_showing(
+            "why is the build broken",
+            &["docker_build", "gh_run_list"],
+        ));
+        l.record(skill_search_showing(
+            "why is the build broken",
+            &["triage-ci", "debug-build"],
+        ));
+        l.record(invoke("gh_run_list"));
+        l.record(skill_invoke("debug-build"));
+
+        let g = graph.read().unwrap();
+        let it = &g.intents[0];
+        assert_eq!(it.surfaced_tools.get("docker_build"), Some(&1));
+        assert_eq!(it.surfaced_tools.get("triage-ci"), None, "skill id leaked");
+        assert_eq!(it.surfaced_skills.get("triage-ci"), Some(&1));
+        assert_eq!(
+            it.surfaced_skills.get("docker_build"),
+            None,
+            "tool id leaked"
+        );
+        assert_eq!(it.support, 1, "still one question");
+    }
+
+    /// A tool invoke must not consume the skill search's impressions, and vice
+    /// versa — the counted flag is per kind, not per window.
+    #[test]
+    fn each_id_space_counts_its_impressions_independently() {
+        let (l, graph) = learner();
+        l.record(search_showing("deploy the service", &["kubectl_apply"]));
+        l.record(skill_search_showing("deploy the service", &["rollout"]));
+        l.record(invoke("kubectl_apply"));
+        l.record(invoke("kubectl_apply"));
+        l.record(skill_invoke("rollout"));
+
+        let g = graph.read().unwrap();
+        let it = &g.intents[0];
+        assert_eq!(it.surfaced_tools.get("kubectl_apply"), Some(&1), "once");
+        assert_eq!(
+            it.surfaced_skills.get("rollout"),
+            Some(&1),
+            "the tool invokes must not have consumed the skill slot"
         );
     }
 
@@ -1108,6 +1264,7 @@ mod tests {
             classify(&search_from("q", Origin::Baseline), policy),
             Step::Remember {
                 query: "q",
+                kind: Capability::Tool,
                 surfaced: Vec::new(),
             }
         );

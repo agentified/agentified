@@ -205,18 +205,18 @@ export function validateGraph(doc) {
         `${at}.vector_n, when present, must be an integer >= 1, got ${JSON.stringify(it.vector_n)}`,
       );
     }
-    // Optional impression counts: tool id -> how many searches showed it. A
-    // denominator for the edges below, never an edge itself. Absent means none.
-    if (it.surfaced_tools !== undefined) {
-      if (!isObj(it.surfaced_tools)) {
-        errs.push(`${at}.surfaced, when present, must be an object`);
-      } else {
-        for (const [id, n] of Object.entries(it.surfaced_tools)) {
-          if (!(isInt(n) && n >= 1)) {
-            errs.push(
-              `${at}.surfaced_tools["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`,
-            );
-          }
+    // Optional impression counts, one map per id space: how many searches showed
+    // each id. A denominator for the edges below, never an edge itself. Absent
+    // means none.
+    for (const key of ['surfaced_tools', 'surfaced_skills']) {
+      if (it[key] === undefined) continue;
+      if (!isObj(it[key])) {
+        errs.push(`${at}.${key}, when present, must be an object`);
+        continue;
+      }
+      for (const [id, n] of Object.entries(it[key])) {
+        if (!(isInt(n) && n >= 1)) {
+          errs.push(`${at}.${key}["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`);
         }
       }
     }

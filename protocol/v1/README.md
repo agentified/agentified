@@ -223,14 +223,16 @@ to delegate:
 - **Additive evolution.** Within `v: 1`, new fields are optional and a consumer **MUST ignore
   fields it does not recognize** (the schema is `additionalProperties: true`). An older
   consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`,
-  `cohesion`, `vector_n`, `cluster_policy`, `surfaced_tools`) loads with a safe default.
-- **Impressions are a denominator, not an edge.** `surfaced_tools` counts how many of a cluster's
-  searches put each **tool** in front of the caller, counting only searches the caller then
-  acted on. Without it a tool shown twelve times and invoked once is indistinguishable from one
-  shown once and invoked once, because only invocations are recorded. It changes nothing about
-  what an edge is: an id present in `surfaced_tools` and absent from `tools` has no edge, and a
-  consumer MUST NOT promote it — what retrieval returned is still not evidence. Tools only;
-  skill ids are a different id space. Absent means none were recorded.
+  `cohesion`, `vector_n`, `cluster_policy`, `surfaced_tools`, `surfaced_skills`) loads with a safe default.
+- **Impressions are a denominator, not an edge.** `surfaced_tools` and `surfaced_skills` count
+  how many of a cluster's searches put each capability in front of the caller, counting only
+  searches the caller then acted on. Without them a capability shown twelve times and invoked
+  once is indistinguishable from one shown once and invoked once, because only invocations are
+  recorded. They change nothing about what an edge is: an id present in an impression map and
+  absent from the matching edge map has no edge, and a consumer MUST NOT promote it — what
+  retrieval returned is still not evidence. Two maps, paired with `tools` and `skills`, because
+  the id spaces are distinct: an id in one MUST NOT be read against the other. Absent means none
+  were recorded.
 - **Edge weights are counts, not the serving order.** `tools` and `skills` map a capability id
   to how many confirmed observations chose it. A consumer should not serve that order raw: a
   capability invoked across many clusters ranks on volume rather than on answering the matched
