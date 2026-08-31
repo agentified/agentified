@@ -16,6 +16,11 @@ from typing import Any
 
 import pytest
 
+try:  # module scope so get_type_hints can resolve the handler annotations below
+    from mcp import types
+except ImportError:
+    types = None  # type: ignore[assignment]
+
 from ratel_ai import (
     EmbedderError,
     McpToolsListError,
