@@ -355,6 +355,11 @@ def _normalize_content(value: Any) -> Any:
     return str(value)
 
 
+def reports_failure(result: Any) -> bool:
+    """MCP reports a failed call in the result (`isError: True`), not by raising."""
+    return isinstance(result, dict) and result.get("isError") is True
+
+
 async def trace_execute_tool(
     tool_id: str,
     args: dict[str, Any],
@@ -388,7 +393,10 @@ async def trace_execute_tool(
             span.set_attribute(GEN_AI_TOOL_CALL_RESULT, _safe_json(result))
         if _capture_content_on_event():
             _add_tool_content_event(tool_id, args, projection["event_id"], result=result)
-        span.set_status(Status(StatusCode.OK))
+        if reports_failure(result):
+            span.set_status(Status(StatusCode.ERROR, "the tool reported a failure"))
+        else:
+            span.set_status(Status(StatusCode.OK))
         return result
 
 

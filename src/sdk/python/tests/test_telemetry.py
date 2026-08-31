@@ -118,6 +118,27 @@ async def test_execute_tool_span_attributes(exporter: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_span_is_error_when_the_tool_reports_a_failure(
+    exporter: Any,
+) -> None:
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="failing_tool",
+            name="failing_tool",
+            description="Reports a failure in its result instead of raising.",
+            input_schema={"properties": {}},
+            output_schema={"properties": {}},
+            execute=lambda args: {"isError": True, "content": [{"type": "text", "text": "boom"}]},
+        )
+    )
+    await catalog.invoke("failing_tool", {})
+
+    spans = _spans_named(exporter, "execute_tool failing_tool")
+    assert spans[0].status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.asyncio
 async def test_search_span_shares_runtime_event_id(exporter: Any) -> None:
     catalog = ToolCatalog()
     skills = SkillCatalog()

@@ -673,6 +673,19 @@ async def test_invoke_emits_start_then_end_telemetry() -> None:
     assert "took_ms" in events[1]
 
 
+async def test_invoke_emits_invoke_error_when_the_tool_reports_a_failure() -> None:
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id="s"))
+    await catalog.register(
+        _read_file_tool(
+            lambda args: {"isError": True, "content": [{"type": "text", "text": "boom"}]}
+        )
+    )
+    catalog.drain_trace_events()
+    await catalog.invoke("read_file", {"path": "/a"})
+    types = [e["type"] for e in catalog.drain_trace_events()]
+    assert types == ["invoke_start", "invoke_error"]
+
+
 async def test_invoke_emits_error_telemetry_and_reraises() -> None:
     def boom(args):
         raise RuntimeError("kaboom")
