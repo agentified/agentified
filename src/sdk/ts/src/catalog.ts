@@ -205,7 +205,8 @@ export interface ObservationPolicyOptions {
    * redrawn, and nothing can redraw them in place; the graph keeps reporting the
    * policy it was clustered under, and the difference shows up as
    * `"active: policy drift"`. To re-derive boundaries, replay a trace log
-   * through {@link experimentalBuildIntentGraph} or relearn from scratch.
+   * through {@link ToolCatalog.experimentalBuildIntentGraph} or relearn from
+   * scratch.
    */
   clusterSimilarity?: number;
   /**

@@ -368,8 +368,10 @@ class SkillHit:
 
     @property
     def normalized(self) -> float:
-        """`score` mapped onto [0, 1] — as on `SearchHit.normalized`, by the same
-        three rules and with the same caveats.
+        """`score` mapped onto [0, 1] for display.
+
+        As on `SearchHit.normalized`, by the same three rules and with the same
+        caveats.
         """
 
 class SkillRegistry:
