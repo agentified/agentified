@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.13.0-rc.1] - 2026-08-31
+
 ### Added
 
 - `cluster_similarity` and `cluster_coverage` on the adaptive-ranking observation options: the two numbers that draw every cluster boundary. `cluster_similarity` is the minimum cosine a query must clear against a single cluster member, `cluster_coverage` the share of a cluster's members it must clear it against before it joins. Both were fixed constants and both are model- and corpus-dependent — a cosine of 0.70 does not mean the same thing on two embedding models, and a narrow catalog wants different granularity from a broad one — so tuning them is the only way to get sensible clusters out of a catalog whose shape the defaults were not chosen for. Values outside `(0, 1]` raise rather than clamp: a clamp would cluster at something you did not ask for, and boundaries once drawn are never redrawn. Applies to **future** admissions only; a graph keeps reporting the policy it was clustered under, and a mismatch surfaces as the `"active: policy drift"` status, which — unlike a paused status — is not fixed by rebuilding. To re-derive boundaries, replay a trace log or relearn.

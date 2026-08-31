@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.12.0-rc.1] - 2026-08-31
+
 ### Added
 
 - **A query joins an intent cluster by member coverage, not centroid proximity alone.** Admission now prefilters on `cos(query, centroid) >= similarity`, counts how many of the cluster's vector-bearing members the query also clears that threshold against, and admits only when `count >= max(2, ceil(coverage * members))`. Matching one member is single-link chaining — A joins because of B, and the cluster grows into whatever B happened to bridge to — and matching an average is worse, because the average of two intents resembles neither. The dense tier had no per-member guard while the lexical tier always had one; that gap collapsed 12 distinct questions into a single cluster in production. On the 50-turn fixture the graph goes from 8 clusters (largest holding 39 of 50 turns) to 20 (largest 12), purity 0.362 to 0.766, merge F1 0.209 to 0.423. Merge recall falls 0.872 to 0.402 and that is the point: the old figure came from one cluster containing almost everything, which scores well on recall for the same reason it is useless.
