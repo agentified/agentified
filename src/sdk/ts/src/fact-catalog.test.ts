@@ -321,7 +321,7 @@ describe("topK budgets the retrieved tier only", () => {
     // Sorted, because what this needs is that the three PINNED facts occupy the
     // slots — their order among themselves is not what the rest of the test
     // rests on, and it moved when the BM25 length penalty went to its standard
-    // 0.75 (ADR-0023), which reweights facts of different lengths.
+    // 0.75, which reweights facts of different lengths.
     const ranked = (await catalog.searchAsync(QUERY, 3)).map((h) => h.factId).sort();
     expect(ranked, "fixture assumption: pinned facts take the top 3 slots").toEqual([
       "p1",

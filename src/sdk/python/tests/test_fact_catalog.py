@@ -326,7 +326,7 @@ async def test_pinned_facts_do_not_consume_the_retrieved_budget() -> None:
     # Sorted, because what this needs is that the three PINNED facts occupy the
     # slots — their order among themselves is not what the rest of the test rests
     # on, and it moved when the BM25 length penalty went to its standard 0.75
-    # (ADR-0023), which reweights facts of different lengths. The TS twin was
+    # which reweights facts of different lengths. The TS twin was
     # fixed the same way in 6666bd4.
     ranked = sorted(hit.fact_id for hit in await catalog.search_async(_QUERY, 3))
     assert ranked == ["p1", "p2", "p3"], "fixture assumption: pinned take the top 3 slots"

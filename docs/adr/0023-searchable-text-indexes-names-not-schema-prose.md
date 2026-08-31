@@ -4,21 +4,32 @@ Date: 2026-08-21
 
 ## Status
 
-Accepted
+**Rejected — 2026-08-31.** Accepted, implemented, and reverted before it shipped in any release.
 
-Supersedes the **projection** decision in
-[ADR-0004](0004-retrieval-and-tool-selection.md); the rest of that ADR — the choice of BM25,
-`replace` vs `suggest`, and `k1`/`b` as fixed tuning rather than a public knob — stands.
-ADR-0004 asked for this: *"Changing the flattening algorithm is a breaking change and warrants
-supersession."*
+Measured on the 50-turn fixture, dropping property descriptions and enum values changed
+**nothing**: top-1 against the invoked tool stayed 12 of 47 and read-queries-served-a-write-op
+stayed 8 of 25 at `b = 0.4`, with the schema prose in or out. The fixture can see the change —
+all 26 tools carry property descriptions and 9 carry enums — so this is a negative result, not an
+absent test. End to end through all three arms it moved one query of 25 in the right direction,
+which is inside the noise of a fixture this size.
 
-Composes with [ADR-0021](0021-catalog-searchable-description-projections.md), which landed
-independently. That decision lets a single entry override the description component and, for a
-tool, opt out of schema indexing entirely. This one changes what the **stable** projection
-indexes for every entry that sets no override. The two do not overlap: after this, the default
-already drops schema prose, so the override's remaining effect on a tool is to drop property
-*names* as well and replace the description outright. An entry that sets the override is
-unaffected by anything below.
+The only evidence for it is experiment E2 in the Kestral misranking investigation: on *their*
+catalog the create family rode 3–6 ranks on schema tokens alone. Real, but not reproducible here,
+and not enough to justify changing the projection **for every catalog** — a breaking change that
+alters ranking for anyone who upgrades.
+
+[ADR-0021](0021-catalog-searchable-description-projections.md), which landed independently,
+already addresses the same problem the other way: a single entry sets
+`experimental_searchable_description` and opts out of schema indexing, per entry, opt-in, breaking
+nobody. That is the better shape for a fix whose evidence comes from one catalog.
+
+`b` was raised 0.4 → 0.75 alongside this and **was not reverted with it**, though its stated
+justification was this decision. On the same fixture 0.75 leaves accuracy unchanged and raises
+read-queries-served-a-write-op from 8 of 25 to 11. It stays only because 0.75 is the field
+standard. See `harness-results.md`'s `b` sweep, and RS-95 for real corpora.
+
+The record below is kept as written, so a future attempt inherits the argument and the
+measurement that refused it rather than rediscovering both.
 
 ## Context
 

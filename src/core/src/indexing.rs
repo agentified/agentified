@@ -13,27 +13,17 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
         if !tool.description.is_empty() {
             tokens.push(tool.description.clone());
         }
-        // Input property NAMES only. A parameter called `branch` genuinely helps
-        // match "tasks for a branch"; the prose describing it does not, and the
-        // output schema describes what comes back rather than what was asked
-        // for. See ADR-0023.
         flatten(&tool.input_schema, &mut tokens);
+        flatten(&tool.output_schema, &mut tokens);
     }
     tokens.join(" ")
 }
 
-/// Collect property **names**, recursing through nested objects and array items.
-///
-/// Names only. A property's `description` is prose written to help a model fill
-/// the argument in, and it is routinely longer than the tool's own description —
-/// so a tool with fifteen parameters arrives at the index as mostly a list of
-/// what its arguments mean rather than what it does. `enum` values are data.
-/// Both used to be folded in here, and measurably inflated parameter-heavy write
-/// ops past read ops that answered the query (ADR-0023).
 fn flatten(value: &serde_json::Value, tokens: &mut Vec<String>) {
     if let Some(properties) = value.get("properties").and_then(|value| value.as_object()) {
         for (key, value) in properties {
             push_identifier(key, tokens);
+            push_field_tokens(value, tokens);
             flatten(value, tokens);
         }
     }
@@ -70,6 +60,19 @@ pub(crate) fn split_identifier(s: &str) -> String {
     out
 }
 
+fn push_field_tokens(value: &serde_json::Value, tokens: &mut Vec<String>) {
+    if let Some(description) = value.get("description").and_then(|value| value.as_str()) {
+        tokens.push(description.to_string());
+    }
+    if let Some(values) = value.get("enum").and_then(|value| value.as_array()) {
+        for value in values {
+            if let Some(value) = value.as_str() {
+                tokens.push(value.to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,8 +97,6 @@ mod tests {
                     }
                 }
             }),
-            // A real output schema, so the negative assertions below test
-            // something: it describes what comes back, not what was asked for.
             output_schema: json!({
                 "properties": {
                     "checksum": {
@@ -115,16 +116,12 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// The stable projection keeps the INPUT schema's property names and drops
-    /// the output schema entirely (ADR-0023). It kept both until that ADR: an
-    /// output schema describes what comes back, never what was asked for, so it
-    /// only ever inflated a tool's document.
     #[test]
-    fn stable_searchable_text_keeps_input_names_and_drops_the_output_schema() {
+    fn stable_searchable_text_keeps_schemas() {
         let tool = read_file_tool();
         let text = searchable_text(&tool);
-        assert!(text.contains("path"), "input property name missing: {text}");
-        assert!(!text.contains("checksum"), "output schema leaked: {text}");
+        assert!(text.contains("path"), "input schema missing: {text}");
+        assert!(text.contains("checksum"), "output schema missing: {text}");
     }
 
     #[test]
@@ -153,17 +150,5 @@ mod tests {
             "properties leaked: {text}"
         );
         assert!(!text.contains('{'), "JSON braces leaked: {text}");
-        // And the parts of a schema that are prose or data rather than a name:
-        // a property's description says how to fill the argument in, an enum
-        // value is data. Neither says what the tool is for (ADR-0023).
-        assert!(
-            !text.contains("absolute path"),
-            "property description leaked: {text}"
-        );
-        assert!(!text.contains("utf8"), "enum value leaked: {text}");
-        assert!(!text.contains("sha256"), "output schema leaked: {text}");
-        // The names themselves are the point of keeping the schema at all.
-        assert!(text.contains("path"), "property name missing: {text}");
-        assert!(text.contains("encoding"), "property name missing: {text}");
     }
 }

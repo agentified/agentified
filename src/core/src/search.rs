@@ -8,13 +8,17 @@ use bm25::{DefaultTokenizer, Document, Language, SearchEngine, SearchEngineBuild
 pub(crate) const BM25_K1: f32 = 0.9;
 /// Length normalisation, at the standard value.
 ///
-/// It was 0.4, chosen when a tool's document was its description *plus* every
-/// schema property name, description and enum value — length differences then
-/// mostly reflected how many arguments a tool took, and penalising that hard
-/// would have been penalising the wrong thing. Since the projection stopped
-/// folding in schema prose (ADR-0023) a document is close to the tool's own
-/// description, so its length carries real information again and there is no
-/// reason to discount it below standard.
+/// It was 0.4 (ADR-0004), discounted below standard because a tool's document is
+/// its description plus every schema token, so length differences partly reflect
+/// how many arguments a tool takes rather than how much it says.
+///
+/// **Raised on evidence we no longer have.** It moved to 0.75 alongside a
+/// projection change that dropped schema prose — and that projection change was
+/// reverted after measurement showed it altered nothing on the fixture. On the
+/// same 47 queries `b = 0.75` leaves top-1 accuracy unchanged (12 of 47) and
+/// raises read-queries-served-a-write-op from 8 of 25 to 11. It stays only
+/// because 0.75 is the field standard; the fixture argues for putting it back.
+/// See the `b` sweep in `harness-results.md`, and RS-95 for the real corpora.
 pub(crate) const BM25_B: f32 = 0.75;
 
 /// A prebuilt BM25 index over `(id, searchable_text)` documents: build once

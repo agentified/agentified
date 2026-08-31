@@ -111,10 +111,9 @@ describe("ToolRegistry", () => {
     // The FFI regression this has always been: the binding must forward
     // serde_json::Value across the boundary without dropping nested fields.
     //
-    // Queried on a property NAME rather than a property description, which is
-    // no longer indexed (ADR-0023) — and which never isolated anything here
-    // anyway, since "regular expression" is in the tool's own description too.
-    // "pattern" appears nowhere but inside the schema.
+    // Queried on a property NAME rather than a property description, which
+    // never isolated anything here anyway: "regular expression" is in the
+    // tool's own description too. "pattern" appears nowhere but the schema.
     const registry = new ToolRegistry();
     await registry.register([readFile, writeFile, searchFiles]);
 

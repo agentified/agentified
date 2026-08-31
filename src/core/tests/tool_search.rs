@@ -237,9 +237,6 @@ fn search_ranks_stronger_match_above_weaker() {
         input_schema: empty_schema(),
         output_schema: empty_schema(),
     });
-    // The weak tool's only signal is a property NAME. It used to be an enum
-    // value, which is no longer indexed at all (ADR-0023) — the point of the
-    // test is the ranking, so it needs a signal that still exists.
     registry.register(Tool {
         id: "weak".into(),
         name: "convert".into(),
@@ -247,7 +244,10 @@ fn search_ranks_stronger_match_above_weaker() {
         experimental_searchable_description: None,
         input_schema: json!({
             "properties": {
-                "compress": { "type": "boolean" }
+                "format": {
+                    "type": "string",
+                    "enum": ["compress", "expand"]
+                }
             }
         }),
         output_schema: empty_schema(),
@@ -323,10 +323,8 @@ fn search_respects_top_k_bound() {
     );
 }
 
-/// The output schema describes what comes BACK, not what the caller asked for,
-/// so none of it reaches the index (ADR-0023).
 #[test]
-fn an_output_schema_description_is_not_indexed() {
+fn search_matches_output_schema_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "weather".into(),
@@ -346,17 +344,36 @@ fn an_output_schema_description_is_not_indexed() {
 
     let hits = registry.search("ambient temperature reading", 5);
 
-    assert!(
-        hits.is_empty(),
-        "output schema text must not be searchable, got {:?}",
-        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
-    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "weather");
 }
 
-/// Nested property NAMES still reach the index; the prose describing them does
-/// not, at any depth (ADR-0023).
 #[test]
-fn a_nested_property_description_is_not_indexed() {
+fn experimental_projection_does_not_match_output_schema_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "weather".into(),
+        name: "weather".into(),
+        description: String::new(),
+        experimental_searchable_description: Some(String::new()),
+        input_schema: empty_schema(),
+        output_schema: json!({
+            "properties": {
+                "temperature_celsius": {
+                    "type": "number",
+                    "description": "ambient temperature reading at the station"
+                }
+            }
+        }),
+    });
+
+    let hits = registry.search("ambient temperature reading", 5);
+
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_nested_object_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "deploy".into(),
@@ -386,17 +403,46 @@ fn a_nested_property_description_is_not_indexed() {
 
     let hits = registry.search("datacenter location identifier", 5);
 
-    assert!(
-        hits.is_empty(),
-        "nested property descriptions must not be searchable, got {:?}",
-        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
-    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "deploy");
 }
 
-/// The same through `items`: the property names inside an array's element shape
-/// are indexed, their descriptions are not (ADR-0023).
 #[test]
-fn an_array_item_description_is_not_indexed() {
+fn experimental_projection_does_not_match_nested_object_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "deploy".into(),
+        name: "deploy".into(),
+        description: String::new(),
+        experimental_searchable_description: Some(String::new()),
+        input_schema: json!({
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "infra": {
+                            "type": "object",
+                            "properties": {
+                                "region": {
+                                    "type": "string",
+                                    "description": "datacenter location identifier"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("datacenter location identifier", 5);
+
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_array_items_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "batch".into(),
@@ -424,17 +470,44 @@ fn an_array_item_description_is_not_indexed() {
 
     let hits = registry.search("unique product identifier", 5);
 
-    assert!(
-        hits.is_empty(),
-        "array item descriptions must not be searchable, got {:?}",
-        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
-    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "batch");
 }
 
-/// Enum values are data, not a description of what a tool is for — `"toml"` says
-/// nothing about `convert`'s purpose (ADR-0023).
 #[test]
-fn an_enum_value_is_not_indexed() {
+fn experimental_projection_does_not_match_array_items_description() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "batch".into(),
+        name: "batch".into(),
+        description: String::new(),
+        experimental_searchable_description: Some(String::new()),
+        input_schema: json!({
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sku": {
+                                "type": "string",
+                                "description": "unique product identifier"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("unique product identifier", 5);
+
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_enum_value() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "convert".into(),
@@ -454,18 +527,36 @@ fn an_enum_value_is_not_indexed() {
 
     let hits = registry.search("toml", 5);
 
-    assert!(
-        hits.is_empty(),
-        "enum values must not be searchable, got {:?}",
-        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
-    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "convert");
 }
 
-/// A parameter's description is written to help a model fill the argument in,
-/// and is routinely longer than the tool's own description — it inflated
-/// parameter-heavy tools past ones that answered the query (ADR-0023).
 #[test]
-fn an_input_param_description_is_not_indexed() {
+fn experimental_projection_does_not_match_enum_value() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        id: "convert".into(),
+        name: "convert".into(),
+        description: String::new(),
+        experimental_searchable_description: Some(String::new()),
+        input_schema: json!({
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "enum": ["yaml", "toml", "json"]
+                }
+            }
+        }),
+        output_schema: empty_schema(),
+    });
+
+    let hits = registry.search("toml", 5);
+
+    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
+}
+
+#[test]
+fn search_matches_input_param_description() {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         id: "fetch".into(),
@@ -485,11 +576,8 @@ fn an_input_param_description_is_not_indexed() {
 
     let hits = registry.search("remote http target", 5);
 
-    assert!(
-        hits.is_empty(),
-        "parameter descriptions must not be searchable, got {:?}",
-        hits.iter().map(|h| h.tool_id.as_str()).collect::<Vec<_>>()
-    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool_id, "fetch");
 }
 
 #[test]
@@ -641,118 +729,4 @@ fn tied_scores_keep_top_k_membership_stable() {
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].tool_id, "alpha_tool");
     assert_eq!(hits[1].tool_id, "mid_tool");
-}
-
-#[test]
-fn experimental_projection_does_not_match_output_schema_description() {
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool {
-        id: "weather".into(),
-        name: "weather".into(),
-        description: String::new(),
-        experimental_searchable_description: Some(String::new()),
-        input_schema: empty_schema(),
-        output_schema: json!({
-            "properties": {
-                "temperature_celsius": {
-                    "type": "number",
-                    "description": "ambient temperature reading at the station"
-                }
-            }
-        }),
-    });
-
-    let hits = registry.search("ambient temperature reading", 5);
-
-    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
-}
-
-#[test]
-fn experimental_projection_does_not_match_nested_object_description() {
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool {
-        id: "deploy".into(),
-        name: "deploy".into(),
-        description: String::new(),
-        experimental_searchable_description: Some(String::new()),
-        input_schema: json!({
-            "properties": {
-                "config": {
-                    "type": "object",
-                    "properties": {
-                        "infra": {
-                            "type": "object",
-                            "properties": {
-                                "region": {
-                                    "type": "string",
-                                    "description": "datacenter location identifier"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }),
-        output_schema: empty_schema(),
-    });
-
-    let hits = registry.search("datacenter location identifier", 5);
-
-    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
-}
-
-#[test]
-fn experimental_projection_does_not_match_array_items_description() {
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool {
-        id: "batch".into(),
-        name: "batch".into(),
-        description: String::new(),
-        experimental_searchable_description: Some(String::new()),
-        input_schema: json!({
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "sku": {
-                                "type": "string",
-                                "description": "unique product identifier"
-                            }
-                        }
-                    }
-                }
-            }
-        }),
-        output_schema: empty_schema(),
-    });
-
-    let hits = registry.search("unique product identifier", 5);
-
-    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
-}
-
-#[test]
-fn experimental_projection_does_not_match_enum_value() {
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool {
-        id: "convert".into(),
-        name: "convert".into(),
-        description: String::new(),
-        experimental_searchable_description: Some(String::new()),
-        input_schema: json!({
-            "properties": {
-                "format": {
-                    "type": "string",
-                    "enum": ["yaml", "toml", "json"]
-                }
-            }
-        }),
-        output_schema: empty_schema(),
-    });
-
-    let hits = registry.search("toml", 5);
-
-    assert!(hits.is_empty(), "schemas are model-facing, not indexed");
 }

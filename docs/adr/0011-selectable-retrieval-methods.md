@@ -28,8 +28,8 @@ is chosen per catalog (a construction-time default) or per call (an explicit ove
 override wins. Across the SDKs the identifier is the string `"bm25" | "semantic" | "hybrid"`,
 parallel to `SearchOrigin`.
 
-- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b = 0.75` since
-  ADR-0023, which also narrowed the projection those scores are computed over) and stays
+- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b` raised from 0.4 to
+  the standard 0.75) and stays
   the default. The legacy `search` / `search_with_origin` entry points keep their infallible
   `Vec<SearchHit>` signature and BM25 behavior byte-for-byte — upgrading callers need no code
   change. The index is cached per registry (`Bm25Cache`) and rebuilt in full on the first
@@ -73,8 +73,7 @@ parallel to `SearchOrigin`.
 - The default stays lightweight and infallible; the ML dependency (Candle, tokenizers with the
   pure-Rust `fancy-regex` backend, `hf-hub`) is compiled in but never exercised unless a caller
   opts into semantic/hybrid. The `searchable_text` contract (ADR-0004, experimentally extended
-  by ADR-0023) is shared, so all
-  three engines rank the same projection.
+  by ADR-0021) is shared, so all three engines rank the same projection.
 - Capability tools inherit the catalog's construction-time default and await async search. MCP
   ingestion registers metadata only, so several upstreams can be ingested before one batched
   embedding build.

@@ -54,8 +54,6 @@
 //!     name: "read_file".into(),
 //!     description: "Read a file from disk".into(),
 //!     experimental_searchable_description: None,
-//!     // Property NAMES are indexed alongside the description; their
-//!     // descriptions and enum values are not (ADR-0023).
 //!     input_schema: serde_json::json!({
 //!         "properties": {
 //!             "path": { "type": "string" }
