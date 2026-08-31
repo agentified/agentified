@@ -12,7 +12,7 @@ pub(crate) const BM25_K1: f32 = 0.9;
 /// schema property name, description and enum value — length differences then
 /// mostly reflected how many arguments a tool took, and penalising that hard
 /// would have been penalising the wrong thing. Since the projection stopped
-/// folding in schema prose (ADR-0021) a document is close to the tool's own
+/// folding in schema prose (ADR-0023) a document is close to the tool's own
 /// description, so its length carries real information again and there is no
 /// reason to discount it below standard.
 pub(crate) const BM25_B: f32 = 0.75;

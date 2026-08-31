@@ -23,6 +23,10 @@ SEMCONV_VERSION: Final = "1.42.0"
 #: NO_CONTENT (default) / SPAN_ONLY / EVENT_ONLY / SPAN_AND_EVENT.
 CAPTURE_CONTENT_ENV: Final = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
 
+#: Ratel-specific opt-in for the experimental catalog-definition event.
+#: The generic content-capture gate must also allow EventRecord content.
+EXPERIMENTAL_CATALOG_DEFINITIONS_ENV: Final = "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS"
+
 # ---------------------------------------------------------------------------
 # Span names (CONVENTIONS.md, Tier 2)
 # ---------------------------------------------------------------------------
@@ -58,6 +62,9 @@ RATEL_SEARCH_RESULTS: Final = "ratel.search.results"
 #: ratel.tool.execution.details — Opt-In structured tool arguments/result event.
 RATEL_TOOL_EXECUTION_DETAILS: Final = "ratel.tool.execution.details"
 
+#: ratel.catalog.definition — experimental, opt-in complete catalog definition event.
+RATEL_CATALOG_DEFINITION: Final = "ratel.catalog.definition"
+
 #: ratel.experiment.results — ranked measurement for one experiment arm.
 RATEL_EXPERIMENT_RESULTS: Final = "ratel.experiment.results"
 
@@ -88,6 +95,33 @@ RATEL_ORIGIN: Final = "ratel.origin"
 
 #: ratel.event.id — runtime-event/OTel deduplication and join key.
 RATEL_EVENT_ID: Final = "ratel.event.id"
+
+#: ratel.catalog.kind — "tool", "skill", or "fact".
+RATEL_CATALOG_KIND: Final = "ratel.catalog.kind"
+#: ratel.catalog.id — stable catalog entry id.
+RATEL_CATALOG_ID: Final = "ratel.catalog.id"
+#: ratel.catalog.name — model-facing catalog entry name.
+RATEL_CATALOG_NAME: Final = "ratel.catalog.name"
+#: ratel.catalog.description — model-facing catalog entry description.
+RATEL_CATALOG_DESCRIPTION: Final = "ratel.catalog.description"
+#: ratel.catalog.tags — search tags; empty for tools.
+RATEL_CATALOG_TAGS: Final = "ratel.catalog.tags"
+#: ratel.catalog.input_schema — canonical JSON tool input schema.
+RATEL_CATALOG_INPUT_SCHEMA: Final = "ratel.catalog.input_schema"
+#: ratel.catalog.output_schema — canonical JSON tool output schema.
+RATEL_CATALOG_OUTPUT_SCHEMA: Final = "ratel.catalog.output_schema"
+#: ratel.catalog.schema_omitted — one or more oversized schema attributes were omitted.
+RATEL_CATALOG_SCHEMA_OMITTED: Final = "ratel.catalog.schema_omitted"
+#: ratel.catalog.searchable_description — effective searchable description.
+RATEL_CATALOG_SEARCHABLE_DESCRIPTION: Final = "ratel.catalog.searchable_description"
+#: whether the effective searchable description came from an explicit override.
+RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: Final = (
+    "ratel.catalog.searchable_description_overridden"
+)
+#: runtime opted into externally-sourced catalog definition overrides.
+RATEL_CATALOG_USE_DEFINITION_OVERRIDES: Final = "ratel.catalog.use_definition_overrides"
+#: ratel.catalog.content_hash — canonical definition SHA-256.
+RATEL_CATALOG_CONTENT_HASH: Final = "ratel.catalog.content_hash"
 
 #: ratel.search.target — "tool", "skill", or "fact" (see SearchTarget).
 RATEL_SEARCH_TARGET: Final = "ratel.search.target"
@@ -150,9 +184,7 @@ RATEL_EXPERIMENT_RANKING_ERROR: Final = "ratel.experiment.ranking_error"
 RATEL_EXPERIMENT_RESULT_ATTRIBUTES_ERROR: Final = "ratel.experiment.result_attributes_error"
 
 #: ratel.experiment.result_attrs_encoding_error — item-attribute encoding error type.
-RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: Final = (
-    "ratel.experiment.result_attrs_encoding_error"
-)
+RATEL_EXPERIMENT_RESULT_ATTRS_ENCODING_ERROR: Final = "ratel.experiment.result_attrs_encoding_error"
 
 #: ratel.experiment.result_ids — ordered ranked result identifiers.
 RATEL_EXPERIMENT_RESULT_IDS: Final = "ratel.experiment.result_ids"
@@ -404,6 +436,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "CAPTURE_CONTENT_ENV",
+    "EXPERIMENTAL_CATALOG_DEFINITIONS_ENV",
     "EXECUTE_TOOL",
     "GEN_AI_INFERENCE_DETAILS",
     "GEN_AI_INPUT_MESSAGES",
@@ -416,6 +449,19 @@ __all__ = [
     "GEN_AI_TOOL_NAME",
     "RATEL_AUTH_FLOW",
     "RATEL_AUTH_OUTCOME",
+    "RATEL_CATALOG_CONTENT_HASH",
+    "RATEL_CATALOG_DEFINITION",
+    "RATEL_CATALOG_DESCRIPTION",
+    "RATEL_CATALOG_ID",
+    "RATEL_CATALOG_INPUT_SCHEMA",
+    "RATEL_CATALOG_KIND",
+    "RATEL_CATALOG_NAME",
+    "RATEL_CATALOG_OUTPUT_SCHEMA",
+    "RATEL_CATALOG_SCHEMA_OMITTED",
+    "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
+    "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
+    "RATEL_CATALOG_USE_DEFINITION_OVERRIDES",
+    "RATEL_CATALOG_TAGS",
     "RATEL_EXPERIMENT_AGREEMENT_EXACT_ORDER",
     "RATEL_EXPERIMENT_AGREEMENT_ITEM_ATTRS",
     "RATEL_EXPERIMENT_AGREEMENT_JACCARD_AT_K",

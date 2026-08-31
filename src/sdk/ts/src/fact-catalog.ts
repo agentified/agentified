@@ -2,8 +2,14 @@ import { SearchTarget } from "@ratel-ai/telemetry";
 import type { FactHit } from "../native/index.cjs";
 import { clampTopK } from "./capabilities.js";
 import type { EmbeddingSpec, SearchMethod, SearchOrigin, TraceSinkConfig } from "./catalog.js";
+import {
+  type DefinitionOverrideApplyOptions,
+  hasSameRetrievalDescription,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
 import { warnExperimentalFactsOnce } from "./experimental-warning.js";
 import {
+  assertValidFact,
   FACT_ID_PATTERN,
   type Fact,
   type GroundingItem,
@@ -52,7 +58,10 @@ export interface FactCatalogOptions {
  */
 export class FactCatalog {
   private readonly registry: FactRegistry;
+  private readonly localFacts = new Map<string, Fact>();
   private readonly facts = new Map<string, Fact>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly factsTopK?: number;
   // Session bookkeeping for the freshness gate: the body this catalog last
@@ -101,14 +110,68 @@ export class FactCatalog {
    */
   async register(facts: Fact | readonly Fact[]): Promise<void> {
     const batch = Array.isArray(facts) ? facts : [facts];
+    for (const fact of batch) assertValidFact(fact);
+    const localBatch = batch.map((fact) => structuredClone(fact));
+    await this.registerEffective(
+      localBatch.map((fact) => this.applyDefinitionOverride(fact)),
+      localBatch,
+    );
+  }
+
+  /** @internal Configure definition overrides before the first local registration. */
+  setDefinitionOverrides(overrides: ReadonlyMap<string, string>): void {
+    this.overrideSearchableDescriptions = new Map(overrides);
+    this.registry.setUseDefinitionOverrides();
+  }
+
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
+    this.overrideSearchableDescriptions = new Map(overrides);
+    const effective = [...this.localFacts.values()].map((fact) =>
+      this.applyDefinitionOverride(fact),
+    );
+    if (adopt) this.registry.setUseDefinitionOverrides(effective);
+    const changed = effective.filter((fact) => {
+      const current = this.facts.get(fact.id);
+      return current === undefined || !hasSameRetrievalDescription(current, fact);
+    });
+    if (changed.length > 0) await this.registerEffective(changed, undefined, emitDefinitions);
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.facts.values()]);
+  }
+
+  private async registerEffective(
+    batch: readonly Fact[],
+    localBatch?: readonly Fact[],
+    emitDefinitions = true,
+  ): Promise<void> {
     // Validation lives in `registerItems` (the registry is public too), which
     // checks the whole batch before indexing any of it — so the local map below
     // can only ever see facts the registry accepted.
-    this.registry.registerItems(batch);
+    this.registry.registerItems(batch, emitDefinitions);
+    if (localBatch) {
+      for (const fact of localBatch) this.localFacts.set(fact.id, fact);
+    }
     for (const fact of batch) {
       this.facts.set(fact.id, fact);
     }
     await this.registry.buildDense();
+  }
+
+  private applyDefinitionOverride(fact: Fact): Fact {
+    return withDefinitionOverride(
+      "fact",
+      fact,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
+    );
   }
 
   /**

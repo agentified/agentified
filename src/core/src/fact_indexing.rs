@@ -4,7 +4,8 @@ use crate::indexing::push_identifier;
 /// Flatten a fact into the text the BM25 index scores against.
 ///
 /// Mirrors [`crate::skill_indexing::searchable_text`] for skills: the name is
-/// pushed both whole and identifier-split, then the description and each tag.
+/// pushed both whole and identifier-split, then the effective searchable
+/// description and each tag.
 /// Like all indexed text these are tokenized at index *and* query time
 /// (lowercased, stemmed, stop-words removed), not matched verbatim. The `body`
 /// is intentionally excluded — it is the injected content, not a ranking signal
@@ -16,8 +17,12 @@ pub(crate) fn searchable_text(fact: &Fact) -> String {
     if !fact.name.is_empty() {
         push_identifier(&fact.name, &mut tokens);
     }
-    if !fact.description.is_empty() {
-        tokens.push(fact.description.clone());
+    let description = fact
+        .experimental_searchable_description
+        .as_deref()
+        .unwrap_or(&fact.description);
+    if !description.is_empty() {
+        tokens.push(description.to_string());
     }
     for tag in &fact.tags {
         if !tag.is_empty() {
@@ -38,6 +43,7 @@ mod tests {
             id: "shop-address".into(),
             name: "shop-address".into(),
             description: "Where the barbershop is located and its opening hours".into(),
+            experimental_searchable_description: None,
             tags: vec!["location".into(), "opening hours".into()],
             metadata: HashMap::from([("stacks".into(), vec!["react".into()])]),
             body: "12 Baker Street, London — must not affect ranking".into(),
@@ -75,6 +81,7 @@ mod tests {
             id: "cancellation_policy".into(),
             name: "cancellation_policy".into(),
             description: String::new(),
+            experimental_searchable_description: None,
             tags: vec![],
             metadata: HashMap::new(),
             body: String::new(),

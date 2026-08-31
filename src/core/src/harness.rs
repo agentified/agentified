@@ -114,6 +114,8 @@ pub(crate) fn tool_of(entry: &CatalogEntry) -> Tool {
         id: entry.id.clone(),
         name: entry.id.clone(),
         description: entry.description.clone(),
+        // The fixture exercises the stable projection, not the override.
+        experimental_searchable_description: None,
         input_schema: entry.input_schema.clone(),
         output_schema: serde_json::json!({}),
     }
@@ -1251,7 +1253,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(
         o,
         "The lexical arm alone, over the same 47 queries, at the old `b = 0.4` and the standard\n\
-         `b = 0.75` it was raised to (ADR-0021). `b` scales how hard a long document is\n\
+         `b = 0.75` it was raised to (ADR-0023). `b` scales how hard a long document is\n\
          penalised: at 0 length is ignored, at 1 it is fully normalised.\n\
          \n\
          `top-1 correct` counts the queries whose BM25 top-1 is the tool the turn actually\n\

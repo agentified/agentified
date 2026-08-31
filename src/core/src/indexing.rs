@@ -5,14 +5,20 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
     if !tool.name.is_empty() {
         push_identifier(&tool.name, &mut tokens);
     }
-    if !tool.description.is_empty() {
-        tokens.push(tool.description.clone());
+    if let Some(description) = &tool.experimental_searchable_description {
+        if !description.is_empty() {
+            tokens.push(description.clone());
+        }
+    } else {
+        if !tool.description.is_empty() {
+            tokens.push(tool.description.clone());
+        }
+        // Input property NAMES only. A parameter called `branch` genuinely helps
+        // match "tasks for a branch"; the prose describing it does not, and the
+        // output schema describes what comes back rather than what was asked
+        // for. See ADR-0023.
+        flatten(&tool.input_schema, &mut tokens);
     }
-    // Input property NAMES only. A parameter called `branch` genuinely helps
-    // match "tasks for a branch"; the prose describing it does not, and the
-    // output schema describes what comes back rather than what was asked for.
-    // See ADR-0021.
-    flatten(&tool.input_schema, &mut tokens);
     tokens.join(" ")
 }
 
@@ -23,12 +29,12 @@ pub(crate) fn searchable_text(tool: &Tool) -> String {
 /// so a tool with fifteen parameters arrives at the index as mostly a list of
 /// what its arguments mean rather than what it does. `enum` values are data.
 /// Both used to be folded in here, and measurably inflated parameter-heavy write
-/// ops past read ops that answered the query (ADR-0021).
+/// ops past read ops that answered the query (ADR-0023).
 fn flatten(value: &serde_json::Value, tokens: &mut Vec<String>) {
-    if let Some(properties) = value.get("properties").and_then(|v| v.as_object()) {
-        for (key, sub) in properties {
+    if let Some(properties) = value.get("properties").and_then(|value| value.as_object()) {
+        for (key, value) in properties {
             push_identifier(key, tokens);
-            flatten(sub, tokens);
+            flatten(value, tokens);
         }
     }
     if let Some(items) = value.get("items") {
@@ -74,6 +80,7 @@ mod tests {
             id: "read_file".into(),
             name: "read_file".into(),
             description: "Read a file from disk".into(),
+            experimental_searchable_description: None,
             input_schema: json!({
                 "properties": {
                     "path": {
@@ -87,11 +94,14 @@ mod tests {
                     }
                 }
             }),
-            // A real output schema, so the negative assertion below tests
+            // A real output schema, so the negative assertions below test
             // something: it describes what comes back, not what was asked for.
             output_schema: json!({
                 "properties": {
-                    "contents": { "type": "string", "description": "read bytes as text" }
+                    "checksum": {
+                        "type": "string",
+                        "description": "sha256 digest of the returned bytes"
+                    }
                 }
             }),
         }
@@ -103,6 +113,18 @@ mod tests {
         let first = searchable_text(&tool);
         let second = searchable_text(&tool);
         assert_eq!(first, second);
+    }
+
+    /// The stable projection keeps the INPUT schema's property names and drops
+    /// the output schema entirely (ADR-0023). It kept both until that ADR: an
+    /// output schema describes what comes back, never what was asked for, so it
+    /// only ever inflated a tool's document.
+    #[test]
+    fn stable_searchable_text_keeps_input_names_and_drops_the_output_schema() {
+        let tool = read_file_tool();
+        let text = searchable_text(&tool);
+        assert!(text.contains("path"), "input property name missing: {text}");
+        assert!(!text.contains("checksum"), "output schema leaked: {text}");
     }
 
     #[test]
@@ -133,13 +155,13 @@ mod tests {
         assert!(!text.contains('{'), "JSON braces leaked: {text}");
         // And the parts of a schema that are prose or data rather than a name:
         // a property's description says how to fill the argument in, an enum
-        // value is data. Neither says what the tool is for (ADR-0021).
+        // value is data. Neither says what the tool is for (ADR-0023).
         assert!(
             !text.contains("absolute path"),
             "property description leaked: {text}"
         );
         assert!(!text.contains("utf8"), "enum value leaked: {text}");
-        assert!(!text.contains("read bytes"), "output schema leaked: {text}");
+        assert!(!text.contains("sha256"), "output schema leaked: {text}");
         // The names themselves are the point of keeping the schema at all.
         assert!(text.contains("path"), "property name missing: {text}");
         assert!(text.contains("encoding"), "property name missing: {text}");

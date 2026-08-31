@@ -18,14 +18,20 @@ off).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
 from typing import Any, TypedDict, TypeVar
 
+import rfc8785
+
 from .runtime_events import new_runtime_event_id
 
 try:
+    import ratel_ai_telemetry as _telemetry_vocabulary
     from opentelemetry import _logs as _otel_logs
     from opentelemetry import trace as _otel_trace
     from opentelemetry.trace import SpanKind, Status, StatusCode
@@ -57,6 +63,52 @@ try:
         content_capture_mode,
     )
 
+    # Compatibility with telemetry helpers released before the catalog
+    # definition vocabulary; the SDK and helper ship on separate trains.
+    RATEL_CATALOG_CONTENT_HASH: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_CONTENT_HASH", "ratel.catalog.content_hash"
+    )
+    RATEL_CATALOG_DEFINITION: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_DEFINITION", "ratel.catalog.definition"
+    )
+    RATEL_CATALOG_DESCRIPTION: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_DESCRIPTION", "ratel.catalog.description"
+    )
+    RATEL_CATALOG_ID: str = getattr(_telemetry_vocabulary, "RATEL_CATALOG_ID", "ratel.catalog.id")
+    RATEL_CATALOG_INPUT_SCHEMA: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_INPUT_SCHEMA", "ratel.catalog.input_schema"
+    )
+    RATEL_CATALOG_KIND: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_KIND", "ratel.catalog.kind"
+    )
+    RATEL_CATALOG_NAME: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_NAME", "ratel.catalog.name"
+    )
+    RATEL_CATALOG_OUTPUT_SCHEMA: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_OUTPUT_SCHEMA", "ratel.catalog.output_schema"
+    )
+    RATEL_CATALOG_SCHEMA_OMITTED: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_SCHEMA_OMITTED", "ratel.catalog.schema_omitted"
+    )
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION: str = getattr(
+        _telemetry_vocabulary,
+        "RATEL_CATALOG_SEARCHABLE_DESCRIPTION",
+        "ratel.catalog.searchable_description",
+    )
+    RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: str = getattr(
+        _telemetry_vocabulary,
+        "RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN",
+        "ratel.catalog.searchable_description_overridden",
+    )
+    RATEL_CATALOG_TAGS: str = getattr(
+        _telemetry_vocabulary, "RATEL_CATALOG_TAGS", "ratel.catalog.tags"
+    )
+    EXPERIMENTAL_CATALOG_DEFINITIONS_ENV: str = getattr(
+        _telemetry_vocabulary,
+        "EXPERIMENTAL_CATALOG_DEFINITIONS_ENV",
+        "RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS",
+    )
+
     RATEL_EVENT_ID: str
     try:
         from ratel_ai_telemetry import RATEL_EVENT_ID as _IMPORTED_RATEL_EVENT_ID
@@ -72,6 +124,8 @@ except ModuleNotFoundError:
     _ENABLED = False
 
 _TRACER_NAME = "ratel-ai"
+_CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES = 64 * 1_024
+_MAX_SAFE_INTEGER = 2**53 - 1
 
 #: `ratel.search.target` values (mirror `SearchTarget` so catalog call sites stay
 #: decoupled from the telemetry vocabulary module).
@@ -89,6 +143,97 @@ class RuntimeEventProjection(TypedDict, total=False):
     invocation_id: str
     trace_id: str
     span_id: str
+
+
+def record_catalog_definitions(
+    kind: str,
+    definitions: Sequence[Any],
+    emitted_hashes: dict[str, str],
+) -> None:
+    """Project changed catalog definitions into the opt-in Logs channel."""
+    if (
+        not _ENABLED
+        or os.getenv(EXPERIMENTAL_CATALOG_DEFINITIONS_ENV, "").lower() != "true"
+        or not _capture_content_on_event()
+    ):
+        return
+    for definition in definitions:
+        tags = list(getattr(definition, "tags", []))
+        override = getattr(definition, "experimental_searchable_description", None)
+        searchable_description = definition.description if override is None else override
+        input_schema = getattr(definition, "input_schema", None) if kind == "tool" else None
+        output_schema = getattr(definition, "output_schema", None) if kind == "tool" else None
+        content = {
+            "kind": kind,
+            "id": definition.id,
+            "name": definition.name,
+            "description": definition.description,
+            "tags": tags,
+            "input_schema": input_schema,
+            "output_schema": output_schema,
+            "searchable_description": searchable_description,
+            "searchable_description_overridden": override is not None,
+        }
+        if _has_unsafe_integer(content):
+            continue
+        try:
+            content_hash = hashlib.sha256(_canonical_json(content).encode()).hexdigest()
+            if kind == "tool":
+                canonical_input_schema = _canonical_json(input_schema)
+                canonical_output_schema = _canonical_json(output_schema)
+                input_schema_omitted = _catalog_schema_exceeds_attribute_limit(
+                    canonical_input_schema
+                )
+                output_schema_omitted = _catalog_schema_exceeds_attribute_limit(
+                    canonical_output_schema
+                )
+        except rfc8785.IntegerDomainError:
+            # Catalog mutation already succeeded. Content telemetry is lossy and
+            # must never turn a supported schema into a failed registration.
+            continue
+        if emitted_hashes.get(definition.id) == content_hash:
+            continue
+        attributes: dict[str, Any] = {
+            RATEL_CATALOG_KIND: kind,
+            RATEL_CATALOG_ID: definition.id,
+            RATEL_CATALOG_NAME: definition.name,
+            RATEL_CATALOG_DESCRIPTION: definition.description,
+            RATEL_CATALOG_TAGS: tags,
+            RATEL_CATALOG_SEARCHABLE_DESCRIPTION: searchable_description,
+            RATEL_CATALOG_SEARCHABLE_DESCRIPTION_OVERRIDDEN: override is not None,
+            RATEL_CATALOG_CONTENT_HASH: content_hash,
+        }
+        if kind == "tool":
+            if not input_schema_omitted:
+                attributes[RATEL_CATALOG_INPUT_SCHEMA] = canonical_input_schema
+            if not output_schema_omitted:
+                attributes[RATEL_CATALOG_OUTPUT_SCHEMA] = canonical_output_schema
+            if input_schema_omitted or output_schema_omitted:
+                attributes[RATEL_CATALOG_SCHEMA_OMITTED] = True
+        _logger().emit(event_name=RATEL_CATALOG_DEFINITION, attributes=attributes)
+        emitted_hashes[definition.id] = content_hash
+
+
+def _canonical_json(value: Any) -> str:
+    return rfc8785.dumps(value).decode("utf-8")
+
+
+def _catalog_schema_exceeds_attribute_limit(value: str) -> bool:
+    return len(value.encode()) > _CATALOG_SCHEMA_MAX_ATTRIBUTE_BYTES
+
+
+def _has_unsafe_integer(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return abs(value) > _MAX_SAFE_INTEGER
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer() and abs(value) > _MAX_SAFE_INTEGER
+    if isinstance(value, list):
+        return any(_has_unsafe_integer(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_unsafe_integer(item) for item in value.values())
+    return False
 
 
 def _tracer() -> Any:
@@ -222,9 +367,7 @@ async def trace_execute_tool(
     No-op pass-through when telemetry is disabled.
     """
     if not _ENABLED:
-        return await run(
-            _event_projection(invocation_id=new_runtime_event_id())
-        )
+        return await run(_event_projection(invocation_id=new_runtime_event_id()))
     with _tracer().start_as_current_span(
         f"{EXECUTE_TOOL} {tool_id}", kind=SpanKind.INTERNAL
     ) as span:

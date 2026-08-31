@@ -10,6 +10,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - `SearchHit.normalized` and `SkillHit.normalized`: `score` mapped onto `[0, 1]` for display. The raw `score` is on three incomparable scales — unbounded BM25, bounded cosine, and an RRF sum whose magnitude is rank arithmetic — so it has never been displayable, and normalizing it yourself is how a rank position gets read as certainty. Each method now carries the rule its own scale admits: `(cos + 1) / 2` for cosine, `score / Σ idf(query terms)` for raw BM25, and min-max across the full candidate set for RRF. The first two are absolute and compare across queries; the RRF rule does not, because rank fusion has no achievable maximum — a `1.0` there means "best of what came back", not "right". **It is not a confidence:** nothing was fitted to whether the hit was the one you went on to use, so `0.8` does not mean "right 80% of the time".
 
+## [0.12.0] - 2026-08-21
+
+### Added
+
+- Experimental catalog-definition telemetry. `events.experimentalCatalogDefinitions: true` publishes change-sensitive `catalog_definition` runtime events; OpenTelemetry export additionally requires `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true` and EventRecord content capture. Definitions use canonical hashes, omit unsafe numeric schemas, and preserve critical identity fields when payloads are bounded.
+- Experimental definition overrides through runtime attach: `catalog.experimentalAttachDefinitionOverrides({ source })` takes any `ExperimentalDefinitionOverlaySource` — `@ratel-ai/cloud-sdk` is the first one — which performs the initial pull and serialized, ETag-aware refreshes. Responses are runtime-validated with bounded entry fields and named `DefinitionOverlayError` failures; tool, skill, and fact updates roll back together on failure without advancing the ETag or override-ownership latch. Complete overlays restore local values on clear and warn when an override shadows an explicit local value. Calling it is one-way opt-in for the life of the process.
+- `experimentalSearchableDescription` on tool, skill, and fact registrations, and on `CatalogRegistration` (ADR-0021): an override for the description component BM25 and embeddings actually rank, so retrieval text can be tuned without changing the `description` the model reads or the `body` it receives. Names stay indexed, skill and fact tags stay indexed, and for a tool the override additionally opts that entry out of schema indexing — `inputSchema` / `outputSchema` stay model-facing but stop contributing tokens. Leave it out and nothing changes: tools still rank description plus schema tokens, skills and facts still rank their authored description. Optional everywhere it appears, so existing registrations compile and rank exactly as before. Experimental, so it may change or be removed without a major-version bump.
+
 ## [0.11.0] - 2026-08-17
 
 ### Added

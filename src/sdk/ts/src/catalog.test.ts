@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EmbedderError, type ExecutableTool, ToolCatalog } from "./index.js";
 import { startDelayedEmbeddingServer } from "./test-support/delayed-embedding-server.js";
 
@@ -58,6 +58,20 @@ describe("ToolCatalog", () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].toolId).toBe("read_file");
     expect(hits[0].score).toBeGreaterThan(0);
+  });
+
+  it("ranks a tool by experimentalSearchableDescription instead of its description", async () => {
+    const catalog = new ToolCatalog();
+    await catalog.register({
+      ...readFile,
+      id: "tool",
+      name: "tool",
+      description: "composedonlyterm",
+      experimentalSearchableDescription: "overrideonlyterm",
+    });
+
+    expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.toolId)).toEqual(["tool"]);
+    expect(catalog.search("composedonlyterm", 5)).toEqual([]);
   });
 
   it("registers an iterable of tools as one batch", async () => {
@@ -126,6 +140,61 @@ describe("ToolCatalog", () => {
 
     expect(received).toBe("/tmp/x");
     expect(catalog.getExecutable("read_file")?.validateInput).toBeTypeOf("function");
+  });
+
+  it("snapshots registered metadata deeply while preserving tool behavior", async () => {
+    const validateInput = vi.fn((input: unknown) => ({ success: true as const, value: input }));
+    const execute = vi.fn((input: unknown) => ({ input }));
+    const tool: ExecutableTool = {
+      id: "mutable",
+      name: "mutable",
+      description: "Accepted description",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+      outputSchema: { type: "object" },
+      validateInput,
+      execute,
+    };
+    const catalog = new ToolCatalog();
+
+    await catalog.register(tool);
+    tool.description = "Re-registered description";
+    (
+      tool.inputSchema as { properties: { path: { type: string } }; required: string[] }
+    ).properties.path.type = "number";
+    (tool.inputSchema as { required: string[] }).required.push("mode");
+
+    expect(catalog.snapshot()).toEqual([
+      {
+        id: "mutable",
+        name: "mutable",
+        description: "Accepted description",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+        outputSchema: { type: "object" },
+      },
+    ]);
+    await expect(catalog.invoke("mutable", { path: 42 })).resolves.toEqual({
+      input: { path: 42 },
+    });
+    expect(catalog.getExecutable("mutable")?.execute).toBe(execute);
+    expect(catalog.getExecutable("mutable")?.validateInput).toBe(validateInput);
+
+    await catalog.register(tool);
+
+    expect(catalog.snapshot()[0]).toMatchObject({
+      description: "Re-registered description",
+      inputSchema: {
+        properties: { path: { type: "number" } },
+        required: ["path", "mode"],
+      },
+    });
   });
 
   it("clears a framework validator when native registration replaces the tool", async () => {
@@ -550,6 +619,31 @@ describe("ToolCatalog embedding config", () => {
 });
 
 describe("ToolCatalog tracing", () => {
+  it("does not churn unchanged retrieval text when a definition overlay is applied", async () => {
+    const catalog = new ToolCatalog({ trace: { kind: "memory", sessionId: "t" } });
+    const writeFile = { ...readFile, id: "write_file", name: "write_file" };
+    await catalog.register([readFile, writeFile]);
+    catalog.drainTraceEvents();
+
+    await catalog.applyDefinitionOverrides(new Map());
+
+    expect(catalog.drainTraceEvents()).toEqual([]);
+
+    const overlay = new Map([
+      [readFile.id, "override retrieval text"],
+      [writeFile.id, writeFile.description],
+    ]);
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(
+      (catalog.drainTraceEvents() as Array<{ type: string; tool_id?: string }>)
+        .filter((event) => event.type === "index_churn")
+        .map((event) => event.tool_id),
+    ).toEqual([readFile.id]);
+
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(catalog.drainTraceEvents()).toEqual([]);
+  });
+
   it("does not capture events when no trace sink is configured (default noop)", async () => {
     const catalog = new ToolCatalog();
     await catalog.register(readFile);

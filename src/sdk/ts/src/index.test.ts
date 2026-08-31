@@ -112,7 +112,7 @@ describe("ToolRegistry", () => {
     // serde_json::Value across the boundary without dropping nested fields.
     //
     // Queried on a property NAME rather than a property description, which is
-    // no longer indexed (ADR-0021) — and which never isolated anything here
+    // no longer indexed (ADR-0023) — and which never isolated anything here
     // anyway, since "regular expression" is in the tool's own description too.
     // "pattern" appears nowhere but inside the schema.
     const registry = new ToolRegistry();

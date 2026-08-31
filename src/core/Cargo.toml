@@ -1,6 +1,6 @@
 [package]
 name = "ratel-ai-core"
-version = "0.10.0" # core-v* release unit (ADR-0008)
+version = "0.11.0" # core-v* release unit (ADR-0008)
 edition.workspace = true
 license = "Apache-2.0"
 repository.workspace = true
@@ -19,6 +19,8 @@ bm25 = "2.3"
 indexmap = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+# Cross-language catalog-definition telemetry hashes (protocol v2 ETags stay separate).
+serde_json_canonicalizer = "0.3"
 ulid = "1"
 
 # Dense (semantic) retrieval — pure-Rust Candle inference, no C++/ONNX native

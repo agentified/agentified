@@ -100,6 +100,7 @@ pub struct SkillRegistry {
     /// place, never duplicating it (RAT-378).
     skills: IndexMap<String, Skill>,
     sink: Arc<dyn TraceSink>,
+    experimental_catalog_definitions: bool,
     /// Prebuilt BM25 index over `skills` — the skill-side twin of
     /// [`crate::ToolRegistry`]'s field: built lazily by the first search,
     /// reused until [`Self::register`] or [`Self::replace_all`] invalidates it.
@@ -126,6 +127,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -138,6 +140,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink,
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
@@ -153,6 +156,7 @@ impl SkillRegistry {
         Self {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
@@ -163,6 +167,11 @@ impl SkillRegistry {
     /// [`crate::ToolRegistry::set_trace_sink`].
     pub fn set_trace_sink(&mut self, sink: Arc<dyn TraceSink>) {
         self.sink = sink;
+    }
+
+    /// Enable experimental complete catalog-definition events for later registrations.
+    pub fn experimental_enable_catalog_definitions(&mut self) {
+        self.experimental_catalog_definitions = true;
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink — see
@@ -386,6 +395,19 @@ impl SkillRegistry {
     /// cached embedding; the corpus never holds a duplicate.
     pub fn register(&mut self, skill: Skill) {
         let skill_id = skill.id.clone();
+        let definition = self
+            .experimental_catalog_definitions
+            .then(|| TraceEvent::catalog_definition_for_skill(&skill))
+            .flatten();
+        let definition_changed = definition.as_ref().is_some_and(|definition| {
+            self.skills.get(&skill_id).is_none_or(|existing| {
+                let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
+                    != definition.catalog_definition_hash()
+            })
+        });
         // Add or replace, the corpus changed either way: the prebuilt BM25
         // index no longer matches it.
         self.bm25.invalidate();
@@ -397,6 +419,9 @@ impl SkillRegistry {
             kind: ChurnKind::Add,
             skill_id,
         });
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
+        }
     }
 
     /// Replace the entire corpus with `skills`: ids absent from the batch are
@@ -412,7 +437,7 @@ impl SkillRegistry {
     ///
     /// Cache handling is deliberately narrow, so a reload of a mostly-unchanged
     /// catalog costs no embeddings: a removed id's vector is dropped, an id whose
-    /// indexed text (`name`/`description`/`tags`) changed is invalidated for
+    /// indexed text (`name`/effective searchable description/`tags`) changed is invalidated for
     /// re-embedding, and everything else keeps the vector it already had —
     /// including an id whose `body`, `tools`, or `metadata` changed, since none
     /// of those are embedded.
@@ -432,6 +457,7 @@ impl SkillRegistry {
     ///         id: id.into(),
     ///         name: id.into(),
     ///         description: description.into(),
+    ///         experimental_searchable_description: None,
     ///         tags: vec![],
     ///         tools: vec![],
     ///         metadata: std::collections::HashMap::new(),
@@ -478,6 +504,19 @@ impl SkillRegistry {
         }
 
         for (id, skill) in &next {
+            let definition = self
+                .experimental_catalog_definitions
+                .then(|| TraceEvent::catalog_definition_for_skill(skill))
+                .flatten();
+            let definition_changed = definition.as_ref().is_some_and(|definition| {
+                self.skills.get(id).is_none_or(|existing| {
+                    let existing_definition = TraceEvent::catalog_definition_for_skill(existing);
+                    existing_definition
+                        .as_ref()
+                        .and_then(TraceEvent::catalog_definition_hash)
+                        != definition.catalog_definition_hash()
+                })
+            });
             match self.skills.get(id) {
                 Some(current) if current == skill => {
                     outcome.unchanged += 1;
@@ -499,6 +538,9 @@ impl SkillRegistry {
                 kind: ChurnKind::Add,
                 skill_id: id.clone(),
             });
+            if definition_changed && let Some(definition) = definition {
+                self.sink.record(definition);
+            }
         }
 
         if indexed_text_changed {
@@ -533,6 +575,7 @@ impl SkillRegistry {
     ///     id: "api-design".into(),
     ///     name: "api-design".into(),
     ///     description: "REST API design patterns: resource naming, pagination".into(),
+    ///     experimental_searchable_description: None,
     ///     tags: vec!["backend".into(), "api".into()],
     ///     tools: vec![],
     ///     metadata: std::collections::HashMap::new(),
@@ -986,6 +1029,7 @@ mod tests {
         SkillRegistry {
             skills: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
@@ -997,6 +1041,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
+            experimental_searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             tools: vec![],
             metadata: std::collections::HashMap::new(),
@@ -1212,6 +1257,24 @@ mod tests {
     }
 
     #[test]
+    fn experimental_searchable_description_replaces_skill_description_but_keeps_name_and_tags() {
+        let mut reg = SkillRegistry::new();
+        let mut overridden = skill(
+            "billing",
+            "billing_helper",
+            "orchestrate zeppelin manifests",
+            &["finance_ops"],
+        );
+        overridden.experimental_searchable_description = Some("reconcile overdue invoices".into());
+        reg.register(overridden);
+
+        assert_eq!(reg.search("overdue invoices", 5)[0].skill_id, "billing");
+        assert!(reg.search("zeppelin manifests", 5).is_empty());
+        assert_eq!(reg.search("billing", 5)[0].skill_id, "billing");
+        assert_eq!(reg.search("finance ops", 5)[0].skill_id, "billing");
+    }
+
+    #[test]
     fn search_on_empty_registry_returns_no_hits() {
         let reg = SkillRegistry::new();
         assert!(reg.search("anything", 5).is_empty());
@@ -1369,6 +1432,51 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_re_embeds_only_the_experimental_searchable_description_edit() {
+        let counter = Arc::new(CountingEmbedder::new());
+        let sink = Arc::new(MemorySink::new("test-session"));
+        let mut reg = with_embedder(counter.clone());
+        reg.set_trace_sink(sink.clone());
+        reg.register(skill("keep", "keep", "REST API design", &["api"]));
+        reg.register(skill("edit", "edit", "REST API design", &["api"]));
+        reg.build_embeddings().unwrap();
+        assert_eq!(counter.doc_calls(), 2);
+        sink.drain();
+
+        let mut edited = skill("edit", "edit", "REST API design", &["api"]);
+        edited.experimental_searchable_description = Some("HTML slides frontend".into());
+        let outcome = reg.replace_all(vec![
+            skill("keep", "keep", "REST API design", &["api"]),
+            edited,
+        ]);
+        assert_eq!(
+            outcome,
+            ReplaceOutcome {
+                added: 0,
+                removed: 0,
+                updated: 1,
+                unchanged: 1,
+            }
+        );
+        let churn: Vec<(ChurnKind, String)> = sink
+            .drain()
+            .into_iter()
+            .filter_map(|envelope| match envelope.event {
+                TraceEvent::SkillChurn { kind, skill_id } => Some((kind, skill_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(churn, vec![(ChurnKind::Add, "edit".to_string())]);
+
+        reg.build_embeddings().unwrap();
+        assert_eq!(
+            counter.doc_calls(),
+            3,
+            "only the override-edited skill is re-embedded"
+        );
+    }
+
+    #[test]
     fn replace_all_drops_the_vector_of_a_removed_id() {
         // The dense guard is a count (`vectors.len() < corpus_len`), so leaving a
         // removed id's vector in the cache would let a *new*, unembedded id slip
@@ -1457,6 +1565,51 @@ mod tests {
         assert_eq!(
             hits.first().map(|h| h.skill_id.as_str()),
             Some("api-design")
+        );
+    }
+
+    #[test]
+    fn semantic_uses_experimental_searchable_description_and_keeps_name_and_tags() {
+        let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut overridden = skill("target", "catalog", "REST API design", &["general"]);
+        overridden.experimental_searchable_description = Some("frontend slides".into());
+        overridden_reg.register(overridden);
+        overridden_reg.register(skill("decoy", "decoy", "REST API design", &["general"]));
+        overridden_reg.build_embeddings().unwrap();
+        let override_hits = overridden_reg
+            .search_with_method("frontend slides", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            override_hits.first().map(|h| h.skill_id.as_str()),
+            Some("target")
+        );
+
+        let mut name_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut named = skill("named", "api_helper", "unrelated", &["general"]);
+        named.experimental_searchable_description = Some("frontend slides".into());
+        name_reg.register(named);
+        name_reg.register(skill("name-decoy", "decoy", "frontend slides", &[]));
+        name_reg.build_embeddings().unwrap();
+        let name_hits = name_reg
+            .search_with_method("REST API", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            name_hits.first().map(|h| h.skill_id.as_str()),
+            Some("named")
+        );
+
+        let mut tag_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut tagged = skill("tagged", "catalog", "unrelated", &["rest_ops"]);
+        tagged.experimental_searchable_description = Some("frontend slides".into());
+        tag_reg.register(tagged);
+        tag_reg.register(skill("tag-decoy", "decoy", "frontend slides", &[]));
+        tag_reg.build_embeddings().unwrap();
+        let tag_hits = tag_reg
+            .search_with_method("REST API", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            tag_hits.first().map(|h| h.skill_id.as_str()),
+            Some("tagged")
         );
     }
 

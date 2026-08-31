@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-21
+
+### Added
+
+- Experimental catalog-definition telemetry vocabulary: `RATEL_CATALOG_DEFINITION`, its `ratel.catalog.*` attribute constants, `EXPERIMENTAL_CATALOG_DEFINITIONS_ENV`, and `RATEL_CATALOG_USE_DEFINITION_OVERRIDES` for runtimes using externally-sourced definition overrides.
+
 ## [0.4.0] - 2026-08-17
 
 ### Added

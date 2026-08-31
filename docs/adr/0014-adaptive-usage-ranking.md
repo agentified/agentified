@@ -6,7 +6,7 @@ Date: 2026-07-20
 
 Accepted
 
-Builds on [ADR-0004](0004-retrieval-and-tool-selection.md) (the `searchable_text`
+Builds on [ADR-0004](0004-retrieval-and-tool-selection.md) (the stable `searchable_text`
 projection), [ADR-0011](0011-selectable-retrieval-methods.md) (the three methods and RRF),
 and [ADR-0007](0007-telemetry-two-streams.md) (the local trace stream, whose sink seam this
 subscribes to). Ratifies the 2026-07-06 adaptive-ranking brief with the amendments below.

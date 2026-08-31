@@ -43,6 +43,8 @@ const result = await agent.generate("what's the weather in Paris?");
 console.log(result.text);
 ```
 
+To experimentally tune retrieval without changing the description sent to the model, attach an explicit override to the constructed tool: `Object.assign(createTool({...}), { experimentalSearchableDescription: "forecast conditions" })`. The adapter forwards it to Ratel and leaves the Mastra description untouched. This surface may change without a major-version bump.
+
 Standalone (framework-free) use of the same core is also fine — `r` is `ratel(config)` before `.adaptTo`, exposing native `ExecutableTool`s. See [`@ratel-ai/sdk`](../../sdk/ts/README.md).
 
 ## The `recallProcessor()` idiom

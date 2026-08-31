@@ -50,8 +50,9 @@ changed — never merely because a turn elapsed.**
 
 ### Facts as a third registry
 
-A `Fact` is `{ id, name, description, tags, metadata, body, pin }` — a `Skill` minus `tools`, plus
-`pin: "always" | "retrieved"` (default `retrieved`). `name`/`description`/`tags` are indexed
+A `Fact` is `{ id, name, description, experimental_searchable_description?, tags, metadata, body, pin }` — a
+`Skill` minus `tools`, plus `pin: "always" | "retrieved"` (default `retrieved`). `name`, the
+effective searchable description, and `tags` are indexed per ADR-0021
 (both tiers are query-rankable, so a pinned fact stays discoverable); `body` is the injected
 content, never indexed. It gets its own `FactRegistry` in `ratel-ai-core` — a near-clone of
 `SkillRegistry` (BM25/semantic/hybrid, replace-in-place, `IndexMap` insertion order) — and its own

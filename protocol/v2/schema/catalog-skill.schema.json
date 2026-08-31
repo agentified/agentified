@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratel.sh/protocol/v2/catalog-skill.schema.json",
+  "title": "CatalogSkillWire",
+  "description": "The wire projection of an engine Skill, served in a v2 catalog pull. The ETag content projection hashes exactly eight fields, canonicalizing an omitted or null searchableDescription to null; a source MAY carry additional fields (a conforming client ignores them), but none may carry a secret.",
+  "type": "object",
+  "required": ["id", "name", "description", "tags", "tools", "metadata", "body"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1, "description": "kebab-case, unique within the project's resolved set" },
+    "description": { "type": "string" },
+    "searchableDescription": { "type": ["string", "null"], "description": "Optional override for the description component used by local retrieval. Omitted or null means use description; name and tags remain indexed." },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "tools": { "type": "array", "items": { "type": "string" }, "description": "referenced tool ids, resolved against the client-owned registry" },
+    "metadata": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } },
+    "body": { "type": "string", "description": "the SKILL.md payload" }
+  }
+}

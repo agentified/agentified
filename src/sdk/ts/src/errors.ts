@@ -20,6 +20,30 @@
  * separate private envelope.
  */
 
+/** Stable failure categories for the experimental definition-overlay boundary. */
+export type DefinitionOverlayErrorCode =
+  | "invalid_status"
+  | "invalid_payload"
+  | "invalid_etag"
+  | "apply_failed";
+
+/** A definition-overlay source returned invalid data or the overlay could not be applied. */
+export class DefinitionOverlayError extends Error {
+  /** Stable machine-readable failure category. */
+  readonly code: DefinitionOverlayErrorCode;
+
+  /**
+   * @param message - Human-readable boundary or apply failure.
+   * @param code - Stable machine-readable failure category.
+   * @param options - Standard error options, including the underlying cause.
+   */
+  constructor(message: string, code: DefinitionOverlayErrorCode, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DefinitionOverlayError";
+    this.code = code;
+  }
+}
+
 /**
  * An embedding model failed to load, download, or run — the base class for every
  * dense-retrieval failure raised from `register` / `searchAsync` on a

@@ -368,7 +368,7 @@ which is exactly what the flat rows were assumed to do before they were measured
 ## BM25 length penalty (`b`)
 
 The lexical arm alone, over the same 47 queries, at the old `b = 0.4` and the standard
-`b = 0.75` it was raised to (ADR-0021). `b` scales how hard a long document is
+`b = 0.75` it was raised to (ADR-0023). `b` scales how hard a long document is
 penalised: at 0 length is ignored, at 1 it is fully normalised.
 
 `top-1 correct` counts the queries whose BM25 top-1 is the tool the turn actually

@@ -88,9 +88,11 @@ impl FromStr for PinMode {
 /// agent *pulls* and runs on demand, a fact is content the grounding layer
 /// *pushes* into the context so the model is never missing it.
 ///
-/// `name`, `description`, and `tags` drive ranking (they are folded into the
-/// searchable text) exactly as on a [`crate::Skill`], so the retrieval-gated
-/// tier is discoverable by query. `body` is the injected content — **not**
+/// `name`, the effective searchable description, and `tags` drive ranking
+/// exactly as on a [`crate::Skill`]. The description component defaults to
+/// [`Self::description`] and can be replaced by
+/// [`Self::experimental_searchable_description`], so the retrieval-gated tier is discoverable
+/// by query. `body` is the injected content — **not**
 /// indexed, so a long body never skews relevance. `pin` splits the tiers (see
 /// [`PinMode`]); `metadata` is free-form, non-indexed context for higher-layer
 /// biasing, never matched as query terms.
@@ -105,6 +107,10 @@ pub struct Fact {
     /// What the fact is about — the primary ranking text (not the content
     /// itself; that is `body`).
     pub description: String,
+    /// Experimental replacement for the description component used by BM25 and
+    /// dense retrieval. The fact name and tags remain indexed. `None` uses
+    /// [`Self::description`].
+    pub experimental_searchable_description: Option<String>,
     /// Author-declared labels and task phrases, indexed alongside the
     /// description.
     pub tags: Vec<String>,

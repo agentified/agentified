@@ -19,6 +19,49 @@
 
 Use `ToolCatalog` for ranked tools with executable handlers and `SkillCatalog` for ranked playbooks loaded on demand. Expose `searchCapabilitiesTool`, `invokeToolTool`, and `getSkillContentTool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog. **Experimental — facts:** the `experimental` namespace adds `experimental.FactCatalog` for constant grounding content (a shop's address, a brand's voice). See [Facts](#facts-experimental) below. This API may change without a major-version bump.
 
+Every tool, skill, and fact accepts an optional experimental `experimentalSearchableDescription`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
+
+## Definition overrides from an external source (experimental)
+
+Registration always owns the complete local definition and can publish it through experimental
+`ratel.catalog.definition` telemetry. An external source can override only the retrieval
+description, and only when the runtime explicitly opts in at attach time. The seam is a plain
+injected source — any implementation of `ExperimentalDefinitionOverlaySource` works; `@ratel-ai/cloud-sdk` is
+the first one, supplying an authenticated network client:
+
+```ts
+import { ratel, type ExperimentalDefinitionOverlaySource } from "@ratel-ai/sdk";
+
+const runtime = ratel();
+await runtime.tools.register(localTools);
+
+export async function attachOverrides(source: ExperimentalDefinitionOverlaySource) {
+  return runtime.catalog.experimentalAttachDefinitionOverrides({ source });
+}
+```
+
+Without that method call, local `experimentalSearchableDescription` values remain authoritative
+and no source is called. The attach promise includes the initial pull and applies the complete
+overlay to live tools, skills, and facts. Call the returned
+attachment's `refresh()` method for later pulls. It passes the last strong ETag to the injected
+source; a `304` is a no-op, while a `200` applies `{ overrides: [...] }` and remembers its new
+ETag. Source responses are runtime-validated before any catalog changes: statuses must be `200` or
+`304`, a `200` needs a non-empty ETag and complete override array, entry ids are capped at 512 UTF-8
+bytes, and retrieval descriptions are capped at 16 KiB. Invalid responses throw
+`DefinitionOverlayError` and retain the previously accepted ETag and definitions. Tool, skill, and
+fact changes share rollback; a failed catalog update restores all three. Concurrent
+`refresh()` calls share one in-flight request. Applying an identical or empty overlay does not
+re-index unchanged entries. Opting in is one-way for the life of the process; reverting means
+restarting the runtime. These APIs may change without a major-version bump.
+
+Removing an override restores the latest local value. If both sides define a Retrieval description
+for one entry, the override wins while attached and the SDK warns once for that continuous
+shadowing period; clearing and later reapplying the override starts a new period.
+
+The model-facing description, schemas, bodies, tags, and executors always remain local. Definition
+events emitted after opt-in carry `ratel.catalog.use_definition_overrides=true`, including one
+re-emission of otherwise unchanged definitions so the override owner can observe adoption.
+
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` option: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
 For semantic or hybrid retrieval, `register()` folds embedding in: it accepts one tool or a whole array and embeds on a libuv worker, so model loading, HTTP, and inference never block Node's event loop — and embedding errors surface right at `register()`:
@@ -384,7 +427,12 @@ envelope has one session/source stamp and a client ULID. The matching OTel proje
 same ID as `ratel.event.id`; OTel remains a parallel observability channel.
 
 ```ts
-const r = ratel({ events: { sourceId: "checkout-api" } });
+const r = ratel({
+  events: {
+    sourceId: "checkout-api",
+    experimentalCatalogDefinitions: true,
+  },
+});
 const subscription = r.events.subscribe(async (batch) => publish(batch));
 
 // Full serializable state; tool executors and skill bodies are always omitted.
@@ -396,8 +444,12 @@ subscription.unsubscribe();
 
 Delivery is best effort, bounded, and fail-open: subscriber work never blocks catalog operations.
 `flush()` drains work already accepted by this process and waits for async handlers to settle.
-The stream includes search, invocation, catalog churn, upstream/auth, experiment, and observable
-delivery-loss facts described by [ADR 0020](../../../docs/adr/0020-runtime-events-lane.md).
+The stream includes search, invocation, catalog churn and, when explicitly enabled, experimental
+`catalog_definition` changes,
+upstream/auth, experiment, and observable delivery-loss facts described by
+[ADR 0020](../../../docs/adr/0020-runtime-events-lane.md). Setting
+`experimentalCatalogDefinitions: true` explicitly consents to those definition fields; the OTel
+message-content capture setting does not filter this runtime lane.
 
 Experiments are SDK-owned facts. Pass the runtime stream as the second argument so their OTel and
 runtime projections share event IDs:
@@ -406,8 +458,13 @@ runtime projections share event IDs:
 const experiment = experimentalDefineExperiment(config, r.events);
 ```
 
-`catalog.snapshot()` is deliberately separate from the event stream: consumers publish it as an
-atomic full replacement under `snapshot.source_id`.
+`catalog.snapshot()` is deliberately authoritative over the lossy, change-sensitive event stream:
+consumers publish it as an atomic full replacement under `snapshot.source_id` for removals and
+recovery. It always contains the locally registered definitions, even while an opted-in definition
+overlay supplies the live Retrieval descriptions. Registration and `skills.replaceAll()` retain a
+deep snapshot of accepted serializable metadata, so later caller-object mutation changes neither
+snapshots nor override restoration; explicitly re-register to adopt a changed value. Tool executor
+and validator function identities are retained.
 
 ## Telemetry
 
@@ -430,7 +487,7 @@ Both lists matter: with `spanProcessors` alone, `NodeSDK` builds the logger prov
 
 **A vendor processor may drop most of it, silently.** Emission and delivery are separate: the provider hands every span to every processor, and each destination then applies its own filter. A stock `new LangfuseSpanProcessor()` keeps a span only if it carries a `gen_ai.*` attribute or comes from a scope it already knows, and `@ratel-ai/sdk` is on neither list — so `execute_tool <tool>` survives while `ratel.search`, `ratel.skill.load`, `ratel.upstream.register`, `ratel.auth.flow`, and `ratel.experiment.arm` do not. Nothing errors; the retrieval spans are simply absent. Widening it is one line of the vendor's own config, keyed on scope — see [`src/telemetry/`](../../telemetry/README.md#emission-is-not-delivery) for the predicate, the full span inventory, and the `ai@7` and Mastra wirings.
 
-Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). The `ratel.*` constants themselves live in [`@ratel-ai/telemetry`](../../telemetry/ts/README.md); this package re-exports only the content-capture gate.
+Message and tool content is off by default; opt in with the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var or `setContentCapture()` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Experimental catalog-definition export additionally requires `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Changed definitions then emit one `ratel.catalog.definition` EventRecord per registry-local content hash. The `ratel.*` constants themselves live in [`@ratel-ai/telemetry`](../../telemetry/ts/README.md); this package re-exports only the content-capture gate.
 
 ## Package layout
 

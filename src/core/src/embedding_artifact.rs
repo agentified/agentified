@@ -211,12 +211,13 @@ impl From<EmbedderError> for ArtifactError {
     }
 }
 
-/// Hash of [`crate::indexing`] + [`crate::skill_indexing`] sources — bumps when
-/// projection logic changes without a manual version constant.
+/// Hash of every catalog projection source — bumps when projection logic
+/// changes without a manual version constant.
 pub(crate) fn projection_version() -> u32 {
     let mut h = Sha256::new();
     h.update(include_str!("indexing.rs"));
     h.update(include_str!("skill_indexing.rs"));
+    h.update(include_str!("fact_indexing.rs"));
     u32::from_le_bytes(h.finalize()[..4].try_into().expect("4 bytes"))
 }
 

@@ -19,11 +19,21 @@ import {
   ToolCatalog,
   type TraceSinkConfig,
 } from "./catalog.js";
+import { validateDefinitionOverlayResponse } from "./definition-overrides.js";
 import type { ExperimentalEmbeddingArtifact } from "./embedding-artifact.js";
+import { DefinitionOverlayError } from "./errors.js";
 import { FactCatalog } from "./fact-catalog.js";
 import type { GroundingResult, GroundingSnapshotItem, GroundOptions } from "./grounding.js";
 import { isPackageInstalled } from "./package-resolution.js";
-import { type RuntimeCatalog, RuntimeEvents, type RuntimeEventsOptions } from "./runtime-events.js";
+import {
+  type ExperimentalDefinitionOverride,
+  type ExperimentalDefinitionOverridesAttachment,
+  type ExperimentalDefinitionOverridesAttachOptions,
+  type ExperimentalDefinitionOverridesRuntimeCatalog,
+  type InternalExperimentalDefinitionOverridesRuntimeCatalog,
+  RuntimeEvents,
+  type RuntimeEventsOptions,
+} from "./runtime-events.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { GET_SKILL_CONTENT_ID, getSkillContentTool } from "./skill-tools.js";
 
@@ -74,6 +84,8 @@ export interface RatelConfig {
 export interface CatalogRegistration {
   /** Retrieval ranks on this; resolve dynamic descriptions at ingest time. */
   description: string;
+  /** ⚠️ Experimental (ADR-0021). Optional retrieval-only description replacement. */
+  experimentalSearchableDescription?: string;
   /** Input JSON Schema (the catalog's native spelling). */
   inputSchema: JSONSchema7;
   /** Output JSON Schema; defaults to `{ type: "object" }` when omitted. */
@@ -261,7 +273,7 @@ export interface AdaptedBase<TTool, TMessage> {
   /** Merged runtime-event stream shared by every view of this core. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: RuntimeCatalog;
+  readonly catalog: ExperimentalDefinitionOverridesRuntimeCatalog;
   /**
    * The model-facing toolset in the framework's shape: this view's passthroughs
    * plus the three capability tools run through the adapter's `expose` codec.
@@ -328,7 +340,7 @@ export interface Ratel {
   /** Merged runtime-event stream shared by tools, skills, and SDK-owned facts. */
   readonly events: RuntimeEvents;
   /** Complete executor-free tool + skill state for snapshot publication. */
-  readonly catalog: RuntimeCatalog;
+  readonly catalog: ExperimentalDefinitionOverridesRuntimeCatalog;
   /**
    * The three capability tools (`search_capabilities`, `invoke_tool`,
    * `get_skill_content`) in native shape, for framework-free hosts. All three
@@ -446,12 +458,101 @@ export function ratel(config: RatelConfig = {}): Ratel {
     experimentalEmbeddingArtifact: embeddingArtifact,
   });
   const events = new RuntimeEvents([catalog, skills], config.events);
-  const runtimeCatalog: RuntimeCatalog = {
+  let factsCatalog: FactCatalog | undefined;
+  let toolOverrides = new Map<string, string>();
+  let skillOverrides = new Map<string, string>();
+  let factOverrides = new Map<string, string>();
+  let useDefinitionOverrides = false;
+  const applyDefinitionOverrides = async (
+    overrides: readonly ExperimentalDefinitionOverride[],
+  ): Promise<void> => {
+    const byKind = (kind: ExperimentalDefinitionOverride["kind"]): Map<string, string> =>
+      new Map(
+        overrides
+          .filter((override) => override.kind === kind)
+          .map((override) => [override.entryId, override.searchableDescription]),
+      );
+    const nextToolOverrides = byKind("tool");
+    const nextSkillOverrides = byKind("skill");
+    const nextFactOverrides = byKind("fact");
+    const stagedOptions = { adopt: false, emitDefinitions: false } as const;
+    const factsAtStart = factsCatalog;
+    const results: PromiseSettledResult<void>[] = await Promise.allSettled([
+      catalog.applyDefinitionOverrides(nextToolOverrides, stagedOptions),
+      skills.applyDefinitionOverrides(nextSkillOverrides, stagedOptions),
+      factsAtStart?.applyDefinitionOverrides(nextFactOverrides, stagedOptions) ?? Promise.resolve(),
+    ]);
+    const lateFacts = factsCatalog;
+    if (
+      !results.some((result) => result.status === "rejected") &&
+      lateFacts !== undefined &&
+      lateFacts !== factsAtStart
+    ) {
+      const [lateFactResult] = await Promise.allSettled([
+        lateFacts.applyDefinitionOverrides(nextFactOverrides, stagedOptions),
+      ]);
+      if (lateFactResult !== undefined) results.push(lateFactResult);
+    }
+    const applyFailures = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (applyFailures.length > 0) {
+      const rollbackResults = await Promise.allSettled([
+        catalog.applyDefinitionOverrides(toolOverrides, stagedOptions),
+        skills.applyDefinitionOverrides(skillOverrides, stagedOptions),
+        factsCatalog?.applyDefinitionOverrides(factOverrides, stagedOptions),
+      ]);
+      const rollbackFailures = rollbackResults.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      const causes = [...applyFailures, ...rollbackFailures].map((result) => result.reason);
+      throw new DefinitionOverlayError(
+        rollbackFailures.length === 0
+          ? "definition overlay apply failed; previous definitions restored"
+          : "definition overlay apply failed and rollback did not complete",
+        "apply_failed",
+        { cause: causes.length === 1 ? causes[0] : new AggregateError(causes) },
+      );
+    }
+    toolOverrides = nextToolOverrides;
+    skillOverrides = nextSkillOverrides;
+    factOverrides = nextFactOverrides;
+    useDefinitionOverrides = true;
+    catalog.enableDefinitionOverrides();
+    skills.enableDefinitionOverrides();
+    factsCatalog?.enableDefinitionOverrides();
+  };
+  const experimentalAttachDefinitionOverrides = async (
+    options: ExperimentalDefinitionOverridesAttachOptions,
+  ): Promise<ExperimentalDefinitionOverridesAttachment> => {
+    let etag: string | undefined;
+    let inFlightRefresh: Promise<boolean> | undefined;
+    const refreshOnce = async (): Promise<boolean> => {
+      const response = validateDefinitionOverlayResponse(await options.source.fetch(etag));
+      if (response.status === 304) return false;
+      await applyDefinitionOverrides(response.body.overrides);
+      etag = response.etag;
+      return true;
+    };
+    const attachment: ExperimentalDefinitionOverridesAttachment = {
+      refresh: () => {
+        inFlightRefresh ??= refreshOnce().finally(() => {
+          inFlightRefresh = undefined;
+        });
+        return inFlightRefresh;
+      },
+    };
+    await attachment.refresh();
+    return attachment;
+  };
+  const runtimeCatalog: InternalExperimentalDefinitionOverridesRuntimeCatalog = {
     snapshot: () => ({
       source_id: events.sourceId,
       tools: catalog.snapshot(),
       skills: skills.snapshot(),
     }),
+    experimentalAttachDefinitionOverrides,
+    applyDefinitionOverrides,
   };
   // The fact catalog owns the grounding freshness state (its injected-body map),
   // so `r.ground` is a thin delegate to `facts.ground`. Constructed **lazily**:
@@ -460,14 +561,16 @@ export function ratel(config: RatelConfig = {}): Ratel {
   // majority of hosts that never touch facts. First access to `r.facts` (or to
   // `ground`/`groundSnapshot`, which go through it) creates the single shared
   // instance; nothing on the stable path (`recall`, `modelTools`) touches it.
-  let factsCatalog: FactCatalog | undefined;
   const facts = (): FactCatalog => {
-    factsCatalog ??= new FactCatalog({
-      method: config.method,
-      embedding: config.embedding,
-      trace: config.trace,
-      factsTopK: config.factsTopK,
-    });
+    if (factsCatalog === undefined) {
+      factsCatalog = new FactCatalog({
+        method: config.method,
+        embedding: config.embedding,
+        trace: config.trace,
+        factsTopK: config.factsTopK,
+      });
+      if (useDefinitionOverrides) factsCatalog.setDefinitionOverrides(factOverrides);
+    }
     return factsCatalog;
   };
   // Framework-shaped passthrough values stay in their originating views, but
@@ -583,6 +686,7 @@ export function ratel(config: RatelConfig = {}): Ratel {
             id,
             name: id,
             description: registration.description,
+            experimentalSearchableDescription: registration.experimentalSearchableDescription,
             inputSchema: registration.inputSchema,
             outputSchema: registration.outputSchema ?? DEFAULT_OUTPUT_SCHEMA,
             validateInput: registration.validateInput,

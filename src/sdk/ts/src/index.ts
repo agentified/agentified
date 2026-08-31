@@ -74,9 +74,11 @@ export type {
   ExperimentalEmbeddingArtifact,
 } from "./embedding-artifact.js";
 export { experimentalBuildEmbeddingArtifact } from "./embedding-artifact.js";
+export type { DefinitionOverlayErrorCode } from "./errors.js";
 export {
   ArtifactError,
   ArtifactWarmError,
+  DefinitionOverlayError,
   DimensionMismatchError,
   EmbedderError,
   IncompatibleMergeError,
@@ -118,6 +120,15 @@ export { ratel } from "./ratel.js";
 export { IntentGraph, SkillRegistry, ToolRegistry } from "./registry.js";
 export type {
   CatalogSnapshot,
+  ExperimentalDefinitionOverlay,
+  ExperimentalDefinitionOverlayNotModified,
+  ExperimentalDefinitionOverlayResponse,
+  ExperimentalDefinitionOverlaySource,
+  ExperimentalDefinitionOverlayUpdated,
+  ExperimentalDefinitionOverride,
+  ExperimentalDefinitionOverridesAttachment,
+  ExperimentalDefinitionOverridesAttachOptions,
+  ExperimentalDefinitionOverridesRuntimeCatalog,
   RuntimeCatalog,
   RuntimeEvent,
   RuntimeEventHandler,

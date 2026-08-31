@@ -164,7 +164,7 @@ class ToolRegistry:
 
     def _register_many(
         self,
-        tools: list[tuple[str, str, str, dict[str, Any], dict[str, Any]]],
+        tools: list[tuple[str, str, str, str | None, dict[str, Any], dict[str, Any]]],
     ) -> None:
         """Atomically convert, then register a tool metadata batch."""
 
@@ -229,9 +229,7 @@ class ToolRegistry:
         else raises `ValueError`.
         """
 
-    def record_event_with_context(
-        self, event: dict[str, Any], context: object
-    ) -> None:
+    def record_event_with_context(self, event: dict[str, Any], context: object) -> None:
         """Record an event with caller-supplied identity and OTel correlation."""
 
     def subscribe_trace_events(
@@ -258,6 +256,9 @@ class ToolRegistry:
         `ValueError` on an unknown kind, a missing required argument, or a
         jsonl path that cannot be opened.
         """
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
 
     def _build_intent_graph(
         self,
@@ -417,6 +418,7 @@ class SkillRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 list[str],
                 dict[str, list[str]],
@@ -433,6 +435,7 @@ class SkillRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 list[str],
                 dict[str, list[str]],
@@ -479,9 +482,7 @@ class SkillRegistry:
     def record_event(self, event: dict[str, Any]) -> None:
         """Record an SDK-layer trace event — see `ToolRegistry.record_event`."""
 
-    def record_event_with_context(
-        self, event: dict[str, Any], context: object
-    ) -> None:
+    def record_event_with_context(self, event: dict[str, Any], context: object) -> None:
         """Record an event with caller-supplied identity and OTel correlation."""
 
     def subscribe_trace_events(
@@ -501,6 +502,9 @@ class SkillRegistry:
         path: str | None = ...,
     ) -> None:
         """Route trace events to a sink — see `ToolRegistry.set_trace_sink`."""
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
 
     def _rebuild_intent_graph(self) -> None:
         """Re-embed the intent graph's members under the current model (worker)."""
@@ -607,6 +611,7 @@ class FactRegistry:
                 str,
                 str,
                 str,
+                str | None,
                 list[str],
                 dict[str, list[str]],
                 str,
@@ -643,6 +648,9 @@ class FactRegistry:
         path: str | None = ...,
     ) -> None:
         """Route trace events to a sink — see `ToolRegistry.set_trace_sink`."""
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
 
     def drain_trace_events(self) -> list[dict[str, Any]]:
         """Drain captured envelopes — see `ToolRegistry.drain_trace_events`."""

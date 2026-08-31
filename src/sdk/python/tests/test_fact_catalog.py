@@ -56,6 +56,21 @@ async def test_registers_facts_and_ranks_relevant_first() -> None:
     assert hits[0].fact_id == "cancellation"
 
 
+async def test_experimental_searchable_description_replaces_fact_description_for_ranking() -> None:
+    catalog = FactCatalog()
+    await catalog.register(
+        Fact(
+            id="fact",
+            name="fact",
+            description="composedonlyterm",
+            experimental_searchable_description="overrideonlyterm",
+        )
+    )
+
+    assert [hit.fact_id for hit in catalog.search("overrideonlyterm", 5)] == ["fact"]
+    assert catalog.search("composedonlyterm", 5) == []
+
+
 async def test_pinned_returns_only_always_in_registration_order() -> None:
     catalog = FactCatalog()
     await catalog.register(
@@ -307,7 +322,13 @@ async def test_pinned_facts_do_not_consume_the_retrieved_budget() -> None:
     # slots go to pinned facts that are then filtered back out, leaving the
     # retrieved tier permanently empty. Pin the top-3 assumption first, so this
     # test fails loudly rather than silently passing if the ranking shifts.
-    ranked = [hit.fact_id for hit in await catalog.search_async(_QUERY, 3)]
+    #
+    # Sorted, because what this needs is that the three PINNED facts occupy the
+    # slots — their order among themselves is not what the rest of the test rests
+    # on, and it moved when the BM25 length penalty went to its standard 0.75
+    # (ADR-0023), which reweights facts of different lengths. The TS twin was
+    # fixed the same way in 6666bd4.
+    ranked = sorted(hit.fact_id for hit in await catalog.search_async(_QUERY, 3))
     assert ranked == ["p1", "p2", "p3"], "fixture assumption: pinned take the top 3 slots"
 
     items = await catalog.ground_snapshot(_QUERY, top_k=3)

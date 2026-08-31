@@ -46,6 +46,43 @@ describe("FactCatalog", () => {
     expect(hits[0].factId).toBe("cancellation");
   });
 
+  it("ranks a fact by experimentalSearchableDescription instead of its description", async () => {
+    const catalog = new FactCatalog();
+    await catalog.register({
+      id: "fact",
+      name: "fact",
+      description: "composedonlyterm",
+      experimentalSearchableDescription: "overrideonlyterm",
+    });
+
+    expect(catalog.search("overrideonlyterm", 5).map((hit) => hit.factId)).toEqual(["fact"]);
+    expect(catalog.search("composedonlyterm", 5)).toEqual([]);
+  });
+
+  it("does not churn unchanged retrieval text when a definition overlay is applied", async () => {
+    const catalog = new FactCatalog({ trace: { kind: "memory", sessionId: "t" } });
+    await catalog.register([cancellation, address]);
+    catalog.drainTraceEvents();
+
+    await catalog.applyDefinitionOverrides(new Map());
+
+    expect(catalog.drainTraceEvents()).toEqual([]);
+
+    const overlay = new Map([
+      [cancellation.id, "override retrieval text"],
+      [address.id, address.description],
+    ]);
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(
+      (catalog.drainTraceEvents() as Array<{ type: string; fact_id?: string }>)
+        .filter((event) => event.type === "fact_churn")
+        .map((event) => event.fact_id),
+    ).toEqual([cancellation.id]);
+
+    await catalog.applyDefinitionOverrides(overlay);
+    expect(catalog.drainTraceEvents()).toEqual([]);
+  });
+
   it("pinned() returns only always facts in registration order", async () => {
     const catalog = new FactCatalog();
     await catalog.register([
@@ -284,7 +321,7 @@ describe("topK budgets the retrieved tier only", () => {
     // Sorted, because what this needs is that the three PINNED facts occupy the
     // slots — their order among themselves is not what the rest of the test
     // rests on, and it moved when the BM25 length penalty went to its standard
-    // 0.75 (ADR-0021), which reweights facts of different lengths.
+    // 0.75 (ADR-0023), which reweights facts of different lengths.
     const ranked = (await catalog.searchAsync(QUERY, 3)).map((h) => h.factId).sort();
     expect(ranked, "fixture assumption: pinned facts take the top 3 slots").toEqual([
       "p1",

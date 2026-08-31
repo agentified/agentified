@@ -1,4 +1,4 @@
-# 21. The searchable-text projection indexes names, not schema prose
+# 23. The searchable-text projection indexes names, not schema prose
 
 Date: 2026-08-21
 
@@ -11,6 +11,14 @@ Supersedes the **projection** decision in
 `replace` vs `suggest`, and `k1`/`b` as fixed tuning rather than a public knob — stands.
 ADR-0004 asked for this: *"Changing the flattening algorithm is a breaking change and warrants
 supersession."*
+
+Composes with [ADR-0021](0021-catalog-searchable-description-projections.md), which landed
+independently. That decision lets a single entry override the description component and, for a
+tool, opt out of schema indexing entirely. This one changes what the **stable** projection
+indexes for every entry that sets no override. The two do not overlap: after this, the default
+already drops schema prose, so the override's remaining effect on a tool is to drop property
+*names* as well and replace the description outright. An entry that sets the override is
+unaffected by anything below.
 
 ## Context
 

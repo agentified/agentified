@@ -9,6 +9,10 @@ import type {
   TraceSinkConfig,
 } from "./catalog.js";
 import {
+  type DefinitionOverrideApplyOptions,
+  withDefinitionOverride,
+} from "./definition-overrides.js";
+import {
   type ExperimentalEmbeddingArtifact,
   resolveEmbeddingArtifact,
 } from "./embedding-artifact.js";
@@ -77,7 +81,10 @@ export interface SkillCatalogOptions {
  */
 export class SkillCatalog {
   private readonly registry: SkillRegistry;
+  private readonly localSkills = new Map<string, Skill>();
   private readonly skills = new Map<string, Skill>();
+  private overrideSearchableDescriptions = new Map<string, string>();
+  private readonly warnedShadowIds = new Set<string>();
   private readonly method: SearchMethod;
   private readonly embeddingArtifact: ExperimentalEmbeddingArtifact | undefined;
 
@@ -115,7 +122,41 @@ export class SkillCatalog {
    */
   async register(skills: Skill | readonly Skill[]): Promise<void> {
     const batch = Array.isArray(skills) ? skills : [skills];
+    const localBatch = batch.map((skill) => structuredClone(skill));
+    await this.registerEffective(
+      localBatch.map((skill) => this.applyDefinitionOverride(skill)),
+      localBatch,
+    );
+  }
+
+  /** @internal Apply a complete definition overlay while retaining local definitions for restore. */
+  async applyDefinitionOverrides(
+    overrides: ReadonlyMap<string, string>,
+    options: DefinitionOverrideApplyOptions = {},
+  ): Promise<void> {
+    const { adopt = true, emitDefinitions = true } = options;
+    this.overrideSearchableDescriptions = new Map(overrides);
+    if (adopt) this.registry.setUseDefinitionOverrides();
+    await this.replaceAllEffective(
+      [...this.localSkills.values()].map((skill) => this.applyDefinitionOverride(skill)),
+      undefined,
+      emitDefinitions,
+    );
+  }
+
+  /** @internal Commit one-way definition-override ownership after a staged apply. */
+  enableDefinitionOverrides(): void {
+    this.registry.setUseDefinitionOverrides([...this.skills.values()]);
+  }
+
+  private async registerEffective(
+    batch: readonly Skill[],
+    localBatch?: readonly Skill[],
+  ): Promise<void> {
     this.registry.registerItems(batch);
+    if (localBatch) {
+      for (const skill of localBatch) this.localSkills.set(skill.id, skill);
+    }
     for (const skill of batch) {
       this.skills.set(skill.id, skill);
     }
@@ -158,7 +199,27 @@ export class SkillCatalog {
    *   rejection.
    */
   replaceAll(skills: readonly Skill[]): PendingReplace {
-    const outcome = this.registry.replaceAllItems(skills);
+    const localSkills = skills.map((skill) => structuredClone(skill));
+    const localIds = new Set(localSkills.map((skill) => skill.id));
+    for (const warnedId of this.warnedShadowIds) {
+      if (!localIds.has(warnedId)) this.warnedShadowIds.delete(warnedId);
+    }
+    return this.replaceAllEffective(
+      localSkills.map((skill) => this.applyDefinitionOverride(skill)),
+      localSkills,
+    );
+  }
+
+  private replaceAllEffective(
+    skills: readonly Skill[],
+    localSkills?: readonly Skill[],
+    emitDefinitions = true,
+  ): PendingReplace {
+    const outcome = this.registry.replaceAllItems(skills, emitDefinitions);
+    if (localSkills) {
+      this.localSkills.clear();
+      for (const skill of localSkills) this.localSkills.set(skill.id, skill);
+    }
     this.skills.clear();
     for (const skill of skills) {
       this.skills.set(skill.id, skill);
@@ -167,6 +228,15 @@ export class SkillCatalog {
     // phase still reports what the (already committed) swap changed.
     const embedded = this.ensureDenseReady().then(() => outcome);
     return Object.assign(embedded, outcome);
+  }
+
+  private applyDefinitionOverride(skill: Skill): Skill {
+    return withDefinitionOverride(
+      "skill",
+      skill,
+      this.overrideSearchableDescriptions,
+      this.warnedShadowIds,
+    );
   }
 
   private async ensureDenseReady(): Promise<void> {
@@ -240,7 +310,7 @@ export class SkillCatalog {
 
   /** Complete, deterministic public skill definition set. */
   snapshot(): SkillDefinition[] {
-    return [...this.skills.values()]
+    return [...this.localSkills.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map(({ body: _body, ...skill }) => structuredClone(skill));
   }
@@ -251,6 +321,11 @@ export class SkillCatalog {
     options: Required<RuntimeEventsOptions>,
   ): NativeEventSubscription {
     return this.registry.subscribeEvents(handler, options);
+  }
+
+  /** @internal Enable experimental complete catalog-definition events. */
+  experimentalEnableCatalogDefinitions(): void {
+    this.registry.experimentalEnableCatalogDefinitions();
   }
 
   /**

@@ -12,8 +12,9 @@
 //!
 //! Three registries hold the corpus, one per capability kind:
 //!
-//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints described by a
-//!   name, a description, and JSON schemas.
+//! - [`ToolRegistry`] indexes [`Tool`]s — callable endpoints ranked by name
+//!   plus description and JSON schema tokens, or by a searchable-description
+//!   override that replaces both.
 //! - [`SkillRegistry`] indexes [`Skill`]s — reusable instruction playbooks
 //!   whose body is dispatched on demand (a *pull*).
 //! - [`FactRegistry`] indexes [`Fact`]s — constant grounding content whose body
@@ -52,8 +53,9 @@
 //!     id: "read_file".into(),
 //!     name: "read_file".into(),
 //!     description: "Read a file from disk".into(),
+//!     experimental_searchable_description: None,
 //!     // Property NAMES are indexed alongside the description; their
-//!     // descriptions and enum values are not (ADR-0021).
+//!     // descriptions and enum values are not (ADR-0023).
 //!     input_schema: serde_json::json!({
 //!         "properties": {
 //!             "path": { "type": "string" }
@@ -65,6 +67,7 @@
 //!     id: "send_email".into(),
 //!     name: "send_email".into(),
 //!     description: "Send an email to a recipient".into(),
+//!     experimental_searchable_description: None,
 //!     input_schema: serde_json::json!({}),
 //!     output_schema: serde_json::json!({}),
 //! });
@@ -120,9 +123,9 @@ pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};
 pub use tool::Tool;
 pub use tool_registry::{AdaptiveRankingStatus, SearchHit, ToolRegistry};
 pub use trace::{
-    ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, FanoutSink, FanoutSubscription,
-    FnSink, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace, SearchStage, SkillHitTrace,
-    TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
+    CatalogKind, ChurnKind, EmbedderLoadStatus, FactHitTrace, FactInjectReason, FanoutSink,
+    FanoutSubscription, FnSink, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace,
+    SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
 };
 pub use usage::{ClusterPolicy, Intent, IntentGraph, IntentGraphError};
 pub use usage_learner::{ObservationPolicy, OriginFilter, Provenance, UsageLearner};

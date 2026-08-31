@@ -65,6 +65,21 @@ async def test_minimal_skill_without_tags_or_body() -> None:
     assert catalog.search("minimal", 5)[0].skill_id == "min"
 
 
+async def test_experimental_searchable_description_replaces_skill_description_for_ranking() -> None:
+    catalog = SkillCatalog()
+    await catalog.register(
+        Skill(
+            id="skill",
+            name="skill",
+            description="composedonlyterm",
+            experimental_searchable_description="overrideonlyterm",
+        )
+    )
+
+    assert [hit.skill_id for hit in catalog.search("overrideonlyterm", 5)] == ["skill"]
+    assert catalog.search("composedonlyterm", 5) == []
+
+
 async def test_re_register_replaces_in_place() -> None:
     # Re-registering an id replaces it in the native corpus, not appends a
     # duplicate: the id ranks once and the latest metadata wins (RAT-378).

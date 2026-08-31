@@ -21,6 +21,10 @@ Amended 2026-08-13 by [ADR-0020](0020-runtime-events-lane.md): the core stream i
 public subscription seam and may be published as a direct product-facts lane. OTel remains a
 separate, unchanged observability projection.
 
+Amended 2026-08-15 to allow catalog definitions on an explicit, content-gated OTel Logs
+EventRecord. Amended 2026-08-19 to recognize the independently consented
+`catalog_definition` runtime event added to ADR-0020's product-facts vocabulary.
+
 ## Context
 
 Two telemetry projections exist for different consumers. A core-owned runtime stream feeds the
@@ -54,6 +58,10 @@ make Ratel Cloud an island.
   Best-effort, sampleable, lossy on backpressure, loosely ordered, no synchronous durability
   on the hot path (ring buffer, periodic flush). Losing an event is acceptable; corrupting a
   catalog is not.
+- Catalog definitions are an intentional public runtime-event variant. Attaching a publisher
+  consents to their public fields independently of OTel content capture. They remain lossy change
+  observations; `catalog.snapshot()` is the authoritative full replacement for removals and
+  recovery ([ADR-0020](0020-runtime-events-lane.md)).
 - The SDK records events into the core sink via a synchronous FFI call per event (negligible
   against the LLM call bracketing each invocation). The JSONL sink writes per-project buckets
   under `~/.ratel/telemetry/<project-slug>/`; the slug convention mirrors Claude Code's
@@ -80,11 +88,15 @@ make Ratel Cloud an island.
 - **Two tiers, layered not forked**: `gen_ai.*` adopted verbatim (never renamed or re-nested)
   plus `ratel.*`, the vocabulary we own: the gateway / skill funnel expressed as OTel
   spans and attributes, joinable with any `gen_ai.*` trace by trace/span id.
-- **Content capture uses the OTel-defined span/EventRecord channels and stays default-off**:
+- **OTel content capture uses the OTel-defined span/EventRecord channels and stays default-off**:
   inference messages ride the standard `gen_ai.client.inference.operation.details` EventRecord;
   tool arguments/results ride `gen_ai.tool.call.*` span attributes in span modes and the
   structured `ratel.tool.execution.details` EventRecord in event modes; search text follows the
-  same split. These are Events in the Logs data model, not SpanEvents.
+  same split. Experimental changed tool, skill, and fact definitions ride
+  `ratel.catalog.definition` in event modes only when
+  `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. These are Events in the Logs data model, not SpanEvents. The
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` gate controls only this OTel projection;
+  it does not filter explicitly attached runtime-event publishers.
 - **Ratel Cloud ingests stock OTLP** (`http/protobuf` + `Bearer`). No custom wire format or
   auth: a customer who already runs OTel dual-exports to Ratel by adding a second exporter.
 - **Three thin vocabulary helpers**, with stock OTel transport: `ratel-ai-telemetry`
@@ -114,6 +126,10 @@ facts publisher, but explicitly does not converge or rebase the OTel producer on
   vocabulary we design and version, with the same care as the local event schema.
 - Cross-language reuse is built in: TS- and Python-emitted remote spans and EventRecords share
   one contract, while their local events continue to share the core-owned schema.
+- OTel catalog-definition export is an explicit carve-out from the earlier local-only boundary.
+  It is default-off because descriptions and schemas are OTel content; a session emits one record
+  per distinct definition hash. Separately, ADR-0020 includes `catalog_definition` in the direct
+  runtime product-facts lane under that lane's explicit publisher consent.
 - Rejected: a bespoke unified observability schema and per-language clients (duplicates a ratified
   standard; the pre-compaction 0013 built exactly this and it was deleted unpublished);
   inference-message content on span attributes (attribute limits reject unbounded text);

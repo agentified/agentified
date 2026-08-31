@@ -44,6 +44,7 @@ pub struct FactRegistry {
     /// [`Self::pinned`] injects always-on facts in.
     facts: IndexMap<String, Fact>,
     sink: Arc<dyn TraceSink>,
+    experimental_catalog_definitions: bool,
     /// Prebuilt BM25 index over `facts`, cached across searches and invalidated
     /// on any mutation of the indexed text (mirrors the skill/tool registries).
     bm25: Bm25Cache,
@@ -64,6 +65,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
@@ -74,6 +76,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink,
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
         }
@@ -85,6 +88,7 @@ impl FactRegistry {
         Self {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
         }
@@ -93,6 +97,11 @@ impl FactRegistry {
     /// Replace the trace sink; subsequent events go to `sink`.
     pub fn set_trace_sink(&mut self, sink: Arc<dyn TraceSink>) {
         self.sink = sink;
+    }
+
+    /// Enable experimental complete catalog-definition events for later registrations.
+    pub fn experimental_enable_catalog_definitions(&mut self) {
+        self.experimental_catalog_definitions = true;
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink. The SDK fact
@@ -107,6 +116,19 @@ impl FactRegistry {
     /// holds a duplicate.
     pub fn register(&mut self, fact: Fact) {
         let fact_id = fact.id.clone();
+        let definition = self
+            .experimental_catalog_definitions
+            .then(|| TraceEvent::catalog_definition_for_fact(&fact))
+            .flatten();
+        let definition_changed = definition.as_ref().is_some_and(|definition| {
+            self.facts.get(&fact_id).is_none_or(|existing| {
+                let existing_definition = TraceEvent::catalog_definition_for_fact(existing);
+                existing_definition
+                    .as_ref()
+                    .and_then(TraceEvent::catalog_definition_hash)
+                    != definition.catalog_definition_hash()
+            })
+        });
         if self.facts.insert(fact_id.clone(), fact).is_some() {
             // Replaced an existing id: drop its stale embedding.
             self.dense.invalidate(&fact_id);
@@ -117,6 +139,9 @@ impl FactRegistry {
             kind: ChurnKind::Add,
             fact_id,
         });
+        if definition_changed && let Some(definition) = definition {
+            self.sink.record(definition);
+        }
     }
 
     /// Number of registered facts (distinct ids).
@@ -160,6 +185,7 @@ impl FactRegistry {
     ///     id: "cancellation".into(),
     ///     name: "cancellation-policy".into(),
     ///     description: "How to cancel or reschedule a booking".into(),
+    ///     experimental_searchable_description: None,
     ///     tags: vec!["booking".into()],
     ///     metadata: std::collections::HashMap::new(),
     ///     body: "Cancel at least 24h ahead for a full refund.".into(),
@@ -420,6 +446,7 @@ mod tests {
         FactRegistry {
             facts: IndexMap::new(),
             sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
         }
@@ -430,6 +457,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: description.into(),
+            experimental_searchable_description: None,
             tags: tags.iter().map(|t| (*t).into()).collect(),
             metadata: std::collections::HashMap::new(),
             body: format!("{name} body"),
@@ -534,6 +562,25 @@ mod tests {
     }
 
     #[test]
+    fn experimental_searchable_description_replaces_fact_description_but_keeps_name_and_tags() {
+        let mut reg = FactRegistry::new();
+        let mut overridden = fact(
+            "billing",
+            "billing_policy",
+            "orchestrate zeppelin manifests",
+            &["finance_ops"],
+            PinMode::Retrieved,
+        );
+        overridden.experimental_searchable_description = Some("reconcile overdue invoices".into());
+        reg.register(overridden);
+
+        assert_eq!(reg.search("overdue invoices", 5)[0].fact_id, "billing");
+        assert!(reg.search("zeppelin manifests", 5).is_empty());
+        assert_eq!(reg.search("billing", 5)[0].fact_id, "billing");
+        assert_eq!(reg.search("finance ops", 5)[0].fact_id, "billing");
+    }
+
+    #[test]
     fn search_on_empty_registry_returns_no_hits() {
         let reg = FactRegistry::new();
         assert!(reg.search("anything", 5).is_empty());
@@ -623,6 +670,81 @@ mod tests {
             hits.first().map(|h| h.fact_id.as_str()),
             Some("shop-address")
         );
+    }
+
+    #[test]
+    fn semantic_uses_experimental_searchable_description_and_keeps_name_and_tags() {
+        let mut overridden_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut overridden = fact(
+            "target",
+            "catalog",
+            "shop address",
+            &["general"],
+            PinMode::Retrieved,
+        );
+        overridden.experimental_searchable_description = Some("cancel refund policy".into());
+        overridden_reg.register(overridden);
+        overridden_reg.register(fact(
+            "decoy",
+            "decoy",
+            "shop address",
+            &["general"],
+            PinMode::Retrieved,
+        ));
+        overridden_reg.build_embeddings().unwrap();
+        let override_hits = overridden_reg
+            .search_with_method("cancel refund", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(
+            override_hits.first().map(|h| h.fact_id.as_str()),
+            Some("target")
+        );
+
+        let mut name_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut named = fact(
+            "named",
+            "shop_address",
+            "unrelated",
+            &["general"],
+            PinMode::Retrieved,
+        );
+        named.experimental_searchable_description = Some("cancel refund".into());
+        name_reg.register(named);
+        name_reg.register(fact(
+            "name-decoy",
+            "decoy",
+            "cancel refund",
+            &[],
+            PinMode::Retrieved,
+        ));
+        name_reg.build_embeddings().unwrap();
+        let name_hits = name_reg
+            .search_with_method("shop address", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(name_hits.first().map(|h| h.fact_id.as_str()), Some("named"));
+
+        let mut tag_reg = with_embedder(Arc::new(StubEmbedder));
+        let mut tagged = fact(
+            "tagged",
+            "catalog",
+            "unrelated",
+            &["location"],
+            PinMode::Retrieved,
+        );
+        tagged.experimental_searchable_description = Some("cancel refund".into());
+        tag_reg.register(tagged);
+        tag_reg.register(fact(
+            "tag-decoy",
+            "decoy",
+            "cancel refund",
+            &[],
+            PinMode::Retrieved,
+        ));
+        tag_reg.build_embeddings().unwrap();
+        let tag_hits = tag_reg
+            .search_with_method("shop location", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        assert_eq!(tag_hits.first().map(|h| h.fact_id.as_str()), Some("tagged"));
     }
 
     #[test]

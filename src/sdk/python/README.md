@@ -19,6 +19,8 @@
 
 Use `ToolCatalog` for ranked tools with sync or async handlers and `SkillCatalog` for ranked Markdown playbooks loaded on demand. Expose `search_capabilities_tool`, `invoke_tool_tool`, and `get_skill_content_tool` so an agent can discover tools and skills, invoke tools, and load full skill instructions. Tools from existing MCP servers can be ingested into the tool catalog with the `mcp` extra. **Experimental — facts:** the opt-in `ratel_ai.experimental` namespace adds `FactCatalog` for constant grounding content (a shop's address, a brand's voice). See [Facts](#facts-experimental) below. This API may change or be removed without a major version bump.
 
+Every tool, skill, and fact accepts an optional experimental `experimental_searchable_description`. It replaces only the description component used by BM25 and embeddings; the model-facing `description` is unchanged, names plus skill/fact tags remain indexed, and opted-in tool schemas are not indexed. When omitted, stable behavior is unchanged: tools rank their description and schema tokens, while skills and facts rank their description. This API may change without a major-version bump.
+
 Semantic and hybrid retrieval use a configurable embedding model ([ADR 0012](../../../docs/adr/0012-configurable-embedding-models.md)), set per catalog via the `embedding` argument: the built-in default, a HuggingFace repo or local directory (in-process), or an OpenAI-compatible endpoint (OpenAI, Ollama, TEI, vLLM).
 
 For semantic or hybrid retrieval, `register()` folds embedding in: it accepts one tool or a whole batch and embeds on a worker thread, so model loading, HTTP, and inference never block the asyncio loop or hold the GIL — and embedding errors surface right at `register()`:
@@ -105,6 +107,7 @@ events = RuntimeEvents(
     [tools, skills],
     session_id="agent-session",
     source_id="checkout-agent",
+    experimental_catalog_definitions=True,
 )
 catalog = RuntimeCatalog(tools, skills, source_id=events.source_id)
 
@@ -120,8 +123,11 @@ subscription.unsubscribe()
 
 Async handlers are marshaled onto the subscribing event loop; synchronous handlers run on the
 native callback thread. Both are observational and fail open. `flush()` waits for work already
-accepted by the bounded native queues and for async handlers to settle. Snapshots contain sorted
-public definitions only — never tool executors or skill bodies. Python exposes no Cloud transport;
+accepted by the bounded native queues and for async handlers to settle. Subscribing a remote
+publisher must set `experimental_catalog_definitions=True` to consent to public
+`catalog_definition` fields regardless of the OTel message-content capture setting. Definition events are lossy and change-sensitive; snapshots are
+the authoritative full replacement for removals and recovery. They contain sorted public
+definitions only—never tool executors or skill bodies. Python exposes no Cloud transport;
 applications may publish these events and snapshots through their own adapter.
 
 ## Facts (experimental)
@@ -181,6 +187,6 @@ Use `ground()` for a long-lived agent whose messages you persist; `ground_snapsh
 
 Facts are **host-driven**: the model-facing `search_capabilities` tool is unchanged and never returns facts — you decide what is true and inject it, rather than letting the model discover it. Every decision is traced (`fact_inject` with its reason, `fact_inject_skip`, `fact_snapshot`), so the skip rate — the tokens you saved — is measurable. See [ADR-0017](../../../docs/adr/0017-facts-and-injection-freshness.md).
 
-Telemetry export is optional. With the `otlp` extra installed, `configure_telemetry()` reads `RATEL_OTLP_ENDPOINT` (falling back to the superseded `RATEL_URL`, which warns) and `RATEL_API_KEY`, wires trace and Logs exporters, and returns a shutdown handle. It exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default — `export_all_spans=True` widens spans only. Message/tool content stays off by default; opt in with `capture_content`/`include_span_and_events` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Hosts that already own OpenTelemetry providers add both `ratel_span_processor` and `ratel_log_record_processor` instead.
+Telemetry export is optional. With the `otlp` extra installed, `configure_telemetry()` reads `RATEL_OTLP_ENDPOINT` (falling back to the superseded `RATEL_URL`, which warns) and `RATEL_API_KEY`, wires trace and Logs exporters, and returns a shutdown handle. It exports only `gen_ai.*`/`ratel.*` signal spans and EventRecords by default — `export_all_spans=True` widens spans only. Message and tool content stays off by default; opt in with `capture_content`/`include_span_and_events` (see the [telemetry guide](https://docs.ratel.sh/docs/telemetry) for the capture modes and their privacy implications). Experimental catalog-definition export additionally requires `RATEL_EXPERIMENTAL_CATALOG_DEFINITIONS=true`. Changed definitions then emit one `ratel.catalog.definition` EventRecord per registry-local content hash. Hosts that already own OpenTelemetry providers add both `ratel_span_processor` and `ratel_log_record_processor` instead.
 
 Package layout: `ratel_ai/` is the Python surface (including `embedding_artifact.py` for build/warm helpers), `native/` contains the PyO3 binding, and `tests/` exercises both. For local development, create `.venv` with `uv`, install `maturin`, `pytest`, `pytest-asyncio`, `ruff`, and `mypy`, then run `.venv/bin/maturin develop` and `.venv/bin/pytest`.

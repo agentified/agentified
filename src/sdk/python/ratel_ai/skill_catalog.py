@@ -39,6 +39,7 @@ from .embedding_artifact import (
 from .telemetry import (
     SEARCH_TARGET_SKILL,
     RuntimeEventProjection,
+    record_catalog_definitions,
     trace_search,
     trace_search_async,
     trace_skill_load,
@@ -73,6 +74,8 @@ class Skill:
     # {"stacks": ["react"]} for the push ranker to boost by project context.
     metadata: dict[str, list[str]] = field(default_factory=dict)
     body: str = ""
+    # Experimental retrieval-description override; name and tags stay indexed.
+    experimental_searchable_description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +242,7 @@ class SkillRegistry:
         # a forgotten `await register(...)` is caught at the next dense search.
         self._undriven_builds = 0
         self._dense_tasks: set[asyncio.Task[Any]] = set()
+        self._emitted_definition_hashes: dict[str, str] = {}
 
     @overload
     def register(self, item: Skill) -> Awaitable[None]: ...
@@ -469,6 +473,12 @@ class SkillRegistry:
             self._raise_if_busy()
             self._native.set_trace_sink(kind, session_id, path)
 
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        with self._dense_state:
+            self._raise_if_busy()
+            self._native.experimental_enable_catalog_definitions()
+
     def experimental_enable_adaptive_ranking(
         self,
         graph: IntentGraph,
@@ -631,6 +641,7 @@ class SkillRegistry:
                         skill.id,
                         skill.name,
                         skill.description,
+                        skill.experimental_searchable_description,
                         skill.tags,
                         skill.tools,
                         skill.metadata,
@@ -639,6 +650,7 @@ class SkillRegistry:
                     for skill in skills
                 ]
             )
+            record_catalog_definitions("skill", skills, self._emitted_definition_hashes)
 
     def _replace_all_items(self, skills: Iterable[Skill]) -> ReplaceOutcome:
         """Swap the corpus without embedding — the metadata half of `replace_all`."""
@@ -651,6 +663,7 @@ class SkillRegistry:
                         skill.id,
                         skill.name,
                         skill.description,
+                        skill.experimental_searchable_description,
                         skill.tags,
                         skill.tools,
                         skill.metadata,
@@ -659,6 +672,7 @@ class SkillRegistry:
                     for skill in skills
                 ]
             )
+            record_catalog_definitions("skill", skills, self._emitted_definition_hashes)
         return ReplaceOutcome(added, removed, updated, unchanged)
 
     def _outcome_tracked(self, outcome: ReplaceOutcome, has_items: bool) -> PendingReplace:
@@ -828,9 +842,7 @@ class SkillCatalog:
             query,
             top_k,
             origin,
-            lambda projection: self._registry.search_with_origin(
-                query, top_k, origin, projection
-            ),
+            lambda projection: self._registry.search_with_origin(query, top_k, origin, projection),
         )
 
     async def search_async(
@@ -909,6 +921,10 @@ class SkillCatalog:
             queue_capacity=queue_capacity,
             batch_size=batch_size,
         )
+
+    def experimental_enable_catalog_definitions(self) -> None:
+        """Enable experimental complete catalog-definition events."""
+        self._registry.experimental_enable_catalog_definitions()
 
     def experimental_enable_adaptive_ranking(
         self,

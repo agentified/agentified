@@ -12,9 +12,20 @@ const REQUIRED_ENVELOPE_FIELDS = new Set([
   "source_id",
   "type",
 ]);
+const CATALOG_CRITICAL_FIELDS = ["kind", "id", "name", "content_hash"] as const;
+const CATALOG_SCHEMA_FIELDS = ["input_schema", "output_schema"] as const;
+const CATALOG_DEFINITION_FIELDS = new Set([
+  ...CATALOG_CRITICAL_FIELDS,
+  ...CATALOG_SCHEMA_FIELDS,
+  "description",
+  "tags",
+  "searchable_description",
+  "searchable_description_overridden",
+]);
 
 /** Frozen remotely publishable v1 event names from ADR-0020. */
 export const RUNTIME_EVENT_TYPES = [
+  "catalog_definition",
   "search",
   "skill_search",
   "gateway_search",
@@ -95,6 +106,8 @@ export interface RuntimeEventsOptions {
   queueCapacity?: number;
   /** Maximum envelopes per callback batch. Defaults to the native bridge default. */
   batchSize?: number;
+  /** ⚠️ Experimental. Publish complete catalog-definition events. Defaults to false. */
+  experimentalCatalogDefinitions?: boolean;
 }
 
 /** One runtime-events subscription. */
@@ -117,10 +130,94 @@ export interface CatalogSnapshot {
   readonly skills: readonly SkillDefinition[];
 }
 
+/** One externally-authored retrieval-description override for a local catalog entry. */
+export interface ExperimentalDefinitionOverride {
+  /** Catalog containing the entry. */
+  readonly kind: "tool" | "skill" | "fact";
+  /** Stable local catalog entry id. */
+  readonly entryId: string;
+  /** Externally-authored replacement for the description component used by retrieval. */
+  readonly searchableDescription: string;
+}
+
+/** Successful payload from the runtime-catalog override endpoint. */
+export interface ExperimentalDefinitionOverlay {
+  /** Complete override set, sorted by the source's wire contract. */
+  readonly overrides: readonly ExperimentalDefinitionOverride[];
+}
+
+/** Fresh complete overlay and its strong entity tag. */
+export interface ExperimentalDefinitionOverlayUpdated {
+  /** Successful conditional request. */
+  readonly status: 200;
+  /** Strong entity tag to send on the next refresh. */
+  readonly etag: string;
+  /** Complete overlay payload. */
+  readonly body: ExperimentalDefinitionOverlay;
+}
+
+/** Response indicating that the previously applied overlay is still current. */
+export interface ExperimentalDefinitionOverlayNotModified {
+  /** Not-modified conditional response. */
+  readonly status: 304;
+}
+
+/** Conditional overlay response surfaced by an injected overlay source. */
+export type ExperimentalDefinitionOverlayResponse =
+  | ExperimentalDefinitionOverlayUpdated
+  | ExperimentalDefinitionOverlayNotModified;
+
+/**
+ * Pluggable boundary implemented by whichever client owns the overlay; the Ratel
+ * Cloud SDK's runtime client is the first implementation, not the only one.
+ */
+export interface ExperimentalDefinitionOverlaySource {
+  /** Pull the overlay, conditionally when a previous strong entity tag is available. */
+  fetch(ifNoneMatch?: string): Promise<ExperimentalDefinitionOverlayResponse>;
+}
+
+/**
+ * Experimental options for letting an overlay source own retrieval descriptions.
+ * Calling the experimental attach method is explicit, one-way opt-in for the
+ * life of the process.
+ */
+export interface ExperimentalDefinitionOverridesAttachOptions {
+  /** Source supplied by the attaching client. Calling attach opts into override ownership. */
+  readonly source: ExperimentalDefinitionOverlaySource;
+}
+
+/** Active definition-overrides attachment. */
+export interface ExperimentalDefinitionOverridesAttachment {
+  /** Pull and apply a changed overlay with cross-catalog rollback; concurrent calls share one request. */
+  refresh(): Promise<boolean>;
+}
+
 /** Public catalog-state seam. */
 export interface RuntimeCatalog {
   /** Return a current, serializable full replacement snapshot. */
   snapshot(): CatalogSnapshot;
+}
+
+/** Experimental runtime catalog seam for definition-overlay attachment. */
+export interface ExperimentalDefinitionOverridesRuntimeCatalog extends RuntimeCatalog {
+  /**
+   * ⚠️ Experimental. Attach an injected overlay source and complete the initial pull.
+   * @throws DefinitionOverlayError for an invalid response or failed cross-catalog apply.
+   */
+  experimentalAttachDefinitionOverrides(
+    options: ExperimentalDefinitionOverridesAttachOptions,
+  ): Promise<ExperimentalDefinitionOverridesAttachment>;
+}
+
+/**
+ * @internal Implementation-side catalog. `applyDefinitionOverrides` bypasses the
+ * conditional-request protocol that keeps an attachment's entity tag honest, so it
+ * stays off the public interface; the attach path and tests reach it through here.
+ */
+export interface InternalExperimentalDefinitionOverridesRuntimeCatalog
+  extends ExperimentalDefinitionOverridesRuntimeCatalog {
+  /** Apply the latest complete override set to live local registrations. */
+  applyDefinitionOverrides(overrides: readonly ExperimentalDefinitionOverride[]): Promise<void>;
 }
 
 /** Asynchronous, fail-open consumer of one public event batch. */
@@ -132,6 +229,7 @@ interface SdkSubscriber {
 }
 
 interface EventSource {
+  experimentalEnableCatalogDefinitions(): void;
   subscribeEvents(
     handler: (batch: RuntimeEvent[]) => void,
     options: Required<RuntimeEventsOptions>,
@@ -157,8 +255,12 @@ export class RuntimeEvents {
       sourceId: this.sourceId,
       queueCapacity: options.queueCapacity ?? 1_024,
       batchSize: options.batchSize ?? 64,
+      experimentalCatalogDefinitions: options.experimentalCatalogDefinitions ?? false,
     };
     this.#sources = sources;
+    if (this.#options.experimentalCatalogDefinitions) {
+      for (const source of sources) source.experimentalEnableCatalogDefinitions();
+    }
   }
 
   /**
@@ -288,6 +390,11 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
     return normalized as unknown as RuntimeEvent;
   }
 
+  normalizedSize = trimCatalogSchemas(normalized, normalizedSize);
+  if (normalizedSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) {
+    return normalized as unknown as RuntimeEvent;
+  }
+
   for (const key of Object.keys(normalized)) {
     if (!REQUIRED_ENVELOPE_FIELDS.has(key) && !isProductFactField(key)) {
       normalizedSize = sizeAfterDeletingProperty(normalized, key, normalizedSize);
@@ -311,7 +418,7 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
   );
   bounded.payload_truncated = true;
   let boundedSize = serializedSize(bounded);
-  for (const [key, value] of Object.entries(normalized)) {
+  for (const [key, value] of prioritizedProductFactEntries(normalized)) {
     if (REQUIRED_ENVELOPE_FIELDS.has(key) || !isProductFactField(key)) continue;
     const boundedValue = sanitizeBoundedValue(value);
     const candidateSize = sizeAfterSettingProperty(bounded, key, boundedValue, boundedSize);
@@ -320,6 +427,35 @@ function normalizeRuntimeEvent(input: Record<string, unknown>): RuntimeEvent {
     boundedSize = candidateSize;
   }
   return bounded as unknown as RuntimeEvent;
+}
+
+function trimCatalogSchemas(value: Record<string, unknown>, currentSize: number): number {
+  if (value.type !== "catalog_definition") return currentSize;
+  const fields = CATALOG_SCHEMA_FIELDS.filter((key) => Object.hasOwn(value, key)).sort(
+    (left, right) =>
+      serializedPropertySize(right, value[right]) - serializedPropertySize(left, value[left]),
+  );
+  for (const key of fields) {
+    currentSize = sizeAfterDeletingProperty(value, key, currentSize);
+    delete value[key];
+    currentSize = sizeAfterSettingProperty(value, "payload_truncated", true, currentSize);
+    value.payload_truncated = true;
+    if (currentSize <= RUNTIME_EVENT_MAX_PAYLOAD_BYTES) break;
+  }
+  return currentSize;
+}
+
+function prioritizedProductFactEntries(value: Record<string, unknown>): [string, unknown][] {
+  const entries = Object.entries(value).filter(
+    ([key]) => !REQUIRED_ENVELOPE_FIELDS.has(key) && isProductFactField(key),
+  );
+  if (value.type !== "catalog_definition") return entries;
+  return [
+    ...CATALOG_CRITICAL_FIELDS.flatMap((key) =>
+      Object.hasOwn(value, key) ? ([[key, value[key]]] as [string, unknown][]) : [],
+    ),
+    ...entries.filter(([key]) => !(CATALOG_CRITICAL_FIELDS as readonly string[]).includes(key)),
+  ];
 }
 
 function sanitizeValue(value: unknown, key: string): unknown {
@@ -426,6 +562,7 @@ function serializedPropertySize(key: string, value: unknown): number {
 
 function isProductFactField(key: string): boolean {
   return (
+    CATALOG_DEFINITION_FIELDS.has(key) ||
     key.endsWith("_id") ||
     key.endsWith("_ids") ||
     key.endsWith("_ms") ||

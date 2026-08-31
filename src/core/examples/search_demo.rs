@@ -17,6 +17,7 @@ fn main() {
         id: "read_file".into(),
         name: "read_file".into(),
         description: "Read a file from local disk and return its textual contents.".into(),
+        experimental_searchable_description: None,
         input_schema: json!({
             "properties": {
                 "path": { "type": "string", "description": "absolute path to the file" },
@@ -38,6 +39,7 @@ fn main() {
         id: "write_file".into(),
         name: "write_file".into(),
         description: "Write textual contents to a file on local disk.".into(),
+        experimental_searchable_description: None,
         input_schema: json!({
             "properties": {
                 "path": { "type": "string", "description": "absolute path to the file" },
@@ -51,6 +53,7 @@ fn main() {
         id: "search_files".into(),
         name: "search_files".into(),
         description: "Grep across files in a directory using a regular expression.".into(),
+        experimental_searchable_description: None,
         input_schema: json!({
             "properties": {
                 "root": { "type": "string", "description": "directory to scan recursively" },
@@ -77,6 +80,7 @@ fn main() {
         id: "run_command".into(),
         name: "run_command".into(),
         description: "Execute a shell command and capture stdout, stderr, exit code.".into(),
+        experimental_searchable_description: None,
         input_schema: json!({
             "properties": {
                 "command": { "type": "string", "description": "command line to run" },

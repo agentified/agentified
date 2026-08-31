@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "ratel-ai-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bm25",
  "candle-core",
@@ -1700,6 +1700,7 @@ dependencies = [
  "indexmap",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "tempfile",
  "tokenizers",
@@ -1709,11 +1710,11 @@ dependencies = [
 
 [[package]]
 name = "ratel-ai-telemetry"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "ratel-sdk-python-native"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -1723,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "ratel-sdk-ts-native"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -1909,6 +1910,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1982,6 +1989,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
