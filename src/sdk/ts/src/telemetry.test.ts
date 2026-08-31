@@ -583,6 +583,20 @@ describe("execute_tool span", () => {
     expect(span.status.code).toBe(1);
   });
 
+  it("marks the span ERROR when the tool reports a failure in its result", async () => {
+    const catalog = new ToolCatalog();
+    await catalog.register({
+      ...readFile,
+      id: "failing_tool",
+      execute: async () => ({ isError: true, content: [{ type: "text", text: "boom" }] }),
+    });
+
+    await catalog.invoke("failing_tool", {});
+
+    const [span] = spansNamed("execute_tool failing_tool");
+    expect(span.status.code).toBe(2); // ERROR
+  });
+
   it("marks an AsyncIterable span ERROR when iteration throws", async () => {
     const catalog = new ToolCatalog();
     await catalog.register({
