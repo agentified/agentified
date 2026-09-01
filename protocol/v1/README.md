@@ -233,6 +233,14 @@ to delegate:
   retrieval returned is still not evidence. Two maps, paired with `tools` and `skills`, because
   the id spaces are distinct: an id in one MUST NOT be read against the other. Absent means none
   were recorded.
+
+  A consumer MAY use them to damp — that is what a denominator is for, and unlike
+  `seeded_support` these do reach ranking. Ratel multiplies each edge by
+  `min(1, (invoked + 3) / (considered + 3))`. Three properties earn that shape: a cluster that
+  recorded no impressions gets `3/3 = 1` exactly, so an older graph and a consumer that reports
+  no hits both rank unchanged; the clamp at `1` means an impression can only ever cost an edge,
+  never promote one; and it multiplies rather than replaces the count, so nine invocations still
+  outweigh one. A consumer that ignores the maps ranks exactly as it did before they existed.
 - **Edge weights are counts, not the serving order.** `tools` and `skills` map a capability id
   to how many confirmed observations chose it. A consumer should not serve that order raw: a
   capability invoked across many clusters ranks on volume rather than on answering the matched
