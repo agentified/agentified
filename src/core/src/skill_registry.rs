@@ -8,7 +8,9 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted};
+use crate::fusion::{
+    RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted, score_fuse,
+};
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
 use crate::skill::Skill;
@@ -58,7 +60,7 @@ fn to_skill_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SkillHit> {
             skill_id,
             score,
             rank: i as u32,
-            fused: scale == Scale::Rrf,
+            fused: matches!(scale, Scale::Rrf | Scale::Fused),
             normalized,
         })
         .collect()
@@ -894,7 +896,8 @@ impl SkillRegistry {
         let depth = RETRIEVE_DEPTH.max(top_k);
 
         let t = Instant::now();
-        let bm25_ranked = self.bm25_index().search(query, depth);
+        let index = self.bm25_index();
+        let bm25_ranked = index.search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -919,19 +922,29 @@ impl SkillRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
-        let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
-        let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
-        if let Some(arm) = &arm {
-            arms.push((&arm.ids, arm.weight()));
-        }
-        let (hits, rrf_stage) = Self::fuse_arms(&arms, top_k);
+        // Score fusion, the twin of `ToolRegistry::hybrid_search_traced`: the
+        // arms are normalised onto one absolute scale and added rather than
+        // fused on rank position.
+        let t = Instant::now();
+        let fused = score_fuse(
+            &bm25_ranked,
+            index.query_ceiling(query),
+            &dense_ranked,
+            arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+        );
+        let fusion_stage = SearchStage {
+            name: "fusion".into(),
+            took_ms: t.elapsed().as_millis() as u64,
+            top_score: fused.first().map(|(_, s)| *s as f64),
+        };
+        let mut hits = to_skill_hits(fused, Scale::Fused);
+        hits.truncate(top_k);
 
         let mut stages = vec![bm25_stage, dense_stage];
         if let Some(arm) = &arm {
             stages.push(Self::usage_stage(arm, usage_ms));
         }
-        stages.push(rrf_stage);
+        stages.push(fusion_stage);
 
         let took_ms = started.elapsed().as_millis() as u64;
         self.record_search(query, origin, top_k, &hits, stages, took_ms, context);
@@ -1688,7 +1701,7 @@ mod tests {
             TraceEvent::SkillSearch { stages, .. }
                 if stages.iter().any(|s| s.name == "bm25")
                 && stages.iter().any(|s| s.name == "dense")
-                && stages.iter().any(|s| s.name == "rrf")
+                && stages.iter().any(|s| s.name == "fusion")
         )));
     }
 

@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::embedding::{Embedded, Embedder, EmbedderError};
+use crate::fusion::SCORE_FUSION_DENSE_WEIGHT;
 use crate::indexing::searchable_text;
 use crate::tool::Tool;
 use crate::trace::NoopSink;
@@ -572,10 +573,17 @@ pub(crate) struct ArmRankings {
     /// The usage arm's promoted ids and its fusion weight; absent when no
     /// cluster matched the query.
     pub usage: Option<(Vec<String>, f32)>,
+    /// `Σ idf(query terms)` — the ceiling `score_fuse` divides the BM25 arm by.
+    pub ceiling: f32,
 }
 
 impl ArmRankings {
-    /// The score the fusion currently ignores, per arm.
+    /// The usage arm in the shape `score_fuse` takes it.
+    pub fn usage_pair(&self) -> Option<(&[String], f32)> {
+        self.usage.as_ref().map(|(ids, w)| (ids.as_slice(), *w))
+    }
+
+    /// Each arm's own top score.
     pub fn bm25_top(&self) -> Option<(&str, f32)> {
         self.bm25.first().map(|(id, s)| (id.as_str(), *s))
     }
@@ -595,6 +603,12 @@ pub(crate) fn served_arms(g: &IntentGraph, turns: &[Turn]) -> Vec<ArmRankings> {
         reg.register(tool_of(entry));
     }
     reg.build_embeddings().expect("fixture vectors");
+    let index = crate::search::Bm25Index::build(
+        entries
+            .iter()
+            .map(|e| (e.id.clone(), searchable_text(&tool_of(e))))
+            .collect::<Vec<_>>(),
+    );
     // The whole corpus, so nothing is truncated before the simulation sees it.
     let depth = entries.len();
 
@@ -623,6 +637,7 @@ pub(crate) fn served_arms(g: &IntentGraph, turns: &[Turn]) -> Vec<ArmRankings> {
                 })
                 .into_arm()
                 .map(|a| (a.ids.clone(), a.weight())),
+            ceiling: index.query_ceiling(&turn.query),
         });
     }
     out
@@ -650,49 +665,12 @@ pub(crate) struct Weighting {
 type ArmWeights = Box<dyn Fn(&ArmRankings) -> (f32, f32)>;
 
 impl Weighting {
-    fn flat(bm25: f32, dense: f32, label: &str) -> Self {
+    /// One dense weight; BM25 takes the remainder. The tuple's first slot is
+    /// unused and kept only so `Weighting` stays one shape.
+    fn dense(w: f32, label: &str) -> Self {
         Self {
             label: label.to_string(),
-            weights: Box::new(move |_| (bm25, dense)),
-        }
-    }
-
-    /// Scale the dense arm between silent at `floor` and full weight at `full`,
-    /// off its own top cosine — the R10 proposal.
-    ///
-    /// Lives here rather than in the engine because the sweep below is what
-    /// refused it: flat at every setting, and the cosine it gates on does not
-    /// separate a right answer from a wrong one on this fixture. Kept so the
-    /// refusal stays reproducible instead of becoming a remembered claim.
-    fn dense_ramp(floor: f32, full: f32) -> Self {
-        Self {
-            label: format!("dense ramp {floor:.2}→{full:.2}"),
-            weights: Box::new(move |a| {
-                let w = a.dense_top().map_or(1.0, |(_, cos)| {
-                    ((cos - floor) / (full - floor)).clamp(0.0, 1.0)
-                });
-                (1.0, w)
-            }),
-        }
-    }
-
-    /// The scale-free BM25 candidate: how decisively its top hit beat its second.
-    /// Measured, not shipped — a raw BM25 score means nothing across corpora, and
-    /// this is the only shape that might. Floored at 0.2 rather than 0.0 because
-    /// an undecisive arm is not a wrong one, and BM25 is the arm with no other
-    /// way to be judged.
-    fn bm25_decisiveness() -> Self {
-        Self {
-            label: "bm25 decisiveness".to_string(),
-            weights: Box::new(|a| {
-                let w = match (a.bm25.first(), a.bm25.get(1)) {
-                    (Some((_, top)), Some((_, second))) if *second > 0.0 => {
-                        ((top / second - 1.0) / 0.5).clamp(0.2, 1.0)
-                    }
-                    _ => 1.0,
-                };
-                (w, 1.0)
-            }),
+            weights: Box::new(move |_| (1.0 - w, w)),
         }
     }
 }
@@ -705,26 +683,10 @@ impl Weighting {
 /// live search path: a simulation that drifts from the fusion it predicts is
 /// worse than no simulation, because it is still convincing.
 pub(crate) fn simulate(arms: &[ArmRankings], w: &Weighting) -> Vec<(String, Vec<String>)> {
-    use crate::fusion::{RRF_K, WeightedArm, rrf_fuse_weighted};
-
     arms.iter()
         .map(|a| {
-            let (wb, wd) = (w.weights)(a);
-            let bm25: Vec<String> = a.bm25.iter().map(|(id, _)| id.clone()).collect();
-            let dense: Vec<String> = a.dense.iter().map(|(id, _)| id.clone()).collect();
-            let mut lists: Vec<WeightedArm<'_>> = Vec::new();
-            // Zero means omit, matching `hybrid_search_traced` — at zero an arm's
-            // ids still enter the candidate set tied, and fill top-k alphabetically.
-            if wb > 0.0 {
-                lists.push((&bm25, wb));
-            }
-            if wd > 0.0 {
-                lists.push((&dense, wd));
-            }
-            if let Some((ids, uw)) = &a.usage {
-                lists.push((ids.as_slice(), *uw));
-            }
-            let mut fused = rrf_fuse_weighted(&lists, RRF_K);
+            let (_, w_dense) = (w.weights)(a);
+            let mut fused = score_fuse_at(&a.bm25, a.ceiling, &a.dense, a.usage_pair(), w_dense);
             fused.truncate(SERVED_K);
             (
                 a.query.clone(),
@@ -732,6 +694,42 @@ pub(crate) fn simulate(arms: &[ArmRankings], w: &Weighting) -> Vec<(String, Vec<
             )
         })
         .collect()
+}
+
+/// `score_fuse` at an arbitrary dense weight, so the sweep can vary the one
+/// constant the shipped call fixes. At [`SCORE_FUSION_DENSE_WEIGHT`] it must
+/// agree with the engine byte for byte — which
+/// `the_offline_simulation_reproduces_the_real_served_order` pins.
+fn score_fuse_at(
+    bm25: &[(String, f32)],
+    ceiling: f32,
+    dense: &[(String, f32)],
+    usage: Option<(&[String], f32)>,
+    w_dense: f32,
+) -> Vec<(String, f32)> {
+    use std::collections::HashMap;
+    let mut scores: HashMap<&str, f32> = HashMap::new();
+    if ceiling > 0.0 {
+        for (id, s) in bm25 {
+            *scores.entry(id.as_str()).or_insert(0.0) +=
+                (1.0 - w_dense) * (s / ceiling).clamp(0.0, 1.0);
+        }
+    }
+    for (id, s) in dense {
+        *scores.entry(id.as_str()).or_insert(0.0) += w_dense * s.clamp(0.0, 1.0);
+    }
+    if let Some((ids, weight)) = usage {
+        for (rank, id) in ids.iter().enumerate() {
+            *scores.entry(id.as_str()).or_insert(0.0) += 0.5 * weight / (1.0 + rank as f32);
+        }
+    }
+    let mut ranked: Vec<(String, f32)> = scores
+        .into_iter()
+        .map(|(id, score)| (id.to_string(), score.min(1.0)))
+        .collect();
+    let len = ranked.len();
+    crate::fusion::sort_and_truncate(&mut ranked, len);
+    ranked
 }
 
 /// Read-phrased queries whose top-1 is a write op — the reported failure,
@@ -1189,37 +1187,34 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         cos_when_ok.len(),
     );
 
-    // -- does acting on those scores help? -----------------------------------
-    let _ = writeln!(o, "\n## Confidence sweep\n");
+    // -- how should the two content arms be split? ----------------------------
+    let _ = writeln!(o, "\n## Fusion weight sweep\n");
     let _ = writeln!(
         o,
-        "The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each\n\
-         weighting. `dense ramp a→b` is the R10 proposal; the flat rows are the\n\
-         competing hypothesis — one fixed weight pair for every query — and sit here rather than\n\
-         in a memory so the two are read against each other.\n\
+        "Hybrid fuses the two content arms on their **normalised scores**, so the split between\n\
+         them is one constant. This sweeps it, refusing the same arms offline through the same\n\
+         arithmetic the engine uses.\n\
          \n\
-         `read→write` is the reported failure at top-1, lower is better; `moved` counts queries\n\
-         whose top-1 differs from the default row; `silent` counts queries where the dense arm\n\
-         was damped to zero and dropped out of the candidate set entirely.\n"
+         `read→write` is the reported failure at top-1, lower is better; `correct` counts queries\n\
+         whose top-1 is the tool the turn actually invoked — the fixture's only ground truth;\n\
+         `moved` counts top-1s that differ from the shipped weight.\n"
     );
     let _ = writeln!(
         o,
-        "| weighting | read→write | moved | silent |\n|---|---|---|---|"
+        "| dense / bm25 | correct | read→write | moved |\n|---|---|---|---|"
     );
     let variants: Vec<Weighting> = vec![
-        Weighting::flat(1.0, 1.0, "flat 1.0 / 1.0 **(default)**"),
-        Weighting::flat(0.7, 0.3, "flat 0.7 / 0.3"),
-        Weighting::flat(0.5, 0.5, "flat 0.5 / 0.5"),
-        Weighting::flat(0.3, 0.7, "flat 0.3 / 0.7"),
-        Weighting::flat(0.1, 0.9, "flat 0.1 / 0.9"),
-        Weighting::dense_ramp(0.30, 0.60),
-        Weighting::dense_ramp(0.40, 0.70),
-        Weighting::dense_ramp(0.50, 0.80),
-        Weighting::dense_ramp(0.60, 0.90),
-        Weighting::dense_ramp(0.65, 0.75),
-        Weighting::bm25_decisiveness(),
+        Weighting::dense(0.5, "0.5 dense / 0.5 bm25"),
+        Weighting::dense(0.6, "0.6 / 0.4"),
+        Weighting::dense(0.7, "0.7 / 0.3 **(shipped)**"),
+        Weighting::dense(0.8, "0.8 / 0.2"),
+        Weighting::dense(0.9, "0.9 / 0.1"),
+        Weighting::dense(1.0, "1.0 dense only"),
     ];
-    let reference = simulate(&arms, &variants[0]);
+    let reference = simulate(
+        &arms,
+        &Weighting::dense(SCORE_FUSION_DENSE_WEIGHT, "shipped"),
+    );
     for v in &variants {
         let sim = simulate(&arms, v);
         let moved = sim
@@ -1227,25 +1222,34 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             .zip(&reference)
             .filter(|((_, a), (_, b))| a.first() != b.first())
             .count();
-        let silent = arms.iter().filter(|a| (v.weights)(a).1 == 0.0).count();
+        let correct = sim
+            .iter()
+            .filter(|(q, hits)| {
+                turns
+                    .iter()
+                    .find(|t| &t.query == q)
+                    .is_some_and(|t| hits.first() == Some(&t.invoked))
+            })
+            .count();
         let _ = writeln!(
             o,
-            "| {} | {} | {} | {} |",
+            "| {} | {} of {} | {} | {} |",
             v.label,
+            correct,
+            sim.len(),
             read_served_write(&arms, &sim),
-            if v.label.contains("default") {
-                "—".to_string()
+            if v.label.contains("shipped") {
+                "\u{2014}".to_string()
             } else {
                 format!("{moved} of {}", arms.len())
             },
-            silent
         );
     }
     let _ = writeln!(
         o,
-        "\n**Read the `read→write` column against the default row, and nothing else.** A weighting\n\
-         that moves many top-1s without lowering it has changed the ranking, not improved it —\n\
-         which is exactly what the flat rows were assumed to do before they were measured.\n"
+        "\n**`correct` is the column that decides this**, and `read→write` is a proxy that predates\n\
+         it. A weight that moves many top-1s without raising `correct` has changed the ranking,\n\
+         not improved it.\n"
     );
 
     // -- what the length penalty costs -----------------------------------------
@@ -1603,12 +1607,12 @@ mod tests {
         let turns = turns();
         let (graph, _) = replay(&turns);
         let arms = served_arms(&graph, &turns);
-        let flat = Weighting::flat(1.0, 1.0, "default");
+        let shipped = Weighting::dense(SCORE_FUSION_DENSE_WEIGHT, "shipped");
 
         assert_eq!(
-            simulate(&arms, &flat),
+            simulate(&arms, &shipped),
             served_topk(&graph, &turns),
-            "the simulation at flat weights must be the live hybrid path, query \
+            "the simulation at the shipped weight must be the live hybrid path, query \
              for query and id for id"
         );
     }

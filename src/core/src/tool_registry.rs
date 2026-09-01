@@ -9,7 +9,9 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted};
+use crate::fusion::{
+    RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted, score_fuse,
+};
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
@@ -141,7 +143,7 @@ fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
             tool_id,
             score,
             rank: i as u32,
-            fused: scale == Scale::Rrf,
+            fused: matches!(scale, Scale::Rrf | Scale::Fused),
             normalized,
         })
         .collect()
@@ -1046,7 +1048,8 @@ impl ToolRegistry {
 
         // 1. BM25 (lexical).
         let t = Instant::now();
-        let bm25_ranked = self.bm25_index().search(query, depth);
+        let index = self.bm25_index();
+        let bm25_ranked = index.search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -1073,20 +1076,28 @@ impl ToolRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
-        // 4. RRF fusion → final top_k.
-        let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
-        let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
-        if let Some(arm) = &arm {
-            arms.push((&arm.ids, arm.weight()));
-        }
-        let (hits, rrf_stage) = Self::fuse_arms(&arms, top_k);
+        // 4. Score fusion → final top_k. The arms are normalised onto one
+        //    absolute scale and added, rather than fused on rank position.
+        let t = Instant::now();
+        let fused = score_fuse(
+            &bm25_ranked,
+            index.query_ceiling(query),
+            &dense_ranked,
+            arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+        );
+        let fusion_stage = SearchStage {
+            name: "fusion".into(),
+            took_ms: t.elapsed().as_millis() as u64,
+            top_score: fused.first().map(|(_, s)| *s as f64),
+        };
+        let mut hits = to_search_hits(fused, Scale::Fused);
+        hits.truncate(top_k);
 
         let mut stages = vec![bm25_stage, dense_stage];
         if let Some(arm) = &arm {
             stages.push(Self::usage_stage(arm, usage_ms));
         }
-        stages.push(rrf_stage);
+        stages.push(fusion_stage);
 
         let took_ms = started.elapsed().as_millis() as u64;
         self.record_search(query, origin, top_k, &hits, stages, took_ms, context);
@@ -1523,7 +1534,7 @@ mod tests {
             TraceEvent::Search { stages, .. }
                 if stages.iter().any(|s| s.name == "bm25")
                 && stages.iter().any(|s| s.name == "dense")
-                && stages.iter().any(|s| s.name == "rrf")
+                && stages.iter().any(|s| s.name == "fusion")
         )));
     }
 
@@ -2754,7 +2765,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(stages, vec!["bm25", "dense", "usage", "rrf"]);
+        assert_eq!(stages, vec!["bm25", "dense", "usage", "fusion"]);
     }
 
     #[test]
@@ -2781,7 +2792,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(stages, vec!["bm25", "dense", "rrf"]);
+        assert_eq!(stages, vec!["bm25", "dense", "fusion"]);
     }
 
     #[test]
@@ -3135,15 +3146,25 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_normalizes_min_max_because_rrf_has_no_absolute_level() {
+    /// Hybrid fuses on normalised scores, so its number is already absolute:
+    /// `normalized` is the fused score itself, with no further mapping. The top
+    /// is NOT pinned to 1.0 and the bottom NOT to 0.0 — which is the whole
+    /// reason to fuse on scores rather than ranks.
+    fn hybrid_scores_are_absolute_not_stretched_to_the_endpoints() {
         let reg = catalog(Arc::new(StubEmbedder));
         reg.build_embeddings().unwrap();
         let hits = reg
             .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Hybrid)
             .unwrap();
-        assert!(hits.iter().all(|h| h.fused));
-        assert_eq!(hits.first().map(|h| h.normalized), Some(1.0));
-        assert_eq!(hits.last().map(|h| h.normalized), Some(0.0));
+        assert!(hits.iter().all(|h| h.fused), "still a fused score");
+        assert!(
+            hits.iter().all(|h| (h.normalized - h.score).abs() < 1e-6),
+            "the fused score needs no remapping"
+        );
+        assert!(
+            hits.last().is_some_and(|h| h.normalized > 0.0),
+            "the weakest hit still matched something; min-max would zero it"
+        );
     }
 
     /// No spread is not the same as everything being worthless. Dividing by a

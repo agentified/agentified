@@ -212,7 +212,7 @@ means unchanged from `promoted`.
 | intent | query | cluster | similarity | promoted | raw order | damped |
 |---|---|---|---|---|---|---|
 | create | create a task for the login bug | intent_18 | 0.734 | create_tasks_batch | = (same) | = (same) |
-| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
+| create | add a task to track the migration | intent_0 | 0.933 | create_task, add_task_comment, create_tasks_batch | = (same) | = (same) |
 | create | open a ticket for the flaky test | intent_1 | 1.000 | create_task | = (same) | = (same) |
 | find | find tasks related to authentication | intent_2 | 0.966 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | find tasks about the rate limiter | intent_8 | 0.931 | search_document_chunks, search_tasks | = (same) | = (same) |
@@ -239,7 +239,7 @@ means unchanged from `promoted`.
 | create | add a task for the payments migration | intent_15 | 0.744 | search_projects | = (same) | = (same) |
 | find | find open tasks about the auth flow | intent_2 | 0.888 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | comment | post an update on the auth task | intent_6 | 0.932 | post_progress_comment, update_task | = (same) | = (same) |
-| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
+| comment | add a comment to the migration task | intent_0 | 0.876 | create_task, add_task_comment, create_tasks_batch | = (same) | = (same) |
 | comment | leave a progress note on the deploy task | intent_12 | 1.000 | post_progress_comment | = (same) | = (same) |
 | link | link these two tasks as blocking | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
 | link | attach the pull request to the task | intent_13 | 0.922 | create_task_relationship, link_pr_to_task | = (same) | = (same) |
@@ -247,15 +247,15 @@ means unchanged from `promoted`.
 | project | find the payments project | intent_15 | 1.000 | search_projects | = (same) | = (same) |
 | project | which projects mention authentication | intent_2 | 0.829 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | review | what did I get done today | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) | list_my_active_tasks, end_day_review_workflow |
-| review | close the task and ask for review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | = (same) |
+| review | close the task and ask for review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | update_task_status, complete_task_with_review |
 | create | create tasks for all the failing checks | intent_18 | 1.000 | create_tasks_batch | = (same) | = (same) |
-| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) | create_task, create_tasks_batch, add_task_comment |
+| create | add tasks for each migration step | intent_0 | 0.916 | create_task, add_task_comment, create_tasks_batch | = (same) | = (same) |
 | find | search tasks authentication | intent_2 | 0.921 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | show me existing tasks about auth | intent_2 | 0.889 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | list tasks concerning authentication | intent_2 | 0.942 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | find | tasks related to authentication | intent_2 | 0.961 | search_tasks, create_task, search_document_chunks | = (same) | search_tasks, search_document_chunks, search_projects |
 | exists | what tasks exist about the rate limiter | intent_8 | 0.927 | search_document_chunks, search_tasks | = (same) | = (same) |
-| status | move the login task to in review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | = (same) |
+| status | move the login task to in review | intent_17 | 0.930 | complete_task_with_review, update_task_status | = (same) | update_task_status, complete_task_with_review |
 | doc_read | open the runbook | intent_19 | 1.000 | get_document_content | = (same) | = (same) |
 | filter | what am I working on | intent_16 | 0.928 | end_day_review_workflow, list_my_active_tasks | = (same) | list_my_active_tasks, end_day_review_workflow |
 
@@ -263,8 +263,8 @@ means unchanged from `promoted`.
 fixtures grow: at this size it behaves as a principled tie-break rather than a ranking
 signal, and whether that changes is the question a bigger graph answers.
 
-**The impression penalty reorders 17 of 47, and changes which id leads
-in 2.** Only the leader count can reach a served result: the arm enters
+**The impression penalty reorders 16 of 47, and changes which id leads
+in 4.** Only the leader count can reach a served result: the arm enters
 at half weight or less, so a swap further down its list is absorbed by two full-weight
 arms. Whether those leaders survive the fusion is the served table below.
 
@@ -283,30 +283,30 @@ change it.
 | intent | query | bm25 top-1 | score | dense top-1 | cos | usage w | served top-1 |
 |---|---|---|---|---|---|---|---|
 | create | create a task for the login bug | create_task_for_branch | 3.252 | create_task | 0.702 | 0.167 | create_tasks_batch |
-| create | add a task to track the migration | add_task_comment | 4.736 | create_task | 0.734 | 0.500 | add_task_comment |
+| create | add a task to track the migration | add_task_comment | 4.736 | create_task | 0.734 | 0.500 | create_task |
 | create | open a ticket for the flaky test | — | — | end_day_review_workflow | 0.482 | 0.167 | create_task |
-| find | find tasks related to authentication | create_task_for_branch | 4.998 | search_tasks | 0.715 | 0.500 | create_task |
+| find | find tasks related to authentication | create_task_for_branch | 4.998 | search_tasks | 0.715 | 0.500 | search_tasks |
 | find | find tasks about the rate limiter | search_projects | 3.877 | search_my_tasks_by_keyword | 0.693 | 0.333 | search_tasks |
 | find | look up tasks about the login system | find_task_by_branch | 3.638 | search_tasks | 0.652 | 0.500 | search_tasks |
-| exists | is there a task for the e2e suite | add_task_comment | 0.458 | create_task | 0.663 | 0.500 | search_tasks |
+| exists | is there a task for the e2e suite | add_task_comment | 0.458 | create_task | 0.663 | 0.500 | update_task |
 | exists | what tasks exist about authentication | update_document | 1.870 | create_task | 0.677 | 0.500 | search_tasks |
 | exists | are there any tasks about authentication | add_task_comment | 0.458 | create_task | 0.672 | 0.500 | search_tasks |
 | status | mark the migration task in progress | post_progress_comment | 4.890 | update_task_status | 0.723 | 0.333 | update_task |
-| status | mark task done | complete_task_with_review | 3.554 | complete_task_with_review | 0.717 | 0.333 | update_task |
+| status | mark task done | complete_task_with_review | 3.554 | complete_task_with_review | 0.717 | 0.333 | complete_task_with_review |
 | status | update the status of the deploy task | update_task_status | 4.570 | update_task_status | 0.791 | 0.333 | update_task |
 | find | search for tasks on the payments flow | search_my_tasks_by_keyword | 2.686 | search_tasks | 0.709 | 0.500 | search_tasks |
 | exists | any tasks about authentication | add_task_comment | 0.458 | create_task | 0.666 | 0.500 | search_tasks |
 | create | create a task for the signup bug | create_task_for_branch | 3.252 | create_task | 0.706 | 0.167 | create_tasks_batch |
 | doc_read | open the onboarding doc | — | — | download_document | 0.588 | 0.167 | get_document_content |
 | doc_search | find the section about rate limits in the docs | search_projects | 3.877 | search_document_chunks | 0.610 | 0.333 | search_document_chunks |
-| doc_read | show me the contents of the design doc | get_document_content | 3.503 | get_document_content | 0.673 | 0.333 | get_document_content |
-| doc_search | search the docs for the auth flow | search_my_tasks_by_keyword | 2.289 | search_document_chunks | 0.646 | 0.500 | search_document_chunks |
+| doc_read | show me the contents of the design doc | get_document_content | 3.503 | get_document_content | 0.673 | 0.333 | download_document |
+| doc_search | search the docs for the auth flow | search_my_tasks_by_keyword | 2.289 | search_document_chunks | 0.646 | 0.500 | search_tasks |
 | doc_read | download the architecture pdf | download_document | 7.564 | download_document | 0.635 | 0.333 | download_document |
 | count | how many tasks are open | add_task_comment | 0.458 | count_tasks | 0.710 | 0.333 | count_tasks |
 | count | count the tasks in progress | post_progress_comment | 4.890 | count_tasks | 0.807 | 0.333 | count_tasks |
 | filter | filter my tasks by status | filter_tasks | 4.884 | filter_tasks | 0.833 | 0.333 | filter_tasks |
-| filter | list tasks that are blocked | list_blocked_tasks | 6.096 | list_blocked_tasks | 0.840 | 0.333 | filter_tasks |
-| status | mark the e2e task complete | complete_task_with_review | 7.528 | complete_task_with_review | 0.701 | 0.500 | create_task |
+| filter | list tasks that are blocked | list_blocked_tasks | 6.096 | list_blocked_tasks | 0.840 | 0.333 | list_blocked_tasks |
+| status | mark the e2e task complete | complete_task_with_review | 7.528 | complete_task_with_review | 0.701 | 0.500 | complete_task_with_review |
 | create | add a task for the payments migration | add_task_comment | 4.736 | create_task | 0.711 | 0.167 | add_task_comment |
 | find | find open tasks about the auth flow | find_task_by_branch | 3.275 | find_task_by_branch | 0.671 | 0.500 | search_tasks |
 | comment | post an update on the auth task | post_progress_comment | 7.039 | post_progress_comment | 0.716 | 0.333 | post_progress_comment |
@@ -316,53 +316,47 @@ change it.
 | link | attach the pull request to the task | link_pr_to_task | 9.045 | link_pr_to_task | 0.823 | 0.333 | link_pr_to_task |
 | link | what is blocking the release | create_task_relationship | 3.056 | list_blocked_tasks | 0.618 | 0.167 | list_blocked_tasks |
 | project | find the payments project | search_projects | 4.584 | search_projects | 0.643 | 0.167 | search_projects |
-| project | which projects mention authentication | search_projects | 2.107 | create_task | 0.614 | 0.500 | search_projects |
+| project | which projects mention authentication | search_projects | 2.107 | create_task | 0.614 | 0.500 | search_tasks |
 | review | what did I get done today | get_document_content | 3.503 | end_day_review_workflow | 0.683 | 0.333 | end_day_review_workflow |
 | review | close the task and ask for review | complete_task_with_review | 7.858 | complete_task_with_review | 0.833 | 0.333 | complete_task_with_review |
 | create | create tasks for all the failing checks | check_task_duplicates | 4.855 | create_task | 0.690 | 0.167 | create_tasks_batch |
-| create | add tasks for each migration step | add_task_comment | 4.736 | update_task_status | 0.714 | 0.500 | add_task_comment |
+| create | add tasks for each migration step | add_task_comment | 4.736 | update_task_status | 0.714 | 0.500 | create_task |
 | find | search tasks authentication | search_my_tasks_by_keyword | 2.686 | search_tasks | 0.761 | 0.500 | search_tasks |
 | find | show me existing tasks about auth | update_document | 1.870 | create_task | 0.690 | 0.500 | search_tasks |
 | find | list tasks concerning authentication | list_blocked_tasks | 3.119 | filter_tasks | 0.673 | 0.500 | search_tasks |
-| find | tasks related to authentication | create_task_for_branch | 2.731 | create_task | 0.699 | 0.500 | create_task |
+| find | tasks related to authentication | create_task_for_branch | 2.731 | create_task | 0.699 | 0.500 | search_tasks |
 | exists | what tasks exist about the rate limiter | update_document | 1.870 | create_tasks_batch | 0.639 | 0.333 | search_tasks |
 | status | move the login task to in review | update_task_status | 4.848 | complete_task_with_review | 0.710 | 0.333 | complete_task_with_review |
-| doc_read | open the runbook | — | — | search_tasks_with_comments | 0.530 | 0.167 | search_tasks_with_comments |
+| doc_read | open the runbook | — | — | search_tasks_with_comments | 0.530 | 0.167 | get_document_content |
 | filter | what am I working on | create_task | 1.935 | create_task | 0.622 | 0.333 | create_task |
 
 **On the 25 read-phrased queries, BM25's own top-1 was a write op 11 times and the dense arm's 8 times.**
 
-**Median dense top-1 cosine when the served top-1 was a write op: 0.699 (3 queries); when it was not: 0.673 (22 queries).** A gap here is the evidence that the dense arm knows when it is guessing; no gap means it does not, and R10 is dead on this fixture whatever the ramp is set to.
+**Median dense top-1 cosine when the served top-1 was a write op: 0.663 (2 queries); when it was not: 0.673 (23 queries).** A gap here is the evidence that the dense arm knows when it is guessing; no gap means it does not, and R10 is dead on this fixture whatever the ramp is set to.
 
 
-## Confidence sweep
+## Fusion weight sweep
 
-The same arms, refused offline through the engine's own `rrf_fuse_weighted` under each
-weighting. `dense ramp a→b` is the R10 proposal; the flat rows are the
-competing hypothesis — one fixed weight pair for every query — and sit here rather than
-in a memory so the two are read against each other.
+Hybrid fuses the two content arms on their **normalised scores**, so the split between
+them is one constant. This sweeps it, refusing the same arms offline through the same
+arithmetic the engine uses.
 
-`read→write` is the reported failure at top-1, lower is better; `moved` counts queries
-whose top-1 differs from the default row; `silent` counts queries where the dense arm
-was damped to zero and dropped out of the candidate set entirely.
+`read→write` is the reported failure at top-1, lower is better; `correct` counts queries
+whose top-1 is the tool the turn actually invoked — the fixture's only ground truth;
+`moved` counts top-1s that differ from the shipped weight.
 
-| weighting | read→write | moved | silent |
+| dense / bm25 | correct | read→write | moved |
 |---|---|---|---|
-| flat 1.0 / 1.0 **(default)** | 3 | — | 0 |
-| flat 0.7 / 0.3 | 3 | 5 of 47 | 0 |
-| flat 0.5 / 0.5 | 3 | 1 of 47 | 0 |
-| flat 0.3 / 0.7 | 4 | 3 of 47 | 0 |
-| flat 0.1 / 0.9 | 7 | 12 of 47 | 0 |
-| dense ramp 0.30→0.60 | 3 | 1 of 47 | 0 |
-| dense ramp 0.40→0.70 | 3 | 1 of 47 | 0 |
-| dense ramp 0.50→0.80 | 3 | 3 of 47 | 1 |
-| dense ramp 0.60→0.90 | 3 | 4 of 47 | 3 |
-| dense ramp 0.65→0.75 | 3 | 5 of 47 | 11 |
-| bm25 decisiveness | 5 | 3 of 47 | 0 |
+| 0.5 dense / 0.5 bm25 | 29 of 47 | 2 | 7 of 47 |
+| 0.6 / 0.4 | 30 of 47 | 2 | 5 of 47 |
+| 0.7 / 0.3 **(shipped)** | 32 of 47 | 2 | — |
+| 0.8 / 0.2 | 33 of 47 | 2 | 3 of 47 |
+| 0.9 / 0.1 | 33 of 47 | 1 | 5 of 47 |
+| 1.0 dense only | 34 of 47 | 1 | 6 of 47 |
 
-**Read the `read→write` column against the default row, and nothing else.** A weighting
-that moves many top-1s without lowering it has changed the ranking, not improved it —
-which is exactly what the flat rows were assumed to do before they were measured.
+**`correct` is the column that decides this**, and `read→write` is a proxy that predates
+it. A weight that moves many top-1s without raising `correct` has changed the ranking,
+not improved it.
 
 
 ## BM25 length penalty (`b`)
@@ -413,11 +407,11 @@ reports the same number at any `top_k`.
 | semantic | 3 | filter_tasks | 0.6674 | 0.834 |
 | semantic | 4 | search_my_tasks_by_keyword | 0.6577 | 0.829 |
 | semantic | 5 | find_task_by_branch | 0.6572 | 0.829 |
-| hybrid | 1 | find_task_by_branch | 0.0320 | 1.000 |
-| hybrid | 2 | create_task_for_branch | 0.0318 | 0.990 |
-| hybrid | 3 | create_task | 0.0318 | 0.988 |
-| hybrid | 4 | check_task_duplicates | 0.0310 | 0.950 |
-| hybrid | 5 | search_tasks | 0.0308 | 0.937 |
+| hybrid | 1 | create_task_for_branch | 0.6351 | 0.635 |
+| hybrid | 2 | find_task_by_branch | 0.5813 | 0.581 |
+| hybrid | 3 | create_task | 0.5312 | 0.531 |
+| hybrid | 4 | check_task_duplicates | 0.5236 | 0.524 |
+| hybrid | 5 | search_projects | 0.5195 | 0.519 |
 
 Query: `find tasks related to authentication` · invoked: `search_tasks`
 
@@ -439,14 +433,16 @@ question.
 | cluster | tool | surfaced | invoked | ratio |
 |---|---|---|---|---|
 | intent_0 | create_task | 6 | 4 | 0.625 |
-| intent_0 | create_tasks_batch | 2 | 1 | 0.500 |
+| intent_0 | create_tasks_batch | 3 | 1 | 0.400 |
+| intent_0 | add_task_comment | 4 | 1 | 0.333 |
 | intent_0 | post_progress_comment | 1 | 0 | 0.333 |
+| intent_0 | search_tasks | 1 | 0 | 0.333 |
 | intent_0 | search_tasks_with_comments | 1 | 0 | 0.333 |
-| intent_0 | add_task_comment | 6 | 1 | 0.250 |
 | intent_0 | create_task_for_branch | 2 | 0 | 0.250 |
-| intent_0 | link_pr_to_task | 3 | 0 | 0.200 |
+| intent_0 | create_task_relationship | 2 | 0 | 0.250 |
+| intent_0 | link_pr_to_task | 2 | 0 | 0.250 |
+| intent_0 | update_task | 4 | 0 | 0.167 |
 | intent_0 | update_task_status | 4 | 0 | 0.167 |
-| intent_0 | create_task_relationship | 5 | 0 | 0.143 |
 | intent_1 | create_task | 0 | 1 | 1.000 |
 | intent_1 | check_task_duplicates | 1 | 0 | 0.333 |
 | intent_1 | complete_task_with_review | 1 | 0 | 0.333 |
@@ -454,21 +450,19 @@ question.
 | intent_1 | search_my_tasks_by_keyword | 1 | 0 | 0.333 |
 | intent_1 | search_tasks_with_comments | 1 | 0 | 0.333 |
 | intent_2 | search_tasks | 12 | 9 | 0.714 |
-| intent_2 | search_document_chunks | 2 | 1 | 0.500 |
+| intent_2 | search_document_chunks | 3 | 1 | 0.400 |
+| intent_2 | create_task_relationship | 1 | 0 | 0.333 |
 | intent_2 | list_my_active_tasks | 1 | 0 | 0.333 |
 | intent_2 | list_tasks_by_status | 1 | 0 | 0.333 |
+| intent_2 | search_my_tasks_by_keyword | 1 | 0 | 0.333 |
 | intent_2 | search_projects | 4 | 1 | 0.333 |
-| intent_2 | search_tasks_with_comments | 1 | 0 | 0.333 |
-| intent_2 | create_task_relationship | 2 | 0 | 0.250 |
-| intent_2 | filter_tasks | 2 | 0 | 0.250 |
-| intent_2 | link_pr_to_task | 2 | 0 | 0.250 |
-| intent_2 | search_my_tasks_by_keyword | 2 | 0 | 0.250 |
-| intent_2 | update_task | 2 | 0 | 0.250 |
 | intent_2 | create_task | 11 | 2 | 0.231 |
-| intent_2 | add_task_comment | 3 | 0 | 0.200 |
+| intent_2 | search_tasks_with_comments | 3 | 0 | 0.200 |
+| intent_2 | create_tasks_batch | 4 | 0 | 0.167 |
 | intent_2 | find_task_by_branch | 4 | 0 | 0.167 |
+| intent_2 | update_task | 4 | 0 | 0.167 |
 | intent_2 | create_task_for_branch | 5 | 0 | 0.143 |
-| intent_2 | create_tasks_batch | 5 | 0 | 0.143 |
+| intent_2 | filter_tasks | 5 | 0 | 0.143 |
 | intent_2 | check_task_duplicates | 6 | 0 | 0.125 |
 | intent_3 | create_task | 1 | 1 | 0.667 |
 | intent_3 | search_tasks | 3 | 2 | 0.600 |
@@ -477,28 +471,24 @@ question.
 | intent_3 | search_my_tasks_by_keyword | 3 | 0 | 0.200 |
 | intent_3 | search_projects | 3 | 0 | 0.200 |
 | intent_3 | search_tasks_with_comments | 3 | 0 | 0.200 |
-| intent_4 | update_task | 0 | 1 | 1.000 |
 | intent_4 | create_task | 3 | 1 | 0.400 |
 | intent_4 | search_tasks | 3 | 1 | 0.400 |
+| intent_4 | update_task | 3 | 1 | 0.400 |
 | intent_4 | complete_task_with_review | 1 | 0 | 0.333 |
 | intent_4 | post_progress_comment | 1 | 0 | 0.333 |
-| intent_4 | add_task_comment | 2 | 0 | 0.250 |
-| intent_4 | create_task_relationship | 2 | 0 | 0.250 |
-| intent_4 | link_pr_to_task | 3 | 0 | 0.200 |
-| intent_5 | update_task | 1 | 2 | 1.000 |
+| intent_4 | filter_tasks | 2 | 0 | 0.250 |
+| intent_4 | link_pr_to_task | 2 | 0 | 0.250 |
+| intent_5 | update_task | 2 | 2 | 0.750 |
 | intent_5 | count_tasks | 1 | 0 | 0.333 |
-| intent_5 | create_task | 1 | 0 | 0.333 |
-| intent_5 | link_pr_to_task | 1 | 0 | 0.333 |
 | intent_5 | post_progress_comment | 1 | 0 | 0.333 |
-| intent_5 | search_tasks | 1 | 0 | 0.333 |
 | intent_5 | complete_task_with_review | 2 | 0 | 0.250 |
+| intent_5 | create_task | 2 | 0 | 0.250 |
 | intent_5 | update_task_status | 2 | 0 | 0.250 |
 | intent_6 | post_progress_comment | 2 | 1 | 0.500 |
 | intent_6 | update_task | 2 | 1 | 0.500 |
-| intent_6 | add_task_comment | 1 | 0 | 0.333 |
 | intent_6 | create_task | 1 | 0 | 0.333 |
-| intent_6 | link_pr_to_task | 1 | 0 | 0.333 |
-| intent_6 | update_document | 1 | 0 | 0.333 |
+| intent_6 | list_tasks_by_status | 1 | 0 | 0.333 |
+| intent_6 | update_document | 2 | 0 | 0.250 |
 | intent_6 | update_task_status | 2 | 0 | 0.250 |
 | intent_7 | get_document_content | 1 | 1 | 0.667 |
 | intent_7 | create_task | 1 | 0 | 0.333 |
@@ -508,9 +498,10 @@ question.
 | intent_8 | search_tasks | 0 | 1 | 1.000 |
 | intent_8 | search_document_chunks | 1 | 1 | 0.667 |
 | intent_8 | create_tasks_batch | 1 | 0 | 0.333 |
+| intent_8 | find_task_by_branch | 1 | 0 | 0.333 |
+| intent_8 | list_blocked_tasks | 1 | 0 | 0.333 |
 | intent_8 | list_my_active_tasks | 1 | 0 | 0.333 |
 | intent_8 | search_projects | 1 | 0 | 0.333 |
-| intent_8 | list_blocked_tasks | 2 | 0 | 0.250 |
 | intent_8 | search_my_tasks_by_keyword | 2 | 0 | 0.250 |
 | intent_8 | search_tasks_with_comments | 2 | 0 | 0.250 |
 | intent_9 | download_document | 2 | 1 | 0.500 |
@@ -520,25 +511,23 @@ question.
 | intent_9 | search_document_chunks | 2 | 0 | 0.250 |
 | intent_9 | update_document | 2 | 0 | 0.250 |
 | intent_10 | count_tasks | 2 | 2 | 0.750 |
-| intent_10 | create_task_relationship | 1 | 0 | 0.333 |
-| intent_10 | list_my_active_tasks | 1 | 0 | 0.333 |
-| intent_10 | list_tasks_by_status | 1 | 0 | 0.333 |
 | intent_10 | post_progress_comment | 1 | 0 | 0.333 |
 | intent_10 | search_tasks | 1 | 0 | 0.333 |
-| intent_10 | update_task_status | 1 | 0 | 0.333 |
 | intent_10 | create_tasks_batch | 2 | 0 | 0.250 |
+| intent_10 | filter_tasks | 2 | 0 | 0.250 |
+| intent_10 | list_tasks_by_status | 2 | 0 | 0.250 |
 | intent_11 | filter_tasks | 2 | 1 | 0.500 |
 | intent_11 | list_tasks_by_status | 2 | 1 | 0.500 |
 | intent_11 | count_tasks | 1 | 0 | 0.333 |
-| intent_11 | create_task | 1 | 0 | 0.333 |
 | intent_11 | create_task_relationship | 1 | 0 | 0.333 |
 | intent_11 | list_blocked_tasks | 1 | 0 | 0.333 |
 | intent_11 | list_my_active_tasks | 1 | 0 | 0.333 |
+| intent_11 | update_task | 1 | 0 | 0.333 |
 | intent_11 | update_task_status | 1 | 0 | 0.333 |
 | intent_12 | post_progress_comment | 1 | 1 | 0.667 |
-| intent_12 | add_task_comment | 1 | 0 | 0.333 |
 | intent_12 | complete_task_with_review | 1 | 0 | 0.333 |
-| intent_12 | link_pr_to_task | 1 | 0 | 0.333 |
+| intent_12 | create_task | 1 | 0 | 0.333 |
+| intent_12 | update_task | 1 | 0 | 0.333 |
 | intent_12 | update_task_status | 1 | 0 | 0.333 |
 | intent_13 | create_task_relationship | 2 | 1 | 0.500 |
 | intent_13 | link_pr_to_task | 2 | 1 | 0.500 |
@@ -556,23 +545,26 @@ question.
 | intent_15 | create_task | 1 | 0 | 0.333 |
 | intent_15 | create_task_for_branch | 1 | 0 | 0.333 |
 | intent_15 | find_task_by_branch | 1 | 0 | 0.333 |
-| intent_16 | list_my_active_tasks | 1 | 1 | 0.667 |
+| intent_16 | list_my_active_tasks | 0 | 1 | 1.000 |
 | intent_16 | end_day_review_workflow | 2 | 1 | 0.500 |
 | intent_16 | create_tasks_batch | 1 | 0 | 0.333 |
 | intent_16 | filter_tasks | 1 | 0 | 0.333 |
+| intent_16 | get_document_content | 1 | 0 | 0.333 |
 | intent_16 | list_tasks_by_status | 1 | 0 | 0.333 |
 | intent_16 | create_task | 2 | 0 | 0.250 |
 | intent_16 | update_task | 2 | 0 | 0.250 |
+| intent_17 | update_task_status | 1 | 1 | 0.667 |
 | intent_17 | complete_task_with_review | 2 | 1 | 0.500 |
-| intent_17 | update_task_status | 2 | 1 | 0.500 |
-| intent_17 | add_task_comment | 2 | 0 | 0.250 |
+| intent_17 | add_task_comment | 1 | 0 | 0.333 |
+| intent_17 | filter_tasks | 1 | 0 | 0.333 |
+| intent_17 | search_tasks_with_comments | 1 | 0 | 0.333 |
 | intent_17 | create_task | 2 | 0 | 0.250 |
 | intent_17 | end_day_review_workflow | 2 | 0 | 0.250 |
 | intent_18 | create_tasks_batch | 1 | 1 | 0.667 |
 | intent_18 | check_task_duplicates | 1 | 0 | 0.333 |
-| intent_18 | complete_task_with_review | 1 | 0 | 0.333 |
 | intent_18 | create_task | 1 | 0 | 0.333 |
 | intent_18 | create_task_for_branch | 1 | 0 | 0.333 |
+| intent_18 | create_task_relationship | 1 | 0 | 0.333 |
 | intent_19 | get_document_content | 0 | 1 | 1.000 |
 | intent_19 | end_day_review_workflow | 1 | 0 | 0.333 |
 | intent_19 | search_document_chunks | 1 | 0 | 0.333 |
@@ -580,7 +572,7 @@ question.
 | intent_19 | search_tasks | 1 | 0 | 0.333 |
 | intent_19 | search_tasks_with_comments | 1 | 0 | 0.333 |
 
-**106 (cluster, tool) pairs were surfaced and never invoked** — evidence that exists nowhere in `tools`, because only invocations write edges.
+**104 (cluster, tool) pairs were surfaced and never invoked** — evidence that exists nowhere in `tools`, because only invocations write edges.
 
 **The ratio would lead a different tool in 4 of 20 clusters.** That count is the whole question: at zero, ranking on impressions changes nothing and is not worth the risk; the larger it is, the more the current order is volume rather than fit — and the more a bad ratio could do damage. Neither reading is available from invocation counts alone.
 
@@ -598,59 +590,59 @@ not improved it.
 
 | graph | top-1 correct | write on read | top-1 changed |
 |---|---|---|---|
-| no impressions | 35 of 47 | 3 of 25 | — |
-| with the penalty | 35 of 47 | 3 of 25 | 0 of 47 |
+| no impressions | 32 of 47 | 2 of 25 | — |
+| with the penalty | 33 of 47 | 2 of 25 | 1 of 47 |
 ## Served top-5 (hybrid: BM25 + dense + usage arm)
 
 | intent | query | top-5 |
 |---|---|---|
-| create | create a task for the login bug | create_tasks_batch, create_task_for_branch, create_task, add_task_comment, create_task_relationship |
-| create | add a task to track the migration | add_task_comment, create_task, create_tasks_batch, update_task_status, link_pr_to_task |
+| create | create a task for the login bug | create_tasks_batch, create_task_for_branch, create_task, create_task_relationship, search_tasks |
+| create | add a task to track the migration | create_task, add_task_comment, link_pr_to_task, create_tasks_batch, update_task_status |
 | create | open a ticket for the flaky test | create_task, end_day_review_workflow, search_tasks_with_comments, complete_task_with_review, search_my_tasks_by_keyword |
-| find | find tasks related to authentication | create_task, search_tasks, search_projects, find_task_by_branch, create_task_for_branch |
-| find | find tasks about the rate limiter | search_tasks, search_document_chunks, list_blocked_tasks, search_my_tasks_by_keyword, search_projects |
-| find | look up tasks about the login system | search_tasks, create_task, find_task_by_branch, create_task_relationship, add_task_comment |
-| exists | is there a task for the e2e suite | search_tasks, create_task, update_task, link_pr_to_task, create_task_relationship |
-| exists | what tasks exist about authentication | search_tasks, create_task, check_task_duplicates, create_task_for_branch, update_task |
-| exists | are there any tasks about authentication | search_tasks, create_task, link_pr_to_task, create_tasks_batch, add_task_comment |
-| status | mark the migration task in progress | update_task, post_progress_comment, update_task_status, complete_task_with_review, link_pr_to_task |
-| status | mark task done | update_task, complete_task_with_review, create_task, update_task_status, count_tasks |
-| status | update the status of the deploy task | update_task, post_progress_comment, update_task_status, update_document, create_task |
+| find | find tasks related to authentication | search_tasks, create_task, create_task_for_branch, search_projects, find_task_by_branch |
+| find | find tasks about the rate limiter | search_tasks, search_document_chunks, search_projects, search_my_tasks_by_keyword, list_blocked_tasks |
+| find | look up tasks about the login system | search_tasks, create_task, find_task_by_branch, search_projects, search_tasks_with_comments |
+| exists | is there a task for the e2e suite | update_task, search_tasks, create_task, link_pr_to_task, filter_tasks |
+| exists | what tasks exist about authentication | search_tasks, create_task, update_task, create_tasks_batch, check_task_duplicates |
+| exists | are there any tasks about authentication | search_tasks, create_task, create_tasks_batch, update_task, filter_tasks |
+| status | mark the migration task in progress | update_task, post_progress_comment, complete_task_with_review, update_task_status, create_task |
+| status | mark task done | complete_task_with_review, update_task, update_task_status, create_task, count_tasks |
+| status | update the status of the deploy task | update_task, post_progress_comment, update_task_status, list_tasks_by_status, update_document |
 | find | search for tasks on the payments flow | search_tasks, create_task, search_tasks_with_comments, search_my_tasks_by_keyword, search_projects |
-| exists | any tasks about authentication | search_tasks, create_task, link_pr_to_task, create_tasks_batch, add_task_comment |
-| create | create a task for the signup bug | create_tasks_batch, create_task_for_branch, create_task, add_task_comment, create_task_relationship |
+| exists | any tasks about authentication | search_tasks, create_task, create_tasks_batch, filter_tasks, update_task |
+| create | create a task for the signup bug | create_tasks_batch, create_task_for_branch, create_task, create_task_relationship, update_task |
 | doc_read | open the onboarding doc | get_document_content, download_document, create_task, create_tasks_batch, update_document |
-| doc_search | find the section about rate limits in the docs | search_document_chunks, search_tasks, search_projects, search_my_tasks_by_keyword, list_blocked_tasks |
-| doc_read | show me the contents of the design doc | get_document_content, download_document, search_document_chunks, update_document, create_task |
-| doc_search | search the docs for the auth flow | search_document_chunks, search_projects, search_tasks, search_tasks_with_comments, search_my_tasks_by_keyword |
+| doc_search | find the section about rate limits in the docs | search_document_chunks, search_projects, search_tasks, search_my_tasks_by_keyword, search_tasks_with_comments |
+| doc_read | show me the contents of the design doc | download_document, get_document_content, search_document_chunks, update_document, create_task |
+| doc_search | search the docs for the auth flow | search_tasks, search_document_chunks, search_projects, create_task, search_tasks_with_comments |
 | doc_read | download the architecture pdf | download_document, get_document_content, search_document_chunks, update_document, end_day_review_workflow |
-| count | how many tasks are open | count_tasks, search_tasks, create_tasks_batch, create_task_relationship, list_my_active_tasks |
-| count | count the tasks in progress | count_tasks, post_progress_comment, update_task_status, create_tasks_batch, list_tasks_by_status |
-| filter | filter my tasks by status | filter_tasks, list_tasks_by_status, count_tasks, update_task_status, create_task |
-| filter | list tasks that are blocked | filter_tasks, list_tasks_by_status, list_blocked_tasks, list_my_active_tasks, create_task_relationship |
-| status | mark the e2e task complete | create_task, search_tasks, update_task, complete_task_with_review, link_pr_to_task |
-| create | add a task for the payments migration | add_task_comment, update_task_status, link_pr_to_task, create_task_relationship, create_task |
-| find | find open tasks about the auth flow | search_tasks, search_projects, create_task, find_task_by_branch, create_task_for_branch |
-| comment | post an update on the auth task | post_progress_comment, update_task, update_task_status, link_pr_to_task, add_task_comment |
-| comment | add a comment to the migration task | add_task_comment, create_task, create_tasks_batch, post_progress_comment, search_tasks_with_comments |
-| comment | leave a progress note on the deploy task | post_progress_comment, update_task_status, complete_task_with_review, link_pr_to_task, add_task_comment |
+| count | how many tasks are open | count_tasks, create_tasks_batch, search_tasks, filter_tasks, list_tasks_by_status |
+| count | count the tasks in progress | count_tasks, post_progress_comment, list_tasks_by_status, filter_tasks, create_tasks_batch |
+| filter | filter my tasks by status | filter_tasks, count_tasks, list_tasks_by_status, update_task_status, update_task |
+| filter | list tasks that are blocked | list_blocked_tasks, filter_tasks, list_tasks_by_status, list_my_active_tasks, create_task_relationship |
+| status | mark the e2e task complete | complete_task_with_review, update_task, search_tasks, create_task, post_progress_comment |
+| create | add a task for the payments migration | add_task_comment, create_task, update_task, update_task_status, link_pr_to_task |
+| find | find open tasks about the auth flow | search_tasks, create_task, search_projects, find_task_by_branch, create_task_for_branch |
+| comment | post an update on the auth task | post_progress_comment, update_task, update_task_status, update_document, create_task |
+| comment | add a comment to the migration task | add_task_comment, create_task, post_progress_comment, search_tasks_with_comments, create_tasks_batch |
+| comment | leave a progress note on the deploy task | post_progress_comment, complete_task_with_review, update_task_status, create_task, update_task |
 | link | link these two tasks as blocking | create_task_relationship, link_pr_to_task, list_blocked_tasks, find_task_by_branch, create_task |
-| link | attach the pull request to the task | link_pr_to_task, create_task_relationship, find_task_by_branch, complete_task_with_review, create_task |
+| link | attach the pull request to the task | link_pr_to_task, find_task_by_branch, create_task_relationship, create_task, complete_task_with_review |
 | link | what is blocking the release | list_blocked_tasks, create_task_relationship, download_document, link_pr_to_task, update_document |
 | project | find the payments project | search_projects, find_task_by_branch, create_task, create_task_for_branch, check_task_duplicates |
-| project | which projects mention authentication | search_projects, create_task, check_task_duplicates, filter_tasks, create_tasks_batch |
-| review | what did I get done today | end_day_review_workflow, list_my_active_tasks, list_tasks_by_status, create_task, update_task |
-| review | close the task and ask for review | complete_task_with_review, update_task_status, end_day_review_workflow, create_task, add_task_comment |
-| create | create tasks for all the failing checks | create_tasks_batch, check_task_duplicates, create_task, create_task_for_branch, complete_task_with_review |
-| create | add tasks for each migration step | add_task_comment, create_task, create_tasks_batch, update_task_status, create_task_relationship |
-| find | search tasks authentication | search_tasks, search_projects, search_document_chunks, create_task, search_my_tasks_by_keyword |
-| find | show me existing tasks about auth | search_tasks, create_task, create_tasks_batch, check_task_duplicates, update_task |
-| find | list tasks concerning authentication | search_tasks, create_task, filter_tasks, list_my_active_tasks, list_tasks_by_status |
-| find | tasks related to authentication | create_task, search_tasks, create_task_relationship, check_task_duplicates, create_task_for_branch |
-| exists | what tasks exist about the rate limiter | search_tasks, list_blocked_tasks, list_my_active_tasks, search_my_tasks_by_keyword, search_document_chunks |
-| status | move the login task to in review | complete_task_with_review, update_task_status, end_day_review_workflow, add_task_comment, create_task |
-| doc_read | open the runbook | search_tasks_with_comments, search_document_chunks, get_document_content, end_day_review_workflow, search_projects |
+| project | which projects mention authentication | search_tasks, create_task, search_projects, check_task_duplicates, filter_tasks |
+| review | what did I get done today | end_day_review_workflow, list_my_active_tasks, get_document_content, list_tasks_by_status, create_task |
+| review | close the task and ask for review | complete_task_with_review, end_day_review_workflow, update_task_status, create_task, filter_tasks |
+| create | create tasks for all the failing checks | create_tasks_batch, check_task_duplicates, create_task_for_branch, create_task, create_task_relationship |
+| create | add tasks for each migration step | create_task, add_task_comment, create_tasks_batch, update_task_status, update_task |
+| find | search tasks authentication | search_tasks, search_my_tasks_by_keyword, search_tasks_with_comments, search_projects, search_document_chunks |
+| find | show me existing tasks about auth | search_tasks, create_task, create_tasks_batch, update_task, check_task_duplicates |
+| find | list tasks concerning authentication | search_tasks, create_task, list_my_active_tasks, list_tasks_by_status, filter_tasks |
+| find | tasks related to authentication | search_tasks, create_task, create_task_for_branch, create_task_relationship, check_task_duplicates |
+| exists | what tasks exist about the rate limiter | search_tasks, search_document_chunks, list_blocked_tasks, search_my_tasks_by_keyword, create_tasks_batch |
+| status | move the login task to in review | complete_task_with_review, update_task_status, end_day_review_workflow, create_task, add_task_comment |
+| doc_read | open the runbook | get_document_content, search_tasks_with_comments, search_document_chunks, end_day_review_workflow, search_projects |
 | filter | what am I working on | create_task, create_tasks_batch, end_day_review_workflow, list_my_active_tasks, update_task |
 
-**Read-phrased queries served a write op at top-1: 3 of 25.** This is the reported failure, measured end to end.
+**Read-phrased queries served a write op at top-1: 2 of 25.** This is the reported failure, measured end to end.
 

@@ -64,6 +64,87 @@ pub(crate) fn sort_and_truncate(ranked: &mut Vec<(String, f32)>, top_k: usize) {
     ranked.truncate(top_k);
 }
 
+/// Weight the dense arm carries in [`score_fuse`]; BM25 takes the remainder.
+///
+/// 0.7/0.3 rather than even, because the lexical arm is the weaker of the two on
+/// every corpus measured so far — on the harness fixture BM25 alone recovers the
+/// invoked tool 12 times in 47 against dense's 23 — and because a BM25 score is
+/// zero for anything the arm never returned, so an even split lets a query with
+/// no lexical purchase halve every candidate uniformly.
+pub(crate) const SCORE_FUSION_DENSE_WEIGHT: f32 = 0.7;
+
+/// How much of the content score the usage arm may add on top.
+///
+/// Chosen to preserve the influence the arm has under RRF rather than to be
+/// round. There, an arm at weight `w` contributes `w/(k+r)` against two content
+/// arms contributing up to `2/k`, so at rank 0 it is worth `w/2` of the content
+/// maximum. Score fusion normalises the content arms to a combined maximum of
+/// `1.0`, so the same relative say is `w/2` — this constant is that `1/2`.
+///
+/// Getting this wrong is not neutral: too large and history overrides a live
+/// lexical match, which is the failure ADR-0014's sub-unit arm weight exists to
+/// prevent.
+const USAGE_SHARE: f32 = 0.5;
+
+/// Fuse the content arms on their **normalised scores** rather than their rank
+/// positions, and add the usage arm as a bounded bonus.
+///
+/// ```text
+/// score(id) = (1-w)·bm25(id)/ceiling + w·max(0, cos(id))
+///           + USAGE_SHARE · arm_weight · 1/(1 + rank_in_arm)
+/// ```
+///
+/// **Why this is possible now and was not before.** ADR-0011 rejected score
+/// fusion because BM25 is unbounded and cosine is `[-1, 1]`, so the two cannot
+/// be added without one silently dominating. Both arms now produce an absolute
+/// `[0, 1]` value — BM25 against the query's own IDF ceiling, cosine clamped —
+/// so they share a scale for the first time.
+///
+/// **What it buys.** RRF's magnitude is rank arithmetic: its maximum is "first
+/// in every arm", which says nothing about whether the match is any good, so a
+/// query the catalog answers well and one it cannot answer at all both return
+/// ~1.0 at the top. A fused score has a real maximum, so its magnitude means
+/// something and can be compared across queries.
+///
+/// **What it costs.** Rank fusion bounds each arm's mistake to one rank
+/// position; score fusion lets a confidently wrong arm carry its confidence. An
+/// id absent from an arm scores `0` there rather than merely being unranked.
+///
+/// Missing from an arm is `0` for that arm, not a dropped candidate: BM25
+/// returns nothing when no query term matches, and scoring that as zero is the
+/// honest reading.
+pub(crate) fn score_fuse(
+    bm25: &[(String, f32)],
+    ceiling: f32,
+    dense: &[(String, f32)],
+    usage: Option<(&[String], f32)>,
+) -> Vec<(String, f32)> {
+    use std::collections::HashMap;
+
+    let w = SCORE_FUSION_DENSE_WEIGHT;
+    let mut scores: HashMap<&str, f32> = HashMap::new();
+    if ceiling > 0.0 {
+        for (id, s) in bm25 {
+            *scores.entry(id.as_str()).or_insert(0.0) += (1.0 - w) * (s / ceiling).clamp(0.0, 1.0);
+        }
+    }
+    for (id, s) in dense {
+        *scores.entry(id.as_str()).or_insert(0.0) += w * s.clamp(0.0, 1.0);
+    }
+    if let Some((ids, weight)) = usage {
+        for (rank, id) in ids.iter().enumerate() {
+            *scores.entry(id.as_str()).or_insert(0.0) += USAGE_SHARE * weight / (1.0 + rank as f32);
+        }
+    }
+    let mut ranked: Vec<(String, f32)> = scores
+        .into_iter()
+        .map(|(id, score)| (id.to_string(), score.min(1.0)))
+        .collect();
+    let len = ranked.len();
+    sort_and_truncate(&mut ranked, len);
+    ranked
+}
+
 /// Which scale a ranked list's scores are on, which decides both
 /// a hit's `fused` flag and how its `normalized` value is derived. Shared by
 /// [`crate::tool_registry`] and [`crate::skill_registry`], so the two cannot
@@ -76,6 +157,9 @@ pub(crate) enum Scale {
     Cosine,
     /// Reciprocal Rank Fusion — rank arithmetic; magnitude is ordering only.
     Rrf,
+    /// A score fusion of already-normalised arms — absolute in `[0, 1]`, so it
+    /// needs no further mapping.
+    Fused,
 }
 
 /// Map each score onto `[0, 1]` by the rule its scale admits.
@@ -98,6 +182,9 @@ pub(crate) enum Scale {
 pub(crate) fn normalize(ranked: &[(String, f32)], scale: Scale) -> Vec<f32> {
     match scale {
         Scale::Cosine => return ranked.iter().map(|(_, s)| (s + 1.0) / 2.0).collect(),
+        // Already `[0, 1]` and already absolute — the whole point of fusing on
+        // scores rather than ranks.
+        Scale::Fused => return ranked.iter().map(|(_, s)| s.clamp(0.0, 1.0)).collect(),
         // A ceiling of zero means no query term appears anywhere in the corpus,
         // so every score is zero too and there is nothing to divide.
         Scale::Bm25 { ceiling } if ceiling > 0.0 => {
