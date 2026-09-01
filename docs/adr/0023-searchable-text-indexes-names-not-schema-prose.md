@@ -28,6 +28,12 @@ justification was this decision. On the same fixture 0.75 leaves accuracy unchan
 read-queries-served-a-write-op from 8 of 25 to 11. It stays only because 0.75 is the field
 standard. See `harness-results.md`'s `b` sweep, and RS-95 for real corpora.
 
+RS-95's SR-Agents run (`0.4.0` → `rc.2`, +0.082 recall@5) contains this `b` change but does not
+isolate it — the same delta also contains score fusion
+([ADR-0024](0024-hybrid-fuses-on-scores.md)). An `rc.1` run on that slice would separate them,
+since rc.1 carries `b = 0.75` without score fusion. Until then `b` rests on the field standard
+and a fixture that argues against it.
+
 The record below is kept as written, so a future attempt inherits the argument and the
 measurement that refused it rather than rediscovering both.
 

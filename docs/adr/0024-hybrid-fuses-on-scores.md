@@ -38,7 +38,9 @@ wrongly.
 
 ## Measurement
 
-BFCL, 100 scenarios shared across all four runs, pool size 100, `retrieval-0.12.0-rc.{1,2}-*`.
+### BFCL — isolates this rule
+
+100 scenarios shared across all four runs, pool size 100, `retrieval-0.12.0-rc.{1,2}-*`.
 rc.1 is RRF; rc.2 is this rule. The `Bm25` and `Semantic` arms are unchanged between the two
 RCs, so rc.1's numbers for them stand.
 
@@ -55,11 +57,36 @@ move, not noise in both directions. Top-1 gained 3 and lost 1.
 
 Two things this does **not** show. Hybrid still trails pure dense on BFCL, which is the fixture's
 verdict surviving contact with a real corpus: the weight already sits at 0.7 dense and the sweep
-wanted more. And BFCL is a *tool* corpus; the skill path is unmeasured here.
+wanted more. And BFCL is a *tool* corpus; for skills see SR-Agents below.
 
 The gold-score column is the readability claim, not a quality one. RRF returned `0.0332` for the
 correct answer whatever the query — two arms times `1/(60+1)`, an artifact of `RRF_K`. Fusion
 returns `0.7151`, on the same scale as the dense arm it mostly reflects.
+
+### SR-Agents — the skill path, but does not isolate this rule
+
+100 scenarios, pool size 100, hybrid. This is the **skill** corpus, so it answers the "unmeasured
+on skills" caveat above. It is a `0.4.0` → `rc.2` comparison, not `rc.1` → `rc.2`.
+
+| k | metric | 0.4.0 | rc.2 | Δ |
+|---|---|---|---|---|
+| 1 | hit@1 / MRR | 0.9700 | 0.9700 | 0 |
+| 3 | recall@3 | 0.7963 | 0.8513 | +0.0550 |
+| 3 | nDCG@3 | 0.8588 | 0.9056 | +0.0468 |
+| 5 | recall@5 | 0.8777 | 0.9593 | **+0.0816** |
+| 5 | nDCG@5 | 0.8836 | 0.9435 | +0.0599 |
+| 5 | hit@5 | 0.9900 | 1.0000 | +0.0100 |
+
+Larger than BFCL's gain, and on skills. **It is not attributable to this rule alone.** `0.4.0`
+predates the whole branch, so the delta also contains `BM25_B` 0.4 → 0.75
+([ADR-0023](0023-searchable-text-indexes-names-not-schema-prose.md), still unsettled) and the
+skill-side normalize-before-truncate fix. Adaptive ranking is *not* in it — `sragents-candidates`
+builds no intent graph — so the usage arm, ICF, and impressions are all inert here.
+
+The shape is consistent with score fusion: hit@1 is flat and every gain is in the tail, which is
+what replacing RRF's near-ties with real scores should do. But `b` also only reorders the tail,
+so the shape is a hint, not an attribution. An `rc.1` hybrid run on the same slice would split
+the two, and would be the first real-corpus evidence on `b`.
 
 ## Decision
 
