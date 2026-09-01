@@ -118,6 +118,54 @@ async def test_execute_tool_span_attributes(exporter: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_span_is_error_when_the_tool_reports_a_failure(
+    exporter: Any,
+) -> None:
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="failing_tool",
+            name="failing_tool",
+            description="Reports a failure in its result instead of raising.",
+            input_schema={"properties": {}},
+            output_schema={"properties": {}},
+            execute=lambda args: {"isError": True, "content": [{"type": "text", "text": "boom"}]},
+        )
+    )
+    await catalog.invoke("failing_tool", {})
+
+    spans = _spans_named(exporter, "execute_tool failing_tool")
+    assert spans[0].status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_is_error_on_the_mcp_result_model(exporter: Any) -> None:
+    """The span channel reads the failure off a `CallToolResult`, not only off a dict."""
+    pytest.importorskip("mcp", reason="install ratel-ai[mcp] to run MCP result-shape tests")
+    from mcp import types
+
+    failure = types.CallToolResult(
+        content=[types.TextContent(type="text", text="boom")],
+        isError=True,
+    )
+    catalog = ToolCatalog()
+    await catalog.register(
+        ExecutableTool(
+            id="failing_model_tool",
+            name="failing_model_tool",
+            description="Returns the result model an mcp client hands back on a failed call.",
+            input_schema={"properties": {}},
+            output_schema={"properties": {}},
+            execute=lambda args: failure,
+        )
+    )
+    await catalog.invoke("failing_model_tool", {})
+
+    spans = _spans_named(exporter, "execute_tool failing_model_tool")
+    assert spans[0].status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.asyncio
 async def test_search_span_shares_runtime_event_id(exporter: Any) -> None:
     catalog = ToolCatalog()
     skills = SkillCatalog()

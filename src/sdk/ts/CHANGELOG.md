@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Fixed
 
+- A tool call that reports failure in its result (`isError`) now closes the `execute_tool` span as `ERROR` and emits `invoke_error`; it previously recorded as a success.
 - **Hybrid results could come back in the wrong order when several hits scored at the top.** Fused scores were capped at `1.0` before being sorted, so two strong hits collapsed to the same value and fell back to alphabetical order by id. This bit hardest with adaptive ranking on: a tool you use constantly could be listed below one you never use, purely because its id sorted later. Ordering now uses the uncapped score. Nothing you can read changes — `score` and `normalized` are still `[0, 1]` — only the order, and only where it was wrong. `"bm25"` and `"semantic"` were never affected.
 
 ### Added

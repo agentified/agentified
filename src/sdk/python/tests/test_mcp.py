@@ -16,6 +16,11 @@ from typing import Any
 
 import pytest
 
+try:  # module scope so get_type_hints can resolve the handler annotations below
+    from mcp import types
+except ImportError:
+    types = None  # type: ignore[assignment]
+
 from ratel_ai import (
     EmbedderError,
     McpToolsListError,
@@ -74,7 +79,6 @@ async def _memory_client_session(server: Any) -> AsyncGenerator[Any, None]:
 def _paginated_probe_server() -> Any:
     """Server that returns two pages of tools/list (decorator API on 1.x, handlers on 2.x)."""
     if _mcp_major_version() >= 2:
-        import mcp_types as types
         from mcp.server.lowlevel.server import Server
 
         tools = [
@@ -106,7 +110,6 @@ def _paginated_probe_server() -> Any:
             on_call_tool=on_call_tool,
         )
 
-    from mcp import types
     from mcp.server import Server
 
     server = Server("ratel-pagination-probe")
@@ -128,6 +131,48 @@ def _paginated_probe_server() -> Any:
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=name)]
+
+    return server
+
+
+def _failing_probe_server() -> Any:
+    """Server whose one tool reports failure in the result (`isError`), without raising."""
+    tools = [types.Tool(name="boom", description="always fails", inputSchema={"type": "object"})]
+    failure = types.CallToolResult(
+        content=[types.TextContent(type="text", text="boom")],
+        isError=True,
+    )
+
+    if _mcp_major_version() >= 2:
+        from mcp.server.lowlevel.server import Server
+
+        async def on_list_tools(
+            _ctx: Any, _params: types.PaginatedRequestParams | None
+        ) -> types.ListToolsResult:
+            return types.ListToolsResult(tools=tools)
+
+        async def on_call_tool(
+            _ctx: Any, _params: types.CallToolRequestParams
+        ) -> types.CallToolResult:
+            return failure
+
+        return Server(
+            "ratel-failure-probe",
+            on_list_tools=on_list_tools,
+            on_call_tool=on_call_tool,
+        )
+
+    from mcp.server import Server
+
+    server = Server("ratel-failure-probe")
+
+    @server.list_tools()
+    async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=tools)
+
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict | None) -> types.CallToolResult:
+        return failure
 
     return server
 
@@ -558,3 +603,20 @@ async def test_register_mcp_server_paginated_list_tools_real_client_session() ->
 
     register_events = [e for e in catalog.drain_trace_events() if e["type"] == "upstream_register"]
     assert register_events[0]["tool_count"] == 3
+
+
+async def test_invoke_emits_invoke_error_when_a_real_mcp_tool_reports_failure() -> None:
+    """MCP signals failure in the result, and the real client returns a model, not a dict."""
+    pytest.importorskip("mcp", reason="install ratel-ai[mcp] to run real MCP session tests")
+
+    server = _failing_probe_server()
+    catalog = ToolCatalog(trace=TraceSinkConfig(kind="memory", session_id="mcp-fail"))
+    async with _memory_client_session(server) as session:
+        await register_mcp_server(catalog, name="demo", session=session)
+        catalog.drain_trace_events()
+        await catalog.invoke("demo__boom", {})
+
+    # The call succeeds at the protocol level; only the body reports the failure.
+    emitted = [e["type"] for e in catalog.drain_trace_events()]
+    assert "invoke_error" in emitted
+    assert "invoke_end" not in emitted

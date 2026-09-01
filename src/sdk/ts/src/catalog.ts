@@ -18,6 +18,7 @@ import {
   argsSizeBytes,
   errorMessage,
   type RuntimeEventProjection,
+  reportsFailure,
   traceExecuteTool,
   traceSearch,
   traceSearchAsync,
@@ -945,7 +946,11 @@ export function runToolInvocation<T>(
     );
     const started = Date.now();
 
-    const succeed = (_result: unknown): void => {
+    const succeed = (result: unknown): void => {
+      if (reportsFailure(result)) {
+        reject(new Error("the tool reported a failure"));
+        return;
+      }
       catalog.recordEvent(
         {
           type: "invoke_end",
