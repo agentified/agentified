@@ -16,6 +16,11 @@ from typing import Any
 
 import pytest
 
+try:  # module scope so get_type_hints can resolve the handler annotations below
+    from mcp import types
+except ImportError:
+    types = None  # type: ignore[assignment]
+
 from ratel_ai import (
     EmbedderError,
     McpToolsListError,
@@ -74,7 +79,6 @@ async def _memory_client_session(server: Any) -> AsyncGenerator[Any, None]:
 def _paginated_probe_server() -> Any:
     """Server that returns two pages of tools/list (decorator API on 1.x, handlers on 2.x)."""
     if _mcp_major_version() >= 2:
-        import mcp_types as types
         from mcp.server.lowlevel.server import Server
 
         tools = [
@@ -106,7 +110,6 @@ def _paginated_probe_server() -> Any:
             on_call_tool=on_call_tool,
         )
 
-    from mcp import types
     from mcp.server import Server
 
     server = Server("ratel-pagination-probe")
