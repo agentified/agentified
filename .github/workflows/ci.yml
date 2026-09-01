@@ -417,10 +417,12 @@ jobs:
       # `mcp` is installed unpinned and currently resolves to 2.x, so the 1.x-only
       # code path in `_paginated_probe_server` is never hit. `pyproject.toml` allows
       # mcp>=1.0; re-run the suite on 1.x to keep that retro-compatible path verified.
+      # Then restore the resolved version; later steps share this venv.
       - name: Test backwards compatibility with mcp 1.x
         run: |
           uv pip install --python .venv 'mcp<2'
           .venv/bin/pytest
+          uv pip install --python .venv 'mcp>=2'
       # Python 3.9 floor (requires-python >=3.9; ADR-0006 ships cp39 abi3 wheels). The
       # suite above runs on 3.11 only, and the AST guard (tests/test_py39_compat.py)
       # catches just the PEP-604 class of import breakage — stdlib/typing drift (e.g.
