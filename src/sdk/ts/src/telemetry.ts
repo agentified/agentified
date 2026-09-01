@@ -734,6 +734,18 @@ export function upstreamFromToolId(toolId: string): string | undefined {
   return toolId.slice(0, idx);
 }
 
+/**
+ * MCP reports a failed call in the result (`isError: true`), not by throwing.
+ * @internal
+ */
+export function reportsFailure(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { isError?: unknown }).isError === true
+  );
+}
+
 /** Close a span in the failure path: record the exception + ERROR status. */
 function fail(span: Span, err: unknown): void {
   if (err instanceof Error) span.recordException(err);
@@ -770,7 +782,11 @@ export function traceExecuteTool<T>(
         if (captureContentOnEvent()) {
           addToolContentEvent(toolId, args, activeContext, projection.eventId, { value: result });
         }
-        span.setStatus({ code: SpanStatusCode.OK });
+        span.setStatus(
+          reportsFailure(result)
+            ? { code: SpanStatusCode.ERROR, message: "the tool reported a failure" }
+            : { code: SpanStatusCode.OK },
+        );
         span.end();
       };
       const reject = (err: unknown): void => {

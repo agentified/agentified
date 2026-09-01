@@ -694,6 +694,23 @@ describe("ToolCatalog tracing", () => {
     expect(JSON.stringify(catalog.drainTraceEvents())).not.toContain("tenant-secret");
   });
 
+  it("emits invoke_error when the tool reports a failure in its result", async () => {
+    const catalog = new ToolCatalog({ trace: { kind: "memory", sessionId: "t" } });
+    await catalog.register({
+      ...readFile,
+      id: "reports_failure",
+      execute: async () => ({ isError: true, content: [{ type: "text", text: "boom" }] }),
+    });
+    catalog.drainTraceEvents();
+
+    await catalog.invoke("reports_failure", { path: "/x" });
+
+    const events = catalog.drainTraceEvents() as Array<Record<string, unknown>>;
+    const types = events.map((e) => e.type);
+    expect(types).toContain("invoke_error");
+    expect(types).not.toContain("invoke_end");
+  });
+
   it("emits invoke_error when the executor throws and re-throws to the caller", async () => {
     const catalog = new ToolCatalog({ trace: { kind: "memory", sessionId: "t" } });
     await catalog.register({

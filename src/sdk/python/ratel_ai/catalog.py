@@ -32,6 +32,7 @@ from .telemetry import (
     SEARCH_TARGET_TOOL,
     RuntimeEventProjection,
     record_catalog_definitions,
+    reports_failure,
     trace_execute_tool,
     trace_search,
     trace_search_async,
@@ -1336,14 +1337,21 @@ class ToolCatalog:
                     result = await result
                 terminal_projection = projection.copy()
                 terminal_projection["event_id"] = new_runtime_event_id()
-                self._registry.record_event(
+                terminal: dict[str, Any] = (
                     {
+                        "type": "invoke_error",
+                        "tool_id": tool_id,
+                        "took_ms": _elapsed_ms(started),
+                        "error": "the tool reported a failure",
+                    }
+                    if reports_failure(result)
+                    else {
                         "type": "invoke_end",
                         "tool_id": tool_id,
                         "took_ms": _elapsed_ms(started),
-                    },
-                    terminal_projection,
+                    }
                 )
+                self._registry.record_event(terminal, terminal_projection)
                 return result
             except asyncio.CancelledError as err:
                 terminal_projection = projection.copy()

@@ -355,6 +355,17 @@ def _normalize_content(value: Any) -> Any:
     return str(value)
 
 
+def reports_failure(result: Any) -> bool:
+    """MCP reports a failed call in the result (`isError: True`), not by raising.
+
+    The client returns a `CallToolResult` model, not a dict, and 2.x renamed the
+    field to `is_error` (alias `isError`), hence both shapes and both spellings.
+    """
+    if isinstance(result, dict):
+        return result.get("isError") is True or result.get("is_error") is True
+    return getattr(result, "is_error", None) is True or getattr(result, "isError", None) is True
+
+
 async def trace_execute_tool(
     tool_id: str,
     args: dict[str, Any],
@@ -388,7 +399,10 @@ async def trace_execute_tool(
             span.set_attribute(GEN_AI_TOOL_CALL_RESULT, _safe_json(result))
         if _capture_content_on_event():
             _add_tool_content_event(tool_id, args, projection["event_id"], result=result)
-        span.set_status(Status(StatusCode.OK))
+        if reports_failure(result):
+            span.set_status(Status(StatusCode.ERROR, "the tool reported a failure"))
+        else:
+            span.set_status(Status(StatusCode.OK))
         return result
 
 
