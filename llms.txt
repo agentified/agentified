@@ -209,6 +209,22 @@ them in place — so a change applies to later queries only. The graph records t
 clustered under and reports `"active: policy drift"` when the two differ. To actually re-derive
 boundaries, replay a trace log through `experimentalBuildIntentGraph`, or relearn from scratch.
 
+### Tuning the hybrid lexical/semantic split
+
+`ToolCatalog` and `SkillCatalog` take `experimentalDenseWeight` /
+`experimental_dense_weight` (default `0.7`): how much of a `"hybrid"` score the semantic arm
+carries, with BM25 taking the remainder. `0` is pure lexical, `1` pure dense; outside `[0, 1]`
+is rejected rather than clamped. Read by `"hybrid"` only, and it does not scale the
+adaptive-ranking arm.
+
+Worth tuning for the same reason the cluster policy is: the default is **corpus-dependent**. It
+was measured on catalogs of natural-language descriptions
+([ADR-0024](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0024-hybrid-fuses-on-scores.md)),
+where the dense arm carries most of the signal. A catalog keyed on exact identifiers, error
+codes, SKUs, or internal jargon gives BM25 purchase those corpora do not have and will want a
+lower value. If exact-name queries are missing their obvious match, lower it; if paraphrases are
+missing, raise it.
+
 ### `replace` vs `suggest` mode
 
 Tool injection runs in two modes ([ADR-0004](https://github.com/ratel-ai/ratel/blob/main/docs/adr/0004-retrieval-and-tool-selection.md)):

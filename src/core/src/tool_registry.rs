@@ -10,7 +10,8 @@ use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{
-    RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted, score_fuse,
+    DenseWeight, RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted,
+    score_fuse,
 };
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
@@ -198,6 +199,10 @@ pub struct ToolRegistry {
     /// scores unchanged. Shared behind a lock because the learner writes to the
     /// same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
+    /// Share of the hybrid content score the dense arm carries (ADR-0024).
+    /// Read only by the hybrid path; the single-arm methods have nothing to
+    /// weigh. Defaults to the shipped 0.7.
+    dense_weight: DenseWeight,
 }
 
 impl Default for ToolRegistry {
@@ -217,6 +222,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -232,6 +238,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -244,6 +251,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -260,6 +268,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -304,6 +313,31 @@ impl ToolRegistry {
     /// searches read it.
     pub fn set_intent_graph(&mut self, graph: Option<Arc<RwLock<IntentGraph>>>) {
         self.graph = graph;
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7` (ADR-0024).
+    ///
+    /// **Experimental.** The default is right for the corpora measured so far —
+    /// natural-language queries against descriptive metadata — and the knob
+    /// exists because that is one corpus shape, not all of them. A catalog keyed
+    /// on exact identifiers, error codes, or internal jargon gives BM25 purchase
+    /// those corpora do not have, and wants a lower weight. Expect the default to
+    /// move if real usage says it should; expect this method to stay.
+    ///
+    /// Read by [`SearchMethod::Hybrid`] only. The single-arm methods have nothing
+    /// to weigh, so setting it does not affect them, and it never scales the
+    /// usage arm (ADR-0014).
+    ///
+    /// [`SearchMethod::Hybrid`]: crate::SearchMethod::Hybrid
+    pub fn set_experimental_dense_weight(&mut self, weight: DenseWeight) {
+        self.dense_weight = weight;
+    }
+
+    /// The dense arm's current share of the hybrid content score.
+    #[must_use]
+    pub fn experimental_dense_weight(&self) -> DenseWeight {
+        self.dense_weight
     }
 
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
@@ -1084,6 +1118,7 @@ impl ToolRegistry {
             index.query_ceiling(query),
             &dense_ranked,
             arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+            self.dense_weight,
         );
         let fusion_stage = SearchStage {
             name: "fusion".into(),
@@ -1451,6 +1486,69 @@ mod tests {
             reg.build_embeddings(),
             Err(EmbedderError::Inference { .. })
         ));
+    }
+
+    #[test]
+    fn the_dense_weight_defaults_to_the_shipped_value_and_only_hybrid_reads_it() {
+        // Two properties in one: an untouched registry searches exactly as before
+        // the knob existed, and a set weight cannot leak into the single-arm methods.
+        let mut reg = catalog(Arc::new(StubEmbedder));
+        assert_eq!(reg.experimental_dense_weight(), DenseWeight::default());
+        reg.build_embeddings().unwrap();
+
+        let bm25_before = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Bm25)
+            .unwrap();
+        let semantic_before = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.0).unwrap());
+
+        let ids = |hits: &[SearchHit]| -> Vec<String> {
+            hits.iter().map(|h| h.tool_id.clone()).collect()
+        };
+        assert_eq!(
+            ids(&reg
+                .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Bm25)
+                .unwrap()),
+            ids(&bm25_before),
+            "bm25 has one content arm and must ignore the split"
+        );
+        assert_eq!(
+            ids(&reg
+                .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Semantic)
+                .unwrap()),
+            ids(&semantic_before),
+            "semantic has one content arm and must ignore the split"
+        );
+    }
+
+    #[test]
+    fn the_dense_weight_reaches_the_hybrid_scores() {
+        // The knob must be observable end to end, not merely stored. Probe the
+        // whole slate rather than one id: the top hit saturates both arms and
+        // clamps to 1.0 at every weight, which would hide the effect.
+        let mut reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+
+        let slate = |reg: &ToolRegistry| -> Vec<(String, f32)> {
+            reg.search_with_method("read a file", 5, Origin::Direct, SearchMethod::Hybrid)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.tool_id, h.score))
+                .collect()
+        };
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.2).unwrap());
+        let lexical_heavy = slate(&reg);
+        reg.set_experimental_dense_weight(DenseWeight::new(0.9).unwrap());
+        let dense_heavy = slate(&reg);
+
+        assert_ne!(
+            lexical_heavy, dense_heavy,
+            "the weight must change the fused scores, not just be stored"
+        );
     }
 
     #[test]

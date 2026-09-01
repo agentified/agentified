@@ -115,6 +115,7 @@ pub use embedding_artifact::{ArtifactError, merge_embedding_artifacts};
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use fact::{Fact, ParsePinModeError, PinMode};
 pub use fact_registry::{FactHit, FactRegistry};
+pub use fusion::{DenseWeight, InvalidDenseWeight};
 pub use method::{ParseSearchMethodError, SearchMethod};
 pub use skill::Skill;
 pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};

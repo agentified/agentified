@@ -1320,6 +1320,15 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    fn set_experimental_dense_weight(&mut self, weight: f64) -> PyResult<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| PyValueError::new_err(format!("experimental_dense_weight: {e}")))?;
+        self.inner.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
@@ -1804,6 +1813,15 @@ impl SkillRegistry {
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    fn set_experimental_dense_weight(&mut self, weight: f64) -> PyResult<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| PyValueError::new_err(format!("experimental_dense_weight: {e}")))?;
+        self.inner.set_experimental_dense_weight(weight);
         Ok(())
     }
 

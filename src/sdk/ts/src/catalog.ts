@@ -339,6 +339,23 @@ export interface ToolCatalogOptions {
    * allowing a later asynchronous semantic override. */
   embedding?: EmbeddingSpec;
   /**
+   * Share of the hybrid content score the dense (semantic) arm carries; BM25
+   * takes the remainder. Default `0.7`. Read by `"hybrid"` only — the
+   * single-arm methods have nothing to weigh.
+   *
+   * **Experimental.** The default suits catalogs of natural-language
+   * descriptions, which is where it was measured (ADR-0024). A catalog keyed on
+   * exact identifiers, error codes, or internal jargon gives the lexical arm
+   * purchase those corpora do not have and wants a lower value. `0` is pure
+   * lexical, `1` pure dense; anything outside `[0, 1]` throws rather than being
+   * clamped, so a mistyped `70` is reported instead of silently searching at
+   * `1`.
+   *
+   * It does not scale the adaptive-ranking arm, whose own share is a separate
+   * guard (ADR-0014).
+   */
+  experimentalDenseWeight?: number;
+  /**
    * Build-time RAT1 to warm on register (any method; default `onMiss: "error"`).
    * Each `register` re-resolves and re-warms over the whole current corpus —
    * intended for one batch at startup; incremental register calls repeat I/O
@@ -401,7 +418,11 @@ export class ToolCatalog {
    */
   constructor(options: ToolCatalogOptions = {}) {
     this.method = options.method ?? "bm25";
-    this.registry = new ToolRegistry(options.embedding, this.method);
+    this.registry = new ToolRegistry(
+      options.embedding,
+      this.method,
+      options.experimentalDenseWeight,
+    );
     this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {
       this.registry.setTraceSink(options.trace);

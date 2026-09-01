@@ -297,6 +297,7 @@ class ToolRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
@@ -362,6 +363,7 @@ class ToolRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
@@ -399,6 +401,8 @@ class ToolRegistry:
             download=download,
         )
         self._native = _NativeToolRegistry(**kwargs)
+        if experimental_dense_weight is not None:
+            self._native.set_experimental_dense_weight(experimental_dense_weight)
         self._eager = method in ("semantic", "hybrid")
         self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
@@ -951,6 +955,7 @@ class ToolCatalog:
         trace: TraceSinkConfig | None = None,
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty catalog.
@@ -965,6 +970,15 @@ class ToolCatalog:
             embedding: model for semantic/hybrid retrieval (a path string or a
                 keyed dict — see `EmbeddingSpec`). Retained and validated even
                 under "bm25" so a later async semantic override can use it.
+            experimental_dense_weight: share of the hybrid content score the
+                dense (semantic) arm carries; BM25 takes the remainder. Default
+                0.7, read by "hybrid" only. The default suits catalogs of
+                natural-language descriptions, which is where it was measured
+                (ADR-0024); a catalog keyed on exact identifiers, error codes,
+                or internal jargon gives the lexical arm purchase those corpora
+                do not have and wants a lower value. 0 is pure lexical, 1 pure
+                dense; anything outside [0, 1] raises rather than being clamped.
+                It does not scale the adaptive-ranking arm.
             experimental_embedding_artifact: build-time RAT1 to warm on register
                 (any method; default ``on_miss`` is ``"error"``). Each
                 ``register`` re-resolves and re-warms over the whole current
@@ -986,6 +1000,7 @@ class ToolCatalog:
         self._registry = ToolRegistry(
             embedding,
             method=method,
+            experimental_dense_weight=experimental_dense_weight,
             experimental_embedding_artifact=experimental_embedding_artifact,
         )
         if trace is not None:

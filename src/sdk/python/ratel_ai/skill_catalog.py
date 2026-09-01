@@ -129,6 +129,7 @@ class SkillRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
@@ -194,6 +195,7 @@ class SkillRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
@@ -230,6 +232,8 @@ class SkillRegistry:
             download=download,
         )
         self._native = _NativeSkillRegistry(**kwargs)
+        if experimental_dense_weight is not None:
+            self._native.set_experimental_dense_weight(experimental_dense_weight)
         self._eager = method in ("semantic", "hybrid")
         self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
@@ -703,6 +707,7 @@ class SkillCatalog:
         trace: TraceSinkConfig | None = None,
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
+        experimental_dense_weight: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty skill catalog.
@@ -715,6 +720,8 @@ class SkillCatalog:
                 registration.
             embedding: model for semantic/hybrid retrieval — see
                 `ToolCatalog.__init__`; retained and validated under "bm25" too.
+            experimental_dense_weight: share of the hybrid content score the
+                dense (semantic) arm carries — see `ToolCatalog.__init__`.
             experimental_embedding_artifact: build-time RAT1 to warm on
                 register/replace_all (any method; default ``on_miss`` is
                 ``"error"``). Each call re-resolves and re-warms over the whole
@@ -735,6 +742,7 @@ class SkillCatalog:
         self._registry = SkillRegistry(
             embedding,
             method=method,
+            experimental_dense_weight=experimental_dense_weight,
             experimental_embedding_artifact=experimental_embedding_artifact,
         )
         if trace is not None:

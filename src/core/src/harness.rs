@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::DenseWeight;
 use crate::embedding::{Embedded, Embedder, EmbedderError};
 use crate::fusion::SCORE_FUSION_DENSE_WEIGHT;
 use crate::indexing::searchable_text;
@@ -696,10 +697,12 @@ pub(crate) fn simulate(arms: &[ArmRankings], w: &Weighting) -> Vec<(String, Vec<
         .collect()
 }
 
-/// `score_fuse` at an arbitrary dense weight, so the sweep can vary the one
-/// constant the shipped call fixes. At [`SCORE_FUSION_DENSE_WEIGHT`] it must
-/// agree with the engine byte for byte — which
-/// `the_offline_simulation_reproduces_the_real_served_order` pins.
+/// `score_fuse` at an arbitrary dense weight, so the sweep can vary what the
+/// shipped call takes from the catalog's [`DenseWeight`].
+///
+/// This used to be a hand-copied reimplementation, which is how a sweep quietly
+/// stops measuring the engine it claims to. Now that the weight is a parameter
+/// it delegates, so the sweep cannot drift from the shipped rule.
 fn score_fuse_at(
     bm25: &[(String, f32)],
     ceiling: f32,
@@ -707,29 +710,8 @@ fn score_fuse_at(
     usage: Option<(&[String], f32)>,
     w_dense: f32,
 ) -> Vec<(String, f32)> {
-    use std::collections::HashMap;
-    let mut scores: HashMap<&str, f32> = HashMap::new();
-    if ceiling > 0.0 {
-        for (id, s) in bm25 {
-            *scores.entry(id.as_str()).or_insert(0.0) +=
-                (1.0 - w_dense) * (s / ceiling).clamp(0.0, 1.0);
-        }
-    }
-    for (id, s) in dense {
-        *scores.entry(id.as_str()).or_insert(0.0) += w_dense * s.clamp(0.0, 1.0);
-    }
-    if let Some((ids, weight)) = usage {
-        for (rank, id) in ids.iter().enumerate() {
-            *scores.entry(id.as_str()).or_insert(0.0) += 0.5 * weight / (1.0 + rank as f32);
-        }
-    }
-    let mut ranked: Vec<(String, f32)> = scores
-        .into_iter()
-        .map(|(id, score)| (id.to_string(), score.min(1.0)))
-        .collect();
-    let len = ranked.len();
-    crate::fusion::sort_and_truncate(&mut ranked, len);
-    ranked
+    let weight = DenseWeight::new(w_dense).expect("sweep weights are in [0, 1]");
+    crate::fusion::score_fuse(bm25, ceiling, dense, usage, weight)
 }
 
 /// Read-phrased queries whose top-1 is a write op — the reported failure,

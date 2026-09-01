@@ -64,7 +64,9 @@ pub(crate) fn sort_and_truncate(ranked: &mut Vec<(String, f32)>, top_k: usize) {
     ranked.truncate(top_k);
 }
 
-/// Weight the dense arm carries in [`score_fuse`]; BM25 takes the remainder.
+/// Default weight the dense arm carries in [`score_fuse`]; BM25 takes the
+/// remainder. See [`DenseWeight`] for why it is a default rather than a
+/// constant.
 ///
 /// 0.7/0.3 rather than even, because the lexical arm is the weaker of the two on
 /// every corpus measured so far — on the harness fixture BM25 alone recovers the
@@ -72,6 +74,78 @@ pub(crate) fn sort_and_truncate(ranked: &mut Vec<(String, f32)>, top_k: usize) {
 /// zero for anything the arm never returned, so an even split lets a query with
 /// no lexical purchase halve every candidate uniformly.
 pub(crate) const SCORE_FUSION_DENSE_WEIGHT: f32 = 0.7;
+
+/// The share of the hybrid **content** score the dense arm carries; BM25 takes
+/// `1 - w`. Only [`SearchMethod::Hybrid`] reads it — the single-arm methods have
+/// nothing to weigh.
+///
+/// **Why this is a knob and not a constant.** The balance between lexical and
+/// semantic retrieval is a property of the *catalog*, not of the algorithm. A
+/// catalog of natural-language descriptions gives the dense arm most of the
+/// signal, which is what the two benchmark corpora measure and where `0.7` was
+/// chosen (ADR-0024). A catalog keyed on exact function names, error codes, or
+/// internal jargon gives BM25 lexical purchase neither corpus has, and `0.7`
+/// would be actively wrong for it. No single value can be right for both, which
+/// is the same argument that made [`ClusterPolicy`] configurable.
+///
+/// Both endpoints are reachable and meaningful: `0.0` is pure lexical, `1.0`
+/// pure dense. That is deliberate — a control that cannot reach its own limits
+/// is a nudge, not a choice.
+///
+/// It does **not** scale the usage arm. That arm's share is ADR-0014's guard
+/// against history overriding a live match, and folding it in here would let a
+/// caller disable the guard while believing they were only retuning retrieval.
+///
+/// [`SearchMethod::Hybrid`]: crate::SearchMethod::Hybrid
+/// [`ClusterPolicy`]: crate::ClusterPolicy
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct DenseWeight(f32);
+
+/// A [`DenseWeight`] was built from a value outside `[0, 1]`.
+///
+/// Rejected rather than clamped, for the reason [`ClusterPolicy`] rejects: a
+/// clamp searches at a weighting the caller did not ask for and never says so.
+///
+/// [`ClusterPolicy`]: crate::ClusterPolicy
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InvalidDenseWeight(pub f32);
+
+impl std::fmt::Display for InvalidDenseWeight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "dense weight {} is out of range (expected 0.0 to 1.0 inclusive)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidDenseWeight {}
+
+impl DenseWeight {
+    /// The weight the dense arm carries, in `[0, 1]`.
+    ///
+    /// # Errors
+    /// [`InvalidDenseWeight`] if `weight` is outside `[0, 1]` or is NaN.
+    pub fn new(weight: f32) -> Result<Self, InvalidDenseWeight> {
+        if weight.is_nan() || !(0.0..=1.0).contains(&weight) {
+            return Err(InvalidDenseWeight(weight));
+        }
+        Ok(Self(weight))
+    }
+
+    /// The weight as a plain float.
+    #[must_use]
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for DenseWeight {
+    fn default() -> Self {
+        Self(SCORE_FUSION_DENSE_WEIGHT)
+    }
+}
 
 /// How much of the content score the usage arm may add on top.
 ///
@@ -93,6 +167,10 @@ const USAGE_SHARE: f32 = 0.5;
 /// score(id) = (1-w)·bm25(id)/ceiling + w·max(0, cos(id))
 ///           + USAGE_SHARE · arm_weight · 1/(1 + rank_in_arm)
 /// ```
+///
+/// `w` is the caller's [`DenseWeight`], defaulting to
+/// [`SCORE_FUSION_DENSE_WEIGHT`]. It splits the *content* arms only; the usage
+/// arm keeps its own share whatever `w` is.
 ///
 /// **Why this is possible now and was not before.** ADR-0011 rejected score
 /// fusion because BM25 is unbounded and cosine is `[-1, 1]`, so the two cannot
@@ -118,10 +196,11 @@ pub(crate) fn score_fuse(
     ceiling: f32,
     dense: &[(String, f32)],
     usage: Option<(&[String], f32)>,
+    dense_weight: DenseWeight,
 ) -> Vec<(String, f32)> {
     use std::collections::HashMap;
 
-    let w = SCORE_FUSION_DENSE_WEIGHT;
+    let w = dense_weight.get();
     let mut scores: HashMap<&str, f32> = HashMap::new();
     if ceiling > 0.0 {
         for (id, s) in bm25 {
@@ -339,6 +418,97 @@ mod tests {
         assert_eq!(
             fused.first().map(|(id, _)| id.as_str()),
             Some("gh_run_list")
+        );
+    }
+
+    fn scored(v: &[(&str, f32)]) -> Vec<(String, f32)> {
+        v.iter().map(|(id, s)| ((*id).to_string(), *s)).collect()
+    }
+
+    #[test]
+    fn the_default_dense_weight_is_the_documented_constant() {
+        assert_eq!(DenseWeight::default().get(), SCORE_FUSION_DENSE_WEIGHT);
+        assert_eq!(DenseWeight::default().get(), 0.7);
+    }
+
+    #[test]
+    fn a_dense_weight_outside_the_unit_range_is_rejected_not_clamped() {
+        // Rejected, so a caller who fat-fingers 70 for 0.7 is told, rather than
+        // silently searching at 1.0 and drawing conclusions from it.
+        for bad in [-0.1_f32, 1.1, 70.0, f32::NAN, f32::INFINITY] {
+            assert!(DenseWeight::new(bad).is_err(), "{bad} should be rejected");
+        }
+        // Both endpoints are legal: pure lexical and pure dense are real choices.
+        for good in [0.0_f32, 0.3, 0.7, 1.0] {
+            assert_eq!(DenseWeight::new(good).unwrap().get(), good);
+        }
+    }
+
+    #[test]
+    fn the_weight_splits_the_content_arms() {
+        // One id in each arm at full strength. At w the dense-only id scores w and
+        // the lexical-only id scores 1-w, so the weight IS the split, exactly.
+        let bm25 = scored(&[("lex", 1.0)]);
+        let dense = scored(&[("sem", 1.0)]);
+        for w in [0.0_f32, 0.3, 0.5, 0.7, 1.0] {
+            let fused = score_fuse(&bm25, 1.0, &dense, None, DenseWeight::new(w).unwrap());
+            let by: std::collections::HashMap<&str, f32> =
+                fused.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+            assert!((by["sem"] - w).abs() < 1e-6, "dense at w={w}");
+            assert!((by["lex"] - (1.0 - w)).abs() < 1e-6, "bm25 at w={w}");
+        }
+    }
+
+    #[test]
+    fn the_weight_can_flip_which_arm_wins() {
+        // The point of the knob: the same two candidates order differently at
+        // 0.3 and 0.7. A knob that cannot change the answer is not a knob.
+        let bm25 = scored(&[("lex", 1.0)]);
+        let dense = scored(&[("sem", 1.0)]);
+        let lexical_heavy = score_fuse(&bm25, 1.0, &dense, None, DenseWeight::new(0.3).unwrap());
+        let dense_heavy = score_fuse(&bm25, 1.0, &dense, None, DenseWeight::new(0.7).unwrap());
+        assert_eq!(
+            lexical_heavy.first().map(|(id, _)| id.as_str()),
+            Some("lex")
+        );
+        assert_eq!(dense_heavy.first().map(|(id, _)| id.as_str()), Some("sem"));
+    }
+
+    #[test]
+    fn the_endpoints_mute_an_arm_without_dropping_its_candidates() {
+        // At w=1.0 BM25 contributes no score, but a BM25-only id is still a
+        // candidate at 0.0 — the same "muted, not omitted" rule weighted RRF has.
+        let bm25 = scored(&[("lex", 1.0)]);
+        let dense = scored(&[("sem", 1.0)]);
+        let pure_dense = score_fuse(&bm25, 1.0, &dense, None, DenseWeight::new(1.0).unwrap());
+        assert_eq!(pure_dense.len(), 2);
+        assert_eq!(pure_dense.last(), Some(&("lex".to_string(), 0.0)));
+
+        let pure_lexical = score_fuse(&bm25, 1.0, &dense, None, DenseWeight::new(0.0).unwrap());
+        assert_eq!(pure_lexical.len(), 2);
+        assert_eq!(pure_lexical.last(), Some(&("sem".to_string(), 0.0)));
+    }
+
+    #[test]
+    fn the_weight_does_not_scale_the_usage_arm() {
+        // ADR-0014's guard is not part of the retrieval split. The usage arm
+        // contributes the same at every content weighting, so a caller cannot
+        // disable it by retuning dense-vs-lexical.
+        let usage = ids(&["hist"]);
+        let mut contributions = vec![];
+        for w in [0.0_f32, 0.5, 1.0] {
+            let fused = score_fuse(
+                &[],
+                1.0,
+                &[],
+                Some((usage.as_slice(), 1.0)),
+                DenseWeight::new(w).unwrap(),
+            );
+            contributions.push(fused[0].1);
+        }
+        assert!(
+            contributions.windows(2).all(|p| (p[0] - p[1]).abs() < 1e-6),
+            "usage contribution moved with the content weight: {contributions:?}"
         );
     }
 

@@ -358,3 +358,12 @@ async def test_replace_all_reports_counts_when_the_embedding_pass_fails() -> Non
     with pytest.raises(EmbedderError):
         await reload
     assert catalog.has("slides")
+
+
+def test_dense_weight_is_wired_on_the_skill_catalog_too() -> None:
+    """Separate wiring from ToolCatalog's, so it needs its own proof."""
+    for bad in (-0.1, 1.1, 70.0, float("nan")):
+        with pytest.raises(ValueError, match="experimental_dense_weight"):
+            SkillCatalog(method="hybrid", experimental_dense_weight=bad)
+    for good in (0.0, 0.3, 0.7, 1.0):
+        SkillCatalog(method="hybrid", experimental_dense_weight=good)

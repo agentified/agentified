@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **`DenseWeight`: the hybrid dense/lexical split is now a per-catalog setting, not a constant.** `score(id) = (1-w)·bm25/ceiling + w·cos`, where `w` was fixed at `0.7` (ADR-0024). It stays the default, so an untouched catalog ranks byte-identically, but it is no longer the only option. The balance between lexical and semantic retrieval is a property of the *catalog*, not of the algorithm: `0.7` was measured on BFCL and SR-Agents, which are both natural-language queries against descriptive metadata, and a catalog keyed on exact identifiers, error codes, or internal jargon gives BM25 purchase neither corpus has. No single value can be right for both — the same argument that made `ClusterPolicy` configurable. `0.0` is pure lexical and `1.0` pure dense, both reachable, because a control that cannot reach its own limits is a nudge rather than a choice. Out of range is rejected rather than clamped, so a mistyped `70` is reported instead of silently searching at `1.0`. Read by `SearchMethod::Hybrid` only, and it never scales the usage arm — that arm's share is ADR-0014's guard against history overriding a live match, and folding it in here would let a caller disable the guard while believing they were only retuning retrieval. `ToolRegistry::set_experimental_dense_weight` and the `SkillRegistry` twin.
+
 ## [0.12.0-rc.2] - 2026-09-01
 
 ### Changed

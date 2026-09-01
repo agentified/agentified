@@ -327,6 +327,26 @@ describe("ToolCatalog search methods", () => {
     expect((error as EmbedderError).message).toMatch(/failed to load embedding model/);
   });
 
+  it("rejects an out-of-range experimentalDenseWeight at construction, not at search", () => {
+    // Rejected rather than clamped: a mistyped 70 must be reported, not
+    // silently searched at 1.0. Construction is where the caller finds out.
+    for (const bad of [-0.1, 1.1, 70, Number.NaN]) {
+      expect(() => new ToolCatalog({ method: "hybrid", experimentalDenseWeight: bad })).toThrow(
+        /experimentalDenseWeight/,
+      );
+    }
+  });
+
+  it("accepts both endpoints of experimentalDenseWeight", () => {
+    // 0 is pure lexical and 1 pure dense — both are real choices, so both
+    // must construct. A control that cannot reach its limits is a nudge.
+    for (const good of [0, 0.3, 0.7, 1]) {
+      expect(
+        () => new ToolCatalog({ method: "hybrid", experimentalDenseWeight: good }),
+      ).not.toThrow();
+    }
+  });
+
   it("keeps dense search behind the asynchronous API", () => {
     // search() rejects a resolved semantic/hybrid method before ever touching
     // the registry, so this needs no registration (and no working model).

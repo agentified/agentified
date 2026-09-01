@@ -91,16 +91,24 @@ the two, and would be the first real-corpus evidence on `b`.
 ## Decision
 
 ```text
-score(id) = 0.3 · clamp(bm25(id) / Σ idf(query terms), 0, 1)
-          + 0.7 · clamp(cos(id), 0, 1)
+score(id) = (1-w) · clamp(bm25(id) / Σ idf(query terms), 0, 1)
+          +    w  · clamp(cos(id), 0, 1)
           + USAGE_SHARE · arm_weight · 1/(1 + rank_in_arm)
 ```
 
-- **0.7 to dense.** The lexical arm is the weaker of the two wherever the two have been compared
-  — decisively on the fixture, where BM25 alone recovers the invoked tool 12 times in 47 against
-  dense's 23, and narrowly on BFCL, where the two tie on recall@1 and dense leads on MRR. An even
-  split also lets a query with no lexical purchase halve every candidate uniformly, since a tool
-  BM25 never returned scores `0` on that arm.
+- **`w` defaults to 0.7 and is a per-catalog setting.** The lexical arm is the weaker of the two
+  wherever the two have been compared — decisively on the fixture, where BM25 alone recovers the
+  invoked tool 12 times in 47 against dense's 23, and narrowly on BFCL, where the two tie on
+  recall@1 and dense leads on MRR. An even split also lets a query with no lexical purchase halve
+  every candidate uniformly, since a tool BM25 never returned scores `0` on that arm.
+
+  It is a **default**, not a constant, because both corpora that produced it are natural-language
+  queries against descriptive metadata — one catalog shape out of many. `DenseWeight` in the core,
+  `experimentalDenseWeight` / `experimental_dense_weight` on the SDK catalogs. `0` is pure
+  lexical and `1` pure dense: both endpoints reachable, because a control that cannot reach its
+  own limits is a nudge rather than a choice. Out of range is rejected, not clamped — a clamp
+  searches at a weighting the caller did not ask for and never says so. See the reversal under
+  **Rejected**.
 - **Absent from an arm is `0`, not a dropped candidate.** BM25 returns nothing when no query term
   matches; scoring that as zero is the honest reading, and it is what makes the total comparable
   across queries.
@@ -149,6 +157,16 @@ score(id) = 0.3 · clamp(bm25(id) / Σ idf(query terms), 0, 1)
 - **`max(nb, nd)` instead of a weighted sum**, so an absent arm cannot drag a candidate down. It
   discards the agreement signal — two arms both liking a tool should beat one — and was not
   measured.
-- **Making the split configurable.** A knob shifts the decision to the caller without evidence
-  for any setting, and the equivalent knob for the dense-confidence gate was reverted for exactly
-  that reason.
+- ~~**Making the split configurable.**~~ **Reversed.** The original argument — a knob shifts the
+  decision to the caller without evidence for any setting, as the reverted dense-confidence gate
+  did — mistook *which* decision was being shifted. The evidence gap is not "what should the
+  number be" but "what should it be **for this catalog**", and that is not a question we can
+  answer centrally at all. BFCL and SR-Agents are both natural-language queries against
+  descriptive metadata; a catalog keyed on exact identifiers, error codes, or internal jargon
+  gives BM25 purchase neither corpus has. That is the same argument that made `ClusterPolicy`
+  configurable, and it applies here for the same reason. Shipped as
+  `experimentalDenseWeight` / `experimental_dense_weight`, defaulting to `0.7` so an
+  untouched catalog is byte-identical.
+
+  The dense-confidence gate is not a counterexample: it was reverted because it changed *nothing*
+  at any setting, not because it was configurable.

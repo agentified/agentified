@@ -300,6 +300,13 @@ class ToolRegistry:
         so use `rank` for ordering and `fused` to detect the scale.
         """
 
+    def set_experimental_dense_weight(self, weight: float) -> None:
+        """Set the dense arm's share of the hybrid content score.
+
+        BM25 takes the remainder. Default 0.7, read by "hybrid" only. Raises
+        ValueError outside [0, 1] rather than clamping.
+        """
+
     def disable_adaptive_ranking(self) -> None:
         """Turn adaptive usage ranking off.
 
@@ -534,6 +541,13 @@ class SkillRegistry:
         Only queries matching a cluster are affected. With a graph attached
         `SearchHit.score` becomes a fusion score rather than a raw BM25 score,
         so use `rank` for ordering and `fused` to detect the scale.
+        """
+
+    def set_experimental_dense_weight(self, weight: float) -> None:
+        """Set the dense arm's share of the hybrid content score.
+
+        BM25 takes the remainder. Default 0.7, read by "hybrid" only. Raises
+        ValueError outside [0, 1] rather than clamping.
         """
 
     def disable_adaptive_ranking(self) -> None:

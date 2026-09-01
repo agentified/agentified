@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **`experimental_dense_weight` on `ToolCatalog` and `SkillCatalog`: the hybrid dense/lexical split.** How much of a hybrid score the semantic arm carries; BM25 takes the remainder. Default `0.7` — unchanged ranking if you do not set it — read by `"hybrid"` only. The default was measured on corpora of natural-language descriptions; a catalog keyed on exact identifiers, error codes, or internal jargon gives the lexical arm purchase those corpora do not have and will want a lower value. `0` is pure lexical, `1` pure dense. Anything outside `[0, 1]` raises `ValueError` at construction rather than being clamped, so a mistyped `70` is reported instead of silently searching at `1`. It does not scale the adaptive-ranking arm, whose share is a separate guard.
+
 ## [0.13.0-rc.2] - 2026-09-01
 
 ### Changed

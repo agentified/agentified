@@ -9,7 +9,8 @@ use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
 use crate::fusion::{
-    RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted, score_fuse,
+    DenseWeight, RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted,
+    score_fuse,
 };
 use crate::method::SearchMethod;
 use crate::search::Bm25Cache;
@@ -114,6 +115,10 @@ pub struct SkillRegistry {
     /// today's behavior exactly. Shared behind a lock because the learner writes
     /// to the same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
+    /// Share of the hybrid content score the dense arm carries (ADR-0024).
+    /// Read only by the hybrid path; the single-arm methods have nothing to
+    /// weigh. Defaults to the shipped 0.7.
+    dense_weight: DenseWeight,
 }
 
 impl Default for SkillRegistry {
@@ -133,6 +138,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -146,6 +152,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -162,6 +169,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -196,6 +204,31 @@ impl SkillRegistry {
     /// becomes an RRF score rather than a BM25 one.
     pub fn set_intent_graph(&mut self, graph: Option<Arc<RwLock<IntentGraph>>>) {
         self.graph = graph;
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7` (ADR-0024).
+    ///
+    /// **Experimental.** The default is right for the corpora measured so far —
+    /// natural-language queries against descriptive metadata — and the knob
+    /// exists because that is one corpus shape, not all of them. A catalog keyed
+    /// on exact identifiers, error codes, or internal jargon gives BM25 purchase
+    /// those corpora do not have, and wants a lower weight. Expect the default to
+    /// move if real usage says it should; expect this method to stay.
+    ///
+    /// Read by [`SearchMethod::Hybrid`] only. The single-arm methods have nothing
+    /// to weigh, so setting it does not affect them, and it never scales the
+    /// usage arm (ADR-0014).
+    ///
+    /// [`SearchMethod::Hybrid`]: crate::SearchMethod::Hybrid
+    pub fn set_experimental_dense_weight(&mut self, weight: DenseWeight) {
+        self.dense_weight = weight;
+    }
+
+    /// The dense arm's current share of the hybrid content score.
+    #[must_use]
+    pub fn experimental_dense_weight(&self) -> DenseWeight {
+        self.dense_weight
     }
 
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
@@ -931,6 +964,7 @@ impl SkillRegistry {
             index.query_ceiling(query),
             &dense_ranked,
             arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+            self.dense_weight,
         );
         let fusion_stage = SearchStage {
             name: "fusion".into(),
@@ -1046,6 +1080,7 @@ mod tests {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -1679,6 +1714,92 @@ mod tests {
         reg.build_embeddings().unwrap();
         reg.rebuild_embeddings().unwrap();
         assert_eq!(counter.doc_calls(), 4, "rebuild embeds every skill again");
+    }
+
+    #[test]
+    fn the_dense_weight_defaults_to_the_shipped_value_and_only_hybrid_reads_it() {
+        // Skill twin of the tool-side test: an untouched registry ranks exactly
+        // as before the knob existed, and the split cannot leak into the
+        // single-arm methods.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        assert_eq!(reg.experimental_dense_weight(), DenseWeight::default());
+        reg.register(skill(
+            "api-design",
+            "api-design",
+            "REST API design patterns",
+            &["api"],
+        ));
+        reg.register(skill(
+            "frontend-slides",
+            "frontend-slides",
+            "Build animation-rich HTML presentations",
+            &["frontend"],
+        ));
+        reg.build_embeddings().unwrap();
+
+        let ids =
+            |hits: Vec<SkillHit>| -> Vec<String> { hits.into_iter().map(|h| h.skill_id).collect() };
+        let bm25_before = ids(reg
+            .search_with_method("api", 5, Origin::Agent, SearchMethod::Bm25)
+            .unwrap());
+        let semantic_before = ids(reg
+            .search_with_method("api", 5, Origin::Agent, SearchMethod::Semantic)
+            .unwrap());
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.0).unwrap());
+
+        assert_eq!(
+            ids(reg
+                .search_with_method("api", 5, Origin::Agent, SearchMethod::Bm25)
+                .unwrap()),
+            bm25_before,
+            "bm25 has one content arm and must ignore the split"
+        );
+        assert_eq!(
+            ids(reg
+                .search_with_method("api", 5, Origin::Agent, SearchMethod::Semantic)
+                .unwrap()),
+            semantic_before,
+            "semantic has one content arm and must ignore the split"
+        );
+    }
+
+    #[test]
+    fn the_dense_weight_reaches_the_hybrid_skill_scores() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill(
+            "api-design",
+            "api-design",
+            "REST API design patterns",
+            &["api"],
+        ));
+        reg.register(skill(
+            "frontend-slides",
+            "frontend-slides",
+            "Build animation-rich HTML presentations",
+            &["frontend"],
+        ));
+        reg.build_embeddings().unwrap();
+
+        // A two-term query where each skill matches one term lexically but only
+        // one densely. A single-term query saturates both arms at 1.0/0.0 and
+        // the clamp then hides the weight entirely.
+        let slate = |reg: &SkillRegistry| -> Vec<(String, f32)> {
+            reg.search_with_method("api presentations", 5, Origin::Agent, SearchMethod::Hybrid)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.skill_id, h.score))
+                .collect()
+        };
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.2).unwrap());
+        let lexical_heavy = slate(&reg);
+        reg.set_experimental_dense_weight(DenseWeight::new(0.9).unwrap());
+        assert_ne!(
+            lexical_heavy,
+            slate(&reg),
+            "the weight must change the fused scores, not just be stored"
+        );
     }
 
     #[test]

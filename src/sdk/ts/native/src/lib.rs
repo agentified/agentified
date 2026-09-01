@@ -1734,6 +1734,17 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    #[napi]
+    pub fn set_experimental_dense_weight(&self, weight: f64) -> napi::Result<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| napi::Error::from_reason(format!("experimentalDenseWeight: {e}")))?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph itself is untouched, so re-enabling
     /// resumes from what it already learned.
@@ -2674,6 +2685,17 @@ impl SkillRegistry {
         registry.set_intent_graph(Some(handle.clone()));
         drop(registry);
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    #[napi]
+    pub fn set_experimental_dense_weight(&self, weight: f64) -> napi::Result<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| napi::Error::from_reason(format!("experimentalDenseWeight: {e}")))?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_experimental_dense_weight(weight);
         Ok(())
     }
 

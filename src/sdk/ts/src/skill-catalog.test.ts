@@ -405,3 +405,20 @@ describe("SkillCatalog tracing", () => {
     expect(catalog.get("api-design")?.body).toBe("# Slides\n\nUpdated body.");
   });
 });
+
+describe("SkillCatalog experimentalDenseWeight", () => {
+  it("rejects out of range and accepts both endpoints", () => {
+    // Separate wiring from ToolCatalog's, so it needs its own proof rather
+    // than inheriting the tool-side test's.
+    for (const bad of [-0.1, 1.1, 70, Number.NaN]) {
+      expect(() => new SkillCatalog({ method: "hybrid", experimentalDenseWeight: bad })).toThrow(
+        /experimentalDenseWeight/,
+      );
+    }
+    for (const good of [0, 0.3, 0.7, 1]) {
+      expect(
+        () => new SkillCatalog({ method: "hybrid", experimentalDenseWeight: good }),
+      ).not.toThrow();
+    }
+  });
+});

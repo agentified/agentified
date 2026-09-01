@@ -728,3 +728,20 @@ async def test_re_register_replaces_in_place() -> None:
     hits = catalog.search("fetch a document over the network", 10)
     assert [h.tool_id for h in hits].count("read_file") == 1
     assert await catalog.invoke("read_file", {"path": "/x"}) == {"contents": "v2"}
+
+
+def test_dense_weight_out_of_range_is_rejected_not_clamped() -> None:
+    """A mistyped 70 must be reported, not silently searched at 1.0.
+
+    Construction is where the caller finds out, so the error arrives before any
+    query has been run against a weighting they did not choose.
+    """
+    for bad in (-0.1, 1.1, 70.0, float("nan")):
+        with pytest.raises(ValueError, match="experimental_dense_weight"):
+            ToolCatalog(method="hybrid", experimental_dense_weight=bad)
+
+
+def test_dense_weight_accepts_both_endpoints() -> None:
+    """0 is pure lexical and 1 pure dense: both are real choices."""
+    for good in (0.0, 0.3, 0.7, 1.0):
+        ToolCatalog(method="hybrid", experimental_dense_weight=good)

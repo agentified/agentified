@@ -61,10 +61,20 @@ export class ToolRegistry {
    *   never loaded eagerly here.
    * @param method - `"bm25"` (default, model-free) or `"semantic"`/`"hybrid"`,
    *   which makes {@link ToolRegistry.register} embed the batch inline.
+   * @param experimentalDenseWeight - Share of the hybrid content score the
+   *   dense arm carries; BM25 takes the remainder. Default `0.7`. Read by
+   *   `"hybrid"` only. Throws outside `[0, 1]`.
    */
-  constructor(embedding?: EmbeddingSpec, method: SearchMethod = "bm25") {
+  constructor(
+    embedding?: EmbeddingSpec,
+    method: SearchMethod = "bm25",
+    experimentalDenseWeight?: number,
+  ) {
     this.native = new NativeToolRegistry(toNativeEmbedding(embedding));
     this.eager = method === "semantic" || method === "hybrid";
+    if (experimentalDenseWeight !== undefined) {
+      this.native.setExperimentalDenseWeight(experimentalDenseWeight);
+    }
   }
 
   /**
@@ -426,10 +436,20 @@ export class SkillRegistry {
    *   {@link ToolRegistry.constructor}.
    * @param method - `"bm25"` (default, model-free) or `"semantic"`/`"hybrid"`,
    *   which makes {@link SkillRegistry.register} embed the batch inline.
+   * @param experimentalDenseWeight - Share of the hybrid content score the
+   *   dense arm carries; BM25 takes the remainder. Default `0.7`. Read by
+   *   `"hybrid"` only. Throws outside `[0, 1]`.
    */
-  constructor(embedding?: EmbeddingSpec, method: SearchMethod = "bm25") {
+  constructor(
+    embedding?: EmbeddingSpec,
+    method: SearchMethod = "bm25",
+    experimentalDenseWeight?: number,
+  ) {
     this.native = new NativeSkillRegistry(toNativeEmbedding(embedding));
     this.eager = method === "semantic" || method === "hybrid";
+    if (experimentalDenseWeight !== undefined) {
+      this.native.setExperimentalDenseWeight(experimentalDenseWeight);
+    }
   }
 
   /**
