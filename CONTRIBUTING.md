@@ -31,9 +31,8 @@ CI (`.github/workflows/ci.yml`) runs all of the above on every PR through the si
 
 ## Branching
 
-- `main` — stable
-- `revamp` — v1 line, current development target until cutover
-- Branch off `revamp` for new work; PR back into `revamp`
+- `main` — stable, and the current development target
+- Branch off `main` for new work; PR back into `main`
 
 ## Backend before frontend
 
