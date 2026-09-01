@@ -356,8 +356,14 @@ def _normalize_content(value: Any) -> Any:
 
 
 def reports_failure(result: Any) -> bool:
-    """MCP reports a failed call in the result (`isError: True`), not by raising."""
-    return isinstance(result, dict) and result.get("isError") is True
+    """MCP reports a failed call in the result (`isError: True`), not by raising.
+
+    The client returns a `CallToolResult` model, not a dict, and 2.x renamed the
+    field to `is_error` (alias `isError`), hence both shapes and both spellings.
+    """
+    if isinstance(result, dict):
+        return result.get("isError") is True or result.get("is_error") is True
+    return getattr(result, "is_error", None) is True or getattr(result, "isError", None) is True
 
 
 async def trace_execute_tool(
