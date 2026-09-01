@@ -12,13 +12,24 @@ pub(crate) const BM25_K1: f32 = 0.9;
 /// its description plus every schema token, so length differences partly reflect
 /// how many arguments a tool takes rather than how much it says.
 ///
-/// **Raised on evidence we no longer have.** It moved to 0.75 alongside a
-/// projection change that dropped schema prose — and that projection change was
-/// reverted after measurement showed it altered nothing on the fixture. On the
-/// same 47 queries `b = 0.75` leaves top-1 accuracy unchanged (12 of 47) and
-/// raises read-queries-served-a-write-op from 8 of 25 to 11. It stays only
-/// because 0.75 is the field standard; the fixture argues for putting it back.
-/// See the `b` sweep in `harness-results.md`, and RS-95 for the real corpora.
+/// **It moved on evidence that was withdrawn, and was re-justified on a real
+/// corpus.** It rose to 0.75 alongside a projection change that dropped schema
+/// prose, and that projection change was reverted after measurement showed it
+/// altered nothing. BFCL then isolated `b` on its own — 599 scenarios, lexical
+/// arm only, no intent graph, the projection back to its original form — and
+/// 0.75 wins narrowly: hit@1 0.8998 to 0.9065, MRR@5 0.9366 to 0.9410, recall
+/// unchanged at every `k`. Recall holding while MRR moves is the signature of a
+/// length penalty: it reorders what was already retrieved rather than retrieving
+/// differently.
+///
+/// **The fixture's objection stands and is about something else.** On 47 queries
+/// 0.75 leaves top-1 unchanged (12 of 47) and raises read-queries-served-a-
+/// write-op from 8 of 25 to 11. BFCL has no read/write taxonomy, so it cannot
+/// see that failure mode at all — the mode this branch exists to fix. Four net
+/// scenarios better on 599 against three worse on 25, measuring different
+/// things. Keep 0.75 as the field standard now that a real corpus is not against
+/// it, and treat the read/write question as open until a corpus can score it.
+/// See the `b` sweep in `harness-results.md` and ADR-0023.
 pub(crate) const BM25_B: f32 = 0.75;
 
 /// A prebuilt BM25 index over `(id, searchable_text)` documents: build once

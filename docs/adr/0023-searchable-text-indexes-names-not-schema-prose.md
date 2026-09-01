@@ -25,14 +25,28 @@ nobody. That is the better shape for a fix whose evidence comes from one catalog
 
 `b` was raised 0.4 → 0.75 alongside this and **was not reverted with it**, though its stated
 justification was this decision. On the same fixture 0.75 leaves accuracy unchanged and raises
-read-queries-served-a-write-op from 8 of 25 to 11. It stays only because 0.75 is the field
-standard. See `harness-results.md`'s `b` sweep, and RS-95 for real corpora.
+read-queries-served-a-write-op from 8 of 25 to 11, so for a while it stood on nothing but the
+field standard. See `harness-results.md`'s `b` sweep.
 
-RS-95's SR-Agents run (`0.4.0` → `rc.2`, +0.082 recall@5) contains this `b` change but does not
-isolate it — the same delta also contains score fusion
-([ADR-0024](0024-hybrid-fuses-on-scores.md)). An `rc.1` run on that slice would separate them,
-since rc.1 carries `b = 0.75` without score fusion. Until then `b` rests on the field standard
-and a fixture that argues against it.
+**RS-95 isolated `b` and it survives.** BFCL's lexical arm alone, `0.4.0` → `0.12.0-rc.1`, 599
+scenarios: hit@1 0.8998 → 0.9065, MRR@5 0.9366 → 0.9410, nDCG@5 0.9485 → 0.9519, recall
+unchanged at every `k`, same direction in both categories. The comparison is clean — the
+projection is byte-identical to pre-branch `main` (this ADR's revert), `k1` never moved, the
+bench builds no intent graph, and the only other lexical commits in that range are display-only
+or byte-identical caching. So `b` is the one ranking variable in the delta. Recall holding while
+MRR moves is what a length penalty should look like: it reorders what was already retrieved.
+
+Two honest caveats. The margin is roughly **four net scenarios in 599** — directionally
+consistent, not decisive. And **BFCL cannot see this ADR's actual concern**: it has no
+read/write taxonomy, so the fixture's objection (0.75 raising read-queries-served-a-write-op
+from 8 of 25 to 11) is neither confirmed nor refuted, only unmeasured. Four better on 599
+against three worse on 25, scoring different things.
+
+`b = 0.75` therefore stays: a real corpus is no longer against it, and it is the field standard.
+The read/write failure mode remains open until a corpus can score it.
+
+The SR-Agents run (`0.4.0` → `rc.2`, +0.082 recall@5) still does not isolate anything, since
+that delta carries score fusion too ([ADR-0024](0024-hybrid-fuses-on-scores.md)).
 
 The record below is kept as written, so a future attempt inherits the argument and the
 measurement that refused it rather than rediscovering both.
