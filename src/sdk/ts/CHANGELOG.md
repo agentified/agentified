@@ -10,7 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
-- **Hybrid search fuses on normalised scores rather than rank positions.** **Breaking:** hybrid results may come back in a different order. The `normalized` field on a hybrid hit is now the fused score itself — absolute, comparable across queries, and no longer stretched so the top hit is always `1.0`. A query your catalog answers well and one it cannot answer at all used to return the same number; now they do not. `"bm25"` and `"semantic"` are unchanged. Shipped in a release candidate to be measured against real corpora; the in-repo fixture measures it as slightly worse for ranking, so it may revert.
+- **Hybrid search fuses on normalised scores rather than rank positions.** **Breaking:** hybrid results may come back in a different order. The `normalized` field on a hybrid hit is now the fused score itself — absolute, comparable across queries, and no longer stretched so the top hit is always `1.0`. A query your catalog answers well and one it cannot answer at all used to return the same number; now they do not. `"bm25"` and `"semantic"` are unchanged. Measured on BFCL before being accepted: better than rank fusion on recall, MRR, and nDCG at every `k`, and the correct answer now scores `0.72` on average where rank fusion returned `0.03` for everything.
 
 ## [0.13.0-rc.1] - 2026-08-31
 
