@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.12.0-rc.2] - 2026-09-01
+
+### Changed
+
+- **Hybrid fuses on normalised scores, not rank positions (ADR-0024).** **Breaking:** hybrid's served order changes for every caller. `score(id) = 0.3·bm25(id)/Σ idf(query terms) + 0.7·cos(id)`, plus the usage arm scaled to the share it already had. ADR-0011 rejected this because BM25 is unbounded and cosine is `[-1, 1]`; both arms now carry an absolute `[0, 1]` value, so they share a scale for the first time. What it buys is a magnitude that means something: RRF's reachable maximum is "first in every arm", which says nothing about match quality, so a query the catalog answers precisely and one it cannot answer at all both returned ~1.0 at the top — the number Kestral displayed as a confidence. On the fixture the same two queries now score 0.92 and 0.27. `SearchHit::normalized` and `SkillHit::normalized` are the fused score itself for hybrid, so it no longer min-maxes against the returned slate. `Bm25` and `Semantic` are unchanged and still fuse the usage arm by rank.
+
+  **Shipped to be measured, and the one measurement we have says it is worse:** top-1 against the invoked tool falls from 35 of 47 to 32, and the weight sweep climbs monotonically to dense-only. Rank fusion bounds an arm's mistake to one rank position and score fusion lets a confidently wrong arm carry its confidence — that is intrinsic to the choice, not a tuning problem. It is in this RC so a real-corpus benchmark can judge it where BM25 has lexical purchase a 47-query fixture does not give it. Expect it to revert if that disagrees.
+
 ## [0.12.0-rc.1] - 2026-08-31
 
 ### Added
