@@ -217,10 +217,17 @@ pub(crate) fn score_fuse(
     }
     let mut ranked: Vec<(String, f32)> = scores
         .into_iter()
-        .map(|(id, score)| (id.to_string(), score.min(1.0)))
+        .map(|(id, score)| (id.to_string(), score))
         .collect();
     let len = ranked.len();
     sort_and_truncate(&mut ranked, len);
+    // Clamp AFTER ordering. The content arms cap at 1.0 by construction, so any
+    // excess is the usage arm's bonus. Clamping first collapsed every saturated
+    // candidate to exactly 1.0 and handed the order to the id tie-break — the
+    // one case the arm exists to influence.
+    for (_, score) in &mut ranked {
+        *score = score.min(1.0);
+    }
     ranked
 }
 
@@ -423,6 +430,53 @@ mod tests {
 
     fn scored(v: &[(&str, f32)]) -> Vec<(String, f32)> {
         v.iter().map(|(id, s)| ((*id).to_string(), *s)).collect()
+    }
+
+    #[test]
+    fn the_usage_arm_orders_candidates_that_both_saturate() {
+        // The content arms cap at 1.0 by construction, so anything above that is
+        // the usage arm's bonus. Two ids equal on content and both in the usage
+        // arm: `zeta` at rank 0 (raw 1.0 + 0.5 = 1.50), `alpha` at rank 1
+        // (raw 1.0 + 0.25 = 1.25). Clamping before the sort collapsed both to
+        // exactly 1.0 and handed the order to the id tie-break, which put
+        // `alpha` first — defeating the arm in the one case it exists for.
+        let bm25 = scored(&[("zeta", 1.0), ("alpha", 1.0)]);
+        let dense = scored(&[("zeta", 1.0), ("alpha", 1.0)]);
+        let usage = ids(&["zeta", "alpha"]);
+        let fused = score_fuse(
+            &bm25,
+            1.0,
+            &dense,
+            Some((usage.as_slice(), 1.0)),
+            DenseWeight::default(),
+        );
+        let order: Vec<&str> = fused.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["zeta", "alpha"],
+            "a stronger usage rank must lead, not the alphabetically earlier id"
+        );
+    }
+
+    #[test]
+    fn a_saturated_score_is_still_reported_within_the_unit_range() {
+        // The companion to the test above: ordering on the raw score must not
+        // become "stop clamping". Everything returned is still in [0, 1], so a
+        // caller reading `score` sees the same range it always has.
+        let bm25 = scored(&[("zeta", 1.0), ("alpha", 1.0)]);
+        let dense = scored(&[("zeta", 1.0), ("alpha", 1.0)]);
+        let usage = ids(&["zeta", "alpha"]);
+        let fused = score_fuse(
+            &bm25,
+            1.0,
+            &dense,
+            Some((usage.as_slice(), 1.0)),
+            DenseWeight::default(),
+        );
+        assert!(
+            fused.iter().all(|(_, s)| *s <= 1.0),
+            "fused scores must stay within [0, 1]: {fused:?}"
+        );
     }
 
     #[test]
