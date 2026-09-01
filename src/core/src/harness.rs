@@ -1321,19 +1321,18 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
         o,
         "`SearchHit::normalized` for the top {SERVED_K} of each method, on a query where the arms\n\
          disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;\n\
-         hybrid is min-max across the full fused candidate set, because RRF has no achievable\n\
-         maximum to divide by.\n\
+         hybrid is the fused score itself, already absolute in `[0, 1]` (ADR-0024), so the\n\
+         raw and normalized columns are equal.\n\
          \n\
-         The first two are absolute — they compare across queries and do not move when\n\
+         All three are absolute — they compare across queries and do not move when\n\
          `top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because\n\
          `authent` carries the query's largest IDF and appears in no document, so half the\n\
          query's discriminating mass is unanswerable by this catalog. That is the number\n\
          saying so.\n\
          \n\
-         The hybrid column still pins 1.00 at the top of whatever the query retrieved, so it\n\
-         says nothing about whether that top is any good. It is normalized before the cut,\n\
-         though, so the fifth row is not forced to 0.00 by being fifth and the same hit\n\
-         reports the same number at any `top_k`.\n"
+         The hybrid column no longer pins 1.00 at the top. Under the rank fusion this\n\
+         replaced it did, whatever the query matched, which is what made the number\n\
+         undisplayable; here the best hit scores what it actually earned.\n"
     );
     let _ = writeln!(
         o,

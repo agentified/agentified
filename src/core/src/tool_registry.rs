@@ -78,12 +78,14 @@ pub struct SearchHit {
     /// [`SearchMethod`] that produced the hit:
     ///
     /// - `Bm25`: raw BM25 relevance (non-negative, unbounded; `k1=0.9`,
-    ///   `b=0.4`, tuned for short tool text per ADR-0004).
+    ///   `b=0.75`).
     /// - `Semantic`: cosine similarity of the L2-normalized query and
     ///   document embeddings (at most `1.0`).
-    /// - `Hybrid`: the Reciprocal Rank Fusion sum `Σ 1/(60 + rank)` over the
-    ///   BM25 and dense rankings — with two arms at most `2/60 ≈ 0.033`, so
-    ///   only the ordering is meaningful, not the magnitude.
+    /// - `Hybrid`: the **score fusion** `(1-w)·bm25/ceiling + w·cos`, plus the
+    ///   usage arm's bonus, bounded to `[0, 1]` (ADR-0024). Unlike the rank
+    ///   fusion it replaced, the magnitude is meaningful: both arms carry an
+    ///   absolute value, so `0.9` and `0.3` say something about match quality.
+    ///   `w` is the catalog's [`DenseWeight`](crate::DenseWeight).
     ///
     /// Scores are comparable within one result list, not across methods or
     /// corpora. Ties are broken by `tool_id` ascending, so ordering is
@@ -102,8 +104,10 @@ pub struct SearchHit {
     /// Whether [`score`](Self::score) is a Reciprocal Rank Fusion score (only its
     /// *ordering* is meaningful) rather than the raw method score. Uniform across
     /// all hits of one search: `true` when the usage arm fused into this search
-    /// (or the method is hybrid, always RRF), `false` for a plain BM25/semantic
-    /// result. Lets a caller detect the scale their `score` is on.
+    /// (or the method is hybrid, always a fusion), `false` for a plain
+    /// BM25/semantic result. Lets a caller detect the scale their `score` is on.
+    /// The name predates score fusion — it still means "not a raw method
+    /// score", but a hybrid `score` is now absolute rather than rank arithmetic.
     pub fused: bool,
     /// `score` mapped onto `[0, 1]` for display, by a rule that follows the
     /// scale `score` is actually on:
@@ -112,12 +116,15 @@ pub struct SearchHit {
     /// - **raw BM25**: `score / Σ idf(query terms)`, clamped — the share of the
     ///   query's discriminating mass this hit actually captured
     ///   ([`crate::search::Bm25Index::query_ceiling`]).
-    /// - **RRF**: min-max across the full fused candidate set — not the returned
-    ///   slice — because rank arithmetic has no achievable maximum to divide by.
-    ///   `1.0` therefore means "top of everything the query retrieved", and the
-    ///   weakest *returned* hit is only `0.0` if nothing ranked below it.
+    /// - **score fusion** (hybrid): the fused score itself, already absolute in
+    ///   `[0, 1]`, so nothing is remapped — `normalized == score`.
+    /// - **RRF** (a single-arm method with the usage arm fused in): min-max
+    ///   across the full fused candidate set — not the returned slice — because
+    ///   rank arithmetic has no achievable maximum to divide by. `1.0` therefore
+    ///   means "top of everything the query retrieved", and the weakest
+    ///   *returned* hit is only `0.0` if nothing ranked below it.
     ///
-    /// The first two are **absolute**: they compare across queries, and a list
+    /// The first three are **absolute**: they compare across queries, and a list
     /// where nothing fits well stays low instead of being promoted to `1.0`.
     /// The RRF rule is **relative** — a `1.0` there says "best of what the query
     /// retrieved", not "right" — though it is at least stable across `top_k`.

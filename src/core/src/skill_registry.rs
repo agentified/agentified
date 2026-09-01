@@ -31,7 +31,7 @@ pub struct SkillHit {
     /// Relevance score — higher is better; the scale depends on the
     /// [`SearchMethod`] exactly as documented on [`crate::SearchHit::score`]:
     /// raw BM25 relevance for `Bm25`, cosine similarity (at most `1.0`) for
-    /// `Semantic`, a Reciprocal Rank Fusion sum for `Hybrid`. Ties break by
+    /// `Semantic`, a bounded score fusion for `Hybrid`. Ties break by
     /// `skill_id` ascending. **Scale also depends on [`fused`](Self::fused)** —
     /// order by [`rank`](Self::rank), branch on [`fused`](Self::fused).
     pub score: f32,
