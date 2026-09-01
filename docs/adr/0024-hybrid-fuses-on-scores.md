@@ -118,6 +118,19 @@ score(id) = (1-w) · clamp(bm25(id) / Σ idf(query terms), 0, 1)
   is worth `w/2` of the content maximum; `USAGE_SHARE = 0.5` reproduces that. Getting this wrong
   is not neutral — too large and history overrides a live lexical match, the failure ADR-0014's
   sub-unit arm weight exists to prevent.
+- **The total is bounded to `[0, 1]` after ordering, never before.** Content caps at `1.0` by
+  construction, so a candidate the usage arm also promotes can exceed it. The excess is
+  discarded for display, but the **ordering is decided on the unbounded value** — clamping first
+  collapses every saturated candidate to exactly `1.0` and hands the order to the id tie-break,
+  which silently defeats the usage arm in the one case it exists for. That was the behaviour
+  shipped in `0.12.0-rc.2`; see the Fixed entry in the core changelog.
+
+  The consequence worth knowing: two hits can display an identical `1.00` while correctly
+  ordered. `rank` is the ordering contract, not `normalized`. Giving the usage arm the remaining
+  headroom instead (`content + (1 - content)·bonus`) would remove the saturation entirely, but it
+  reweights the arm against content everywhere, so it needs its own measurement rather than
+  riding in as a bug fix.
+
 - **`SearchHit::normalized` is the fused score itself.** It is already absolute in `[0, 1]`, so
   hybrid stops min-maxing against the returned slate — which pinned the top to `1.0` and the
   bottom to `0.0` whatever they matched.

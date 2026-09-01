@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hybrid results could come back in the wrong order when several hits scored at the top.** Fused scores were capped at `1.0` before being sorted, so two strong hits collapsed to the same value and fell back to alphabetical order by id. This bit hardest with adaptive ranking on: a tool you use constantly could be listed below one you never use, purely because its id sorted later. Ordering now uses the uncapped score. Nothing you can read changes — `score` and `normalized` are still `[0, 1]` — only the order, and only where it was wrong. `"bm25"` and `"semantic"` were never affected.
+
 ### Added
 
 - **`experimentalDenseWeight` on `ToolCatalog` and `SkillCatalog`: the hybrid dense/lexical split.** How much of a hybrid score the semantic arm carries; BM25 takes the remainder. Default `0.7` — unchanged ranking if you do not set it — read by `"hybrid"` only. The default was measured on corpora of natural-language descriptions; a catalog keyed on exact identifiers, error codes, or internal jargon gives the lexical arm purchase those corpora do not have and will want a lower value. `0` is pure lexical, `1` pure dense. Anything outside `[0, 1]` throws at construction rather than being clamped, so a mistyped `70` is reported instead of silently searching at `1`. It does not scale the adaptive-ranking arm, whose share is a separate guard.
