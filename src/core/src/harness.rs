@@ -660,6 +660,10 @@ fn median(xs: &[f32]) -> Option<f32> {
 pub(crate) struct Weighting {
     pub label: String,
     pub weights: ArmWeights,
+    /// The dense weight this row sweeps, so the reference row is found by value.
+    /// It used to be detected by a substring of `label`, which silently changed
+    /// the table the moment the label was reworded.
+    pub dense_weight: Option<f32>,
 }
 
 /// The `(bm25, dense)` weights one weighting gives a query.
@@ -671,6 +675,7 @@ impl Weighting {
     fn dense(w: f32, label: &str) -> Self {
         Self {
             label: label.to_string(),
+            dense_weight: Some(w),
             weights: Box::new(move |_| (1.0 - w, w)),
         }
     }
@@ -1173,13 +1178,13 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(o, "\n## Fusion weight sweep\n");
     let _ = writeln!(
         o,
-        "Hybrid fuses the two content arms on their **normalised scores**, so the split between\n\
-         them is one constant. This sweeps it, refusing the same arms offline through the same\n\
-         arithmetic the engine uses.\n\
+        "Hybrid fuses the two content arms on their **relevance scores**, so the split between\n\
+         them is one number — `DenseWeight`, a per-catalog setting defaulting to 0.7. This\n\
+         sweeps it, refusing the same arms offline through the same arithmetic the engine uses.\n\
          \n\
          `read→write` is the reported failure at top-1, lower is better; `correct` counts queries\n\
          whose top-1 is the tool the turn actually invoked — the fixture's only ground truth;\n\
-         `moved` counts top-1s that differ from the shipped weight.\n"
+         `moved` counts top-1s that differ from the default weight.\n"
     );
     let _ = writeln!(
         o,
@@ -1188,7 +1193,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let variants: Vec<Weighting> = vec![
         Weighting::dense(0.5, "0.5 dense / 0.5 bm25"),
         Weighting::dense(0.6, "0.6 / 0.4"),
-        Weighting::dense(0.7, "0.7 / 0.3 **(shipped)**"),
+        Weighting::dense(0.7, "0.7 / 0.3 **(default)**"),
         Weighting::dense(0.8, "0.8 / 0.2"),
         Weighting::dense(0.9, "0.9 / 0.1"),
         Weighting::dense(1.0, "1.0 dense only"),
@@ -1220,7 +1225,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
             correct,
             sim.len(),
             read_served_write(&arms, &sim),
-            if v.label.contains("shipped") {
+            if v.dense_weight == Some(SCORE_FUSION_DENSE_WEIGHT) {
                 "\u{2014}".to_string()
             } else {
                 format!("{moved} of {}", arms.len())

@@ -337,19 +337,19 @@ change it.
 
 ## Fusion weight sweep
 
-Hybrid fuses the two content arms on their **normalised scores**, so the split between
-them is one constant. This sweeps it, refusing the same arms offline through the same
-arithmetic the engine uses.
+Hybrid fuses the two content arms on their **relevance scores**, so the split between
+them is one number — `DenseWeight`, a per-catalog setting defaulting to 0.7. This
+sweeps it, refusing the same arms offline through the same arithmetic the engine uses.
 
 `read→write` is the reported failure at top-1, lower is better; `correct` counts queries
 whose top-1 is the tool the turn actually invoked — the fixture's only ground truth;
-`moved` counts top-1s that differ from the shipped weight.
+`moved` counts top-1s that differ from the default weight.
 
 | dense / bm25 | correct | read→write | moved |
 |---|---|---|---|
 | 0.5 dense / 0.5 bm25 | 29 of 47 | 2 | 7 of 47 |
 | 0.6 / 0.4 | 30 of 47 | 2 | 5 of 47 |
-| 0.7 / 0.3 **(shipped)** | 32 of 47 | 2 | — |
+| 0.7 / 0.3 **(default)** | 32 of 47 | 2 | — |
 | 0.8 / 0.2 | 33 of 47 | 2 | 3 of 47 |
 | 0.9 / 0.1 | 33 of 47 | 1 | 5 of 47 |
 | 1.0 dense only | 34 of 47 | 1 | 6 of 47 |
