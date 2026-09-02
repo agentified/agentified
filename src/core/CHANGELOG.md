@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.12.0-rc.4] - 2026-09-02
+
 ### Changed
 
 - **`SearchHit::normalized` and `SkillHit::normalized` are renamed to `relevance`.** **Breaking**, but only against `0.12.0-rc.{1,2,3}` — the field has never appeared in a stable release. The old name described the *operation* that produced the number rather than what it means, and "normalized" invites the reading that it is a probability. It is not: nothing here is fitted to whether a hit was the one the caller went on to invoke, and the field docs say so. `relevance` says what it is — how well this hit matches the query, on `[0, 1]` — without borrowing a word it has not earned. Considered and rejected: `confidence`, which would name the exact mistake this branch exists to fix, since a caller reading `0.8` as "right 80% of the time" would be wrong in every method and badly wrong under a single-arm method with adaptive ranking on, where the value is a min-max whose `1.0` only means "best of what came back".
