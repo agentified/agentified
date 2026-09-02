@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+
+- **`SearchHit.normalized` and `SkillHit.normalized` are renamed to `relevance`.** **Breaking** against the `0.13.0-rc.*` prereleases only; the field has never shipped in a stable release, so `0.12.0` users are unaffected. The old name described how the number was produced rather than what it tells you, and it invited reading the value as a probability. It is not one — nothing was fitted to whether a hit was the one you went on to use. `relevance` says what it is: how well the hit matches the query, on `[0, 1]`. If you are on an rc, rename the field at your call sites; nothing else changes.
+
 ## [0.13.0-rc.3] - 2026-09-02
 
 ### Fixed

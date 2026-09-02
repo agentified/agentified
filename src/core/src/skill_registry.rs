@@ -43,26 +43,26 @@ pub struct SkillHit {
     /// the raw method score — the skill-side twin of [`crate::SearchHit::fused`].
     pub fused: bool,
     /// [`score`](Self::score) mapped onto `[0, 1]` for display — the skill-side
-    /// twin of [`crate::SearchHit::normalized`], by the same three rules and
+    /// twin of [`crate::SearchHit::relevance`], by the same three rules and
     /// with the same caveats. See it for what each rule means and why this is
     /// not a confidence.
-    pub normalized: f32,
+    pub relevance: f32,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list — the
 /// skill-side twin of [`crate::tool_registry`]'s `to_search_hits`.
 fn to_skill_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SkillHit> {
-    let normalized = normalize(&ranked, scale);
+    let relevance = normalize(&ranked, scale);
     ranked
         .into_iter()
-        .zip(normalized)
+        .zip(relevance)
         .enumerate()
-        .map(|(i, ((skill_id, score), normalized))| SkillHit {
+        .map(|(i, ((skill_id, score), relevance))| SkillHit {
             skill_id,
             score,
             rank: i as u32,
             fused: matches!(scale, Scale::Rrf | Scale::Fused),
-            normalized,
+            relevance,
         })
         .collect()
 }
@@ -2205,7 +2205,7 @@ mod tests {
             .unwrap();
     }
 
-    // ---- the normalized score ----
+    // ---- the relevance score ----
 
     fn hits_for(reg: &SkillRegistry, q: &str, m: SearchMethod, k: usize) -> Vec<SkillHit> {
         reg.search_with_method(q, k, Origin::Direct, m)
@@ -2226,17 +2226,17 @@ mod tests {
         ));
         let hits = hits_for(&reg, "shared token", SearchMethod::Bm25, 5);
         assert!(hits.len() >= 2);
-        assert!(hits.iter().all(|h| (0.0..=1.0).contains(&h.normalized)));
+        assert!(hits.iter().all(|h| (0.0..=1.0).contains(&h.relevance)));
         assert!(
-            hits.last().is_some_and(|h| h.normalized > 0.0),
+            hits.last().is_some_and(|h| h.relevance > 0.0),
             "the weakest hit still captured part of the query"
         );
         for pair in hits.windows(2) {
-            assert!(pair[0].normalized >= pair[1].normalized);
+            assert!(pair[0].relevance >= pair[1].relevance);
         }
     }
 
-    /// The property the truncate order decides. `fuse_arms` normalized AFTER the
+    /// The property the truncate order decides. `fuse_arms` relevance AFTER the
     /// cut until this landed, which pinned the last returned hit to 0.00 and made
     /// the value move with `top_k` — the same bug fixed on the tool side.
     #[test]
@@ -2257,15 +2257,15 @@ mod tests {
         for h in &shallow {
             let same = deep.iter().find(|d| d.skill_id == h.skill_id).unwrap();
             assert!(
-                (same.normalized - h.normalized).abs() < 1e-6,
+                (same.relevance - h.relevance).abs() < 1e-6,
                 "{}: {} at k=2, {} at k=3",
                 h.skill_id,
-                h.normalized,
-                same.normalized
+                h.relevance,
+                same.relevance
             );
         }
         assert!(
-            shallow.last().is_some_and(|h| h.normalized > 0.0),
+            shallow.last().is_some_and(|h| h.relevance > 0.0),
             "something ranked below it, so it is not the minimum"
         );
     }
@@ -2280,11 +2280,11 @@ mod tests {
         reg.build_embeddings().unwrap();
         for h in hits_for(&reg, "api", SearchMethod::Semantic, 5) {
             assert!(
-                (h.normalized - (h.score + 1.0) / 2.0).abs() < 1e-6,
-                "{} score {} normalized {}",
+                (h.relevance - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} relevance {}",
                 h.skill_id,
                 h.score,
-                h.normalized
+                h.relevance
             );
         }
     }

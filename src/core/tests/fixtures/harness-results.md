@@ -377,12 +377,12 @@ The lexical arm alone is weak either way — it is one of three, and the served 
 below are what fusion makes of it.
 
 
-## Normalized scores
+## Relevance scores
 
-`SearchHit::normalized` for the top 5 of each method, on a query where the arms
+`SearchHit::relevance` for the top 5 of each method, on a query where the arms
 disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;
 hybrid is the fused score itself, already absolute in `[0, 1]` (ADR-0024), so the
-raw and normalized columns are equal.
+raw and relevance columns are equal.
 
 All three are absolute — they compare across queries and do not move when
 `top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because
@@ -394,7 +394,7 @@ The hybrid column no longer pins 1.00 at the top. Under the rank fusion this
 replaced it did, whatever the query matched, which is what made the number
 undisplayable; here the best hit scores what it actually earned.
 
-| method | # | tool | raw | normalized |
+| method | # | tool | raw | relevance |
 |---|---|---|---|---|
 | bm25 | 1 | create_task_for_branch | 4.9984 | 0.617 |
 | bm25 | 2 | find_task_by_branch | 3.2751 | 0.404 |

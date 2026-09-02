@@ -44,14 +44,18 @@ class SearchHit:
         """
 
     @property
-    def normalized(self) -> float:
-        """`score` mapped onto [0, 1] for display.
+    def relevance(self) -> float:
+        """How well this hit matches the query, on [0, 1].
 
         The rule follows the scale `score` is actually on: `(cos + 1) / 2` for
-        cosine, `score / sum of idf(query terms)` for raw BM25, and min-max
-        across the full candidate set for RRF. The first two compare across
-        queries; the RRF rule does not — a 1.0 there means "best of what came
-        back", not "right".
+        cosine, `score / sum of idf(query terms)` for raw BM25, and for hybrid
+        the fused score itself, which is already absolute. Those three compare
+        across queries — a list where nothing fits well stays low instead of
+        being stretched to 1.0.
+
+        The exception is a single-arm method with adaptive ranking on, where
+        `score` is a rank-fusion sum and this is a min-max across the candidate
+        set: there 1.0 only means "best of what came back", not "good".
 
         **Not a confidence.** Nothing here was fitted to whether the hit was the
         one you went on to use, so 0.8 does not mean "right 80% of the time".
@@ -374,10 +378,10 @@ class SkillHit:
         """Whether `score` is an RRF score — as on `SearchHit.fused`."""
 
     @property
-    def normalized(self) -> float:
+    def relevance(self) -> float:
         """`score` mapped onto [0, 1] for display.
 
-        As on `SearchHit.normalized`, by the same three rules and with the same
+        As on `SearchHit.relevance`, by the same three rules and with the same
         caveats.
         """
 

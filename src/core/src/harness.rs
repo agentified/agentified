@@ -1315,14 +1315,14 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
          below are what fusion makes of it.\n"
     );
 
-    // -- the normalized score, per method -------------------------------------
-    let _ = writeln!(o, "\n## Normalized scores\n");
+    // -- the relevance score, per method -------------------------------------
+    let _ = writeln!(o, "\n## Relevance scores\n");
     let _ = writeln!(
         o,
-        "`SearchHit::normalized` for the top {SERVED_K} of each method, on a query where the arms\n\
+        "`SearchHit::relevance` for the top {SERVED_K} of each method, on a query where the arms\n\
          disagree. Semantic is `(cos + 1) / 2`; BM25 is `score / Σ idf(query terms)`, clamped;\n\
          hybrid is the fused score itself, already absolute in `[0, 1]` (ADR-0024), so the\n\
-         raw and normalized columns are equal.\n\
+         raw and relevance columns are equal.\n\
          \n\
          All three are absolute — they compare across queries and do not move when\n\
          `top_k` does. Read the BM25 column's ceiling: no tool exceeds 0.52 because\n\
@@ -1336,7 +1336,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     );
     let _ = writeln!(
         o,
-        "| method | # | tool | raw | normalized |\n|---|---|---|---|---|"
+        "| method | # | tool | raw | relevance |\n|---|---|---|---|---|"
     );
     {
         use crate::method::SearchMethod;
@@ -1370,7 +1370,7 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
                     i + 1,
                     h.tool_id,
                     h.score,
-                    h.normalized
+                    h.relevance
                 );
             }
         }

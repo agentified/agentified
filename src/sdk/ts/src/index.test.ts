@@ -84,7 +84,7 @@ describe("ToolRegistry", () => {
     expect(hits[0].score).toBeGreaterThan(0);
   });
 
-  it("carries a normalized score that follows the BM25 ceiling rule", async () => {
+  it("carries a relevance score that follows the BM25 ceiling rule", async () => {
     // The point of the field: `score` is on three incomparable scales, so it was
     // never displayable. Asserting the RULE, not merely that the field exists —
     // a mirror struct that passed `score` twice would satisfy a presence check.
@@ -94,17 +94,17 @@ describe("ToolRegistry", () => {
     const hits = registry.search("read file", 5);
     expect(hits.length).toBeGreaterThan(1);
     for (const hit of hits) {
-      expect(hit.normalized).toBeGreaterThan(0);
-      expect(hit.normalized).toBeLessThanOrEqual(1);
-      expect(hit.normalized).not.toBe(hit.score);
+      expect(hit.relevance).toBeGreaterThan(0);
+      expect(hit.relevance).toBeLessThanOrEqual(1);
+      expect(hit.relevance).not.toBe(hit.score);
     }
     // Monotone with the raw score, since one shared query ceiling divides them
     // all. And the weakest hit is NOT pinned to zero — min-max would put it
     // there whatever it matched.
     for (let i = 1; i < hits.length; i += 1) {
-      expect(hits[i - 1].normalized).toBeGreaterThanOrEqual(hits[i].normalized);
+      expect(hits[i - 1].relevance).toBeGreaterThanOrEqual(hits[i].relevance);
     }
-    expect(hits[hits.length - 1].normalized).toBeGreaterThan(0);
+    expect(hits[hits.length - 1].relevance).toBeGreaterThan(0);
   });
 
   it("indexes property names nested inside inputSchema", async () => {

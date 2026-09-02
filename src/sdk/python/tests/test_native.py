@@ -47,15 +47,15 @@ async def test_search_hit_carries_a_normalized_score() -> None:
     hits = reg.search("read a text file", 5)
     assert len(hits) > 1
     for hit in hits:
-        assert 0.0 < hit.normalized <= 1.0
-        assert hit.normalized != hit.score
+        assert 0.0 < hit.relevance <= 1.0
+        assert hit.relevance != hit.score
     # Monotone with the raw score, and the weakest hit is not pinned to zero —
     # min-max would put it there whatever it matched.
-    assert [h.normalized for h in hits] == sorted(
-        (h.normalized for h in hits), reverse=True
+    assert [h.relevance for h in hits] == sorted(
+        (h.relevance for h in hits), reverse=True
     )
-    assert hits[-1].normalized > 0
-    assert "normalized=" in repr(hits[0])
+    assert hits[-1].relevance > 0
+    assert "relevance=" in repr(hits[0])
 
 
 async def test_skill_hit_carries_a_normalized_score() -> None:
@@ -85,9 +85,9 @@ async def test_skill_hit_carries_a_normalized_score() -> None:
     hits = reg.search("api reference", 5)
     assert len(hits) >= 1
     for hit in hits:
-        assert 0.0 < hit.normalized <= 1.0
-        assert hit.normalized != hit.score
-    assert "normalized=" in repr(hits[0])
+        assert 0.0 < hit.relevance <= 1.0
+        assert hit.relevance != hit.score
+    assert "relevance=" in repr(hits[0])
 
 async def test_registry_register_many_no_longer_exists() -> None:
     # register_many / build_embeddings / rebuild_embeddings were folded into

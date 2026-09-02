@@ -117,7 +117,7 @@ pub struct SearchHit {
     ///   query's discriminating mass this hit actually captured
     ///   ([`crate::search::Bm25Index::query_ceiling`]).
     /// - **score fusion** (hybrid): the fused score itself, already absolute in
-    ///   `[0, 1]`, so nothing is remapped — `normalized == score`.
+    ///   `[0, 1]`, so nothing is remapped — `relevance == score`.
     /// - **RRF** (a single-arm method with the usage arm fused in): min-max
     ///   across the full fused candidate set — not the returned slice — because
     ///   rank arithmetic has no achievable maximum to divide by. `1.0` therefore
@@ -135,24 +135,24 @@ pub struct SearchHit {
     ///
     /// Under the RRF rule, a list of one — or one where every score ties —
     /// normalizes to `1.0` throughout; there is no spread to express.
-    pub normalized: f32,
+    pub relevance: f32,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list: `rank` is
 /// the position, `fused` says whether these are RRF scores. One place so the two
 /// new fields cannot drift between the fused and raw paths.
 fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
-    let normalized = normalize(&ranked, scale);
+    let relevance = normalize(&ranked, scale);
     ranked
         .into_iter()
-        .zip(normalized)
+        .zip(relevance)
         .enumerate()
-        .map(|(i, ((tool_id, score), normalized))| SearchHit {
+        .map(|(i, ((tool_id, score), relevance))| SearchHit {
             tool_id,
             score,
             rank: i as u32,
             fused: matches!(scale, Scale::Rrf | Scale::Fused),
-            normalized,
+            relevance,
         })
         .collect()
 }
@@ -3150,7 +3150,7 @@ mod tests {
             .unwrap();
     }
 
-    // ---- the normalized score ----
+    // ---- the relevance score ----
 
     /// The BM25 rule divides by the query's own ceiling, so the top is *not*
     /// pinned to 1.0 and the value survives a change of `top_k`.
@@ -3160,24 +3160,24 @@ mod tests {
         let hits = reg.search("read a file", 5);
         assert!(hits.len() >= 2, "need a spread to normalize");
         assert!(
-            hits.iter().all(|h| (0.0..=1.0).contains(&h.normalized)),
+            hits.iter().all(|h| (0.0..=1.0).contains(&h.relevance)),
             "must be clamped into [0, 1]"
         );
         // Nothing is pinned to zero: the last hit still matched something, and
         // min-max would have reported it as 0.00 regardless.
         assert!(
-            hits.last().is_some_and(|h| h.normalized > 0.0),
+            hits.last().is_some_and(|h| h.relevance > 0.0),
             "the weakest hit still captured part of the query"
         );
         // Monotone with the raw score, since one shared ceiling divides them all.
         for pair in hits.windows(2) {
             assert!(
-                pair[0].normalized >= pair[1].normalized,
+                pair[0].relevance >= pair[1].relevance,
                 "{} {} then {} {}",
                 pair[0].tool_id,
-                pair[0].normalized,
+                pair[0].relevance,
                 pair[1].tool_id,
-                pair[1].normalized
+                pair[1].relevance
             );
         }
     }
@@ -3195,11 +3195,11 @@ mod tests {
         for h in &shallow {
             let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
             assert!(
-                (same.normalized - h.normalized).abs() < 1e-6,
+                (same.relevance - h.relevance).abs() < 1e-6,
                 "{}: {} at k=2, {} at k=3",
                 h.tool_id,
-                h.normalized,
-                same.normalized
+                h.relevance,
+                same.relevance
             );
         }
     }
@@ -3215,10 +3215,10 @@ mod tests {
         let with_unknown = reg.search("read quetzalcoatl", 5);
         assert_eq!(plain[0].tool_id, with_unknown[0].tool_id);
         assert!(
-            with_unknown[0].normalized < plain[0].normalized,
+            with_unknown[0].relevance < plain[0].relevance,
             "{} vs {}",
-            with_unknown[0].normalized,
-            plain[0].normalized
+            with_unknown[0].relevance,
+            plain[0].relevance
         );
     }
 
@@ -3231,28 +3231,28 @@ mod tests {
             .unwrap();
         for h in &hits {
             assert!(
-                (h.normalized - (h.score + 1.0) / 2.0).abs() < 1e-6,
-                "{} score {} normalized {}",
+                (h.relevance - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} relevance {}",
                 h.tool_id,
                 h.score,
-                h.normalized
+                h.relevance
             );
         }
         // StubEmbedder puts non-matching buckets at cosine 0.0, which is the
         // point: an absolute rule reports 0.5, where min-max would report 0.0
         // for the same hit and 1.0 for a hit that is merely least-bad.
         assert!(
-            hits.iter().any(|h| (h.normalized - 0.5).abs() < 1e-6),
+            hits.iter().any(|h| (h.relevance - 0.5).abs() < 1e-6),
             "expected an orthogonal hit at 0.5, got {:?}",
             hits.iter()
-                .map(|h| (h.tool_id.as_str(), h.normalized))
+                .map(|h| (h.tool_id.as_str(), h.relevance))
                 .collect::<Vec<_>>()
         );
     }
 
     #[test]
     /// Hybrid fuses on normalised scores, so its number is already absolute:
-    /// `normalized` is the fused score itself, with no further mapping. The top
+    /// `relevance` is the fused score itself, with no further mapping. The top
     /// is NOT pinned to 1.0 and the bottom NOT to 0.0 — which is the whole
     /// reason to fuse on scores rather than ranks.
     fn hybrid_scores_are_absolute_not_stretched_to_the_endpoints() {
@@ -3263,11 +3263,11 @@ mod tests {
             .unwrap();
         assert!(hits.iter().all(|h| h.fused), "still a fused score");
         assert!(
-            hits.iter().all(|h| (h.normalized - h.score).abs() < 1e-6),
+            hits.iter().all(|h| (h.relevance - h.score).abs() < 1e-6),
             "the fused score needs no remapping"
         );
         assert!(
-            hits.last().is_some_and(|h| h.normalized > 0.0),
+            hits.last().is_some_and(|h| h.relevance > 0.0),
             "the weakest hit still matched something; min-max would zero it"
         );
     }
@@ -3280,7 +3280,7 @@ mod tests {
         reg.register(tool("only_one", "singular unrepeated vocabulary"));
         let hits = reg.search("singular", 5);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].normalized, 1.0);
+        assert_eq!(hits[0].relevance, 1.0);
     }
 
     /// Normalizing before the cut is what keeps the fused number stable: the
@@ -3305,16 +3305,16 @@ mod tests {
         for h in &shallow {
             let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
             assert!(
-                (same.normalized - h.normalized).abs() < 1e-6,
+                (same.relevance - h.relevance).abs() < 1e-6,
                 "{}: {} at k=2, {} at k=3",
                 h.tool_id,
-                h.normalized,
-                same.normalized
+                h.relevance,
+                same.relevance
             );
         }
         // And the last hit of a short list is not forced to zero by being last.
         assert!(
-            shallow.last().is_some_and(|h| h.normalized > 0.0),
+            shallow.last().is_some_and(|h| h.relevance > 0.0),
             "something ranked below it, so it is not the minimum"
         );
     }

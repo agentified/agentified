@@ -126,12 +126,12 @@ score(id) = (1-w) · clamp(bm25(id) / Σ idf(query terms), 0, 1)
   shipped in `0.12.0-rc.2`; see the Fixed entry in the core changelog.
 
   The consequence worth knowing: two hits can display an identical `1.00` while correctly
-  ordered. `rank` is the ordering contract, not `normalized`. Giving the usage arm the remaining
+  ordered. `rank` is the ordering contract, not `relevance`. Giving the usage arm the remaining
   headroom instead (`content + (1 - content)·bonus`) would remove the saturation entirely, but it
   reweights the arm against content everywhere, so it needs its own measurement rather than
   riding in as a bug fix.
 
-- **`SearchHit::normalized` is the fused score itself.** It is already absolute in `[0, 1]`, so
+- **`SearchHit::relevance` is the fused score itself.** It is already absolute in `[0, 1]`, so
   hybrid stops min-maxing against the returned slate — which pinned the top to `1.0` and the
   bottom to `0.0` whatever they matched.
 - **Only hybrid changes.** `Bm25` and `Semantic` still fuse the usage arm by rank, because a
