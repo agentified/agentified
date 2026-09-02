@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.12.0-rc.3] - 2026-09-02
+
 ### Fixed
 
 - **Hybrid ordered saturated candidates alphabetically instead of by score.** `score_fuse` clamped each candidate to `1.0` *before* sorting. The content arms cap at `1.0` by construction, so anything above that is the usage arm's bonus (ADR-0014): two candidates that both cleared it collapsed to exactly `1.0` and the sort fell through to the id-ascending tie-break. That defeated the usage arm in the one case it exists for — a capability that both matches the query *and* has invocation history — so a tool with strong history could be served below an alphabetically earlier one it outscored. Ordering is now on the raw score with the clamp applied after, which leaves every value a caller can read unchanged: `normalized` was already clamped independently, and `score` is still bounded to `[0, 1]`. Only `rank` moves, and only where the bug fired. Present since score fusion landed in `0.12.0-rc.2`; a catalog on `bm25` or `semantic` was never affected.
