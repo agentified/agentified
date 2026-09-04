@@ -56,6 +56,40 @@ pub struct ObservationPolicyOptions {
     pub origins: Option<String>,
     /// Whether learning is marked as seeded: `"live"` (default) or `"seeded"`.
     pub provenance: Option<String>,
+    /// Minimum cosine a query must clear against a single cluster member for
+    /// that member to count toward its match. Default `0.70`. In `(0, 1]`.
+    ///
+    /// Model-dependent — a cosine of 0.70 does not mean the same thing on two
+    /// embedding models — and corpus-dependent, since a narrow catalog and a
+    /// broad one want different granularity.
+    pub cluster_similarity: Option<f64>,
+    /// Share of a cluster's members a query must clear that threshold against
+    /// before it joins. Default `0.5`, a majority. In `(0, 1]`.
+    pub cluster_coverage: Option<f64>,
+}
+
+/// Read the cluster policy out of the options bag, rejecting a value outside
+/// `(0, 1]` rather than clamping it: a clamp would silently cluster at something
+/// the caller did not ask for, and boundaries once drawn are never redrawn.
+fn parse_cluster_policy(
+    options: &Option<ObservationPolicyOptions>,
+) -> napi::Result<core::ClusterPolicy> {
+    let mut policy = core::ClusterPolicy::default();
+    if let Some(o) = options {
+        if let Some(v) = o.cluster_similarity {
+            policy = policy.with_similarity(v as f32);
+        }
+        if let Some(v) = o.cluster_coverage {
+            policy = policy.with_coverage(v as f32);
+        }
+    }
+    if !policy.is_valid() {
+        return Err(napi::Error::from_reason(format!(
+            "clusterSimilarity {} / clusterCoverage {}: both must be in (0, 1]",
+            policy.similarity, policy.coverage
+        )));
+    }
+    Ok(policy)
 }
 
 /// Resolve the policy options, **rejecting** unknown values.
@@ -746,6 +780,7 @@ impl Task for ToolSearchTask {
                         score: hit.score as f64,
                         rank: hit.rank,
                         fused: hit.fused,
+                        relevance: f64::from(hit.relevance),
                     })
                     .collect()
             })
@@ -870,6 +905,7 @@ impl Task for SkillSearchTask {
                         score: hit.score as f64,
                         rank: hit.rank,
                         fused: hit.fused,
+                        relevance: f64::from(hit.relevance),
                     })
                     .collect()
             })
@@ -1035,6 +1071,19 @@ pub struct SearchHit {
     /// method score: the usage arm fused into this search, or the method is
     /// hybrid. Uniform across one result list; lets a caller detect the scale.
     pub fused: bool,
+    /// How well this hit matches the query, on `[0, 1]`, by the rule its scale
+    /// admits: `(cos + 1) / 2` for cosine, `score / Σ idf(query terms)` for raw
+    /// BM25, and for hybrid the fused score itself, which is already absolute.
+    /// Those three compare across queries — a list where nothing fits well
+    /// stays low instead of being stretched to `1.0`.
+    ///
+    /// The exception is a single-arm method with adaptive ranking on, where
+    /// `score` is a rank-fusion sum and this is a min-max across the candidate
+    /// set: there `1.0` only means "best of what came back", not "good".
+    ///
+    /// **Not a confidence.** Nothing here was fitted to whether the hit was the
+    /// one you went on to use, so `0.8` does not mean "right 80% of the time".
+    pub relevance: f64,
 }
 
 /// Destination for the local trace stream (ADR-0007): `"noop"` discards,
@@ -1101,7 +1150,11 @@ fn resolve_embedding(config: Option<EmbeddingConfig>) -> napi::Result<Option<Emb
 #[napi(object)]
 pub struct AdaptiveRankingStatus {
     /// One of `"active" | "inactive" | "unknown" | "paused: dim mismatch" |
-    /// "paused: model mismatch"`.
+    /// "paused: model mismatch" | "active: policy drift"`.
+    ///
+    /// Policy drift begins `active` on purpose: the arm is still serving, and a
+    /// caller that recovers from anything `paused` by rebuilding would summon a
+    /// remedy that cannot revisit cluster boundaries.
     pub status: String,
     /// When paused: the embedding model (or its dimension) the graph's centroids
     /// were built with. Absent unless paused.
@@ -1149,6 +1202,29 @@ fn map_status(s: core::AdaptiveRankingStatus) -> AdaptiveRankingStatus {
             built: Some(built),
             active: Some(active),
             dim_mismatch: Some(dim_mismatch),
+        },
+        S::PolicyDrift {
+            built_similarity,
+            built_coverage,
+            active_similarity,
+            active_coverage,
+        } => AdaptiveRankingStatus {
+            status: "active: policy drift".into(),
+            built: Some(format!(
+                "similarity {built_similarity} / coverage {built_coverage}"
+            )),
+            active: Some(format!(
+                "similarity {active_similarity} / coverage {active_coverage}"
+            )),
+            dim_mismatch: None,
+        },
+        // `AdaptiveRankingStatus` is non-exhaustive: a core built ahead of this
+        // binding must degrade rather than fail to compile against it.
+        _ => AdaptiveRankingStatus {
+            status: "unknown".into(),
+            built: None,
+            active: None,
+            dim_mismatch: None,
         },
     }
 }
@@ -1341,6 +1417,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -1362,6 +1439,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -1408,6 +1486,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -1636,8 +1715,17 @@ impl ToolRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
+        let cluster_policy = parse_cluster_policy(&options)?;
         self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -1649,6 +1737,44 @@ impl ToolRegistry {
         registry.set_intent_graph(Some(handle.clone()));
         drop(registry);
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    #[napi]
+    pub fn set_experimental_dense_weight(&self, weight: f64) -> napi::Result<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| napi::Error::from_reason(format!("experimentalDenseWeight: {e}")))?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[napi]
+    pub fn set_experimental_bm25_params(
+        &self,
+        k1: Option<f64>,
+        b: Option<f64>,
+    ) -> napi::Result<()> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let mut params = registry.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(napi::Error::from_reason(format!(
+                "experimentalBm25: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        registry.set_experimental_bm25_params(params);
         Ok(())
     }
 
@@ -2160,6 +2286,9 @@ pub struct SkillHit {
     pub rank: u32,
     /// `true` when `score` is an RRF score — as on `SearchHit.fused`.
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` — as on `SearchHit.relevance`, by the same
+    /// three rules and with the same caveats.
+    pub relevance: f64,
 }
 
 /// What a `SkillRegistry.replaceAll` changed, counted by id. `updated` covers
@@ -2305,6 +2434,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -2323,6 +2453,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -2368,6 +2499,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -2564,8 +2696,17 @@ impl SkillRegistry {
         graph: &IntentGraph,
         options: Option<ObservationPolicyOptions>,
     ) -> napi::Result<()> {
+        let cluster_policy = parse_cluster_policy(&options)?;
         self.usage_policy = parse_policy(options, core::OriginFilter::Any, core::Provenance::Live)?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| napi::Error::from_reason("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -2577,6 +2718,44 @@ impl SkillRegistry {
         registry.set_intent_graph(Some(handle.clone()));
         drop(registry);
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    #[napi]
+    pub fn set_experimental_dense_weight(&self, weight: f64) -> napi::Result<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| napi::Error::from_reason(format!("experimentalDenseWeight: {e}")))?;
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        registry.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[napi]
+    pub fn set_experimental_bm25_params(
+        &self,
+        k1: Option<f64>,
+        b: Option<f64>,
+    ) -> napi::Result<()> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let mut params = registry.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(napi::Error::from_reason(format!(
+                "experimentalBm25: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        registry.set_experimental_bm25_params(params);
         Ok(())
     }
 

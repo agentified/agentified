@@ -55,6 +55,30 @@ async function useIt(catalog: ToolCatalog, query: string, chosen: string): Promi
   await catalog.invoke(chosen, {});
 }
 
+/** A catalog that ranks densely, so tests can reach the tier BM25 never consults. */
+async function semanticCatalog(): Promise<ToolCatalog> {
+  const catalog = new ToolCatalog({ method: "semantic" });
+  await catalog.register([
+    {
+      id: "gh_run_list",
+      name: "gh_run_list",
+      description: "list CI runs",
+      inputSchema: {},
+      outputSchema: {},
+      execute: async () => "ok",
+    },
+    {
+      id: "docker_build",
+      name: "docker_build",
+      description: "build an image",
+      inputSchema: {},
+      outputSchema: {},
+      execute: async () => "ok",
+    },
+  ]);
+  return catalog;
+}
+
 describe("adaptive usage ranking", () => {
   it("leaves ranking untouched until it is enabled", async () => {
     const catalog = await buildCatalog();
@@ -450,29 +474,6 @@ function staleModelGraph(): IntentGraph {
 }
 
 describe.skipIf(!hasModel)("adaptive ranking model-change detection", () => {
-  async function semanticCatalog(): Promise<ToolCatalog> {
-    const catalog = new ToolCatalog({ method: "semantic" });
-    await catalog.register([
-      {
-        id: "gh_run_list",
-        name: "gh_run_list",
-        description: "list CI runs",
-        inputSchema: {},
-        outputSchema: {},
-        execute: async () => "ok",
-      },
-      {
-        id: "docker_build",
-        name: "docker_build",
-        description: "build an image",
-        inputSchema: {},
-        outputSchema: {},
-        execute: async () => "ok",
-      },
-    ]);
-    return catalog;
-  }
-
   it("pauses and warns on a model mismatch, and rebuild restores it", async () => {
     const catalog = await semanticCatalog();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -655,6 +656,67 @@ describe("baseline seeding", () => {
     const graph = await catalog.experimentalBuildIntentGraph(`\n${good}\n\n`);
     // The search was never acted on, so it teaches nothing — but parsing worked.
     expect(graph.clusterCount).toBe(0);
+  });
+});
+
+describe("cluster policy", () => {
+  it("reaches the graph and is recorded on it", async () => {
+    // The behavioural proof that the rule honours these values lives in the core
+    // tests, which can drive the dense tier directly. What this catalog can show
+    // — and what the plumbing actually gets wrong — is whether an option set
+    // here survives the field-by-field rebuild on the way to native at all.
+    const graph = new IntentGraph();
+    const catalog = await buildCatalog();
+    catalog.experimentalEnableAdaptiveRanking(graph, {
+      clusterSimilarity: 0.82,
+      clusterCoverage: 0.4,
+    });
+    catalog.search("why is the build broken", 5);
+    catalog.recordEvent({ type: "invoke_start", tool_id: "gh_run_list", args_size_bytes: 0 });
+
+    const recorded = JSON.parse(graph.toJson()).cluster_policy;
+    expect(recorded.similarity).toBeCloseTo(0.82);
+    expect(recorded.coverage).toBeCloseTo(0.4);
+  });
+
+  it("changes what joins a cluster, through the dense tier", async () => {
+    // The plumbing test above only proves the option arrives. This proves it is
+    // acted on, which needs a real model: the option governs the DENSE tier, and
+    // a BM25 catalog clusters lexically and never consults it.
+    const turns: [string, string][] = [
+      ["why is the build broken", "gh_run_list"],
+      ["why is the build failing", "gh_run_list"],
+    ];
+    const clusterAt = async (clusterSimilarity?: number) => {
+      const graph = new IntentGraph();
+      const catalog = await semanticCatalog();
+      catalog.experimentalEnableAdaptiveRanking(
+        graph,
+        clusterSimilarity === undefined ? {} : { clusterSimilarity },
+      );
+      for (const [query, tool] of turns) {
+        await catalog.searchAsync(query, 5, "direct", "semantic");
+        catalog.recordEvent({ type: "invoke_start", tool_id: tool, args_size_bytes: 0 });
+      }
+      return graph.clusterCount;
+    };
+
+    // Two phrasings of one question merge at the default and cannot at 1.0,
+    // where nothing short of an identical query clears the bar.
+    expect(await clusterAt()).toBe(1);
+    expect(await clusterAt(1.0)).toBe(2);
+  }, 60_000);
+
+  it("rejects a value outside (0, 1] rather than clamping it", async () => {
+    // A clamp would cluster at something the caller did not ask for, and
+    // boundaries once drawn are never redrawn.
+    const catalog = await buildCatalog();
+    expect(() =>
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { clusterSimilarity: 1.5 }),
+    ).toThrow(/in \(0, 1\]/);
+    expect(() =>
+      catalog.experimentalEnableAdaptiveRanking(new IntentGraph(), { clusterCoverage: 0 }),
+    ).toThrow(/in \(0, 1\]/);
   });
 });
 

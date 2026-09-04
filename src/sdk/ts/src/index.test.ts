@@ -84,13 +84,40 @@ describe("ToolRegistry", () => {
     expect(hits[0].score).toBeGreaterThan(0);
   });
 
-  it("indexes content nested inside inputSchema property descriptions", async () => {
-    // Tool's only signal for "regular expression" lives inside inputSchema.properties.pattern.description.
-    // Verifies the binding forwards serde_json::Value across the FFI without dropping nested fields.
+  it("carries a relevance score that follows the BM25 ceiling rule", async () => {
+    // The point of the field: `score` is on three incomparable scales, so it was
+    // never displayable. Asserting the RULE, not merely that the field exists —
+    // a mirror struct that passed `score` twice would satisfy a presence check.
+    const registry = new ToolRegistry();
+    await registry.register([readFile, writeFile]);
+
+    const hits = registry.search("read file", 5);
+    expect(hits.length).toBeGreaterThan(1);
+    for (const hit of hits) {
+      expect(hit.relevance).toBeGreaterThan(0);
+      expect(hit.relevance).toBeLessThanOrEqual(1);
+      expect(hit.relevance).not.toBe(hit.score);
+    }
+    // Monotone with the raw score, since one shared query ceiling divides them
+    // all. And the weakest hit is NOT pinned to zero — min-max would put it
+    // there whatever it matched.
+    for (let i = 1; i < hits.length; i += 1) {
+      expect(hits[i - 1].relevance).toBeGreaterThanOrEqual(hits[i].relevance);
+    }
+    expect(hits[hits.length - 1].relevance).toBeGreaterThan(0);
+  });
+
+  it("indexes property names nested inside inputSchema", async () => {
+    // The FFI regression this has always been: the binding must forward
+    // serde_json::Value across the boundary without dropping nested fields.
+    //
+    // Queried on a property NAME rather than a property description, which
+    // never isolated anything here anyway: "regular expression" is in the
+    // tool's own description too. "pattern" appears nowhere but the schema.
     const registry = new ToolRegistry();
     await registry.register([readFile, writeFile, searchFiles]);
 
-    const hits = registry.search("regular expression", 3);
+    const hits = registry.search("pattern", 3);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].toolId).toBe("search_files");
   });

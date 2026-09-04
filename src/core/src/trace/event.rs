@@ -484,6 +484,30 @@ pub enum TraceEvent {
         /// The model now configured.
         active: String,
     },
+    /// The graph's clusters were drawn under a different [`crate::ClusterPolicy`]
+    /// than the one now in force.
+    ///
+    /// **A notice, not a pause.** Unlike a model swap, nothing here is
+    /// meaningless: the vectors are fine and the clusters are still coherent,
+    /// merely coarser or finer than the current setting would draw them. The arm
+    /// keeps serving.
+    ///
+    /// What it reports is that those boundaries **will not be redrawn**. Nothing
+    /// can redraw them in place — a cluster's edges are aggregate counts with no
+    /// member attribution to split on — so a rebuild is the wrong remedy here,
+    /// and this deliberately does not travel under the model event or the paused
+    /// status that would summon one. Re-deriving boundaries means replaying the
+    /// trace log, or relearning.
+    UsageClusterPolicyChanged {
+        /// Similarity the existing boundaries were drawn under.
+        built_similarity: f64,
+        /// Coverage fraction the existing boundaries were drawn under.
+        built_coverage: f64,
+        /// Similarity now in force.
+        active_similarity: f64,
+        /// Coverage fraction now in force.
+        active_coverage: f64,
+    },
     /// Emitted once when a semantic/hybrid search finds the attached intent
     /// graph's centroids were built with a *different* embedding model than the
     /// active one, so cosine across the two spaces would be meaningless. Unlike

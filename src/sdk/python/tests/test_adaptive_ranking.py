@@ -746,6 +746,62 @@ async def test_a_malformed_log_line_names_its_line_number() -> None:
         await catalog.experimental_build_intent_graph(f'{good}\n{{"v":1,"ts":2,"sess')
 
 
+async def test_the_cluster_policy_reaches_the_graph_and_is_recorded() -> None:
+    """The behavioural proof that the rule honours these values lives in the core
+    tests, which can drive the dense tier directly. What this catalog can show --
+    and what the plumbing actually gets wrong -- is whether an option set here
+    survives the trip to native at all."""
+    catalog = await build_catalog()
+    graph = IntentGraph()
+    catalog.experimental_enable_adaptive_ranking(
+        graph, cluster_similarity=0.82, cluster_coverage=0.4
+    )
+    catalog.search("why is the build broken", 5)
+    catalog.record_event(
+        {"type": "invoke_start", "tool_id": "gh_run_list", "args_size_bytes": 0}
+    )
+
+    recorded = json.loads(graph.to_json())["cluster_policy"]
+    assert recorded["similarity"] == pytest.approx(0.82)
+    assert recorded["coverage"] == pytest.approx(0.4)
+
+
+async def test_the_cluster_policy_changes_what_joins_a_cluster() -> None:
+    """The plumbing test above only proves the option arrives. This proves it is
+    acted on, which needs a real model: the option governs the DENSE tier, and a
+    BM25 catalog clusters lexically and never consults it."""
+    turns = [
+        ("why is the build broken", "gh_run_list"),
+        ("why is the build failing", "gh_run_list"),
+    ]
+
+    async def cluster_count(**policy: float) -> int:
+        catalog = await _semantic_catalog()
+        graph = IntentGraph()
+        catalog.experimental_enable_adaptive_ranking(graph, **policy)
+        for query, tool in turns:
+            await catalog.search_async(query, 5, method="semantic")
+            catalog.record_event(
+                {"type": "invoke_start", "tool_id": tool, "args_size_bytes": 0}
+            )
+        return graph.cluster_count
+
+    # Two phrasings of one question merge at the default and cannot at 1.0,
+    # where nothing short of an identical query clears the bar.
+    assert await cluster_count() == 1
+    assert await cluster_count(cluster_similarity=1.0) == 2
+
+
+async def test_a_cluster_policy_outside_the_unit_range_is_rejected() -> None:
+    """Rejected, not clamped: a clamp would cluster at something the caller did
+    not ask for, and boundaries once drawn are never redrawn."""
+    catalog = await build_catalog()
+    with pytest.raises(ValueError, match=r"in \(0, 1\]"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), cluster_similarity=1.5)
+    with pytest.raises(ValueError, match=r"in \(0, 1\]"):
+        catalog.experimental_enable_adaptive_ranking(IntentGraph(), cluster_coverage=0.0)
+
+
 async def test_live_learning_can_be_restricted_by_origin() -> None:
     catalog = await build_catalog()
     graph = IntentGraph()

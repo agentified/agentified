@@ -488,8 +488,12 @@
       "`centroid` MAY be absent; a consumer without an embedder matches lexically over `members`, and one with an embedder MAY derive a centroid from `members`.",
       "A consumer MUST NOT mix centroids produced by different embedding models; on a model change, discard the centroids and re-derive from `members`.",
       "`label` and `terms` are display-only. Retrieval results MUST be identical whatever they contain.",
-      "Only the relative order of edge weights within a cluster is load-bearing; absolute magnitudes are never compared against BM25 or cosine scores.",
-      "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains."
+      "Edge weights are observation COUNTS, and absolute magnitudes are never compared against BM25 or cosine scores. They are not, on their own, the order to serve: a consumer SHOULD down-weight a capability that appears across many clusters, because one that answers every intent identifies none of them. Ratel scales each edge by 1 + ln(clusters / clusters naming that capability), counted over the raw edge maps of every cluster \u2014 not over the edges that survive a consumer's own catalog filter, which would make the order depend on which catalog is attached rather than on the graph.",
+      "`cluster_policy` MAY be absent, meaning the built-in defaults. It is PROVENANCE: it records the similarity and coverage the graph's existing boundaries were drawn under, not what a consumer should cluster at next. A consumer clustering at different values MUST NOT assume the existing boundaries match them \u2014 boundaries are never redrawn in place.",
+      "`cohesion` MAY be absent, meaning 1.0. A consumer that matches on `centroid` without per-member vectors SHOULD scale the similarity it requires by it: a normalized centroid hides how far apart its members are, so a cluster that drifted apart otherwise reads as tight and keeps absorbing.",
+      "`vector_n` is provenance for learning only \u2014 it weights the next fold into `centroid`. Retrieval results MUST be identical whatever it contains.",
+      "`seeded_support` is provenance only — it records how many of `support` came from a seeding pass rather than live traffic. Retrieval results MUST be identical whatever it contains.",
+      "`surfaced_tools` and `surfaced_skills` are provenance only — it counts how many of a cluster's searches put each capability in front of the caller, so a consumer can tell a capability that is shown constantly and rarely used from one shown rarely and always used. A consumer MUST NOT let it affect ranking, and MUST NOT treat an id present in an impression map but absent from the matching edge map as an edge: what retrieval returned is not evidence, only what was invoked is. The two maps exist because tool and skill ids are different id spaces: an id in one MUST NOT be read against the other."
     ],
     "valid": [
       {
@@ -714,6 +718,89 @@
         }
       },
       {
+        "name": "cohesion-and-fold-count",
+        "why": "A dense cluster records how tightly its members agree and how many embeddings the centroid averages. Normalizing the centroid divides the spread out, so a consumer with no per-member vectors has no other way to tell a tight cluster from one that drifted into the generic direction of its domain.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "cohesion": 0.914,
+              "vector_n": 2,
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cohesion-absent-defaults-to-tight",
+        "why": "Both fields are additive: a producer that does not track spread omits them, and a consumer reads cohesion 1.0 and one folded vector \u2014 the behaviour every graph written before they existed already has.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-recorded",
+        "why": "The similarity threshold and coverage fraction are configurable per catalog, so a graph records what its boundaries were drawn under. Without it two producers at different settings would disagree about what a cluster means while both claiming v: 1.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "cluster_policy": { "similarity": 0.82, "coverage": 0.4 },
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-absent-defaults",
+        "why": "Absent means the built-in defaults (0.70 / 0.5), which is historically exact \u2014 before the policy was configurable those were the only values a producer could have used. A graph still at the defaults is byte-identical to one written before the field existed.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
         "name": "dense-with-model",
         "why": "A dense graph declares the embedding model its centroids were built with, so a consumer can detect a model swap instead of cosine-ing across vector spaces.",
         "doc": {
@@ -826,6 +913,101 @@
                 "gh_run_list": 0.8
               },
               "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impressions-recorded",
+        "why": "A cluster records how many of its searches put each tool in front of the caller, beside how many invoked it. `docker_build` was shown nine times and never invoked, so it has an impression count and NO edge — the case that is invisible when only invocations are counted.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_tools": {
+                "docker_build": 9,
+                "gh_run_list": 6
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impressions-absent-means-none",
+        "why": "Every graph written before impressions existed omits the map, and so does a producer that does not track what its searches returned. Absent means not-recorded, which is not the same as shown-zero-times.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impressions-both-id-spaces",
+        "why": "A cluster reached by a capability search records what BOTH catalogs put in front of the caller, in two maps. One map would let a tool id and a skill id of the same name collide and damp each other — which is why `tools` and `skills` are separate too.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_tools": {
+                "docker_build": 9,
+                "gh_run_list": 6
+              },
+              "surfaced_skills": {
+                "release-notes": 7,
+                "triage-ci": 4
+              },
+              "skills": {
+                "triage-ci": 3.0
+              }
             }
           ]
         }
@@ -1089,6 +1271,68 @@
         }
       },
       {
+        "name": "cohesion-out-of-range",
+        "because": "`cohesion` is the norm of a mean of unit vectors, so it lies in (0, 1]. A value above 1 is not expressible by any producer, and zero would mean the members cancelled out entirely.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "centroid": [0.8, 0.577, 0.161],
+              "cohesion": 1.4,
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cohesion-without-a-centroid",
+        "because": "`cohesion` describes how far apart the members a centroid averages are. Recorded without a centroid it describes nothing, which means the producer dropped a field rather than omitted one.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken"],
+              "cohesion": 0.5,
+              "support": 1,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "cluster-policy-out-of-range",
+        "because": "`similarity` is a cosine and `coverage` a fraction; both live in (0, 1]. A coverage above 1 asks for more members than a cluster can have.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "cluster_policy": { "similarity": 0.7, "coverage": 1.4 },
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": ["build", "ci"],
+              "members": ["why is the build broken", "did CI pass"],
+              "centroid": [0.8, 0.577, 0.161],
+              "support": 5,
+              "tools": { "gh_run_list": 0.8 },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
         "name": "seeded-support-exceeds-support",
         "because": "`seeded_support` counts a subset of `support`; a value above it is not expressible by any producer.",
         "doc": {
@@ -1112,6 +1356,98 @@
                 "gh_run_list": 0.8
               },
               "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impression-count-zero",
+        "because": "Absence already means \"surfaced no times\", so a stored zero is a second spelling of one state. Counts are >= 1 — the same rule that rejects a zero-weight edge.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_tools": {
+                "docker_build": 0
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "impression-count-not-an-integer",
+        "because": "Impressions count searches, not weight. A fractional value has no meaning and signals a producer conflating the denominator with an edge.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_tools": {
+                "docker_build": 2.5
+              },
+              "skills": {}
+            }
+          ]
+        }
+      },
+      {
+        "name": "skill-impression-count-zero",
+        "because": "The skill map obeys the same rule as the tool one: absence already means \"surfaced no times\", so a stored zero is a second spelling of one state.",
+        "doc": {
+          "v": 1,
+          "built_from_ts": 1753000000000,
+          "intents": [
+            {
+              "id": "intent_0",
+              "label": "is the build green",
+              "terms": [
+                "build",
+                "ci"
+              ],
+              "members": [
+                "why is the build broken",
+                "did CI pass"
+              ],
+              "support": 5,
+              "tools": {
+                "gh_run_list": 4.0
+              },
+              "surfaced_skills": {
+                "release-notes": 0
+              },
+              "skills": {
+                "triage-ci": 3.0
+              }
             }
           ]
         }

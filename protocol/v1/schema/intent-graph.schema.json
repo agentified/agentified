@@ -25,6 +25,16 @@
       "minLength": 1,
       "description": "OPTIONAL fingerprint of the embedding model the centroids were built with. Present only for a graph that carries centroids; absent for a lexically-clustered graph. A consumer MUST NOT cosine a query against centroids built by a different model \u2014 it detects the swap (dimension or fingerprint) and pauses the usage arm until the graph is rebuilt. See ADR-0014."
     },
+    "cluster_policy": {
+      "type": "object",
+      "description": "OPTIONAL policy the graph's existing cluster boundaries were drawn under: `similarity` is the minimum cosine a query must clear against a single member, and `coverage` the share of a cluster's members it must clear it against. Both are configurable per catalog, so a graph MUST record what it was clustered under \u2014 without it, two producers at different settings disagree about what a cluster means while both claiming v: 1. Absent means the built-in defaults (0.70 / 0.5), which is historically exact: before the policy was configurable those were the only values a producer could have used. PROVENANCE ONLY: it describes boundaries already drawn, not what a consumer should cluster at next, and changing the policy does NOT redraw them. See ADR-0014.",
+      "required": ["similarity", "coverage"],
+      "additionalProperties": true,
+      "properties": {
+        "similarity": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "coverage": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
     "rev": {
       "type": "integer",
       "minimum": 0,
@@ -94,6 +104,18 @@
           "minimum": 0,
           "description": "OPTIONAL count of this cluster's `support` observations that came from a SEEDING pass \u2014 a baseline capture (queries recorded while Ratel observed but served no retrieval) or a replay of a trace log \u2014 rather than from live serving traffic. PROVENANCE ONLY: a consumer MUST NOT let it affect ranking, and a consumer that does not understand it MUST ignore it. Invariant: seeded_support <= support, since it counts a subset. Absent means 0."
         },
+        "cohesion": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "OPTIONAL tightness of this cluster's members: the norm of the UNNORMALIZED mean of their embeddings, before the `centroid` was scaled to unit length. 1.0 when every member points the same way, sqrt(n)/n for n mutually orthogonal ones. Normalizing divides this out, so it is the one thing `centroid` cannot tell a consumer, and a consumer with no per-member vectors needs it to know whether a match against `centroid` means anything: a diffuse cluster's centroid sits near the generic direction of its domain and is close to everything in it. Consumers SHOULD raise the similarity a query must clear in proportion (ADR-0014). Requires `centroid`; absent means 1.0, i.e. treat the cluster as tight."
+        },
+        "vector_n": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "OPTIONAL count of embeddings folded into `centroid`. Distinct from members.len(), because a cluster can gain members lexically with no embedding. A producer that keeps learning needs it to weight the next fold correctly; without it a reloaded centroid counts as a single sample and one further observation can drag the whole cluster. PROVENANCE FOR LEARNING ONLY: a consumer MUST NOT let it affect ranking. Absent means 1.",
+          "$comment": "Absent means 1, not 0 \u2014 a stored centroid always had at least one vector folded into it."
+        },
         "last_ts": {
           "type": "integer",
           "minimum": 0,
@@ -104,6 +126,18 @@
         },
         "skills": {
           "$ref": "#/$defs/edges"
+        },
+        "surfaced_tools": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "OPTIONAL map of tool id -> how many of this cluster's searches put that tool in front of the caller, counting only searches the caller then acted on. It is the denominator `tools` has never had: a tool shown twelve times and invoked once is indistinguishable from one shown once and invoked once when only invocations are counted. TOOLS ONLY \u2014 skill ids live in a different id space and are never recorded here. RANKING INPUT, unlike `seeded_support`: this is the denominator half of an edge weight, so a consumer MAY let it damp ranking — that is what it is for. Ratel multiplies each edge by `min(1, (invoked + 3) / (considered + 3))`, so a tool shown constantly and taken rarely falls behind one shown rarely and always taken; the pseudo-counts stop a single unlucky impression halving an edge, and the clamp means an impression can only ever cost an edge, never promote one. A consumer that does not understand it MUST ignore it, which ranks exactly as before impressions existed. An id present here but absent from `tools` has NO edge and MUST NOT be promoted \u2014 recording what a search returned is not the same as making it evidence. Absent means none were recorded.",
+          "$comment": "Counts are >= 1: absence already means \"surfaced no times\", so a stored zero is a second spelling of the same state."
+        },
+        "surfaced_skills": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "OPTIONAL map of skill id -> how many of this cluster's searches put that skill in front of the caller, counting only searches the caller then acted on. It is the denominator `skills` has never had: a skill shown twelve times and invoked once is indistinguishable from one shown once and invoked once when only invocations are counted. The skill-side twin of `surfaced_tools`; the two id spaces are why there are two maps. RANKING INPUT, unlike `seeded_support`: this is the denominator half of an edge weight, so a consumer MAY let it damp ranking — that is what it is for. Ratel multiplies each edge by `min(1, (invoked + 3) / (considered + 3))`, so a skill shown constantly and taken rarely falls behind one shown rarely and always taken; the pseudo-counts stop a single unlucky impression halving an edge, and the clamp means an impression can only ever cost an edge, never promote one. A consumer that does not understand it MUST ignore it, which ranks exactly as before impressions existed. An id present here but absent from `skills` has NO edge and MUST NOT be promoted \u2014 recording what a search returned is not the same as making it evidence. Absent means none were recorded.",
+          "$comment": "Counts are >= 1: absence already means \"surfaced no times\", so a stored zero is a second spelling of the same state."
         }
       }
     },

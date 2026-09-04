@@ -222,8 +222,47 @@ to delegate:
   merged. Absent `rev` is treated as 0.
 - **Additive evolution.** Within `v: 1`, new fields are optional and a consumer **MUST ignore
   fields it does not recognize** (the schema is `additionalProperties: true`). An older
-  consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`) loads
-  with a safe default.
+  consumer reads a newer graph; a graph missing a newer field (`model`, `last_ts`, `rev`,
+  `cohesion`, `vector_n`, `cluster_policy`, `surfaced_tools`, `surfaced_skills`) loads with a safe default.
+- **Impressions are a denominator, not an edge.** `surfaced_tools` and `surfaced_skills` count
+  how many of a cluster's searches put each capability in front of the caller, counting only
+  searches the caller then acted on. Without them a capability shown twelve times and invoked
+  once is indistinguishable from one shown once and invoked once, because only invocations are
+  recorded. They change nothing about what an edge is: an id present in an impression map and
+  absent from the matching edge map has no edge, and a consumer MUST NOT promote it — what
+  retrieval returned is still not evidence. Two maps, paired with `tools` and `skills`, because
+  the id spaces are distinct: an id in one MUST NOT be read against the other. Absent means none
+  were recorded.
+
+  A consumer MAY use them to damp — that is what a denominator is for, and unlike
+  `seeded_support` these do reach ranking. Ratel multiplies each edge by
+  `min(1, (invoked + 3) / (considered + 3))`. Three properties earn that shape: a cluster that
+  recorded no impressions gets `3/3 = 1` exactly, so an older graph and a consumer that reports
+  no hits both rank unchanged; the clamp at `1` means an impression can only ever cost an edge,
+  never promote one; and it multiplies rather than replaces the count, so nine invocations still
+  outweigh one. A consumer that ignores the maps ranks exactly as it did before they existed.
+- **Edge weights are counts, not the serving order.** `tools` and `skills` map a capability id
+  to how many confirmed observations chose it. A consumer should not serve that order raw: a
+  capability invoked across many clusters ranks on volume rather than on answering the matched
+  question. Ratel scales each edge by `1 + ln(clusters / clusters naming it)`, counted over every
+  cluster's **raw** edges — counting only the ones a consumer's own catalog still defines would
+  make the order a property of that catalog rather than of the graph, so two consumers of one
+  document would disagree. Derived, so nothing about it crosses the wire.
+- **Cluster provenance.** The similarity a query must clear and the share of a cluster's members
+  it must clear it against are configurable per catalog, so `cluster_policy` records what a
+  graph's boundaries were actually drawn under — otherwise two producers at different settings
+  disagree about what a cluster means while both claiming `v: 1`. Absent means the built-in
+  defaults, which is historically exact: before the policy was configurable those were the only
+  values a producer could have used. It is provenance, not instruction — a consumer clustering at
+  different values MUST NOT assume the existing boundaries match them, because boundaries are
+  never redrawn in place.
+- **Cluster spread.** `centroid` is L2-normalized, which divides out how far apart the members
+  it averages actually are — and a cluster that drifted apart has a centroid sitting near the
+  generic direction of its domain, close to everything in it. `cohesion` carries that magnitude
+  back (`1.0` when every member points the same way, `sqrt(n)/n` for n mutually orthogonal
+  ones), so a consumer matching on `centroid` alone can raise the bar in proportion instead of
+  reading a diffuse cluster as a tight one. `vector_n` is the fold count behind the centroid,
+  for producers that keep learning; neither is required, and absent means `1.0` and `1`.
 - **Version safety.** A consumer **MUST reject an unrecognized `v`** with a clean error, never a
   crash or a silent degrade.
 

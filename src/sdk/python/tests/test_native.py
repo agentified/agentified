@@ -31,6 +31,64 @@ async def test_register_and_search_returns_hit() -> None:
     assert hits[0].score > 0
 
 
+async def test_search_hit_carries_a_normalized_score() -> None:
+    # `score` is on three incomparable scales, so it was never displayable.
+    # Asserting the RULE, not merely that the field exists — a mirror struct
+    # that passed `score` twice would satisfy a presence check.
+    reg = ToolRegistry()
+    await _register_read_file(reg)
+    await reg.register(
+        "write_file",
+        "write_file",
+        "Write textual contents to a file on local disk.",
+        {"properties": {"path": {"type": "string"}}},
+        {"properties": {"written": {"type": "boolean"}}},
+    )
+    hits = reg.search("read a text file", 5)
+    assert len(hits) > 1
+    for hit in hits:
+        assert 0.0 < hit.relevance <= 1.0
+        assert hit.relevance != hit.score
+    # Monotone with the raw score, and the weakest hit is not pinned to zero —
+    # min-max would put it there whatever it matched.
+    assert [h.relevance for h in hits] == sorted(
+        (h.relevance for h in hits), reverse=True
+    )
+    assert hits[-1].relevance > 0
+    assert "relevance=" in repr(hits[0])
+
+
+async def test_skill_hit_carries_a_normalized_score() -> None:
+    reg = SkillRegistry()
+    await reg.register(
+        [
+            Skill(
+                id="api-docs",
+                name="api-docs",
+                description="Write REST api reference documentation.",
+                tags=["api"],
+                tools=[],
+                metadata={},
+                body="# api-docs",
+            ),
+            Skill(
+                id="slides",
+                name="slides",
+                description="Build a frontend slides deck from scratch.",
+                tags=["frontend"],
+                tools=[],
+                metadata={},
+                body="# slides",
+            ),
+        ]
+    )
+    hits = reg.search("api reference", 5)
+    assert len(hits) >= 1
+    for hit in hits:
+        assert 0.0 < hit.relevance <= 1.0
+        assert hit.relevance != hit.score
+    assert "relevance=" in repr(hits[0])
+
 async def test_registry_register_many_no_longer_exists() -> None:
     # register_many / build_embeddings / rebuild_embeddings were folded into
     # the variadic, self-embedding `register` (RAT-379/async-register).

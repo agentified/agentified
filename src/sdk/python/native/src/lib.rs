@@ -580,14 +580,28 @@ pub struct SearchHit {
     /// scale their `score` is on.
     #[pyo3(get)]
     pub fused: bool,
+    /// How well this hit matches the query, on `[0, 1]`, by the rule its scale
+    /// admits: `(cos + 1) / 2` for cosine, `score / Σ idf(query terms)` for raw
+    /// BM25, and for hybrid the fused score itself, which is already absolute.
+    /// Those three compare across queries — a list where nothing fits well
+    /// stays low instead of being stretched to `1.0`.
+    ///
+    /// The exception is a single-arm method with adaptive ranking on, where
+    /// `score` is a rank-fusion sum and this is a min-max across the candidate
+    /// set: there `1.0` only means "best of what came back", not "good".
+    ///
+    /// **Not a confidence.** Nothing here was fitted to whether the hit was the
+    /// one you went on to use, so `0.8` does not mean "right 80% of the time".
+    #[pyo3(get)]
+    pub relevance: f64,
 }
 
 #[pymethods]
 impl SearchHit {
     fn __repr__(&self) -> String {
         format!(
-            "SearchHit(tool_id={:?}, score={}, rank={}, fused={})",
-            self.tool_id, self.score, self.rank, self.fused
+            "SearchHit(tool_id={:?}, score={}, rank={}, fused={}, relevance={})",
+            self.tool_id, self.score, self.rank, self.fused, self.relevance
         )
     }
 }
@@ -609,14 +623,18 @@ pub struct SkillHit {
     /// `true` when `score` is an RRF score — as on [`SearchHit::fused`].
     #[pyo3(get)]
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` — as on [`SearchHit::relevance`], by the
+    /// same three rules and with the same caveats.
+    #[pyo3(get)]
+    pub relevance: f64,
 }
 
 #[pymethods]
 impl SkillHit {
     fn __repr__(&self) -> String {
         format!(
-            "SkillHit(skill_id={:?}, score={}, rank={}, fused={})",
-            self.skill_id, self.score, self.rank, self.fused
+            "SkillHit(skill_id={:?}, score={}, rank={}, fused={}, relevance={})",
+            self.skill_id, self.score, self.rank, self.fused, self.relevance
         )
     }
 }
@@ -643,6 +661,29 @@ impl FactHit {
 }
 
 /// Map the core status enum to the tuple the Python facade renders.
+/// Read the cluster policy, rejecting a value outside `(0, 1]` rather than
+/// clamping it: a clamp would silently cluster at something the caller did not
+/// ask for, and boundaries once drawn are never redrawn.
+fn parse_cluster_policy(
+    similarity: Option<f64>,
+    coverage: Option<f64>,
+) -> PyResult<core::ClusterPolicy> {
+    let mut policy = core::ClusterPolicy::default();
+    if let Some(v) = similarity {
+        policy = policy.with_similarity(v as f32);
+    }
+    if let Some(v) = coverage {
+        policy = policy.with_coverage(v as f32);
+    }
+    if !policy.is_valid() {
+        return Err(PyValueError::new_err(format!(
+            "cluster_similarity {} / cluster_coverage {}: both must be in (0, 1]",
+            policy.similarity, policy.coverage
+        )));
+    }
+    Ok(policy)
+}
+
 fn map_adaptive_status(
     s: core::AdaptiveRankingStatus,
 ) -> (String, Option<String>, Option<String>, Option<bool>) {
@@ -666,6 +707,26 @@ fn map_adaptive_status(
             Some(active),
             Some(dim_mismatch),
         ),
+        // Begins "active" on purpose: the arm is still serving, and a caller that
+        // recovers from anything "paused" by rebuilding would summon a remedy
+        // that cannot revisit cluster boundaries.
+        S::PolicyDrift {
+            built_similarity,
+            built_coverage,
+            active_similarity,
+            active_coverage,
+        } => (
+            "active: policy drift".into(),
+            Some(format!(
+                "similarity {built_similarity} / coverage {built_coverage}"
+            )),
+            Some(format!(
+                "similarity {active_similarity} / coverage {active_coverage}"
+            )),
+            None,
+        ),
+        // Non-exhaustive upstream: degrade rather than fail to compile.
+        _ => ("unknown".into(), None, None, None),
     }
 }
 
@@ -933,6 +994,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -966,6 +1028,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -1008,6 +1071,7 @@ impl ToolRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -1225,13 +1289,16 @@ impl ToolRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None, cluster_similarity=None, cluster_coverage=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
         provenance: Option<&str>,
+        cluster_similarity: Option<f64>,
+        cluster_coverage: Option<f64>,
     ) -> PyResult<()> {
+        let cluster_policy = parse_cluster_policy(cluster_similarity, cluster_coverage)?;
         self.usage_policy = parse_policy(
             origins,
             provenance,
@@ -1239,6 +1306,14 @@ impl ToolRegistry {
             core::Provenance::Live,
         )?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| PyValueError::new_err("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -1248,6 +1323,37 @@ impl ToolRegistry {
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    fn set_experimental_dense_weight(&mut self, weight: f64) -> PyResult<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| PyValueError::new_err(format!("experimental_dense_weight: {e}")))?;
+        self.inner.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[pyo3(signature = (k1=None, b=None))]
+    fn set_experimental_bm25_params(&mut self, k1: Option<f64>, b: Option<f64>) -> PyResult<()> {
+        let mut params = self.inner.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(PyValueError::new_err(format!(
+                "experimental_bm25_params: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        self.inner.set_experimental_bm25_params(params);
         Ok(())
     }
 
@@ -1448,6 +1554,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect()
     }
@@ -1480,6 +1587,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -1518,6 +1626,7 @@ impl SkillRegistry {
                 score: hit.score as f64,
                 rank: hit.rank,
                 fused: hit.fused,
+                relevance: f64::from(hit.relevance),
             })
             .collect())
     }
@@ -1698,13 +1807,16 @@ impl SkillRegistry {
     /// Only queries matching a cluster are affected. With a graph attached
     /// `SearchHit.score` becomes a fusion score rather than a raw BM25 score, so
     /// compare ordering rather than magnitudes.
-    #[pyo3(signature = (graph, origins=None, provenance=None))]
+    #[pyo3(signature = (graph, origins=None, provenance=None, cluster_similarity=None, cluster_coverage=None))]
     fn enable_adaptive_ranking(
         &mut self,
         graph: &IntentGraph,
         origins: Option<&str>,
         provenance: Option<&str>,
+        cluster_similarity: Option<f64>,
+        cluster_coverage: Option<f64>,
     ) -> PyResult<()> {
+        let cluster_policy = parse_cluster_policy(cluster_similarity, cluster_coverage)?;
         self.usage_policy = parse_policy(
             origins,
             provenance,
@@ -1712,6 +1824,14 @@ impl SkillRegistry {
             core::Provenance::Live,
         )?;
         let handle = graph.inner.clone();
+        // Sets what FUTURE admissions are measured against. Existing boundaries
+        // stay as they are — nothing can redraw them in place — and the graph
+        // keeps reporting the policy it was clustered under, so the difference
+        // surfaces as drift rather than silently changing what a cluster means.
+        handle
+            .write()
+            .map_err(|_| PyValueError::new_err("intent graph lock poisoned"))?
+            .set_cluster_policy(cluster_policy);
         let sink = active_trace_sink(
             &self.base_sink,
             Some(&handle),
@@ -1721,6 +1841,37 @@ impl SkillRegistry {
         self.inner.set_trace_sink(sink);
         self.inner.set_intent_graph(Some(handle.clone()));
         self.graph = Some(handle);
+        Ok(())
+    }
+
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7`. Rejected outside `[0, 1]`.
+    fn set_experimental_dense_weight(&mut self, weight: f64) -> PyResult<()> {
+        let weight = core::DenseWeight::new(weight as f32)
+            .map_err(|e| PyValueError::new_err(format!("experimental_dense_weight: {e}")))?;
+        self.inner.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[pyo3(signature = (k1=None, b=None))]
+    fn set_experimental_bm25_params(&mut self, k1: Option<f64>, b: Option<f64>) -> PyResult<()> {
+        let mut params = self.inner.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(PyValueError::new_err(format!(
+                "experimental_bm25_params: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        self.inner.set_experimental_bm25_params(params);
         Ok(())
     }
 

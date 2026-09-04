@@ -129,6 +129,9 @@ class SkillRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
@@ -194,6 +197,9 @@ class SkillRegistry:
         embedding: EmbeddingSpec | None = None,
         *,
         method: SearchMethod = "bm25",
+        experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
@@ -230,6 +236,10 @@ class SkillRegistry:
             download=download,
         )
         self._native = _NativeSkillRegistry(**kwargs)
+        if experimental_dense_weight is not None:
+            self._native.set_experimental_dense_weight(experimental_dense_weight)
+        if experimental_bm25_k1 is not None or experimental_bm25_b is not None:
+            self._native.set_experimental_bm25_params(experimental_bm25_k1, experimental_bm25_b)
         self._eager = method in ("semantic", "hybrid")
         self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
@@ -487,6 +497,8 @@ class SkillRegistry:
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
         provenance: ProvenanceOption | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -517,7 +529,9 @@ class SkillRegistry:
             self._warn_on_model_mismatch = warn_on_model_mismatch
             self._rebuild_on_model_change = rebuild_on_model_change
             self._adaptive_warned = False
-            self._native.enable_adaptive_ranking(graph, origins, provenance)
+            self._native.enable_adaptive_ranking(
+            graph, origins, provenance, cluster_similarity, cluster_coverage
+        )
         self._maybe_warn_model_mismatch()
 
     def experimental_disable_adaptive_ranking(self) -> None:
@@ -557,6 +571,17 @@ class SkillRegistry:
         if self._adaptive_warned or not self._warn_on_model_mismatch:
             return
         status, built, active, dim_mismatch = self._native.adaptive_ranking_status()
+        if status == "active: policy drift":
+            self._adaptive_warned = True
+            warnings.warn(
+                f"ratel: intent graph clusters were drawn under {built}, but {active} is "
+                "now configured. Adaptive usage ranking is still ACTIVE -- the new policy "
+                "applies to future queries only. Existing clusters are NOT redrawn, and "
+                "rebuilding will not redraw them; replay a trace log through "
+                "experimental_build_intent_graph(), or relearn.",
+                stacklevel=2,
+            )
+            return
         if not status.startswith("paused"):
             return
         self._adaptive_warned = True
@@ -688,6 +713,9 @@ class SkillCatalog:
         trace: TraceSinkConfig | None = None,
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
+        experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty skill catalog.
@@ -700,6 +728,12 @@ class SkillCatalog:
                 registration.
             embedding: model for semantic/hybrid retrieval — see
                 `ToolCatalog.__init__`; retained and validated under "bm25" too.
+            experimental_dense_weight: share of the hybrid content score the
+                dense (semantic) arm carries — see `ToolCatalog.__init__`.
+            experimental_bm25_k1: term-frequency saturation — see
+                `ToolCatalog.__init__`.
+            experimental_bm25_b: length normalisation — see
+                `ToolCatalog.__init__`.
             experimental_embedding_artifact: build-time RAT1 to warm on
                 register/replace_all (any method; default ``on_miss`` is
                 ``"error"``). Each call re-resolves and re-warms over the whole
@@ -720,6 +754,9 @@ class SkillCatalog:
         self._registry = SkillRegistry(
             embedding,
             method=method,
+            experimental_dense_weight=experimental_dense_weight,
+            experimental_bm25_k1=experimental_bm25_k1,
+            experimental_bm25_b=experimental_bm25_b,
             experimental_embedding_artifact=experimental_embedding_artifact,
         )
         if trace is not None:
@@ -919,6 +956,8 @@ class SkillCatalog:
         rebuild_on_model_change: bool = False,
         origins: OriginFilterOption | None = None,
         provenance: ProvenanceOption | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against ``graph`` (ADR-0014).
 
@@ -943,6 +982,8 @@ class SkillCatalog:
             rebuild_on_model_change=rebuild_on_model_change,
             origins=origins,
             provenance=provenance,
+            cluster_similarity=cluster_similarity,
+            cluster_coverage=cluster_coverage,
         )
 
     async def experimental_rebuild_intent_graph(self) -> None:

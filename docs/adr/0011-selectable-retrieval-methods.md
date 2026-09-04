@@ -28,7 +28,8 @@ is chosen per catalog (a construction-time default) or per call (an explicit ove
 override wins. Across the SDKs the identifier is the string `"bm25" | "semantic" | "hybrid"`,
 parallel to `SearchOrigin`.
 
-- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b = 0.4`) and stays
+- **BM25** is unchanged from ADR-0004 (`Bm25Index::search`, `k1 = 0.9`, `b` raised from 0.4 to
+  the standard 0.75) and stays
   the default. The legacy `search` / `search_with_origin` entry points keep their infallible
   `Vec<SearchHit>` signature and BM25 behavior byte-for-byte — upgrading callers need no code
   change. The index is cached per registry (`Bm25Cache`) and rebuilt in full on the first
@@ -37,9 +38,17 @@ parallel to `SearchOrigin`.
   pinned revision, CLS-pool + L2-normalize) and cosine-ranks it against embedded tool/skill
   text (`dense_search`). The same `searchable_text` projection feeds it. (The model is the
   default; **ADR-0012** makes it configurable per catalog — HuggingFace/local/endpoint.)
-- **Hybrid** runs the BM25 and dense arms to a fixed retrieval depth and fuses their rankings
-  by **Reciprocal Rank Fusion** (`RRF_K = 60`), no cross-encoder reranker. RRF fuses on rank
-  position, so BM25's unbounded scores and cosine's `[-1, 1]` never need reconciling.
+- **Hybrid** runs the BM25 and dense arms to a fixed retrieval depth and fuses them, no
+  cross-encoder reranker.
+
+  > **Superseded by [ADR-0024](0024-hybrid-fuses-on-scores.md).** Hybrid fuses on **normalised
+  > scores**, not rank positions. The reasoning below — that RRF fuses on rank so BM25's
+  > unbounded scores and cosine's `[-1, 1]` never need reconciling — was correct while the arms
+  > had no shared scale; both now carry an absolute `[0, 1]` value. `Bm25` and `Semantic` still
+  > fuse the usage arm by rank.
+
+  Originally: by **Reciprocal Rank Fusion** (`RRF_K = 60`). RRF fuses on rank position, so
+  BM25's unbounded scores and cosine's `[-1, 1]` never need reconciling.
 - **Fallibility is confined to the new path.** A method-carrying `search_with_method` returns
   `Result<_, EmbedderError>`; `Bm25` is always `Ok`, while `Semantic`/`Hybrid` surface a failed
   model load (network, cache, underpowered machine) as a catchable error — a Python
@@ -72,8 +81,7 @@ parallel to `SearchOrigin`.
 - The default stays lightweight and infallible; the ML dependency (Candle, tokenizers with the
   pure-Rust `fancy-regex` backend, `hf-hub`) is compiled in but never exercised unless a caller
   opts into semantic/hybrid. The `searchable_text` contract (ADR-0004, experimentally extended
-  by ADR-0021) is shared, so all
-  three engines rank the same projection.
+  by ADR-0021) is shared, so all three engines rank the same projection.
 - Capability tools inherit the catalog's construction-time default and await async search. MCP
   ingestion registers metadata only, so several upstreams can be ingested before one batched
   embedding build.
@@ -86,4 +94,6 @@ parallel to `SearchOrigin`.
   registration metadata-only in every mode. Rejected: full-corpus re-embed on `register` (the first cut of
   this ADR) — the incremental id-keyed cache re-embeds only ids not currently cached (newly
   registered, or invalidated when a re-register replaces an id). Rejected:
-  score-normalization fusion for hybrid — RRF needs no per-arm score calibration.
+  score-normalization fusion for hybrid — RRF needs no per-arm score calibration. **Reversed by
+  [ADR-0024](0024-hybrid-fuses-on-scores.md)**, once both arms carried an absolute `[0, 1]` value
+  and the cost of an undisplayable magnitude was paid in production.

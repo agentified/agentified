@@ -6,9 +6,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.13.0-rc.4] - 2026-09-02
+
+### Changed
+
+- **`SearchHit.normalized` and `SkillHit.normalized` are renamed to `relevance`.** **Breaking** against the `0.13.0-rc.*` prereleases only; the field has never shipped in a stable release, so `0.12.0` users are unaffected. The old name described how the number was produced rather than what it tells you, and it invited reading the value as a probability. It is not one — nothing was fitted to whether a hit was the one you went on to use. `relevance` says what it is: how well the hit matches the query, on `[0, 1]`. If you are on an rc, rename the field at your call sites; nothing else changes.
+
+## [0.13.0-rc.3] - 2026-09-02
+
 ### Fixed
 
 - A tool call that reports failure in its result (`isError`) now closes the `execute_tool` span as `ERROR` and emits `invoke_error`; it previously recorded as a success.
+- **Hybrid results could come back in the wrong order when several hits scored at the top.** Fused scores were capped at `1.0` before being sorted, so two strong hits collapsed to the same value and fell back to alphabetical order by id. This bit hardest with adaptive ranking on: a tool you use constantly could be listed below one you never use, purely because its id sorted later. Ordering now uses the uncapped score. Nothing you can read changes — `score` and `normalized` are still `[0, 1]` — only the order, and only where it was wrong. `"bm25"` and `"semantic"` were never affected.
+
+### Added
+
+- **`experimentalDenseWeight` on `ToolCatalog` and `SkillCatalog`: the hybrid dense/lexical split.** How much of a hybrid score the semantic arm carries; BM25 takes the remainder. Default `0.7` — unchanged ranking if you do not set it — read by `"hybrid"` only. The default was measured on corpora of natural-language descriptions; a catalog keyed on exact identifiers, error codes, or internal jargon gives the lexical arm purchase those corpora do not have and will want a lower value. `0` is pure lexical, `1` pure dense. Anything outside `[0, 1]` throws at construction rather than being clamped, so a mistyped `70` is reported instead of silently searching at `1`. It does not scale the adaptive-ranking arm, whose share is a separate guard.
+
+## [0.13.0-rc.2] - 2026-09-01
+
+### Changed
+
+- **Hybrid search fuses on normalised scores rather than rank positions.** **Breaking:** hybrid results may come back in a different order. The `normalized` field on a hybrid hit is now the fused score itself — absolute, comparable across queries, and no longer stretched so the top hit is always `1.0`. A query your catalog answers well and one it cannot answer at all used to return the same number; now they do not. `"bm25"` and `"semantic"` are unchanged. Measured on BFCL before being accepted: better than rank fusion on recall, MRR, and nDCG at every `k`, and the correct answer now scores `0.72` on average where rank fusion returned `0.03` for everything.
+
+## [0.13.0-rc.1] - 2026-08-31
+
+### Added
+
+- `clusterSimilarity` and `clusterCoverage` on the adaptive-ranking observation options: the two numbers that draw every cluster boundary. `clusterSimilarity` is the minimum cosine a query must clear against a single cluster member, `clusterCoverage` the share of a cluster's members it must clear it against before it joins. Both were fixed constants and both are model- and corpus-dependent — a cosine of 0.70 does not mean the same thing on two embedding models, and a narrow catalog wants different granularity from a broad one — so tuning them is the only way to get sensible clusters out of a catalog whose shape the defaults were not chosen for. Values outside `(0, 1]` are rejected rather than clamped: a clamp would cluster at something you did not ask for, and boundaries once drawn are never redrawn. Applies to **future** admissions only; a graph keeps reporting the policy it was clustered under, and a mismatch surfaces as the `"active: policy drift"` status, which — unlike a paused status — is not fixed by rebuilding. To re-derive boundaries, replay a trace log or relearn.
+- `SearchHit.normalized` and `SkillHit.normalized`: `score` mapped onto `[0, 1]` for display. The raw `score` is on three incomparable scales — unbounded BM25, bounded cosine, and an RRF sum whose magnitude is rank arithmetic — so it has never been displayable, and normalizing it yourself is how a rank position gets read as certainty. Each method now carries the rule its own scale admits: `(cos + 1) / 2` for cosine, `score / Σ idf(query terms)` for raw BM25, and min-max across the full candidate set for RRF. The first two are absolute and compare across queries; the RRF rule does not, because rank fusion has no achievable maximum — a `1.0` there means "best of what came back", not "right". **It is not a confidence:** nothing was fitted to whether the hit was the one you went on to use, so `0.8` does not mean "right 80% of the time".
 
 ## [0.12.0] - 2026-08-21
 

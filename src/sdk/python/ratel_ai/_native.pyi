@@ -43,6 +43,24 @@ class SearchHit:
         lets you detect which scale `score` is on.
         """
 
+    @property
+    def relevance(self) -> float:
+        """How well this hit matches the query, on [0, 1].
+
+        The rule follows the scale `score` is actually on: `(cos + 1) / 2` for
+        cosine, `score / sum of idf(query terms)` for raw BM25, and for hybrid
+        the fused score itself, which is already absolute. Those three compare
+        across queries — a list where nothing fits well stays low instead of
+        being stretched to 1.0.
+
+        The exception is a single-arm method with adaptive ranking on, where
+        `score` is a rank-fusion sum and this is a min-max across the candidate
+        set: there 1.0 only means "best of what came back", not "good".
+
+        **Not a confidence.** Nothing here was fitted to whether the hit was the
+        one you went on to use, so 0.8 does not mean "right 80% of the time".
+        """
+
 class IntentGraph:
     """A shared usage-ranking intent graph (ADR-0014).
 
@@ -271,6 +289,8 @@ class ToolRegistry:
         graph: IntentGraph,
         origins: str | None = None,
         provenance: str | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
@@ -282,6 +302,23 @@ class ToolRegistry:
         Only queries matching a cluster are affected. With a graph attached
         `SearchHit.score` becomes a fusion score rather than a raw BM25 score,
         so use `rank` for ordering and `fused` to detect the scale.
+        """
+
+    def set_experimental_dense_weight(self, weight: float) -> None:
+        """Set the dense arm's share of the hybrid content score.
+
+        BM25 takes the remainder. Default 0.7, read by "hybrid" only. Raises
+        ValueError outside [0, 1] rather than clamping.
+        """
+
+    def set_experimental_bm25_params(
+        self, k1: float | None = None, b: float | None = None
+    ) -> None:
+        """Set BM25 k1/b; unset fields keep their current value.
+
+        Raises ValueError if the result is outside its mathematically valid
+        domain (k1 finite and >= 0, b finite and in [0, 1]) rather than
+        clamping.
         """
 
     def disable_adaptive_ranking(self) -> None:
@@ -349,6 +386,14 @@ class SkillHit:
     @property
     def fused(self) -> bool:
         """Whether `score` is an RRF score — as on `SearchHit.fused`."""
+
+    @property
+    def relevance(self) -> float:
+        """`score` mapped onto [0, 1] for display.
+
+        As on `SearchHit.relevance`, by the same three rules and with the same
+        caveats.
+        """
 
 class SkillRegistry:
     """Private native metadata registry over the skill corpus.
@@ -497,6 +542,8 @@ class SkillRegistry:
         graph: IntentGraph,
         origins: str | None = None,
         provenance: str | None = None,
+        cluster_similarity: float | None = None,
+        cluster_coverage: float | None = None,
     ) -> None:
         """Turn on adaptive usage ranking against `graph` (ADR-0014).
 
@@ -508,6 +555,23 @@ class SkillRegistry:
         Only queries matching a cluster are affected. With a graph attached
         `SearchHit.score` becomes a fusion score rather than a raw BM25 score,
         so use `rank` for ordering and `fused` to detect the scale.
+        """
+
+    def set_experimental_dense_weight(self, weight: float) -> None:
+        """Set the dense arm's share of the hybrid content score.
+
+        BM25 takes the remainder. Default 0.7, read by "hybrid" only. Raises
+        ValueError outside [0, 1] rather than clamping.
+        """
+
+    def set_experimental_bm25_params(
+        self, k1: float | None = None, b: float | None = None
+    ) -> None:
+        """Set BM25 k1/b; unset fields keep their current value.
+
+        Raises ValueError if the result is outside its mathematically valid
+        domain (k1 finite and >= 0, b finite and in [0, 1]) rather than
+        clamping.
         """
 
     def disable_adaptive_ranking(self) -> None:

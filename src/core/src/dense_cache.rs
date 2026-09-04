@@ -23,7 +23,7 @@ use crate::dense_search::dense_search;
 use crate::embedding::{Embedder, EmbedderError, embedder_with_telemetry};
 use crate::embedding_artifact::{
     ArtifactEntry, ArtifactEntryKind, ArtifactError, build_empty_artifact, hash_projection_text,
-    load_and_validate,
+    load_and_validate, projection_version,
 };
 use crate::embedding_config::EmbeddingModel;
 use crate::trace::{TraceEvent, TraceSink};
@@ -53,6 +53,20 @@ pub enum WarmError {
         /// Artifact-compat identity of the configured embedder.
         active: String,
     },
+    /// RAT1 header projection version does not match this build's.
+    ///
+    /// The searchable-text projection decides what an entry's vector actually
+    /// describes, so an artifact built under a different one is stale whatever
+    /// its model says. Without this the failure is silent in the worst way: every
+    /// entry misses the per-entry projection hash, and the miss policy either
+    /// reports the whole catalog missing for no stated reason or quietly
+    /// re-embeds all of it — the exact cost the artifact exists to avoid.
+    ArtifactProjectionMismatch {
+        /// Projection version recorded in the RAT1 header.
+        artifact: u32,
+        /// Projection version this build computes.
+        active: u32,
+    },
     /// Embedder load, identity probe, or dimension check failed during warm.
     Embedder(EmbedderError),
 }
@@ -64,6 +78,10 @@ impl std::fmt::Display for WarmError {
             WarmError::ArtifactModelMismatch { artifact, active } => write!(
                 f,
                 "embedding artifact was built with model {artifact}, but the configured embedding model is {active} — the artifact cannot warm this catalog (hint: rebuild the artifact with the current model, or configure the model the artifact was built with; artifact identities are opaque build-time values, so compare them rather than reading them)"
+            ),
+            WarmError::ArtifactProjectionMismatch { artifact, active } => write!(
+                f,
+                "embedding artifact was built under searchable-text projection {artifact}, but this build uses {active} — its vectors describe text this build no longer produces (hint: rebuild the artifact; the projection changes when the indexed fields change, so no configuration can make an older one usable)"
             ),
             WarmError::Embedder(e) => write!(f, "{e}"),
         }
@@ -209,6 +227,26 @@ impl DenseCache {
     /// Embed arbitrary texts under the active model, returning the vectors and
     /// the model fingerprint. Used to re-embed an intent graph's members when
     /// rebuilding its centroids after a model change.
+    /// Embed `texts` as **queries**, returning the vectors and the resolved
+    /// model identity.
+    ///
+    /// The query-side twin of [`Self::embed_texts_with_identity`]. An instructed
+    /// model prefixes queries and documents differently, so text that will later
+    /// be compared against live queries has to be embedded on this side or it
+    /// sits in a manifold the queries never reach.
+    pub(crate) fn embed_queries_with_identity(
+        &self,
+        texts: &[String],
+        sink: &dyn TraceSink,
+    ) -> Result<(Vec<Vec<f32>>, String), EmbedderError> {
+        if texts.is_empty() {
+            return Ok((Vec::new(), self.built_fingerprint().unwrap_or_default()));
+        }
+        let embedder = self.resolve_embedder(sink)?;
+        let embedded = embedder.embed_query_batch_with_identity(texts)?;
+        Ok((embedded.value, embedded.fingerprint))
+    }
+
     pub(crate) fn embed_texts_with_identity(
         &self,
         texts: &[String],
@@ -277,6 +315,16 @@ impl DenseCache {
         sink: &dyn TraceSink,
     ) -> Result<WarmOutcome, WarmError> {
         let (header, entries) = load_and_validate(bytes)?;
+        // Checked before anything else: a projection change makes every entry
+        // stale, and the per-entry hash below would report that as an
+        // indistinguishable pile of misses rather than as a cause.
+        let active_projection = projection_version();
+        if header.projection_version != active_projection {
+            return Err(WarmError::ArtifactProjectionMismatch {
+                artifact: header.projection_version,
+                active: active_projection,
+            });
+        }
         // Known other kinds are ignored so one mixed RAT1 can warm either registry.
         let by_id: HashMap<&str, &ArtifactEntry> = entries
             .iter()
@@ -1335,6 +1383,41 @@ mod tests {
         ));
         assert!(cache.built_fingerprint().is_none());
         assert!(cache.dim().is_none());
+    }
+
+    #[test]
+    fn a_stale_projection_is_named_rather_than_reported_as_a_pile_of_misses() {
+        // Without the header check every entry fails the per-entry projection
+        // hash, and the miss policy either reports the whole catalog missing for
+        // no stated reason or silently re-embeds all of it — the exact cost the
+        // artifact exists to avoid. Neither says the projection changed.
+        let items = [doc("a", "read")];
+        let mut bytes =
+            build_test_artifact(ArtifactEntryKind::Tool, &items, "m", vec![unit([1.0, 0.0])]);
+        // Stand in for an artifact built by another build. The projection
+        // version is the first field of the payload, which starts after
+        // magic + format version + payload length + checksum; the checksum
+        // covers the payload, so reseal it or this tests corruption instead.
+        const PAYLOAD_AT: usize = 4 + 4 + 8 + 32;
+        let stale = u32::from_le_bytes(bytes[PAYLOAD_AT..PAYLOAD_AT + 4].try_into().unwrap())
+            .wrapping_add(1);
+        bytes[PAYLOAD_AT..PAYLOAD_AT + 4].copy_from_slice(&stale.to_le_bytes());
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(&bytes[PAYLOAD_AT..]);
+        bytes[16..PAYLOAD_AT].copy_from_slice(&digest);
+
+        let cache =
+            DenseCache::with_embedder(Arc::new(FpCountingEmbedder::new("m", |_| unit([1.0, 0.0]))));
+        let err = cache
+            .warm_from_artifact(&bytes, ArtifactEntryKind::Tool, &items, &NoopSink)
+            .expect_err("stale projection");
+        let message = err.to_string();
+        assert!(
+            matches!(err, WarmError::ArtifactProjectionMismatch { .. }),
+            "{message}"
+        );
+        assert!(message.contains("projection"), "{message}");
+        assert!(message.contains("rebuild the artifact"), "{message}");
     }
 
     #[test]

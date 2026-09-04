@@ -317,7 +317,12 @@ describe("topK budgets the retrieved tier only", () => {
     // top slots go to pinned facts that are then filtered back out, leaving the
     // retrieved tier permanently empty. Pin the top-3 assumption first, so this
     // test fails loudly rather than silently passing if the ranking shifts.
-    const ranked = (await catalog.searchAsync(QUERY, 3)).map((h) => h.factId);
+    //
+    // Sorted, because what this needs is that the three PINNED facts occupy the
+    // slots — their order among themselves is not what the rest of the test
+    // rests on, and it moved when the BM25 length penalty went to its standard
+    // 0.75, which reweights facts of different lengths.
+    const ranked = (await catalog.searchAsync(QUERY, 3)).map((h) => h.factId).sort();
     expect(ranked, "fixture assumption: pinned facts take the top 3 slots").toEqual([
       "p1",
       "p2",

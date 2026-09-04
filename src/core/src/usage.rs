@@ -23,8 +23,11 @@
 //!   cannot connect "why is the build broken" to "did CI pass".
 //!
 //! The wire shape is `protocol/v1/schema/intent-graph.schema.json`; this is its
-//! consumer. An edge weight is a plain count of confirmed invocations: it orders
-//! the arm and nothing more, since RRF then fuses on rank position.
+//! consumer. An edge weight is a plain count of confirmed invocations, and it is
+//! not on its own the order to serve: a capability invoked across many clusters
+//! ranks on volume rather than on answering the matched question, so each count
+//! is scaled by how few clusters name it ([`ClusterFrequency`]). Only the
+//! resulting order leaves the arm — RRF fuses on rank position.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -45,11 +48,100 @@ pub(crate) const SUPPORT_FULL: u32 = 3;
 /// lexically matched outranks one only usage history supports. The arm still
 /// promotes a deeply-ranked capability past another arm's top hit, because that
 /// id accumulates from both arms — sub-unit damps the arm without disabling it.
-/// Like `BM25_K1` / `RRF_K`, this is fixed tuning, not a public knob (ADR-0004).
+/// Like `RRF_K`, this is fixed tuning, not a public knob (ADR-0004). Unlike
+/// `BM25_K1`/`BM25_B`, which moved to a caller-configurable [`crate::Bm25Params`]
+/// because the corpus-shape assumption behind their defaults does not hold for
+/// every deployment.
 pub(crate) const USAGE_WEIGHT: f32 = 0.5;
 
-/// Minimum cosine between a query and a cluster centroid to count as a match.
+/// Default for [`ClusterPolicy::similarity`].
 pub(crate) const TAU_COSINE: f32 = 0.70;
+
+/// Default for [`ClusterPolicy::coverage`].
+pub(crate) const COVERAGE_FRACTION: f32 = 0.5;
+
+/// How similar a query must be to a cluster, and to how much of it, before it
+/// joins — the two numbers that draw every cluster boundary.
+///
+/// **Configurable, and recorded on the graph that was clustered under it.**
+/// The threshold is model-dependent: an endpoint catalog can carry any embedding
+/// model, and a cosine of 0.70 does not mean the same thing on two of them. It is
+/// corpus-dependent too — a narrow catalog and a broad one want different
+/// granularity. Recording it is what keeps that safe: two producers at different
+/// settings would otherwise disagree about what a cluster means while both
+/// claiming the same protocol version (ADR-0014).
+///
+/// `#[non_exhaustive]` so a later dimension is additive, which is also why the
+/// builders exist — such a struct cannot be written as a literal outside this
+/// crate at all, `..Default::default()` included.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ClusterPolicy {
+    /// Minimum cosine between a query and a **single cluster member** for that
+    /// member to count toward [`Intent::coverage`]. Also the centroid prefilter,
+    /// which is what makes admission provably *the centroid rule AND coverage* —
+    /// a strict subset, never looser. Default `0.70`.
+    pub similarity: f32,
+    /// Fraction of a cluster's vector-bearing members a query must match before
+    /// it joins — a majority by default, floored at two members.
+    ///
+    /// Matching one member is single-link chaining: A joins because of B, and the
+    /// cluster grows into whatever B happened to bridge to. Matching an average is
+    /// worse, because the average of two intents resembles neither. Counting
+    /// members is what distinguishes "close to this whole cluster" from "close to
+    /// one thing in it", and a fraction rather than a count keeps the test
+    /// comparable across clusters of different sizes. Default `0.5`.
+    pub coverage: f32,
+}
+
+impl Default for ClusterPolicy {
+    fn default() -> Self {
+        Self {
+            similarity: TAU_COSINE,
+            coverage: COVERAGE_FRACTION,
+        }
+    }
+}
+
+impl ClusterPolicy {
+    /// Set how similar a query must be to a single member.
+    #[must_use]
+    pub fn with_similarity(mut self, similarity: f32) -> Self {
+        self.similarity = similarity;
+        self
+    }
+
+    /// Set the share of members it must be that similar to.
+    #[must_use]
+    pub fn with_coverage(mut self, coverage: f32) -> Self {
+        self.coverage = coverage;
+        self
+    }
+
+    /// Whether this is the built-in policy. `skip_serializing_if` reads it, so a
+    /// graph that never moved off the defaults stays byte-identical on the wire
+    /// to one written before the field existed.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether both values are in `(0, 1]` — the range a cosine and a fraction
+    /// can mean anything in.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        (0.0 < self.similarity && self.similarity <= 1.0)
+            && (0.0 < self.coverage && self.coverage <= 1.0)
+    }
+}
+
+/// How many of a cluster's most recent members keep their query vector in memory.
+///
+/// Coverage over a bounded recent sample is the same statistical test as coverage
+/// over all 50, at a third of the memory: `Option<Vec<f32>>` at [`MEMBER_CAP`] and
+/// 384 dims is ~77 KB per cluster, this caps it near ~25 KB. Older members keep
+/// their text and tokens — only the vector is dropped.
+pub(crate) const VECTOR_RETAIN: usize = 16;
 
 /// Minimum Jaccard overlap between a query and a cluster's closest single
 /// member for a lexical match — `|q ∩ m| / |q ∪ m|`.
@@ -70,6 +162,32 @@ const MS_PER_DAY: f64 = 86_400_000.0;
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
+
+/// Wire default for [`Intent::cohesion`]: a graph produced before the field
+/// existed, or by a producer that does not track spread, is treated as perfectly
+/// tight — which reproduces the pre-cohesion bar exactly.
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn is_one_f32(x: &f32) -> bool {
+    *x == 1.0
+}
+
+/// Wire default for [`Intent::vector_n`]: a reloaded centroid counts as a single
+/// prior sample, the weight the pre-accumulator code gave it.
+fn one_u32() -> u32 {
+    1
+}
+
+fn is_one_u32(n: &u32) -> bool {
+    *n == 1
+}
+
+/// Pseudo-counts smoothing [`Intent::passed_over`]. Large enough that one
+/// unlucky impression does not halve an edge: shown once and skipped reads
+/// `3/4`, shown nine times and skipped reads `3/12`.
+const IMPRESSION_PRIOR: f32 = 3.0;
 
 /// A cluster keeps full weight for this long after its last use, then decays.
 /// Recent work should not be discounted at all; only topics that have genuinely
@@ -135,6 +253,14 @@ pub(crate) struct Observation<'a> {
     /// rather than live serving traffic. Recorded on
     /// [`Intent::seeded_support`]; never reaches ranking.
     pub seeded: bool,
+    /// Tool ids the search that led here put in front of the caller, counted
+    /// into [`Intent::surfaced`]. Empty for a skill search, for an observation
+    /// whose window already counted its impressions, and for any caller that
+    /// does not track them.
+    ///
+    /// This is the *denominator* of an edge, never an edge: an id appearing
+    /// only here gets no entry in `tools` and cannot be promoted by the arm.
+    pub surfaced: &'a [String],
 }
 
 /// Which edge map of a cluster to rank.
@@ -256,7 +382,7 @@ impl ArmOutcome {
 /// behaviour they assert rather than as struct literals.
 #[cfg(test)]
 impl IntentGraph {
-    fn observe_live(
+    pub(crate) fn observe_live(
         &mut self,
         query: &str,
         kind: Capability,
@@ -271,6 +397,30 @@ impl IntentGraph {
             ts_ms,
             first_confirmation,
             seeded: false,
+            surfaced: &[],
+        });
+    }
+
+    /// [`Self::observe_live`] plus the ids the search surfaced. Separate rather
+    /// than a sixth parameter so the dozens of existing call sites keep reading
+    /// as the behaviour they assert.
+    pub(crate) fn observe_surfacing(
+        &mut self,
+        query: &str,
+        kind: Capability,
+        capability_id: &str,
+        ts_ms: u64,
+        first_confirmation: bool,
+        surfaced: &[String],
+    ) {
+        self.observe(Observation {
+            query,
+            kind,
+            capability_id,
+            ts_ms,
+            first_confirmation,
+            seeded: false,
+            surfaced,
         });
     }
 }
@@ -495,6 +645,30 @@ pub struct Intent {
     /// magnitude is discarded by the fusion.
     #[serde(default)]
     pub skills: BTreeMap<String, f32>,
+    /// Tool id → how many of this cluster's searches put it in front of the
+    /// caller, counting only searches the caller then acted on.
+    ///
+    /// **Provenance only — nothing in ranking reads it.** It is the denominator
+    /// `tools` never had: a tool shown twelve times and invoked once looks
+    /// identical to one shown once and invoked once when only invocations are
+    /// counted. Recording that is not the same as ranking on it, and ADR-0014's
+    /// rule that edges come from invocations and never from retrievals is
+    /// unchanged — an id here with no entry in `tools` has no edge, contributes
+    /// nothing to the arm, and cannot be promoted.
+    ///
+    /// Paired with [`Self::tools`], the edge map it is the denominator for.
+    /// [`Self::surfaced_skills`] is the skill-side twin — two maps rather than
+    /// one, because tool and skill ids are different id spaces and would collide.
+    ///
+    /// Absent on the wire means none were recorded, which is what every graph
+    /// written before this field existed says.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaced_tools: BTreeMap<String, u32>,
+    /// Skill id → how many of this cluster's searches put it in front of the
+    /// caller. The skill-side twin of [`Self::surfaced_tools`]; see it for what
+    /// the count means and why nothing in ranking treats it as an edge.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaced_skills: BTreeMap<String, u32>,
     /// Tokens of each member, positionally parallel to `members`.
     ///
     /// Matching scores a query against **individual members**, not their union:
@@ -518,13 +692,67 @@ pub struct Intent {
     /// How many query vectors have been folded into `centroid` — the weight of
     /// the running mean in [`Self::absorb_vector`]. Distinct from `members.len()`
     /// because a cluster can gain members lexically (no vector), which must not
-    /// inflate the weight. Live-learning scratch: not serialized (a reloaded
-    /// centroid is treated as a single prior sample), so never part of identity.
-    #[serde(skip)]
+    /// inflate the weight.
+    ///
+    /// Carried on the wire so learning resumes at the right weight after a
+    /// round-trip. Without it the running mean restarted at one sample, and the
+    /// next single observation could drag a fifty-member cluster's centroid
+    /// halfway across — every save/load cycle made centroids plastic again.
+    /// Absent on the wire means one, the weight the pre-accumulator code gave a
+    /// reloaded centroid.
+    #[serde(default = "one_u32", skip_serializing_if = "is_one_u32")]
     vector_n: u32,
+    /// `‖mean‖` — how tightly this cluster's members agree. `1.0` when they all
+    /// point the same way, `sqrt(n)/n` for n mutually orthogonal ones.
+    ///
+    /// Normalizing the centroid divides this out, so it is the one thing the
+    /// stored centroid cannot tell a consumer, and it is what lets a cluster with
+    /// no retained member vectors still guard itself: the bar it must clear is
+    /// `TAU_COSINE / cohesion`, which rises as the cluster spreads. Without it a
+    /// diffuse cluster presents as tight and keeps absorbing.
+    ///
+    /// Absent on the wire means `1.0` — the pre-cohesion bar, unchanged.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one_f32")]
+    pub(crate) cohesion: f32,
+    /// Running mean of the folded query vectors, kept **unnormalized** — the
+    /// accumulator [`Self::centroid`] is derived from.
+    ///
+    /// Held separately because normalizing destroys the one thing the magnitude
+    /// carries: `‖mean‖` is the cluster's cohesion. Folding the normalized
+    /// centroid back into itself instead (the earlier `c * k + v`) stretched the
+    /// accumulated history to full length at every step, so the centroid
+    /// over-weighted early members and the spread was lost outright.
+    ///
+    /// Live-learning scratch like [`Self::vector_n`]: never serialized, restored
+    /// from the centroid at weight 1 by [`Self::restore_accumulator`], and so
+    /// never part of identity.
+    #[serde(skip)]
+    mean: Option<Vec<f32>>,
+    /// Query vector of each member, positionally parallel to `members` and
+    /// `member_bags` — the evidence [`Self::coverage`] counts over.
+    ///
+    /// `None` for a member the lexical tier added (no embedding was in flight)
+    /// and for one whose vector has aged past [`VECTOR_RETAIN`]. The `Option` is
+    /// load-bearing rather than an empty-vector sentinel: [`cosine`] returns 0.0
+    /// for a zero-norm input, so a sentinel would be a member that can never
+    /// qualify yet still counts in the denominator, silently raising the bar in
+    /// proportion to how much a cluster grew lexically.
+    ///
+    /// Never serialized. Fifty 384-dim vectors per cluster is ~77 KB, and
+    /// `to_json` crosses the SDK boundary as a string on every save — that is
+    /// ~230 KB of JSON floats per cluster, on an artifact already documented as
+    /// carrying sensitive query text. A graph reloaded without them falls back to
+    /// the cohesion-scaled centroid bar until its members are re-observed or
+    /// `rebuild_intent_graph` refills them.
+    #[serde(skip)]
+    member_vectors: Vec<Option<Vec<f32>>>,
 }
 
-/// Identity is the evidence — members, centroid, support, edges. The derived
+/// Identity is the evidence — members, centroid, cohesion, support, edges.
+/// `cohesion` counts because it is read while ranking (it sets the bar a
+/// centroid-only cluster must clear); `vector_n` does not, because it only
+/// weights the *next* fold, the same reason `seeded_support` is excluded. The
+/// derived
 /// display fields are ignored, so a graph compares equal to its own round-trip
 /// whether or not labels have been materialized.
 impl PartialEq for Intent {
@@ -532,6 +760,7 @@ impl PartialEq for Intent {
         self.id == other.id
             && self.members == other.members
             && self.centroid == other.centroid
+            && self.cohesion == other.cohesion
             && self.support == other.support
             && self.tools == other.tools
             && self.skills == other.skills
@@ -554,12 +783,17 @@ impl Intent {
     /// The drop count is returned rather than discarded because an arm that
     /// loses every id is indistinguishable, from the outside, from a cluster
     /// that never matched — see [`ArmOutcome`].
-    fn ranked(&self, kind: Capability, known: &dyn Fn(&str) -> bool) -> (Vec<String>, u32) {
+    fn ranked(
+        &self,
+        kind: Capability,
+        known: &dyn Fn(&str) -> bool,
+        cf: &ClusterFrequency<'_>,
+    ) -> (Vec<String>, u32) {
         let edges = self.edges(kind);
         let mut ranked: Vec<(String, f32)> = edges
             .iter()
             .filter(|(id, _)| known(id.as_str()))
-            .map(|(id, w)| (id.clone(), *w))
+            .map(|(id, w)| (id.clone(), *w * cf.weight(id) * self.passed_over(kind, id)))
             .collect();
         let dropped = (edges.len() - ranked.len()) as u32;
         let len = ranked.len();
@@ -567,33 +801,169 @@ impl Intent {
         (ranked.into_iter().map(|(id, _)| id).collect(), dropped)
     }
 
-    /// Fold `vector` into this cluster's centroid as a running mean over its
-    /// members, renormalized so cosine stays a plain dot product.
+    /// How much to damp an edge for having been shown and refused — `1.0` for
+    /// none at all, falling toward `0` as a capability is offered more often than
+    /// it is taken.
     ///
-    /// The mean of unit vectors falls inside the sphere, so skipping the
-    /// renormalize would depress every later similarity by the cluster's own
-    /// spread. A first vector — or one of a different width, meaning the
-    /// embedding model changed — replaces the centroid rather than being
-    /// averaged into a space it does not share.
+    /// `min(1, (invoked + k) / (considered + k))`. Three properties earn the
+    /// shape:
+    ///
+    /// - **Neutral without evidence.** A cluster that recorded no impressions —
+    ///   every graph written before they existed, and every caller that does not
+    ///   report its hits — gets `k/k = 1` exactly, so its ranking is unchanged.
+    ///   The absence of the data is the off switch; there is no flag.
+    /// - **It only ever penalises.** Clamped at `1`, so an impression can never
+    ///   promote. The failure mode is damping something it should not have, not
+    ///   inventing a winner, which is the whole point of a negative signal.
+    /// - **Volume survives.** It multiplies the invocation count rather than
+    ///   replacing it, so nine invocations still outweigh one. The count says how
+    ///   much evidence there is; this says how much of it was offered and refused.
+    ///
+    /// Reads the impression map matching `kind`, so tools and skills are damped
+    /// by their own evidence and never by each other's.
+    fn passed_over(&self, kind: Capability, id: &str) -> f32 {
+        let considered = self.surfaced(kind).get(id).copied().unwrap_or(0) as f32;
+        let invoked = self.edges(kind).get(id).copied().unwrap_or(0.0);
+        ((invoked + IMPRESSION_PRIOR) / (considered + IMPRESSION_PRIOR)).min(1.0)
+    }
+
+    /// The impression map for `kind` — the denominator twin of [`Self::edges`].
+    fn surfaced(&self, kind: Capability) -> &BTreeMap<String, u32> {
+        match kind {
+            Capability::Tool => &self.surfaced_tools,
+            Capability::Skill => &self.surfaced_skills,
+        }
+    }
+
+    /// The impression map for `kind`, mutably.
+    fn surfaced_mut(&mut self, kind: Capability) -> &mut BTreeMap<String, u32> {
+        match kind {
+            Capability::Tool => &mut self.surfaced_tools,
+            Capability::Skill => &mut self.surfaced_skills,
+        }
+    }
+
+    /// Fold `vector` into this cluster's running mean over its members, and
+    /// re-derive the centroid from it — renormalized so cosine stays a plain dot
+    /// product.
+    ///
+    /// **The mean is accumulated, never re-derived from the centroid.** A
+    /// normalized centroid has length 1 however far apart its members are, so
+    /// re-weighting it by the fold count (`c * k + v`) asserted that the
+    /// accumulated history had full length `k` — which is true only when every
+    /// member points the same way. That over-weighted early members and erased
+    /// the spread, and the error grew with exactly the diffuse clusters where it
+    /// mattered most.
+    ///
+    /// The update is the standard incremental mean, `m += (v - m) / n`. It stays
+    /// bounded at `‖m‖ <= 1`, where a raw running sum would grow without bound
+    /// and lose f32 precision as a long-lived cluster keeps folding.
+    ///
+    /// Weighted by vectors ALREADY folded (`vector_n`), not by `members.len()`:
+    /// a cluster can gain members lexically with no vector, and counting those
+    /// would pin the centroid to the first vector after such growth (it would
+    /// arrive with weight ~n).
+    ///
+    /// A first vector — or one of a different width, meaning the embedding model
+    /// changed — starts the mean fresh rather than blending across two spaces.
     fn absorb_vector(&mut self, vector: &[f32]) {
-        let merged: Vec<f32> = match self.centroid.as_deref() {
-            // Weight the running mean by vectors ALREADY folded (`vector_n`), not
-            // by `members.len()`: a cluster can gain members lexically with no
-            // vector, and counting those would pin the centroid to the first
-            // vector after such growth (it would arrive with weight ~n).
-            Some(c) if c.len() == vector.len() => {
-                let k = self.vector_n.max(1) as f32;
-                c.iter().zip(vector).map(|(c, v)| c * k + v).collect()
+        // A centroid set without going through the accumulator — a producer-built
+        // cluster, or any future path that writes one directly — would otherwise
+        // be thrown away by the fresh-start arm below. Adopt it first, at the
+        // same weight 1 a reloaded centroid gets.
+        if self.mean.is_none() && self.centroid.is_some() {
+            self.restore_accumulator();
+        }
+        let fresh = self.mean.as_deref().is_none_or(|m| m.len() != vector.len());
+        if fresh {
+            self.mean = Some(vector.to_vec());
+            self.vector_n = 1;
+        } else {
+            self.vector_n = self.vector_n.saturating_add(1);
+            let n = self.vector_n as f32;
+            let mean = self.mean.as_mut().expect("not fresh, so the mean is set");
+            for (m, v) in mean.iter_mut().zip(vector) {
+                *m += (v - *m) / n;
             }
-            // A first vector — or one of a different width (the embedding model
-            // changed) — starts the mean fresh rather than blending across spaces.
-            _ => {
-                self.vector_n = 0;
-                vector.to_vec()
+        }
+        let mean = self.mean.clone().expect("set on both arms above");
+        self.cohesion = norm(&mean);
+        self.centroid = Some(normalize(mean));
+    }
+
+    /// Add `member` and everything derived from it in one step: the text, its
+    /// token bag, its query vector, and the centroid fold.
+    ///
+    /// One method rather than four calls at the call site because the vector is
+    /// **optional while the tokens are not** — a member the lexical tier added has
+    /// no embedding. Pushed separately, the two vectors would fall out of step on
+    /// the first such member and [`Self::cap_members`] would then evict a
+    /// mismatched pair. Here the parallel arrays cannot diverge.
+    fn absorb_member(&mut self, member: &str, vector: Option<&[f32]>) {
+        self.members.push(member.to_string());
+        self.absorb_tokens(member);
+        self.member_vectors.push(vector.map(<[f32]>::to_vec));
+        if let Some(v) = vector {
+            self.absorb_vector(v);
+        }
+        self.retain_recent_vectors();
+        self.cap_members();
+    }
+
+    /// Drop all but the newest [`VECTOR_RETAIN`] member vectors, leaving their
+    /// members and token bags in place.
+    fn retain_recent_vectors(&mut self) {
+        let mut budget = VECTOR_RETAIN;
+        for slot in self.member_vectors.iter_mut().rev() {
+            if slot.is_none() {
+                continue;
             }
-        };
-        self.vector_n = self.vector_n.saturating_add(1);
-        self.centroid = Some(normalize(merged));
+            if budget == 0 {
+                *slot = None;
+            } else {
+                budget -= 1;
+            }
+        }
+    }
+
+    /// How much of this cluster `query` actually matches: the count of members it
+    /// clears [`ClusterPolicy::similarity`] against, the count it needs, and the mean cosine over
+    /// those it cleared.
+    ///
+    /// `None` when the cluster holds no comparable member vector at all — a
+    /// lexically-grown cluster, or one reloaded from the wire. That is "no dense
+    /// evidence available", **not** "rejected": the caller falls back to the
+    /// centroid bar rather than treating an unanswerable question as a no.
+    pub(crate) fn coverage(&self, query: &[f32], policy: ClusterPolicy) -> Option<Coverage> {
+        let mut total = 0u32;
+        let mut qualifying = 0u32;
+        let mut sum = 0.0f32;
+        for v in self.member_vectors.iter().flatten() {
+            // A width mismatch means the member was embedded by a different model
+            // — not comparable, and the arm is paused on that mismatch anyway.
+            if v.len() != query.len() {
+                continue;
+            }
+            total += 1;
+            let c = cosine(query, v);
+            if c >= policy.similarity {
+                qualifying += 1;
+                sum += c;
+            }
+        }
+        if total == 0 {
+            return None;
+        }
+        Some(Coverage {
+            qualifying,
+            required: required_matches(total, policy.coverage),
+            fraction: qualifying as f32 / total as f32,
+            mean_cos: if qualifying == 0 {
+                0.0
+            } else {
+                sum / qualifying as f32
+            },
+        })
     }
 
     /// Drop the oldest members past [`MEMBER_CAP`], keeping the token caches in
@@ -603,6 +973,7 @@ impl Intent {
         while self.members.len() > MEMBER_CAP {
             self.members.remove(0);
             self.member_bags.remove(0);
+            self.member_vectors.remove(0);
         }
         // The union bag is derived from the surviving members.
         self.bag = self.member_bags.iter().flatten().cloned().collect();
@@ -616,6 +987,32 @@ impl Intent {
         self.member_bags.push(tokens);
     }
 
+    /// Restore the live accumulator after deserialization, where it is skipped
+    /// on the wire.
+    ///
+    /// A normalized centroid has had its magnitude divided out, so the
+    /// accumulator is rebuilt from the two scalars that survive the wire:
+    /// `mean = centroid × cohesion`, weighted by the fold count it was built
+    /// from. Both default to their identity values, so a graph written before
+    /// they existed — or by a producer that does not track them — reconstructs to
+    /// exactly the pre-accumulator behaviour.
+    fn restore_accumulator(&mut self) {
+        match self.centroid.as_deref() {
+            Some(c) => {
+                self.mean = Some(c.iter().map(|x| x * self.cohesion).collect());
+                // A centroid exists, so at least one vector went into it. Leaving
+                // the weight at zero would let the next fold replace it outright
+                // rather than average with it.
+                self.vector_n = self.vector_n.max(1);
+            }
+            None => {
+                self.mean = None;
+                self.vector_n = 0;
+                self.cohesion = 1.0;
+            }
+        }
+    }
+
     /// Rebuild the cache from `members` — after deserialization, where the
     /// cache is skipped on the wire.
     fn rebuild_bag(&mut self) {
@@ -625,6 +1022,11 @@ impl Intent {
             .map(|m| tokenize(m).into_iter().collect())
             .collect();
         self.bag = self.members.iter().flat_map(|m| tokenize(m)).collect();
+        // Member vectors cannot be rebuilt — that needs an embedder, which the
+        // load path does not have. Size the array to match so the three stay
+        // parallel; the cluster matches on the centroid bar until a rebuild or
+        // fresh observations refill it.
+        self.member_vectors = vec![None; self.members.len()];
     }
 
     /// How well `q` matches this cluster: the **best Jaccard overlap with any
@@ -704,6 +1106,26 @@ pub struct IntentGraph {
     /// centroids offline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The policy this graph's existing cluster boundaries were drawn under.
+    ///
+    /// Provenance, not configuration — it says how the clusters below came to be,
+    /// which is the whole reason the policy is safe to expose: without it, two
+    /// producers at different settings would disagree about what a cluster means
+    /// while both claiming the same protocol version (ADR-0014).
+    ///
+    /// Absent on the wire means the default, which is also historically exact:
+    /// before the policy was configurable the constants were the only value a
+    /// producer could have used. A graph still at the default therefore
+    /// serializes byte-identically to one written before the field existed.
+    #[serde(default, skip_serializing_if = "ClusterPolicy::is_default")]
+    pub cluster_policy: ClusterPolicy,
+    /// The policy in force now — what every admission decision is measured
+    /// against. Comes from configuration, never from the wire: it describes how
+    /// *this process* is clustering, not how the loaded graph was clustered.
+    /// Those can differ, and [`Self::cluster_policy`] is what lets a consumer
+    /// see that they do.
+    #[serde(skip)]
+    active_policy: ClusterPolicy,
     /// Scratch for the search path → learner handoff; never serialized.
     #[serde(skip)]
     pending: PendingQuery,
@@ -751,13 +1173,17 @@ impl GraphModelStatus {
 impl Serialize for IntentGraph {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let len = 4 + usize::from(self.model.is_some());
+        let len =
+            4 + usize::from(self.model.is_some()) + usize::from(!self.cluster_policy.is_default());
         let mut out = serializer.serialize_struct("IntentGraph", len)?;
         out.serialize_field("v", &self.v)?;
         out.serialize_field("built_from_ts", &self.built_from_ts)?;
         out.serialize_field("rev", &self.rev)?;
         if let Some(model) = &self.model {
             out.serialize_field("model", model)?;
+        }
+        if !self.cluster_policy.is_default() {
+            out.serialize_field("cluster_policy", &self.cluster_policy)?;
         }
         out.serialize_field("intents", &self.labeled())?;
         out.end()
@@ -794,6 +1220,9 @@ impl IntentGraph {
                 it.last_ts = anchor;
             }
         }
+        // Absent configuration, keep clustering the way this graph already was —
+        // a reload on its own must not move a boundary.
+        graph.active_policy = graph.cluster_policy;
         graph.rebuild_caches();
         Ok(graph)
     }
@@ -803,6 +1232,15 @@ impl IntentGraph {
     /// set). Serde already catches shape errors (a missing `members`, a negative
     /// `rev`); these are the value-level rules it cannot express.
     fn validate(&self) -> Result<(), IntentGraphError> {
+        // The first graph-level rule; every check below it is per-intent. A
+        // cosine and a fraction both live in (0, 1], and a value outside that is
+        // not something any producer can have meant.
+        if !self.cluster_policy.is_valid() {
+            return Err(IntentGraphError::Malformed(format!(
+                "cluster_policy similarity {} / coverage {} outside (0, 1]",
+                self.cluster_policy.similarity, self.cluster_policy.coverage
+            )));
+        }
         let mut seen = std::collections::HashSet::with_capacity(self.intents.len());
         for it in &self.intents {
             if !seen.insert(it.id.as_str()) {
@@ -832,6 +1270,18 @@ impl IntentGraph {
             // `seeded_support` counts a subset of `support`, so no producer can
             // emit a larger value. Equality is legal and is the normal state
             // right after a seeding pass.
+            if !(0.0 < it.cohesion && it.cohesion <= 1.0) {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} has cohesion {} outside (0, 1]",
+                    it.id, it.cohesion
+                )));
+            }
+            if it.cohesion != 1.0 && it.centroid.is_none() {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} records a cohesion but carries no centroid",
+                    it.id
+                )));
+            }
             if it.seeded_support > it.support {
                 return Err(IntentGraphError::Malformed(format!(
                     "intent {:?} has seeded_support {} exceeding support {}",
@@ -849,16 +1299,31 @@ impl IntentGraph {
                     it.id
                 )));
             }
+            // A zero impression count says "this was surfaced no times", which
+            // is what absence already says. Rejecting it keeps one meaning per
+            // state, the same reason a zero-weight edge is rejected above.
+            if it
+                .surfaced_tools
+                .values()
+                .chain(it.surfaced_skills.values())
+                .any(|n| *n == 0)
+            {
+                return Err(IntentGraphError::Malformed(format!(
+                    "intent {:?} has a zero impression count",
+                    it.id
+                )));
+            }
         }
         Ok(())
     }
 
-    /// Rebuild every cluster's derived token cache. The cache is skipped on the
-    /// wire, so a deserialized graph must restore it before it can match
-    /// lexically.
+    /// Rebuild every cluster's derived state. The token cache and the centroid
+    /// accumulator are both skipped on the wire, so a deserialized graph must
+    /// restore them before it can match lexically or keep folding.
     fn rebuild_caches(&mut self) {
         for it in &mut self.intents {
             it.rebuild_bag();
+            it.restore_accumulator();
         }
     }
 
@@ -870,6 +1335,8 @@ impl IntentGraph {
             rev: 0,
             intents: Vec::new(),
             model: None,
+            cluster_policy: ClusterPolicy::default(),
+            active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
         }
@@ -940,6 +1407,7 @@ impl IntentGraph {
             ts_ms,
             first_confirmation,
             seeded,
+            surfaced,
         } = obs;
         // A query vector is available only when the search path was
         // semantic/hybrid AND the slot still belongs to this query.
@@ -948,6 +1416,7 @@ impl IntentGraph {
             return; // no words to cluster on and no embedding either
         }
         self.built_from_ts = self.built_from_ts.max(ts_ms);
+        let first_cluster = self.intents.is_empty();
 
         // Only fold the vector if it was produced by the graph's model. On a
         // model swap (fingerprint differs from `self.model`) we FREEZE: the
@@ -982,9 +1451,14 @@ impl IntentGraph {
                     last_ts: 0,
                     tools: BTreeMap::new(),
                     skills: BTreeMap::new(),
+                    surfaced_tools: BTreeMap::new(),
+                    surfaced_skills: BTreeMap::new(),
                     bag: std::collections::HashSet::new(),
                     member_bags: Vec::new(),
                     vector_n: 0,
+                    cohesion: 1.0,
+                    mean: None,
+                    member_vectors: Vec::new(),
                 });
                 self.intents.len() - 1
             }
@@ -998,12 +1472,7 @@ impl IntentGraph {
             // same condition, and what stops a second invoke from folding the
             // same query vector in twice.
             if !it.members.iter().any(|m| m == query) {
-                it.members.push(query.to_string());
-                it.absorb_tokens(query);
-                if let Some(v) = vector.as_deref() {
-                    it.absorb_vector(v);
-                }
-                it.cap_members();
+                it.absorb_member(query, vector.as_deref());
             }
             // `|| support == 0` is load-bearing: a cluster moves as it learns, so
             // a later invoke from the same search can match a cluster the first
@@ -1021,6 +1490,16 @@ impl IntentGraph {
                 }
             }
             it.last_ts = it.last_ts.max(ts_ms);
+            // What the search put in front of the caller, counted once per
+            // window by the caller (an empty slice on every later invoke of the
+            // same search). Deliberately not gated on `first_confirmation`:
+            // that token is claimed by whichever of the tool and skill learners
+            // invokes first, so gating here would drop the tool impressions
+            // whenever a skill invoke won the race.
+            let impressions = it.surfaced_mut(kind);
+            for id in surfaced {
+                *impressions.entry(id.clone()).or_insert(0) += 1;
+            }
             let edges = match kind {
                 Capability::Tool => &mut it.tools,
                 Capability::Skill => &mut it.skills,
@@ -1033,6 +1512,13 @@ impl IntentGraph {
         // before eviction, while `idx` is still valid.
         if self.model.is_none() && self.intents[idx].centroid.is_some() {
             self.model = fingerprint;
+        }
+        // Stamped on the observation that creates the graph's first cluster, and
+        // frozen from then on. It records the policy these boundaries were drawn
+        // under, and boundaries are never redrawn in place — so a later policy
+        // change stays visible precisely because this does not follow it.
+        if first_cluster {
+            self.cluster_policy = self.active_policy;
         }
 
         // Evict clusters decayed past the floor — last, since it renumbers
@@ -1052,6 +1538,34 @@ impl IntentGraph {
     /// later value means unsaved learning, or another writer moved ahead of you.
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+
+    /// Whether this graph's boundaries were drawn under the policy now in force.
+    ///
+    /// `None` when they match, or when the graph is still at the defaults it was
+    /// necessarily written under. `Some((built, active))` is a **notice, not a
+    /// pause**: the vectors are fine and the clusters are still coherent, merely
+    /// coarser or finer than the current setting would draw them. What it warns
+    /// about is that they will not be redrawn.
+    pub(crate) fn cluster_policy_drift(&self) -> Option<(ClusterPolicy, ClusterPolicy)> {
+        (self.cluster_policy != self.active_policy)
+            .then_some((self.cluster_policy, self.active_policy))
+    }
+
+    /// Set the policy future admissions are measured against.
+    ///
+    /// Does **not** redraw existing boundaries — nothing can, since a cluster's
+    /// edges are aggregate counts with no member attribution to split on. The
+    /// graph keeps reporting the policy it was clustered under, and the
+    /// difference surfaces as a drift notice.
+    pub fn set_cluster_policy(&mut self, policy: ClusterPolicy) {
+        self.active_policy = policy;
+    }
+
+    /// The policy future admissions are measured against.
+    #[must_use]
+    pub fn active_cluster_policy(&self) -> ClusterPolicy {
+        self.active_policy
     }
 
     /// Whether this graph's centroids can be trusted against the currently active
@@ -1130,12 +1644,73 @@ impl IntentGraph {
                     *s += x;
                 }
             }
-            self.intents[i].centroid = Some(normalize(sum));
+            let folded = vectors.len();
+            for s in &mut sum {
+                *s /= folded as f32;
+            }
+            let it = &mut self.intents[i];
+            it.cohesion = norm(&sum);
+            it.centroid = Some(normalize(sum.clone()));
+            // Keep the per-member vectors, not just their mean. They are what
+            // `coverage` counts, they never cross the wire, and this is the only
+            // path that has them in hand — so a rebuild is also how a graph that
+            // came off disk, or was grown before coverage existed, gets a dense
+            // tier that can tell a cluster's members apart again.
+            //
+            // Only when the pairing is provably intact. The caller snapshots
+            // members, embeds without the graph lock, then re-locks, and a
+            // concurrent `observe` in that window can append a member and evict
+            // the oldest — shifting every position by one. The centroid does not
+            // care, being an order-insensitive mean, but these are matched to
+            // members by position. On any disagreement leave them alone: the
+            // cluster keeps the cohesion bar until fresh observations refill it,
+            // which is a degraded tier rather than a silently wrong one.
+            if vectors.len() == it.members.len() {
+                it.member_vectors = vectors.into_iter().map(Some).collect();
+                it.retain_recent_vectors();
+            }
+            // Reset the accumulator to what was actually rebuilt. Leaving the
+            // stale fold count let the next single observation yank a whole
+            // cluster's centroid halfway across, no matter how many members it
+            // held — and since the count never crosses the wire, every
+            // save/load/rebuild cycle made centroids plastic again.
+            it.mean = Some(sum);
+            it.vector_n = folded as u32;
         }
         self.model = Some(fingerprint);
         // A rebuild rewrites every centroid and restamps the model — a change the
         // caller will want to persist.
         self.rev += 1;
+    }
+
+    /// Count, across every cluster, how many name each capability of `kind`.
+    ///
+    /// Built over the **raw** edge maps, before any registry filtering. `known`
+    /// is a property of whichever catalog happens to be attached, not of the
+    /// graph, so counting surviving edges would make this statistic differ
+    /// between two agents sharing one graph — and differ again in a harness that
+    /// knows every id. Counting raw keeps it a pure function of the graph, which
+    /// is also why it needs no wire field: any consumer of the same document
+    /// derives the same numbers.
+    ///
+    /// A consequence worth stating: a capability the registry no longer defines
+    /// still counts toward how spread out *other* capabilities are. That is the
+    /// graph-faithful answer — the observations happened — and it is what keeps
+    /// the numbers portable.
+    pub(crate) fn cluster_frequency(&self, kind: Capability) -> ClusterFrequency<'_> {
+        let mut seen_in: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut clusters = 0usize;
+        for it in &self.intents {
+            let edges = it.edges(kind);
+            if edges.is_empty() {
+                continue;
+            }
+            clusters += 1;
+            for id in edges.keys() {
+                *seen_in.entry(id.as_str()).or_insert(0) += 1;
+            }
+        }
+        ClusterFrequency { clusters, seen_in }
     }
 
     /// The cluster this query belongs to: by cosine when an embedding is
@@ -1146,12 +1721,20 @@ impl IntentGraph {
     /// centroids are still being filled in, and a query that no centroid
     /// recognizes may still share words with a cluster.
     fn best_match(&self, query: &str, vector: Option<&[f32]>) -> Option<usize> {
-        if let Some(v) = vector
-            && let Some(i) = self.best_dense_match(v)
-        {
-            return Some(i);
+        match vector {
+            // Same guard the serving path applies in `arm`: once a query has been
+            // put to the centroid-bearing clusters and refused, token overlap must
+            // not hand it back to one of them. Only clusters the dense tier cannot
+            // see — those with no centroid — remain eligible.
+            //
+            // Learning needs this more than serving does, not less. A bad serve is
+            // one bad ranking; a bad admission is written into the graph and every
+            // later query is matched against a cluster that has drifted.
+            Some(v) if self.has_centroids() => self
+                .best_dense_match(v)
+                .or_else(|| self.best_lexical_matching(query, true)),
+            _ => self.best_lexical_matching(query, false),
         }
-        self.best_lexical_match(query)
     }
 
     /// Index of the nearest cluster centroid clearing [`TAU_COSINE`]. Ties break
@@ -1160,17 +1743,10 @@ impl IntentGraph {
         self.intents
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| {
-                let c = it.centroid.as_deref()?;
-                if c.len() != vector.len() {
-                    return None; // a different embedding model — not comparable
-                }
-                Some((i, cosine(vector, c)))
-            })
-            .filter(|(_, sim)| *sim >= TAU_COSINE)
+            .filter_map(|(i, it)| dense_verdict(it, vector, self.active_policy).map(|v| (i, v)))
+            .filter(|(_, v)| v.admitted)
             .max_by(|a, b| {
-                a.1.partial_cmp(&b.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                rank_verdicts(&a.1, &b.1)
                     .then_with(|| self.intents[b.0].id.cmp(&self.intents[a.0].id))
             })
             .map(|(i, _)| i)
@@ -1179,7 +1755,7 @@ impl IntentGraph {
     /// Index of the cluster whose member-token bag best covers `query`, if any
     /// clears [`TAU_LEXICAL`]. Ties break by cluster id so growth does not
     /// depend on `Vec` order.
-    fn best_lexical_match(&self, query: &str) -> Option<usize> {
+    fn best_lexical_matching(&self, query: &str, centroidless_only: bool) -> Option<usize> {
         let q: std::collections::HashSet<String> = tokenize(query).into_iter().collect();
         if q.is_empty() {
             return None;
@@ -1187,6 +1763,7 @@ impl IntentGraph {
         self.intents
             .iter()
             .enumerate()
+            .filter(|(_, it)| !centroidless_only || it.centroid.is_none())
             .map(|(i, it)| (i, it.lexical_score(&q)))
             .filter(|(_, score)| *score >= TAU_LEXICAL)
             .max_by(|a, b| {
@@ -1379,22 +1956,26 @@ impl IntentGraph {
         kind: Capability,
         known: &dyn Fn(&str) -> bool,
     ) -> ArmOutcome {
-        let Some(best) = self
+        let Some((intent, verdict)) = self
             .intents
             .iter()
-            .filter_map(|it| {
-                let c = it.centroid.as_deref()?;
-                if c.len() != query_vec.len() {
-                    return None; // different embedding model — not comparable
-                }
-                Some((it, cosine(query_vec, c)))
-            })
-            .filter(|(_, sim)| *sim >= TAU_COSINE)
-            .max_by(pick_best)
+            .filter_map(|it| dense_verdict(it, query_vec, self.active_policy).map(|v| (it, v)))
+            .filter(|(_, v)| v.admitted)
+            .max_by(|a, b| rank_verdicts(&a.1, &b.1).then_with(|| b.0.id.cmp(&a.0.id)))
         else {
             return ArmOutcome::NoMatch;
         };
-        arm_from(best.0, best.1, self.built_from_ts, kind, known)
+        // The reported similarity stays the centroid cosine: integrators already
+        // dashboard it, and swapping in a coverage fraction would silently change
+        // what the number means. The prefilter computed it anyway.
+        arm_from(
+            intent,
+            verdict.centroid_cos,
+            self.built_from_ts,
+            kind,
+            known,
+            &self.cluster_frequency(kind),
+        )
     }
 
     /// Match `query` lexically against each cluster's members and return the best
@@ -1443,7 +2024,14 @@ impl IntentGraph {
         else {
             return ArmOutcome::NoMatch;
         };
-        arm_from(best.0, best.1, self.built_from_ts, kind, known)
+        arm_from(
+            best.0,
+            best.1,
+            self.built_from_ts,
+            kind,
+            known,
+            &self.cluster_frequency(kind),
+        )
     }
 }
 
@@ -1462,8 +2050,9 @@ fn arm_from(
     now_ts: u64,
     kind: Capability,
     known: &dyn Fn(&str) -> bool,
+    cf: &ClusterFrequency<'_>,
 ) -> ArmOutcome {
-    let (ids, dropped) = intent.ranked(kind, known);
+    let (ids, dropped) = intent.ranked(kind, known, cf);
     if ids.is_empty() {
         // Matched, but nothing it remembers of this kind still exists. Two very
         // different reasons: the catalog dropped every id it knew (`dropped >
@@ -1492,14 +2081,170 @@ fn arm_from(
     })
 }
 
+/// How many clusters each capability of one kind appears in, and how many
+/// clusters carry that kind at all — the corpus statistic behind
+/// [`Intent::ranked`]'s inverse-cluster-frequency weight.
+///
+/// Scoped to one [`Capability`] because `tools` and `skills` are separate
+/// namespaces: the same string in each is unrelated, a search reads only one,
+/// and a tools-only cluster is ordinary — counting those in the skill
+/// denominator would inflate every skill's weight.
+pub(crate) struct ClusterFrequency<'a> {
+    /// Clusters carrying at least one edge of this kind.
+    clusters: usize,
+    /// Capability id → how many of those clusters name it.
+    seen_in: std::collections::HashMap<&'a str, usize>,
+}
+
+impl ClusterFrequency<'_> {
+    /// `1 + ln(clusters / seen_in)` — how much this capability being rare across
+    /// the corpus should count for.
+    ///
+    /// **Smoothed, and the `1 +` is load-bearing.** Plain `ln(N / cf)` sends a
+    /// capability present in *every* cluster to exactly zero, pinning it last in
+    /// every arm forever — which for a genuine workhorse is wrong. The floor of
+    /// 1.0 stops ubiquity earning a promotion without making it earn a
+    /// punishment. It is also why there is nothing here to configure: the
+    /// smoothing is the whole of the tuning.
+    ///
+    /// An id this index has never seen scores the maximum rather than dividing
+    /// by zero; that only happens if a caller mixes an index of one kind with
+    /// edges of another, which the type makes awkward and the callers do not do.
+    pub(crate) fn weight(&self, id: &str) -> f32 {
+        let seen = self.seen_in.get(id).copied().unwrap_or(1).max(1);
+        1.0 + (self.clusters.max(1) as f32 / seen as f32).ln()
+    }
+}
+
+/// How much of a cluster a query matched — see [`Intent::coverage`].
+///
+/// `pub(crate)` so the measurement harness can report the rule's own numbers
+/// rather than recomputing them beside it, where the two could drift.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Coverage {
+    /// Members whose cosine cleared [`ClusterPolicy::similarity`].
+    pub(crate) qualifying: u32,
+    /// Members that had to clear it — see [`required_matches`].
+    pub(crate) required: u32,
+    /// `qualifying / comparable members`, in `[0, 1]`. Comparable across clusters
+    /// of different sizes, which a raw count is not: a 50-member cluster would
+    /// otherwise outrank a 4-member one on count alone.
+    pub(crate) fraction: f32,
+    /// Mean cosine over the members that qualified. Breaks ties between clusters
+    /// a query covers equally.
+    pub(crate) mean_cos: f32,
+}
+
+/// How many of `n` comparable members a query must match to join.
+///
+/// `ceil(COVERAGE_FRACTION * n)`, floored at 2 and capped at `n`. The floor
+/// matters because a plain fraction drops the requirement to 1 at `n = 2` —
+/// single-link chaining, at exactly the size where one bad admission defines what
+/// the cluster becomes. The cap is cold start: a cluster with one member must
+/// still be able to gain its second.
+fn required_matches(n: u32, coverage: f32) -> u32 {
+    let by_fraction = (coverage * n as f32).ceil() as u32;
+    n.min(by_fraction.max(2))
+}
+
+/// One cluster's dense verdict for a query: whether it admits, how well it
+/// matched, and the centroid cosine to report on the trace.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DenseVerdict {
+    pub(crate) admitted: bool,
+    /// Whether the verdict rests on member coverage rather than the centroid
+    /// alone. Clusters with real per-member evidence outrank those without, so a
+    /// legacy or freshly-loaded cluster cannot beat one that actually matched.
+    pub(crate) covered: bool,
+    /// Coverage fraction, or the centroid cosine when the cluster has no
+    /// comparable member vectors. Both are in `[0, 1]`, and they are only ever
+    /// compared within the same `covered` tier.
+    pub(crate) score: f32,
+    pub(crate) mean_cos: f32,
+    /// Always the centroid cosine — what `UsageBoost.similarity` reports, whose
+    /// meaning must not change under integrators.
+    pub(crate) centroid_cos: f32,
+}
+
+/// Score `query` against one cluster's dense tier, or `None` if the cluster is
+/// not comparable (no centroid, different embedding model) or fails the
+/// prefilter.
+///
+/// The centroid check is kept as a **prefilter**, one dot product, so the
+/// per-member scan only runs on clusters that could plausibly match — the same
+/// shape the lexical tier uses, where `bag` prefilters `lexical_score`. Because
+/// the prefilter threshold is [`TAU_COSINE`] itself, admission here is the old
+/// rule *and* coverage, never looser.
+pub(crate) fn dense_verdict(
+    it: &Intent,
+    query: &[f32],
+    policy: ClusterPolicy,
+) -> Option<DenseVerdict> {
+    let centroid = it.centroid.as_deref()?;
+    if centroid.len() != query.len() {
+        return None; // a different embedding model — not comparable
+    }
+    let centroid_cos = cosine(query, centroid);
+    if centroid_cos < policy.similarity {
+        return None;
+    }
+    Some(match it.coverage(query, policy) {
+        Some(cov) => DenseVerdict {
+            admitted: cov.qualifying >= cov.required,
+            covered: true,
+            score: cov.fraction,
+            mean_cos: cov.mean_cos,
+            centroid_cos,
+        },
+        // No comparable member vector: nothing to count, so fall back to the
+        // centroid — but scaled by how tight the cluster actually is. Normalizing
+        // divided that spread out, which is what let a diffuse cluster present as
+        // tight and keep absorbing; dividing it back in raises the bar exactly as
+        // the cluster diversifies. A cluster with no recorded spread has
+        // `cohesion == 1.0`, so this is the pre-coverage rule unchanged.
+        None => DenseVerdict {
+            admitted: centroid_cos >= policy.similarity / it.cohesion.max(f32::MIN_POSITIVE),
+            covered: false,
+            score: centroid_cos,
+            mean_cos: centroid_cos,
+            centroid_cos,
+        },
+    })
+}
+
+/// Order two dense verdicts: real coverage beats none, then how much of the
+/// cluster matched, then how well. Callers append an id tie-break so the winner
+/// never depends on iteration order.
+fn rank_verdicts(a: &DenseVerdict, b: &DenseVerdict) -> std::cmp::Ordering {
+    a.covered
+        .cmp(&b.covered)
+        .then_with(|| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| {
+            a.mean_cos
+                .partial_cmp(&b.mean_cos)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// L2 norm. For an accumulator of unit vectors this doubles as the cluster's
+/// **cohesion**: 1.0 when every member points the same way, `sqrt(n)/n` for n
+/// mutually orthogonal ones — the spread that normalizing throws away.
+fn norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+}
+
 /// Scale to unit length. A zero vector is returned unchanged — there is no
 /// direction to preserve, and dividing would produce NaNs that would poison
 /// every later comparison.
 fn normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
+    let n = norm(&v);
+    if n > 0.0 {
         for x in &mut v {
-            *x /= norm;
+            *x /= n;
         }
     }
     v
@@ -1556,9 +2301,14 @@ mod tests {
             last_ts: 0,
             tools: tools.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: BTreeMap::new(),
+            surfaced_tools: BTreeMap::new(),
+            surfaced_skills: BTreeMap::new(),
             bag: std::collections::HashSet::new(),
             member_bags: Vec::new(),
             vector_n: 0,
+            cohesion: 1.0,
+            mean: None,
+            member_vectors: Vec::new(),
         };
         it.rebuild_bag(); // the cache is derived from members — keep them in step
         it
@@ -1571,6 +2321,8 @@ mod tests {
             rev: 0,
             intents,
             model: None,
+            cluster_policy: ClusterPolicy::default(),
+            active_policy: ClusterPolicy::default(),
             pending: PendingQuery::default(),
             credit: CreditSlot::default(),
         }
@@ -1672,6 +2424,122 @@ mod tests {
     }
 
     #[test]
+    fn the_centroid_is_the_mean_of_its_members() {
+        // Three mutually orthogonal unit vectors: the true mean is
+        // `(e_x + e_y + e_z) / 3`, whose direction is `1/sqrt(3)` per axis.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        it.absorb_vector(&[1.0, 0.0, 0.0]);
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+        it.absorb_vector(&[0.0, 0.0, 1.0]);
+
+        let c = it.centroid.as_ref().unwrap();
+        let want = 1.0 / 3.0f32.sqrt();
+        for (axis, x) in c.iter().enumerate() {
+            assert!(
+                (x - want).abs() < 1e-6,
+                "axis {axis}: expected {want}, got {x} (centroid {c:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_accumulator_norm_falls_as_a_cluster_diversifies() {
+        // `‖mean‖` IS the cluster's spread: 1.0 when every member points the same
+        // way, `sqrt(n)/n` for n mutually orthogonal ones. It is the signal a
+        // diffuse cluster needs to price itself out of new members.
+        //
+        // The pre-accumulator code rebuilt the mean from the RENORMALIZED
+        // centroid — `c * k + v`, where `c` has length 1, so `c * k` has length
+        // `k` no matter how far apart the members actually were. That stretched
+        // the history back to full length at every step, and this sequence read
+        // 1.000 / 0.707 / 0.745 / 0.825: *rising* exactly as the cluster spread
+        // out, which is backwards.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        for n in 1..=4usize {
+            let mut v = vec![0.0f32; 4];
+            v[n - 1] = 1.0;
+            it.absorb_vector(&v);
+
+            let want = (n as f32).sqrt() / n as f32;
+            let got = norm(it.mean.as_deref().unwrap());
+            assert!(
+                (got - want).abs() < 1e-6,
+                "after {n} orthogonal vectors: expected ‖mean‖ {want}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reloaded_centroid_folds_as_a_single_prior_sample() {
+        // The accumulator is derived state and never crosses the wire, so a
+        // reloaded centroid arrives normalized with no record of how many members
+        // it averaged. Seeding the accumulator with it at weight 1 reproduces
+        // exactly what the pre-accumulator code did (`vector_n.max(1)`), so a
+        // round-trip does not change what the next observation does — and, more
+        // importantly, does not DISCARD the centroid by starting fresh.
+        let mut g = IntentGraph::empty();
+        g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "m");
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
+
+        let back = IntentGraph::from_json(&serde_json::to_string(&g).unwrap()).unwrap();
+        let mut it = back.intents[0].clone();
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        // Equal weight with the reloaded centroid → normalize(e_x + e_y).
+        let c = it.centroid.as_ref().unwrap();
+        assert!(
+            (c[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6
+                && (c[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "expected ~0.707 per axis, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn rebuild_centroids_resets_the_fold_count_to_what_it_rebuilt() {
+        // Rebuild rewrote the centroid but left the stale fold count. Combined
+        // with the count never crossing the wire, a loaded-then-rebuilt cluster
+        // resumed its running mean at k=1 — so the next single observation yanked
+        // a whole cluster's centroid halfway across, no matter how many members
+        // it actually held.
+        let mut g = graph(vec![intent("i0", &["a", "b", "c"], &[("t", 1.0)])]);
+        let along_x = vec![vec![1.0f32, 0.0, 0.0]; 3];
+        g.rebuild_centroids(vec![("i0".into(), along_x)], "m".into());
+
+        let mut it = g.intents[0].clone();
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        // Three members at e_x plus one at e_y → mean (0.75, 0.25, 0).
+        let c = it.centroid.as_ref().unwrap();
+        let want = normalize(vec![0.75, 0.25, 0.0]);
+        assert!(
+            (c[0] - want[0]).abs() < 1e-6 && (c[1] - want[1]).abs() < 1e-6,
+            "expected {want:?} (one new vector against three), got {c:?} \
+             — 0.707 per axis means the fold count was reset to 1"
+        );
+    }
+
+    #[test]
+    fn a_centroid_set_outside_the_accumulator_is_adopted_not_discarded() {
+        // The accumulator is the fold's source of truth, so a cluster carrying a
+        // centroid it never accumulated (a producer-built graph, a direct write)
+        // must be adopted rather than dropped on the next fold — otherwise the
+        // first live observation silently erases everything the producer knew.
+        let mut it = dense_intent("i0", vec![1.0, 0.0, 0.0]);
+        assert!(
+            it.mean.is_none(),
+            "centroid written directly, no accumulator"
+        );
+
+        it.absorb_vector(&[0.0, 1.0, 0.0]);
+
+        let c = it.centroid.as_ref().unwrap();
+        assert!(
+            (c[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "expected the prior centroid at weight 1 → ~0.707 per axis, got {c:?}"
+        );
+    }
+
+    #[test]
     fn medoid_labels_the_most_central_member_not_the_alphabetical_first() {
         // The old scoring was a constant 1.0 (every member's tokens are in the
         // union bag), so the label was just the tie-break — the alphabetically
@@ -1748,6 +2616,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         assert_eq!(g.intents[0].support, 1);
         assert_eq!(g.intents[0].seeded_support, 1);
@@ -1775,6 +2644,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: first,
             seeded: true,
+            surfaced: &[],
         };
         g.observe(obs("gh_run_list", true));
         g.observe(obs("gh_run_view", false));
@@ -1797,6 +2667,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         g.observe_live(
             "why is the build broken",
@@ -1808,6 +2679,238 @@ mod tests {
 
         assert_eq!(g.intents[0].support, 2);
         assert_eq!(g.intents[0].seeded_support, 1);
+    }
+
+    // ---- damping an edge that was shown and refused ----
+
+    /// The property that makes this shippable without a flag: a graph that
+    /// recorded no impressions ranks exactly as it did before they existed.
+    #[test]
+    fn a_cluster_with_no_impressions_is_not_damped_at_all() {
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "a", T0, true);
+        g.observe_live("why is the build broken", Capability::Tool, "b", T0, false);
+        g.observe_live("why is the build broken", Capability::Tool, "b", T0, false);
+        let before: Vec<String> = g
+            .arm("why is the build broken", None, Capability::Tool, &|_| true)
+            .into_arm()
+            .expect("armed")
+            .ids;
+        assert_eq!(before, vec!["b".to_string(), "a".to_string()]);
+        assert!(g.intents[0].surfaced_tools.is_empty(), "nothing recorded");
+    }
+
+    /// A capability shown constantly and taken rarely falls behind one shown
+    /// rarely and taken every time — the reinforcement loop the report names,
+    /// which invocation counts alone cannot see.
+    #[test]
+    fn a_capability_shown_far_more_often_than_it_is_taken_falls_behind() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        // `loud` is invoked more, so counts alone rank it first...
+        for _ in 0..5 {
+            g.observe_surfacing(q, Capability::Tool, "loud", T0, true, &["loud".into()]);
+        }
+        // ...but on four more searches it was ranked above `quiet` and skipped.
+        for _ in 0..4 {
+            g.observe_surfacing(
+                q,
+                Capability::Tool,
+                "quiet",
+                T0,
+                true,
+                &["loud".into(), "quiet".into()],
+            );
+        }
+        let it = &g.intents[0];
+        assert!(
+            it.tools["loud"] > it.tools["quiet"],
+            "counts still favour loud: {:?}",
+            it.tools
+        );
+        assert_eq!(
+            g.arm(q, None, Capability::Tool, &|_| true)
+                .into_arm()
+                .expect("armed")
+                .ids,
+            vec!["quiet".to_string(), "loud".to_string()],
+            "but loud was passed over eight times"
+        );
+    }
+
+    /// Clamped at 1, so an impression can only ever cost an edge weight. A
+    /// capability taken every time it is offered is exactly as strong as one
+    /// nobody recorded impressions for.
+    #[test]
+    fn always_being_taken_is_the_same_as_no_impressions_at_all() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        g.observe_surfacing(q, Capability::Tool, "a", T0, true, &["a".into()]);
+        assert_eq!(g.intents[0].passed_over(Capability::Tool, "a"), 1.0);
+        assert_eq!(g.intents[0].passed_over(Capability::Tool, "unknown"), 1.0);
+    }
+
+    /// One unlucky impression must not halve an edge — that is what the prior
+    /// buys, and without it a single search would swing the order.
+    #[test]
+    fn the_prior_absorbs_a_single_refusal() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        g.observe_surfacing(
+            q,
+            Capability::Tool,
+            "taken",
+            T0,
+            true,
+            &["skipped".into(), "taken".into()],
+        );
+        let damped = g.intents[0].passed_over(Capability::Tool, "skipped");
+        assert!(
+            (damped - 0.75).abs() < 1e-6,
+            "shown once, never taken: {damped}"
+        );
+    }
+
+    /// The skill arm is damped by its own evidence, on the same rule. Before the
+    /// maps were split this returned 1.0 unconditionally, which made the penalty
+    /// tool-only in everything but name.
+    #[test]
+    fn a_skill_shown_far_more_often_than_it_is_taken_falls_behind() {
+        let mut g = IntentGraph::empty();
+        let q = "write a changelog";
+        for _ in 0..5 {
+            g.observe_surfacing(q, Capability::Skill, "loud", T0, true, &["loud".into()]);
+        }
+        for _ in 0..4 {
+            g.observe_surfacing(
+                q,
+                Capability::Skill,
+                "quiet",
+                T0,
+                true,
+                &["loud".into(), "quiet".into()],
+            );
+        }
+        let it = &g.intents[0];
+        assert!(it.skills["loud"] > it.skills["quiet"], "{:?}", it.skills);
+        assert_eq!(
+            g.arm(q, None, Capability::Skill, &|_| true)
+                .into_arm()
+                .expect("armed")
+                .ids,
+            vec!["quiet".to_string(), "loud".to_string()],
+            "loud was passed over four times"
+        );
+    }
+
+    /// The two id spaces never damp each other: an id in one map must not reach
+    /// the other's denominator, however identically it is spelled.
+    #[test]
+    fn a_tool_and_a_skill_of_the_same_name_are_damped_separately() {
+        let mut g = IntentGraph::empty();
+        let q = "why is the build broken";
+        // The tool is offered and refused; the skill is always taken.
+        for _ in 0..6 {
+            g.observe_surfacing(q, Capability::Tool, "other", T0, true, &["build".into()]);
+        }
+        g.observe_surfacing(q, Capability::Skill, "build", T0, false, &["build".into()]);
+
+        let it = &g.intents[0];
+        assert!(
+            it.passed_over(Capability::Tool, "build") < 0.5,
+            "the tool was shown six times and never taken"
+        );
+        assert_eq!(
+            it.passed_over(Capability::Skill, "build"),
+            1.0,
+            "the skill of the same name was always taken"
+        );
+    }
+
+    // ---- impressions on the wire ----
+
+    #[test]
+    fn a_graph_that_saw_no_impressions_omits_the_field() {
+        // Empty-skip keeps a graph grown by a caller that does not report hits
+        // byte-identical to one produced before the field existed, so every
+        // wire fixture written against v1 still matches.
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(
+            !json.contains("surfaced_tools"),
+            "absent means none; got {json}"
+        );
+    }
+
+    #[test]
+    fn impressions_round_trip_through_the_wire_form() {
+        let mut g = IntentGraph::empty();
+        g.observe_surfacing(
+            "why is the build broken",
+            Capability::Tool,
+            "gh_run_list",
+            T0,
+            true,
+            &["gh_run_list".to_string(), "docker_build".to_string()],
+        );
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("surfaced_tools"), "got {json}");
+
+        let back = IntentGraph::from_json(&json).expect("round trip");
+        assert_eq!(back.intents[0].surfaced_tools.get("docker_build"), Some(&1));
+        assert_eq!(back.intents[0].surfaced_tools.get("gh_run_list"), Some(&1));
+    }
+
+    /// The rule the whole design turns on: a surfaced id is a denominator, not
+    /// an edge. If this ever fails, retrievals have become evidence and
+    /// ADR-0014's central decision has been reversed by accident.
+    #[test]
+    fn a_surfaced_id_alone_never_reaches_the_arm() {
+        let mut g = IntentGraph::empty();
+        g.observe_surfacing(
+            "why is the build broken",
+            Capability::Tool,
+            "gh_run_list",
+            T0,
+            true,
+            &["docker_build".to_string()],
+        );
+        assert_eq!(g.intents[0].surfaced_tools.get("docker_build"), Some(&1));
+        assert!(
+            !g.intents[0].tools.contains_key("docker_build"),
+            "shown is not used"
+        );
+        let arm = g
+            .arm("why is the build broken", None, Capability::Tool, &|_| true)
+            .into_arm()
+            .expect("the invoked tool armed it");
+        assert!(
+            !arm.ids.iter().any(|id| id == "docker_build"),
+            "a surfaced-only id must never be promoted, got {:?}",
+            arm.ids
+        );
+    }
+
+    #[test]
+    fn a_graph_with_a_zero_impression_count_is_rejected() {
+        // Absence already means "surfaced no times", so a stored zero is a
+        // second spelling of the same state — rejected for the same reason a
+        // zero-weight edge is.
+        let mut g = IntentGraph::empty();
+        g.observe_live("why is the build broken", Capability::Tool, "t", T0, true);
+        let json = serde_json::to_string(&g).unwrap().replace(
+            r#""tools":{"t":1.0}"#,
+            r#""tools":{"t":1.0},"surfaced_tools":{"t":0}"#,
+        );
+        assert!(
+            json.contains(r#""surfaced_tools":{"t":0}"#),
+            "fixture: {json}"
+        );
+        assert!(matches!(
+            IntentGraph::from_json(&json),
+            Err(IntentGraphError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -1833,6 +2936,7 @@ mod tests {
             ts_ms: T0,
             first_confirmation: true,
             seeded: true,
+            surfaced: &[],
         });
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains(r#""seeded_support":1"#), "got {json}");
@@ -2129,6 +3233,113 @@ mod tests {
     }
 
     #[test]
+    fn a_capability_spread_across_clusters_loses_to_one_specific_to_this_intent() {
+        // Sorting edges by raw count alone lets a capability rank on volume
+        // rather than on answering *this* question. Here every edge in the
+        // matched cluster sits at one observation, so the order is decided
+        // entirely by the tie-break — and by id ascending that hands it to
+        // `apply_migration`, a capability every other cluster also reaches for,
+        // over one only this cluster has ever used.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("apply_migration", 3.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("apply_migration", 1.0), ("gh_run_list", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &all_known)
+            .unwrap();
+        assert_eq!(
+            arm.ids,
+            vec!["gh_run_list", "apply_migration"],
+            "a capability that answers every intent identifies none of them"
+        );
+    }
+
+    #[test]
+    fn a_real_count_gap_still_beats_cluster_frequency() {
+        // The guard on the other side. Down-weighting spread must not be strong
+        // enough to invert genuine evidence: `gh_run_list` was chosen four times
+        // here against one, and stays ahead even though it is the more widely
+        // used of the two.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("gh_run_list", 2.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("gh_run_list", 4.0), ("apply_migration", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &all_known)
+            .unwrap();
+        assert_eq!(arm.ids, vec!["gh_run_list", "apply_migration"]);
+    }
+
+    #[test]
+    fn cluster_frequency_is_read_from_the_graph_not_the_registry() {
+        // `known` is a REGISTRY closure, so counting cluster frequency over
+        // surviving edges would make the statistic depend on which catalog is
+        // attached: two agents sharing a graph would rank the same cluster
+        // differently, and the harness — which knows everything — would disagree
+        // with both. Counting over the raw edges keeps it a property of the graph.
+        let mut intents: Vec<Intent> = (0..4)
+            .map(|i| {
+                intent(
+                    &format!("other_{i}"),
+                    &[&format!("unrelated question {i}")],
+                    &[("apply_migration", 3.0)],
+                )
+            })
+            .collect();
+        intents.insert(
+            0,
+            intent(
+                "matched",
+                &["build broken"],
+                &[("apply_migration", 1.0), ("gh_run_list", 1.0)],
+            ),
+        );
+        let g = graph(intents);
+
+        // A registry that has never heard of the other clusters' capability —
+        // it is dropped from the arm, but it still counted toward the spread.
+        let narrow = |id: &str| id != "ghost";
+        let arm = g
+            .arm_lexical("build broken", Capability::Tool, &narrow)
+            .unwrap();
+        assert_eq!(
+            arm.ids,
+            vec!["gh_run_list", "apply_migration"],
+            "the order must not depend on what the registry happens to define"
+        );
+    }
+
+    #[test]
     fn edges_rank_by_weight_not_by_id() {
         // The edges live in a BTreeMap, which already iterates id-ascending — so a
         // fixture whose weight order happens to agree with alphabetical order proves
@@ -2147,6 +3358,10 @@ mod tests {
 
     #[test]
     fn tied_edge_weights_break_by_id_ascending() {
+        // One cluster, so every id has cluster frequency 1 and the inverse-
+        // cluster-frequency weight is exactly 1.0 — this pins the tie-break that
+        // remains once cf has nothing to say. The multi-cluster case, where cf
+        // decides instead, is the sibling below.
         let g = graph(vec![intent(
             "i0",
             &["build broken"],
@@ -3012,5 +4227,655 @@ mod tests {
             .flat_map(|m| tokenize(m))
             .collect();
         assert_eq!(&g.intents[0].bag, &fresh);
+    }
+
+    #[test]
+    fn a_tight_cluster_serializes_without_cohesion_or_fold_count() {
+        // Both fields default to their identity values, so a cluster that has
+        // nothing to say about spread must not say it — a graph written by this
+        // build stays byte-identical to one written before the fields existed.
+        let mut g = IntentGraph::empty();
+        g.note_query_vector("build broken", &[1.0, 0.0, 0.0], "m");
+        g.observe_live("build broken", Capability::Tool, "a", T0, true);
+
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(!json.contains("cohesion"), "unexpected cohesion in {json}");
+        assert!(!json.contains("vector_n"), "unexpected vector_n in {json}");
+    }
+
+    #[test]
+    fn cohesion_and_the_fold_count_round_trip_and_rebuild_the_accumulator() {
+        // Normalizing the centroid divides the spread out, so without these two
+        // scalars a reloaded cluster cannot say how tightly its members agreed,
+        // and its running mean restarts at one sample.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.last_ts = T0;
+        let (cohesion, folded, mean) = (it.cohesion, it.vector_n, it.mean.clone().unwrap());
+        assert!(cohesion < 1.0, "two topics should not read as tight");
+
+        let g = graph(vec![it]);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(
+            json.contains("cohesion"),
+            "a diffuse cluster must record it"
+        );
+
+        let back = IntentGraph::from_json(&json).unwrap();
+        let reloaded = &back.intents[0];
+        assert!((reloaded.cohesion - cohesion).abs() < 1e-6);
+        assert_eq!(reloaded.vector_n, folded);
+        for (a, b) in reloaded.mean.as_ref().unwrap().iter().zip(&mean) {
+            assert!((a - b).abs() < 1e-6, "accumulator not rebuilt: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn a_reloaded_diffuse_cluster_raises_its_own_bar() {
+        // The payoff, and the reason cohesion is on the wire at all. Member
+        // vectors are not, so after a reload this cluster has no coverage to
+        // count — and the centroid alone would admit the outsider at 0.72. Scaled
+        // by how far apart the members actually are, the bar it has to clear is
+        // higher than that, so the cluster stops absorbing instead of drifting
+        // further.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.last_ts = T0;
+        let g = graph(vec![it]);
+
+        let outsider = topic_vec(2, 0);
+        let centroid_cos = cosine(&outsider, g.intents[0].centroid.as_deref().unwrap());
+        assert!(
+            centroid_cos >= TAU_COSINE,
+            "the unscaled centroid must still admit it, got {centroid_cos}"
+        );
+
+        let back = IntentGraph::from_json(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert!(
+            back.intents[0].member_vectors.iter().all(Option::is_none),
+            "member vectors do not cross the wire"
+        );
+        assert!(
+            back.arm("outsider", Some(&outsider), Capability::Tool, &all_known)
+                .is_none(),
+            "a cluster spread this wide must not arm on a query no member knows"
+        );
+    }
+
+    #[test]
+    fn a_graph_whose_cohesion_is_out_of_range_is_rejected() {
+        for bad in ["0.0", "-0.5", "1.5"] {
+            let json = format!(
+                r#"{{"v":1,"built_from_ts":1,"intents":[{{"id":"i0","label":"q","terms":[],
+                   "members":["q"],"support":1,"tools":{{}},"skills":{{}},
+                   "centroid":[1.0],"cohesion":{bad}}}]}}"#
+            );
+            assert!(
+                IntentGraph::from_json(&json).is_err(),
+                "cohesion {bad} is not a spread any producer can mean"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cohesion_without_a_centroid_is_rejected() {
+        // Cohesion describes a centroid's spread. Recorded without one it is
+        // unattached to anything, which means the producer lost a field.
+        let json = r#"{"v":1,"built_from_ts":1,"intents":[{"id":"i0","label":"q","terms":[],
+                       "members":["q"],"support":1,"tools":{},"skills":{},"cohesion":0.5}]}"#;
+        assert!(IntentGraph::from_json(json).is_err());
+    }
+
+    // ---- the cluster policy -------------------------------------------------
+
+    #[test]
+    fn the_default_policy_is_the_constants_it_replaced() {
+        let p = ClusterPolicy::default();
+        assert_eq!(p.similarity, TAU_COSINE);
+        assert_eq!(p.coverage, COVERAGE_FRACTION);
+        assert!(p.is_valid());
+    }
+
+    #[test]
+    fn a_stricter_policy_refuses_what_the_default_admits() {
+        // The policy has to be read at the decision point, not just stored. A
+        // refactor that threaded the parameter through and then ignored it would
+        // pass every other test in this file, because they all run at the default.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(0, 1)));
+
+        let query = topic_vec(0, 2); // ~0.98 against both members
+        assert!(
+            dense_verdict(&it, &query, ClusterPolicy::default()).is_some_and(|v| v.admitted),
+            "the default must admit a same-topic query"
+        );
+        assert!(
+            !dense_verdict(&it, &query, ClusterPolicy::default().with_similarity(0.995))
+                .is_some_and(|v| v.admitted),
+            "a threshold above the members' own similarity must refuse it"
+        );
+    }
+
+    #[test]
+    fn a_looser_coverage_admits_what_a_majority_refuses() {
+        // The other knob, on its own: a query matching one member of three is a
+        // third of the cluster — refused by a majority, admitted at a third.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+        it.absorb_member("c", Some(&topic_vec(2, 0)));
+
+        let query = topic_vec(0, 1); // ~0.98 to `a`, ~0.67 to the rest
+        let at = |coverage| {
+            dense_verdict(
+                &it,
+                &query,
+                ClusterPolicy::default().with_coverage(coverage),
+            )
+            .is_some_and(|v| v.admitted)
+        };
+        assert!(!at(0.5), "one of three is not a majority");
+        // The floor of two members still applies, so a third of three is two.
+        assert_eq!(required_matches(3, 0.34), 2);
+    }
+
+    /// Build a graph whose boundaries were drawn under `policy`.
+    fn graph_clustered_at(policy: ClusterPolicy) -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        g.active_policy = policy;
+        g.note_query_vector("q0", &topic_vec(0, 0), "m");
+        g.observe_live("q0", Capability::Tool, "t", T0, true);
+        g
+    }
+
+    #[test]
+    fn a_graph_at_the_default_policy_omits_it_from_the_wire() {
+        // Absent means the default, which is historically exact: before the
+        // policy was configurable the constants were the only value a producer
+        // could have used. So a default graph must be byte-identical to one
+        // written before the field existed.
+        let json = serde_json::to_string(&graph_clustered_at(ClusterPolicy::default())).unwrap();
+        assert!(
+            !json.contains("cluster_policy"),
+            "unexpected policy in {json}"
+        );
+    }
+
+    #[test]
+    fn a_tuned_graph_records_the_policy_it_was_clustered_under() {
+        let tuned = ClusterPolicy::default()
+            .with_similarity(0.82)
+            .with_coverage(0.4);
+        let g = graph_clustered_at(tuned);
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("cluster_policy"), "missing policy in {json}");
+
+        let back = IntentGraph::from_json(&json).unwrap();
+        assert_eq!(back.cluster_policy, tuned);
+        assert_eq!(
+            back.active_policy, tuned,
+            "a reload on its own must not move a boundary — the active policy \
+             starts as the one the graph was clustered under"
+        );
+    }
+
+    #[test]
+    fn the_recorded_policy_is_stamped_once_and_then_frozen() {
+        // It describes how the existing boundaries were drawn, and boundaries are
+        // never redrawn in place. If it followed later configuration it would
+        // report that the clusters are something they are not — and the mismatch
+        // it exists to expose could never be detected.
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_similarity(0.75));
+
+        g.active_policy = ClusterPolicy::default().with_similarity(0.95);
+        g.note_query_vector("q1", &topic_vec(3, 0), "m");
+        g.observe_live("q1", Capability::Tool, "t", T0, true);
+
+        assert_eq!(
+            g.cluster_policy.similarity, 0.75,
+            "the stamp must not follow"
+        );
+    }
+
+    #[test]
+    fn rebuild_does_not_restamp_the_policy() {
+        // Unlike the model, which a rebuild does overwrite. A rebuild replaces
+        // centroids without revisiting cluster boundaries, so the policy those
+        // boundaries came from is still the recorded one.
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_coverage(0.9));
+        g.active_policy = ClusterPolicy::default();
+
+        g.rebuild_centroids(
+            vec![("intent_0".into(), vec![topic_vec(0, 0)])],
+            "m2".into(),
+        );
+
+        assert_eq!(g.cluster_policy.coverage, 0.9);
+        assert_eq!(g.model.as_deref(), Some("m2"), "the model IS restamped");
+    }
+
+    #[test]
+    fn a_graph_whose_policy_is_out_of_range_is_rejected() {
+        for bad in [
+            r#"{"similarity":0.0,"coverage":0.5}"#,
+            r#"{"similarity":0.7,"coverage":1.5}"#,
+        ] {
+            let json = format!(
+                r#"{{"v":1,"built_from_ts":1,"cluster_policy":{bad},"intents":[{{"id":"i0",
+                   "label":"q","terms":[],"members":["q"],"support":1,"tools":{{}},"skills":{{}}}}]}}"#
+            );
+            assert!(
+                IntentGraph::from_json(&json).is_err(),
+                "a cosine and a fraction both live in (0, 1]: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_policy_change_is_visible_as_drift() {
+        let mut g = graph_clustered_at(ClusterPolicy::default().with_similarity(0.75));
+        assert!(
+            g.cluster_policy_drift().is_none(),
+            "nothing has changed yet"
+        );
+
+        g.set_cluster_policy(ClusterPolicy::default().with_similarity(0.9));
+
+        let (built, active) = g
+            .cluster_policy_drift()
+            .expect("the change must be visible");
+        assert_eq!(built.similarity, 0.75);
+        assert_eq!(active.similarity, 0.9);
+        assert_eq!(
+            g.intents.len(),
+            1,
+            "and it must not have redrawn anything — nothing can"
+        );
+    }
+
+    // ---- dense clustering must not collapse ---------------------------------
+
+    /// A deterministic stand-in for a real sentence embedding, composed of three
+    /// disjoint axis groups: a **shared** component every query in the domain
+    /// carries, a **topic** component for what the query wants, and a small
+    /// **phrasing** component for how it is worded.
+    ///
+    /// The existing dense fixtures use orthogonal basis vectors — cosine 0.0
+    /// between topics — and that is precisely why they never caught this. Real
+    /// embeddings of same-domain English do not look like that: measured on the
+    /// checked-in incident fixture, bge-small puts distinct-intent query pairs at
+    /// a median cosine of 0.64 and same-intent pairs at 0.69. The distributions
+    /// overlap almost entirely, and *that* is the geometry the clustering rule
+    /// has to survive.
+    ///
+    /// Tuned to reproduce it: ~0.98 within a topic, **~0.65 across topics** —
+    /// below `TAU_COSINE`, so no two members are individually similar enough to
+    /// merge, yet the drifting centroid merges them anyway. That gap is the bug.
+    fn topic_vec(topic: usize, phrasing: usize) -> Vec<f32> {
+        const TOPICS: usize = 4;
+        const PHRASINGS: usize = 4;
+        let mut v = vec![0.0f32; 1 + TOPICS + PHRASINGS];
+        v[0] = 0.806; // shared: every query here is about tasks
+        v[1 + topic] = 0.574; // what the query wants
+        v[1 + TOPICS + phrasing] = 0.141; // how it happens to be worded
+        normalize(v)
+    }
+
+    /// Grow a graph by observing `(topic, phrasing)` pairs through the dense tier.
+    fn cluster_topics(pairs: &[(usize, usize)]) -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        for (i, (topic, phrasing)) in pairs.iter().enumerate() {
+            let q = format!("t{topic} p{phrasing} q{i}");
+            g.note_query_vector(&q, &topic_vec(*topic, *phrasing), "m");
+            g.observe_live(&q, Capability::Tool, &format!("tool_{topic}"), T0, true);
+        }
+        g
+    }
+
+    #[test]
+    fn a_dense_rejected_cluster_is_not_joined_by_word_overlap_while_learning() {
+        // The learning twin of a_dense_rejected_cluster_is_not_rescued_by_word_
+        // overlap. Learning needs the guard more than serving does: a bad serve is
+        // one bad ranking, but a bad admission is written into the graph, and
+        // every later query is then matched against a cluster that has drifted.
+        //
+        // It also gets louder with coverage in place, because the dense tier now
+        // refuses far more often — every refusal is another chance for token
+        // overlap to hand the query straight back.
+        let mut dense = intent("dense", &["deploy the app to prod"], &[("t", 1.0)]);
+        dense.centroid = Some(normalize(vec![1.0, 0.0, 0.0]));
+        dense.last_ts = T0;
+        let mut g = graph(vec![dense]);
+
+        // Orthogonal to the centroid, so the dense tier refuses it — while it
+        // shares every word with the cluster's only member.
+        let q = "deploy the app to prod now";
+        g.note_query_vector(q, &[0.0, 1.0, 0.0], "m");
+        g.observe_live(q, Capability::Tool, "t", T0, true);
+
+        assert_eq!(
+            g.intents.len(),
+            2,
+            "a query the dense tier refused must seed its own cluster, not rejoin \
+             on word overlap: {:?}",
+            g.intents.iter().map(|i| &i.members).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn genuine_paraphrases_still_share_one_cluster() {
+        // The guard in the other direction. Splitting is only a fix if real
+        // paraphrases still merge — a graph of singletons has learned nothing,
+        // and "cluster count went up" on its own proves neither.
+        let g = cluster_topics(&[(0, 0), (0, 1), (0, 2), (0, 3)]);
+
+        assert_eq!(
+            g.intents.len(),
+            1,
+            "four phrasings of one intent must stay together, got {:?}",
+            g.intents.iter().map(|i| &i.members).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_diffuse_cluster_does_not_absorb_a_distinct_query() {
+        // The mechanism in isolation. Two topics in one cluster, then a third
+        // query that is BELOW tau against every single member — and yet above
+        // tau against their centroid, because averaging two topics cancels what
+        // distinguishes them and leaves the shared component pointing at
+        // everything in the domain.
+        // Built by hand: with the rule in place two topics no longer merge
+        // through the live path, so a cluster this diffuse can only arrive from
+        // history — one grown under the old rule, or refilled by a rebuild.
+        let mut it = intent("i0", &[], &[("t", 1.0)]);
+        it.absorb_member("a", Some(&topic_vec(0, 0)));
+        it.absorb_member("b", Some(&topic_vec(1, 0)));
+
+        let outsider = topic_vec(2, 0);
+        let centroid_cos = cosine(&outsider, it.centroid.as_deref().unwrap());
+        assert!(
+            centroid_cos >= TAU_COSINE,
+            "fixture must reproduce the bug: the centroid should admit the \
+             outsider, got {centroid_cos}"
+        );
+
+        it.last_ts = T0; // hand-built, so stamp it current or eviction claims it
+        let mut g = IntentGraph::empty();
+        g.intents.push(it);
+        g.note_query_vector("outsider", &outsider, "m");
+        g.observe_live("outsider", Capability::Tool, "other", T0, true);
+
+        assert_eq!(
+            g.intents.len(),
+            2,
+            "a query no member recognizes must seed its own cluster, not join on \
+             the average"
+        );
+    }
+
+    #[test]
+    fn the_cohesion_bar_is_non_decreasing_in_cluster_diversity() {
+        // The property that makes the rule self-limiting rather than
+        // self-accelerating: as a cluster takes on distinct topics, `‖mean‖`
+        // falls, so the bar derived from it (`TAU_COSINE / cohesion`) rises.
+        // Under the pre-accumulator arithmetic this ran the other way.
+        let mut it = intent("i0", &["a"], &[("t", 1.0)]);
+        let mut previous = f32::INFINITY;
+        for topic in 0..4 {
+            it.absorb_vector(&topic_vec(topic, 0));
+            let bar = TAU_COSINE / norm(it.mean.as_deref().unwrap());
+            assert!(
+                bar >= previous || previous.is_infinite(),
+                "absorbing topic {topic} lowered the bar from {previous} to {bar}"
+            );
+            previous = bar;
+        }
+        // Concretely: once spread across four topics, the bar has risen past the
+        // similarity a same-domain query actually carries, so a fifth distinct
+        // topic can no longer reach it — the cluster has stopped growing on its
+        // own rather than accelerating.
+        let cross_topic = cosine(&topic_vec(0, 0), &topic_vec(1, 0));
+        assert!(
+            previous > cross_topic,
+            "the bar ({previous}) must outrun the similarity a distinct topic \
+             carries ({cross_topic}), or the cluster keeps absorbing"
+        );
+    }
+
+    #[test]
+    fn required_matches_floors_at_two_and_caps_at_the_cluster() {
+        // The floor is what stops single-link chaining at the size where it does
+        // the most damage: a plain 50% of two members is one, and one member is
+        // exactly how a cluster grows into something nobody asked for. The cap is
+        // cold start — a one-member cluster must still be able to gain a second.
+        for (members, want) in [(1, 1), (2, 2), (3, 2), (4, 2), (5, 3), (10, 5), (16, 8)] {
+            assert_eq!(
+                required_matches(members, COVERAGE_FRACTION),
+                want,
+                "{members} members should require {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cluster_without_member_vectors_matches_on_the_centroid() {
+        // Member vectors never cross the wire, so a reloaded or producer-built
+        // cluster has none. That is "no dense evidence", not "reject": it must
+        // still match, reproducing the pre-coverage rule exactly, or every graph
+        // loaded from disk would silently stop arming.
+        let mut it = intent("i0", &["deploy the app"], &[("t", 1.0)]);
+        it.centroid = Some(normalize(vec![1.0, 0.0, 0.0]));
+        it.last_ts = T0;
+        assert!(
+            it.member_vectors.iter().all(Option::is_none),
+            "the helper rebuilds derived state, so no member carries a vector"
+        );
+        let g = graph(vec![it]);
+
+        let close = normalize(vec![0.95, 0.31, 0.0]); // ~0.95 to the centroid
+        assert!(
+            g.arm("deploy the app", Some(&close), Capability::Tool, &all_known)
+                .is_some(),
+            "a centroid-only cluster must still arm"
+        );
+
+        let far = vec![0.0, 1.0, 0.0];
+        assert!(
+            g.arm("deploy the app", Some(&far), Capability::Tool, &all_known)
+                .is_none(),
+            "and must still reject below tau"
+        );
+    }
+
+    #[test]
+    fn rebuild_refills_the_member_vectors_it_is_the_repair_path_for() {
+        // Member vectors never cross the wire, so a graph off disk has none and
+        // falls back to the centroid bar. A rebuild already embeds every member —
+        // keeping those vectors rather than only their mean is what makes it the
+        // repair path for a graph grown before coverage existed.
+        let mut g = graph(vec![intent("i0", &["a", "b"], &[("t", 1.0)])]);
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_none),
+            "a wire-shaped cluster starts with none"
+        );
+
+        g.rebuild_centroids(
+            vec![("i0".into(), vec![topic_vec(0, 0), topic_vec(0, 1)])],
+            "m".into(),
+        );
+
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_some),
+            "the rebuild had them in hand and must keep them"
+        );
+        // And the refilled tier discriminates again: same topic in, distinct out.
+        assert!(
+            dense_verdict(&g.intents[0], &topic_vec(0, 2), ClusterPolicy::default())
+                .is_some_and(|v| v.admitted && v.covered)
+        );
+        assert!(
+            !dense_verdict(&g.intents[0], &topic_vec(1, 0), ClusterPolicy::default())
+                .is_some_and(|v| v.admitted),
+            "a distinct topic must not be admitted once coverage can see the members"
+        );
+    }
+
+    #[test]
+    fn rebuild_leaves_member_vectors_alone_when_the_pairing_shifted() {
+        // The caller snapshots members, embeds without the graph lock, then
+        // re-locks — and a concurrent observe in that window can append a member,
+        // shifting every position. The centroid is an order-insensitive mean and
+        // does not care; these are matched by position and would silently pair a
+        // member's text with its neighbour's vector.
+        let mut g = graph(vec![intent("i0", &["a", "b", "c"], &[("t", 1.0)])]);
+
+        g.rebuild_centroids(
+            vec![("i0".into(), vec![topic_vec(0, 0), topic_vec(0, 1)])],
+            "m".into(),
+        );
+
+        assert!(
+            g.intents[0].member_vectors.iter().all(Option::is_none),
+            "a degraded tier beats a silently wrong one"
+        );
+        assert!(
+            g.intents[0].centroid.is_some(),
+            "the centroid is order-insensitive and still rebuilds"
+        );
+    }
+
+    // ---- the reported incident, against real embeddings ---------------------
+
+    /// Query-side bge-small embeddings of the 12 queries from Experiment E4 of
+    /// the 2026-08-11 misranking investigation.
+    ///
+    /// The crate's only checked-in real-embedding fixture, and it earns the
+    /// exception: every other dense fixture pins geometry we invented, so it can
+    /// only prove the rule works on the geometry we claim exists. This one is a
+    /// literal regression vector for the reported incident. It downloads nothing
+    /// at test time (see `crate::fusion` — core tests run on every build without
+    /// a model), and the queries are the report's own examples, not customer data.
+    const INCIDENT_FIXTURE: &str = include_str!("../tests/fixtures/incident-queries.json");
+
+    fn incident_queries() -> Vec<(String, String, Vec<f32>)> {
+        let doc: serde_json::Value = serde_json::from_str(INCIDENT_FIXTURE).unwrap();
+        doc["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                (
+                    q["query"].as_str().unwrap().to_string(),
+                    q["tool"].as_str().unwrap().to_string(),
+                    q["vector"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|x| x.as_f64().unwrap() as f32)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn incident_graph() -> IntentGraph {
+        let mut g = IntentGraph::empty();
+        for (query, tool, vector) in incident_queries() {
+            g.note_query_vector(&query, &vector, "bge-small");
+            g.observe_live(&query, Capability::Tool, &tool, T0, true);
+        }
+        g
+    }
+
+    #[test]
+    fn the_incident_queries_do_not_collapse_into_one_cluster() {
+        // Reproduced from the fixture: matching on the centroid puts 11 of these
+        // 12 into a single cluster, which is what let the most-invoked write op
+        // ride into every task-phrased search.
+        let g = incident_graph();
+        let sizes: Vec<usize> = g.intents.iter().map(|i| i.members.len()).collect();
+
+        assert!(
+            g.intents.len() >= 5,
+            "12 queries across four intents collapsed into {} clusters, sizes {sizes:?}",
+            g.intents.len()
+        );
+        assert!(
+            sizes.iter().all(|n| *n <= 5),
+            "no cluster should hold most of the corpus, sizes {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn a_read_query_and_a_write_query_do_not_arm_the_same_cluster() {
+        // The user-visible failure, structurally: "find tasks related to
+        // authentication" served create_task because it armed the same cluster a
+        // create-phrased query arms — one cluster holding both intents boosts
+        // whatever it saw invoked most onto every query it recognizes.
+        let g = incident_graph();
+        let qs = incident_queries();
+        let pick = |text: &str| {
+            let (q, _, v) = qs
+                .iter()
+                .find(|(q, _, _)| q == text)
+                .expect("query is in the fixture");
+            g.arm(q, Some(v), Capability::Tool, &all_known)
+                .expect("the fixture's own query must match the cluster it grew")
+                .intent_id
+        };
+
+        assert_ne!(
+            pick("find tasks related to authentication"),
+            pick("create a task for the login bug"),
+            "a read intent and a write intent armed the same cluster"
+        );
+    }
+
+    /// Regenerate [`INCIDENT_FIXTURE`] against the real model. Ignored: it is a
+    /// tool, not a test, and it needs the model on disk.
+    ///
+    /// `cargo test -p ratel-ai-core --lib regenerate_incident_fixture -- --ignored`
+    #[test]
+    #[ignore]
+    fn regenerate_incident_fixture() {
+        use crate::embedding::embedder_with_telemetry;
+        use crate::embedding_config::EmbeddingModel;
+
+        let embedder =
+            embedder_with_telemetry(&EmbeddingModel::Default, &crate::trace::NoopSink).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(INCIDENT_FIXTURE).unwrap();
+        let rows: Vec<String> = doc["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                let (intent, tool, text) = (
+                    q["intent"].as_str().unwrap(),
+                    q["tool"].as_str().unwrap(),
+                    q["query"].as_str().unwrap(),
+                );
+                let nums: Vec<String> = embedder
+                    .embed_query(text)
+                    .unwrap()
+                    .iter()
+                    .map(|x| format!("{x:.6}"))
+                    .collect();
+                format!(
+                    "    {{ \"intent\": \"{intent}\", \"tool\": \"{tool}\", \"query\": \"{text}\", \"vector\": [{}] }}",
+                    nums.join(",")
+                )
+            })
+            .collect();
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/incident-queries.json"),
+            format!(
+                "{{\n  \"note\": {},\n  \"model\": {},\n  \"revision\": {},\n  \"queries\": [\n{}\n  ]\n}}\n",
+                doc["note"], doc["model"], doc["revision"], rows.join(",\n")
+            ),
+        )
+        .unwrap();
     }
 }

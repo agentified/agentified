@@ -9,10 +9,13 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{
+    DenseWeight, RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted,
+    score_fuse,
+};
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
-use crate::search::Bm25Cache;
+use crate::search::{Bm25Cache, Bm25Params};
 use crate::tool::Tool;
 use crate::trace::{
     ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEnvelope, TraceEvent,
@@ -22,8 +25,11 @@ use crate::usage::{ArmOutcome, Capability, IntentGraph, UsageArm};
 use crate::usage_learner::{self, ObservationPolicy};
 
 /// Whether adaptive usage ranking is currently contributing to a registry's
-/// results — the SDK-facing view of the model-compatibility check (ADR-0014).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// results — the SDK-facing view of the compatibility checks (ADR-0014).
+///
+/// Not `Eq`: the policy-drift variant carries the thresholds, which are floats.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AdaptiveRankingStatus {
     /// No intent graph attached.
     Inactive,
@@ -43,6 +49,24 @@ pub enum AdaptiveRankingStatus {
         /// The active model, in the same units.
         active: String,
     },
+    /// Attached and serving, but the clusters were drawn under a different
+    /// [`crate::ClusterPolicy`] than the one now in force.
+    ///
+    /// Deliberately **not** a `Paused` variant. Nothing here is meaningless — the
+    /// clusters are still coherent, merely coarser or finer than the current
+    /// setting would draw them — and the SDKs recover from anything reported as
+    /// paused by rebuilding, which cannot revisit cluster boundaries and so
+    /// cannot fix this. Re-deriving boundaries means a replay or a relearn.
+    PolicyDrift {
+        /// Similarity the existing boundaries were drawn under.
+        built_similarity: f32,
+        /// Coverage fraction the existing boundaries were drawn under.
+        built_coverage: f32,
+        /// Similarity now in force.
+        active_similarity: f32,
+        /// Coverage fraction now in force.
+        active_coverage: f32,
+    },
 }
 
 /// One ranked match from a [`ToolRegistry`] search, best-first in the
@@ -54,12 +78,15 @@ pub struct SearchHit {
     /// [`SearchMethod`] that produced the hit:
     ///
     /// - `Bm25`: raw BM25 relevance (non-negative, unbounded; `k1=0.9`,
-    ///   `b=0.4`, tuned for short tool text per ADR-0004).
+    ///   `b=0.4` by default, configurable via
+    ///   [`ToolRegistry::set_experimental_bm25_params`]).
     /// - `Semantic`: cosine similarity of the L2-normalized query and
     ///   document embeddings (at most `1.0`).
-    /// - `Hybrid`: the Reciprocal Rank Fusion sum `Σ 1/(60 + rank)` over the
-    ///   BM25 and dense rankings — with two arms at most `2/60 ≈ 0.033`, so
-    ///   only the ordering is meaningful, not the magnitude.
+    /// - `Hybrid`: the **score fusion** `(1-w)·bm25/ceiling + w·cos`, plus the
+    ///   usage arm's bonus, bounded to `[0, 1]` (ADR-0024). Unlike the rank
+    ///   fusion it replaced, the magnitude is meaningful: both arms carry an
+    ///   absolute value, so `0.9` and `0.3` say something about match quality.
+    ///   `w` is the catalog's [`DenseWeight`](crate::DenseWeight).
     ///
     /// Scores are comparable within one result list, not across methods or
     /// corpora. Ties are broken by `tool_id` ascending, so ordering is
@@ -78,23 +105,55 @@ pub struct SearchHit {
     /// Whether [`score`](Self::score) is a Reciprocal Rank Fusion score (only its
     /// *ordering* is meaningful) rather than the raw method score. Uniform across
     /// all hits of one search: `true` when the usage arm fused into this search
-    /// (or the method is hybrid, always RRF), `false` for a plain BM25/semantic
-    /// result. Lets a caller detect the scale their `score` is on.
+    /// (or the method is hybrid, always a fusion), `false` for a plain
+    /// BM25/semantic result. Lets a caller detect the scale their `score` is on.
+    /// The name predates score fusion — it still means "not a raw method
+    /// score", but a hybrid `score` is now absolute rather than rank arithmetic.
     pub fused: bool,
+    /// `score` mapped onto `[0, 1]` for display, by a rule that follows the
+    /// scale `score` is actually on:
+    ///
+    /// - **cosine**: `(score + 1) / 2`, an affine remap of the model's own range.
+    /// - **raw BM25**: `score / Σ idf(query terms)`, clamped — the share of the
+    ///   query's discriminating mass this hit actually captured
+    ///   ([`crate::search::Bm25Index::query_ceiling`]).
+    /// - **score fusion** (hybrid): the fused score itself, already absolute in
+    ///   `[0, 1]`, so nothing is remapped — `relevance == score`.
+    /// - **RRF** (a single-arm method with the usage arm fused in): min-max
+    ///   across the full fused candidate set — not the returned slice — because
+    ///   rank arithmetic has no achievable maximum to divide by. `1.0` therefore
+    ///   means "top of everything the query retrieved", and the weakest
+    ///   *returned* hit is only `0.0` if nothing ranked below it.
+    ///
+    /// The first three are **absolute**: they compare across queries, and a list
+    /// where nothing fits well stays low instead of being promoted to `1.0`.
+    /// The RRF rule is **relative** — a `1.0` there says "best of what the query
+    /// retrieved", not "right" — though it is at least stable across `top_k`.
+    ///
+    /// **None of them is a calibrated confidence.** Nothing here was fitted to
+    /// whether the hit was the one the caller went on to invoke, so `0.8` does
+    /// not mean "right 80% of the time".
+    ///
+    /// Under the RRF rule, a list of one — or one where every score ties —
+    /// normalizes to `1.0` throughout; there is no spread to express.
+    pub relevance: f32,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list: `rank` is
 /// the position, `fused` says whether these are RRF scores. One place so the two
 /// new fields cannot drift between the fused and raw paths.
-fn to_search_hits(ranked: Vec<(String, f32)>, fused: bool) -> Vec<SearchHit> {
+fn to_search_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SearchHit> {
+    let relevance = normalize(&ranked, scale);
     ranked
         .into_iter()
+        .zip(relevance)
         .enumerate()
-        .map(|(i, (tool_id, score))| SearchHit {
+        .map(|(i, ((tool_id, score), relevance))| SearchHit {
             tool_id,
             score,
             rank: i as u32,
-            fused,
+            fused: matches!(scale, Scale::Rrf | Scale::Fused),
+            relevance,
         })
         .collect()
 }
@@ -148,6 +207,10 @@ pub struct ToolRegistry {
     /// scores unchanged. Shared behind a lock because the learner writes to the
     /// same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
+    /// Share of the hybrid content score the dense arm carries (ADR-0024).
+    /// Read only by the hybrid path; the single-arm methods have nothing to
+    /// weigh. Defaults to the shipped 0.7.
+    dense_weight: DenseWeight,
 }
 
 impl Default for ToolRegistry {
@@ -167,6 +230,23 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
+        }
+    }
+
+    /// A registry backed by an injected embedder, for tests and the measurement
+    /// harness — the harness lives in its own module and cannot reach these
+    /// private fields, and it must not load a real model on every run.
+    #[cfg(test)]
+    pub(crate) fn with_embedder_for_test(embedder: Arc<dyn crate::embedding::Embedder>) -> Self {
+        Self {
+            tools: IndexMap::new(),
+            sink: Arc::new(NoopSink),
+            experimental_catalog_definitions: false,
+            bm25: Bm25Cache::new(),
+            dense: DenseCache::with_embedder(embedder),
+            graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -179,6 +259,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -195,6 +276,7 @@ impl ToolRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -241,6 +323,48 @@ impl ToolRegistry {
         self.graph = graph;
     }
 
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7` (ADR-0024).
+    ///
+    /// **Experimental.** The default is right for the corpora measured so far —
+    /// natural-language queries against descriptive metadata — and the knob
+    /// exists because that is one corpus shape, not all of them. A catalog keyed
+    /// on exact identifiers, error codes, or internal jargon gives BM25 purchase
+    /// those corpora do not have, and wants a lower weight. Expect the default to
+    /// move if real usage says it should; expect this method to stay.
+    ///
+    /// Read by [`SearchMethod::Hybrid`] only. The single-arm methods have nothing
+    /// to weigh, so setting it does not affect them, and it never scales the
+    /// usage arm (ADR-0014).
+    ///
+    /// [`SearchMethod::Hybrid`]: crate::SearchMethod::Hybrid
+    pub fn set_experimental_dense_weight(&mut self, weight: DenseWeight) {
+        self.dense_weight = weight;
+    }
+
+    /// The dense arm's current share of the hybrid content score.
+    #[must_use]
+    pub fn experimental_dense_weight(&self) -> DenseWeight {
+        self.dense_weight
+    }
+
+    /// Set the BM25 `k1`/`b` tuning; forces a rebuild on the next search. See
+    /// [`crate::search::BM25_B`]'s doc comment for when a caller would want to
+    /// deviate from the default.
+    ///
+    /// **Experimental.** No built-in evaluation ships alongside this — a
+    /// caller who overrides it has no way to tell, from this crate alone,
+    /// whether the override helped their corpus.
+    pub fn set_experimental_bm25_params(&mut self, params: Bm25Params) {
+        self.bm25.set_params(params);
+    }
+
+    /// The BM25 tuning the registry's index is (or will be) built with.
+    #[must_use]
+    pub fn experimental_bm25_params(&self) -> Bm25Params {
+        self.bm25.params()
+    }
+
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
     /// the SDK can surface a model-mismatch to the user without draining the trace
     /// stream. Computed from the attached graph's model vs the active embedder.
@@ -269,7 +393,17 @@ impl ToolRegistry {
         };
         let active_dim = self.dense.dim().unwrap_or(0);
         match g.model_status(&active_fp, active_dim).describe() {
-            None => AdaptiveRankingStatus::Active,
+            // A paused graph is reported as paused: a policy notice would be the
+            // lesser problem, and the caller can only act on one at a time.
+            None => match g.cluster_policy_drift() {
+                None => AdaptiveRankingStatus::Active,
+                Some((built, active)) => AdaptiveRankingStatus::PolicyDrift {
+                    built_similarity: built.similarity,
+                    built_coverage: built.coverage,
+                    active_similarity: active.similarity,
+                    active_coverage: active.coverage,
+                },
+            },
             Some((built, active, dim_mismatch)) => AdaptiveRankingStatus::Paused {
                 dim_mismatch,
                 built,
@@ -320,7 +454,7 @@ impl ToolRegistry {
         for (id, cluster_members) in &members {
             let (vectors, fp) = self
                 .dense
-                .embed_texts_with_identity(cluster_members, self.sink.as_ref())?;
+                .embed_queries_with_identity(cluster_members, self.sink.as_ref())?;
             if !cluster_members.is_empty() {
                 fingerprint = Some(fp);
             }
@@ -420,8 +554,11 @@ impl ToolRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // A poisoned lock must not take down a search: usage ranking is an
         // enhancement, and losing it degrades to today's behavior.
-        let (outcome, mismatch) = {
+        let (outcome, mismatch, drift) = {
             let guard = graph.read().ok()?;
+            // Read under the same guard as the arm, so the notice describes the
+            // graph the ranking actually came from.
+            let drift = guard.cluster_policy_drift();
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
                 _ => None,
@@ -430,7 +567,7 @@ impl ToolRegistry {
                 // Paused: the graph's centroids belong to another model. Base
                 // ranking is untouched; the query is NOT noted, so the learner
                 // does not fold a foreign-model vector.
-                (ArmOutcome::NoMatch, mismatch)
+                (ArmOutcome::NoMatch, mismatch, drift)
             } else {
                 // Hand the embedded query to the learner: it only sees trace
                 // events, which carry text and not vectors, so this is how a
@@ -441,13 +578,25 @@ impl ToolRegistry {
                 let known = |id: &str| self.tools.contains_key(id);
                 // The graph picks the match tier from what it carries; a lexically
                 // grown graph has no centroids to compare a query vector against.
-                (guard.arm(query, query_vec, Capability::Tool, &known), None)
+                (
+                    guard.arm(query, query_vec, Capability::Tool, &known),
+                    None,
+                    drift,
+                )
             }
         };
         // The read guard is released BEFORE the sink runs. A `UsageLearner` sink
         // takes the write lock on this same graph, and `RwLock` is not
         // reentrant — recording while still holding the read guard would
         // deadlock the search path.
+        if let Some((built, active)) = drift {
+            self.sink.record(TraceEvent::UsageClusterPolicyChanged {
+                built_similarity: f64::from(built.similarity),
+                built_coverage: f64::from(built.coverage),
+                active_similarity: f64::from(active.similarity),
+                active_coverage: f64::from(active.coverage),
+            });
+        }
         if let Some((built, active, dim_mismatch)) = mismatch {
             self.sink.record(TraceEvent::UsageModelMismatch {
                 built,
@@ -758,15 +907,19 @@ impl ToolRegistry {
     /// and `(score desc, id asc)` ordering have exactly one implementation.
     fn fuse_arms(arms: &[WeightedArm<'_>], top_k: usize) -> (Vec<SearchHit>, SearchStage) {
         let t = Instant::now();
-        let mut fused = rrf_fuse_weighted(arms, RRF_K);
-        fused.truncate(top_k);
+        let fused = rrf_fuse_weighted(arms, RRF_K);
         let stage = SearchStage {
             name: "rrf".into(),
             took_ms: t.elapsed().as_millis() as u64,
             top_score: fused.first().map(|(_, s)| *s as f64),
         };
-        // These came out of RRF, so their magnitude is ordering-only.
-        let hits = to_search_hits(fused, true);
+        // Normalize across the WHOLE candidate set, then cut. Doing it after the
+        // cut would min-max against the k-th score, so the last hit a caller
+        // asked for would read 0.00 however good it was — and the same hit would
+        // report a different number at a different `top_k`. The candidate set is
+        // a property of the query; the cut is a property of the request.
+        let mut hits = to_search_hits(fused, Scale::Rrf);
+        hits.truncate(top_k);
         (hits, stage)
     }
 
@@ -801,7 +954,13 @@ impl ToolRegistry {
             // No graph, or nothing matched: the original path, unchanged, with
             // raw BM25 scores. ADR-0011's byte-for-byte promise lives here.
             // Raw BM25 scores — not fused.
-            let hits = to_search_hits(self.bm25_index().search(query, top_k), false);
+            let index = self.bm25_index();
+            let hits = to_search_hits(
+                index.search(query, top_k),
+                Scale::Bm25 {
+                    ceiling: index.query_ceiling(query),
+                },
+            );
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -886,7 +1045,7 @@ impl ToolRegistry {
             // to give the usage arm room to re-rank; with no arm to fuse, trim
             // back to what the caller asked for (the fused path does this in
             // `fuse_arms`).
-            let mut hits = to_search_hits(ranked, false);
+            let mut hits = to_search_hits(ranked, Scale::Cosine);
             hits.truncate(top_k);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
@@ -948,7 +1107,8 @@ impl ToolRegistry {
 
         // 1. BM25 (lexical).
         let t = Instant::now();
-        let bm25_ranked = self.bm25_index().search(query, depth);
+        let index = self.bm25_index();
+        let bm25_ranked = index.search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -975,20 +1135,29 @@ impl ToolRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
-        // 4. RRF fusion → final top_k.
-        let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
-        let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
-        if let Some(arm) = &arm {
-            arms.push((&arm.ids, arm.weight()));
-        }
-        let (hits, rrf_stage) = Self::fuse_arms(&arms, top_k);
+        // 4. Score fusion → final top_k. The arms are normalised onto one
+        //    absolute scale and added, rather than fused on rank position.
+        let t = Instant::now();
+        let fused = score_fuse(
+            &bm25_ranked,
+            index.query_ceiling(query),
+            &dense_ranked,
+            arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+            self.dense_weight,
+        );
+        let fusion_stage = SearchStage {
+            name: "fusion".into(),
+            took_ms: t.elapsed().as_millis() as u64,
+            top_score: fused.first().map(|(_, s)| *s as f64),
+        };
+        let mut hits = to_search_hits(fused, Scale::Fused);
+        hits.truncate(top_k);
 
         let mut stages = vec![bm25_stage, dense_stage];
         if let Some(arm) = &arm {
             stages.push(Self::usage_stage(arm, usage_ms));
         }
-        stages.push(rrf_stage);
+        stages.push(fusion_stage);
 
         let took_ms = started.elapsed().as_millis() as u64;
         self.record_search(query, origin, top_k, &hits, stages, took_ms, context);
@@ -1114,14 +1283,7 @@ mod tests {
     }
 
     fn with_embedder(embedder: Arc<dyn Embedder>) -> ToolRegistry {
-        ToolRegistry {
-            tools: IndexMap::new(),
-            sink: Arc::new(NoopSink),
-            experimental_catalog_definitions: false,
-            bm25: Bm25Cache::new(),
-            dense: DenseCache::with_embedder(embedder),
-            graph: None,
-        }
+        ToolRegistry::with_embedder_for_test(embedder)
     }
 
     fn tool(id: &str, description: &str) -> Tool {
@@ -1352,6 +1514,93 @@ mod tests {
     }
 
     #[test]
+    fn the_dense_weight_defaults_to_the_shipped_value_and_only_hybrid_reads_it() {
+        // Two properties in one: an untouched registry searches exactly as before
+        // the knob existed, and a set weight cannot leak into the single-arm methods.
+        let mut reg = catalog(Arc::new(StubEmbedder));
+        assert_eq!(reg.experimental_dense_weight(), DenseWeight::default());
+        reg.build_embeddings().unwrap();
+
+        let bm25_before = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Bm25)
+            .unwrap();
+        let semantic_before = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.0).unwrap());
+
+        let ids = |hits: &[SearchHit]| -> Vec<String> {
+            hits.iter().map(|h| h.tool_id.clone()).collect()
+        };
+        assert_eq!(
+            ids(&reg
+                .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Bm25)
+                .unwrap()),
+            ids(&bm25_before),
+            "bm25 has one content arm and must ignore the split"
+        );
+        assert_eq!(
+            ids(&reg
+                .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Semantic)
+                .unwrap()),
+            ids(&semantic_before),
+            "semantic has one content arm and must ignore the split"
+        );
+    }
+
+    #[test]
+    fn the_dense_weight_reaches_the_hybrid_scores() {
+        // The knob must be observable end to end, not merely stored. Probe the
+        // whole slate rather than one id: the top hit saturates both arms and
+        // clamps to 1.0 at every weight, which would hide the effect.
+        let mut reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+
+        let slate = |reg: &ToolRegistry| -> Vec<(String, f32)> {
+            reg.search_with_method("read a file", 5, Origin::Direct, SearchMethod::Hybrid)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.tool_id, h.score))
+                .collect()
+        };
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.2).unwrap());
+        let lexical_heavy = slate(&reg);
+        reg.set_experimental_dense_weight(DenseWeight::new(0.9).unwrap());
+        let dense_heavy = slate(&reg);
+
+        assert_ne!(
+            lexical_heavy, dense_heavy,
+            "the weight must change the fused scores, not just be stored"
+        );
+    }
+
+    #[test]
+    fn bm25_params_default_to_the_shipped_tuning_and_reach_search() {
+        // Same shape as the dense-weight pair above: the untouched registry
+        // reads the shipped default, and setting the knob actually changes
+        // what `search` returns rather than merely being stored.
+        let mut reg = ToolRegistry::new();
+        assert_eq!(reg.experimental_bm25_params(), Bm25Params::default());
+        reg.register(tool("short", "read"));
+        reg.register(tool(
+            "long",
+            "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12",
+        ));
+
+        let top = |reg: &ToolRegistry| reg.search("read", 1)[0].tool_id.clone();
+        assert_eq!(top(&reg), "long", "default b=0.4 favors term frequency");
+
+        reg.set_experimental_bm25_params(Bm25Params::default().with_b(1.0));
+        assert_eq!(
+            top(&reg),
+            "short",
+            "b=1.0 must reach search, not just be stored"
+        );
+    }
+
+    #[test]
     fn hybrid_fuses_bm25_and_dense() {
         let reg = catalog(Arc::new(StubEmbedder));
         reg.build_embeddings().unwrap();
@@ -1432,7 +1681,7 @@ mod tests {
             TraceEvent::Search { stages, .. }
                 if stages.iter().any(|s| s.name == "bm25")
                 && stages.iter().any(|s| s.name == "dense")
-                && stages.iter().any(|s| s.name == "rrf")
+                && stages.iter().any(|s| s.name == "fusion")
         )));
     }
 
@@ -1804,6 +2053,7 @@ mod tests {
             ts_ms: 1,
             first_confirmation: true,
             seeded: false,
+            surfaced: &[],
         });
 
         assert_eq!(graph.len(), 1);
@@ -2466,6 +2716,89 @@ mod tests {
         assert!(events[0].2, "different width → dim_mismatch true");
     }
 
+    /// Returns a different vector on the query side than the document side, so a
+    /// test can tell which side a caller reached for. The crate's other stubs are
+    /// symmetric; `RebuildRaceEmbedder` is the only precedent for this shape.
+    struct SidedEmbedder;
+
+    impl SidedEmbedder {
+        const DOC: [f32; 3] = [1.0, 0.0, 0.0];
+        const QUERY: [f32; 3] = [0.0, 1.0, 0.0];
+    }
+
+    impl Embedder for SidedEmbedder {
+        fn embed_doc(&self, _: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(Self::DOC.to_vec())
+        }
+        fn embed_query(&self, _: &str) -> Result<Vec<f32>, EmbedderError> {
+            Ok(Self::QUERY.to_vec())
+        }
+        fn fingerprint(&self) -> String {
+            "sided".into()
+        }
+    }
+
+    #[test]
+    fn rebuild_embeds_graph_members_as_queries_not_documents() {
+        // A cluster's members are past QUERIES. Re-embedding them through the
+        // document path puts the rebuilt centroid in the doc-side manifold, while
+        // every live query arrives on the query side — an instructed model (the
+        // built-in one carries a query instruction and no doc prefix) then scores
+        // every comparison against a centroid the queries can never reach.
+        let mut reg = with_embedder(Arc::new(SidedEmbedder));
+        reg.register(tool("read_file", "read a file"));
+        reg.build_embeddings().unwrap();
+        reg.set_intent_graph(Some(graph_with_model(
+            "read_file",
+            vec![0.0, 0.0, 1.0],
+            "another-model",
+        )));
+
+        reg.rebuild_intent_graph().unwrap();
+
+        let graph = reg.graph.as_ref().unwrap().read().unwrap();
+        let centroid = graph.labeled()[0].centroid.clone().unwrap();
+        assert_eq!(
+            centroid,
+            SidedEmbedder::QUERY.to_vec(),
+            "members must be re-embedded query-side, got {centroid:?}"
+        );
+    }
+
+    #[test]
+    fn policy_drift_is_reported_as_active_not_paused() {
+        use crate::usage::ClusterPolicy;
+
+        // The whole design in one assertion. Both SDKs recover from a status
+        // beginning "paused" by rebuilding, and a rebuild replaces centroids
+        // without revisiting cluster boundaries — so reporting drift as paused
+        // would fire an embedding pass incapable of fixing what it fired for.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("read_file", "read a file"));
+        reg.build_embeddings().unwrap();
+
+        // The stub takes the trait's default fingerprint, so name it: the model
+        // must MATCH, or the graph reports paused and drift never gets a look in.
+        let graph = graph_with_model("read_file", vec![1.0, 0.0, 0.0], "unknown");
+        graph
+            .write()
+            .unwrap()
+            .set_cluster_policy(ClusterPolicy::default().with_similarity(0.9));
+        reg.set_intent_graph(Some(graph));
+
+        match reg.adaptive_ranking_status() {
+            AdaptiveRankingStatus::PolicyDrift {
+                built_similarity,
+                active_similarity,
+                ..
+            } => {
+                assert_eq!(built_similarity, 0.70, "the graph's own default");
+                assert_eq!(active_similarity, 0.9);
+            }
+            other => panic!("expected policy drift, got {other:?}"),
+        }
+    }
+
     #[test]
     fn rebuild_intent_graph_restores_the_arm_after_a_model_change() {
         let sink = Arc::new(MemorySink::new("s"));
@@ -2579,7 +2912,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(stages, vec!["bm25", "dense", "usage", "rrf"]);
+        assert_eq!(stages, vec!["bm25", "dense", "usage", "fusion"]);
     }
 
     #[test]
@@ -2606,7 +2939,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(stages, vec!["bm25", "dense", "rrf"]);
+        assert_eq!(stages, vec!["bm25", "dense", "fusion"]);
     }
 
     #[test]
@@ -2857,5 +3190,174 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
+    }
+
+    // ---- the relevance score ----
+
+    /// The BM25 rule divides by the query's own ceiling, so the top is *not*
+    /// pinned to 1.0 and the value survives a change of `top_k`.
+    #[test]
+    fn bm25_normalizes_against_the_query_ceiling_not_the_list() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        let hits = reg.search("read a file", 5);
+        assert!(hits.len() >= 2, "need a spread to normalize");
+        assert!(
+            hits.iter().all(|h| (0.0..=1.0).contains(&h.relevance)),
+            "must be clamped into [0, 1]"
+        );
+        // Nothing is pinned to zero: the last hit still matched something, and
+        // min-max would have reported it as 0.00 regardless.
+        assert!(
+            hits.last().is_some_and(|h| h.relevance > 0.0),
+            "the weakest hit still captured part of the query"
+        );
+        // Monotone with the raw score, since one shared ceiling divides them all.
+        for pair in hits.windows(2) {
+            assert!(
+                pair[0].relevance >= pair[1].relevance,
+                "{} {} then {} {}",
+                pair[0].tool_id,
+                pair[0].relevance,
+                pair[1].tool_id,
+                pair[1].relevance
+            );
+        }
+    }
+
+    /// The property min-max could not give: the same hit reports the same number
+    /// whether it was asked for alone or among others.
+    #[test]
+    fn a_bm25_hit_normalizes_the_same_at_any_top_k() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("alpha", "shared token alpha extra extra extra"));
+        reg.register(tool("beta", "shared token beta"));
+        reg.register(tool("gamma", "shared token gamma padding padding padding"));
+        let deep = reg.search("shared token", 3);
+        let shallow = reg.search("shared token", 2);
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
+            assert!(
+                (same.relevance - h.relevance).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.tool_id,
+                h.relevance,
+                same.relevance
+            );
+        }
+    }
+
+    /// A query word no document contains still counts toward the ceiling, so a
+    /// catalog with no vocabulary for the question reports a lower number.
+    /// Suppressing that would make an unanswerable query look answerable.
+    #[test]
+    fn an_unmatchable_query_word_lowers_the_score() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("reader", "read a file"));
+        let plain = reg.search("read", 5);
+        let with_unknown = reg.search("read quetzalcoatl", 5);
+        assert_eq!(plain[0].tool_id, with_unknown[0].tool_id);
+        assert!(
+            with_unknown[0].relevance < plain[0].relevance,
+            "{} vs {}",
+            with_unknown[0].relevance,
+            plain[0].relevance
+        );
+    }
+
+    #[test]
+    fn semantic_normalizes_cosine_affinely_and_does_not_force_a_one() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+        let hits = reg
+            .search_with_method("read", 5, Origin::Direct, SearchMethod::Semantic)
+            .unwrap();
+        for h in &hits {
+            assert!(
+                (h.relevance - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} relevance {}",
+                h.tool_id,
+                h.score,
+                h.relevance
+            );
+        }
+        // StubEmbedder puts non-matching buckets at cosine 0.0, which is the
+        // point: an absolute rule reports 0.5, where min-max would report 0.0
+        // for the same hit and 1.0 for a hit that is merely least-bad.
+        assert!(
+            hits.iter().any(|h| (h.relevance - 0.5).abs() < 1e-6),
+            "expected an orthogonal hit at 0.5, got {:?}",
+            hits.iter()
+                .map(|h| (h.tool_id.as_str(), h.relevance))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    /// Hybrid fuses on normalised scores, so its number is already absolute:
+    /// `relevance` is the fused score itself, with no further mapping. The top
+    /// is NOT pinned to 1.0 and the bottom NOT to 0.0 — which is the whole
+    /// reason to fuse on scores rather than ranks.
+    fn hybrid_scores_are_absolute_not_stretched_to_the_endpoints() {
+        let reg = catalog(Arc::new(StubEmbedder));
+        reg.build_embeddings().unwrap();
+        let hits = reg
+            .search_with_method("read a file", 5, Origin::Direct, SearchMethod::Hybrid)
+            .unwrap();
+        assert!(hits.iter().all(|h| h.fused), "still a fused score");
+        assert!(
+            hits.iter().all(|h| (h.relevance - h.score).abs() < 1e-6),
+            "the fused score needs no remapping"
+        );
+        assert!(
+            hits.last().is_some_and(|h| h.relevance > 0.0),
+            "the weakest hit still matched something; min-max would zero it"
+        );
+    }
+
+    /// No spread is not the same as everything being worthless. Dividing by a
+    /// zero range would be a NaN, and reporting 0.0 would call a sole result bad.
+    #[test]
+    fn a_single_hit_or_an_all_tied_list_normalizes_to_one() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("only_one", "singular unrepeated vocabulary"));
+        let hits = reg.search("singular", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].relevance, 1.0);
+    }
+
+    /// Normalizing before the cut is what keeps the fused number stable: the
+    /// candidate set belongs to the query, the cut belongs to the request. If
+    /// this regresses, the weakest hit a caller asked for reads 0.00 whatever
+    /// its score, and the same hit reports two different numbers at two `top_k`.
+    #[test]
+    fn a_fused_hit_normalizes_the_same_at_any_top_k() {
+        // Both arms must agree on the order, or symmetric rank swaps make the
+        // fused scores tie and there is no spread to measure.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(tool("aa", "shared token read"));
+        reg.register(tool("bb", "shared token read padding padding padding"));
+        reg.register(tool("cc", "shared token remove"));
+        reg.build_embeddings().unwrap();
+        let hy = |k| {
+            reg.search_with_method("shared token read", k, Origin::Direct, SearchMethod::Hybrid)
+                .unwrap()
+        };
+        let (deep, shallow) = (hy(3), hy(2));
+        assert!(deep.len() > shallow.len(), "need differing depths");
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.tool_id == h.tool_id).unwrap();
+            assert!(
+                (same.relevance - h.relevance).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.tool_id,
+                h.relevance,
+                same.relevance
+            );
+        }
+        // And the last hit of a short list is not forced to zero by being last.
+        assert!(
+            shallow.last().is_some_and(|h| h.relevance > 0.0),
+            "something ranked below it, so it is not the minimum"
+        );
     }
 }

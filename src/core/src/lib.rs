@@ -56,7 +56,7 @@
 //!     experimental_searchable_description: None,
 //!     input_schema: serde_json::json!({
 //!         "properties": {
-//!             "path": { "type": "string", "description": "absolute path" }
+//!             "path": { "type": "string" }
 //!         }
 //!     }),
 //!     output_schema: serde_json::json!({}),
@@ -104,6 +104,8 @@ mod usage;
 mod usage_learner;
 
 #[cfg(test)]
+mod harness;
+#[cfg(test)]
 mod test_support;
 
 pub use artifact_warm::{ArtifactWarmError, OnArtifactMiss, ParseOnArtifactMissError};
@@ -113,7 +115,9 @@ pub use embedding_artifact::{ArtifactError, merge_embedding_artifacts};
 pub use embedding_config::{EmbeddingModel, EmbeddingSpec, Pooling};
 pub use fact::{Fact, ParsePinModeError, PinMode};
 pub use fact_registry::{FactHit, FactRegistry};
+pub use fusion::{DenseWeight, InvalidDenseWeight};
 pub use method::{ParseSearchMethodError, SearchMethod};
+pub use search::Bm25Params;
 pub use skill::Skill;
 pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};
 pub use tool::Tool;
@@ -123,5 +127,5 @@ pub use trace::{
     FanoutSubscription, FnSink, JsonlSink, MemorySink, NoopSink, Origin, SearchHitTrace,
     SearchStage, SkillHitTrace, TraceEnvelope, TraceEvent, TraceEventContext, TraceSink,
 };
-pub use usage::{Intent, IntentGraph, IntentGraphError};
+pub use usage::{ClusterPolicy, Intent, IntentGraph, IntentGraphError};
 pub use usage_learner::{ObservationPolicy, OriginFilter, Provenance, UsageLearner};

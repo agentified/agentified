@@ -178,6 +178,33 @@ export type OriginFilterOption = "any" | "agent" | "baseline";
 export type ProvenanceOption = "live" | "seeded";
 
 /**
+ * BM25 `k1`/`b` override. Both are optional independently — an unset field
+ * keeps its current value. Rejected outside their valid domain (`k1` finite
+ * and non-negative, `b` finite and in `[0, 1]`) rather than clamped, same
+ * posture as {@link ToolCatalogOptions.experimentalDenseWeight}.
+ *
+ * **Experimental.** The shipped defaults (`k1=0.9`, `b=0.4`) assume
+ * tool-shaped documents — a short description plus every schema token
+ * (ADR-0004) — so document length partly reflects how many arguments a tool
+ * takes, not how much it says. BFCL later measured `b=0.75` as a narrow
+ * winner on a corpus shaped like that (599 function-calling scenarios,
+ * lexical arm only — see ADR-0023/ADR-0024), which is why 0.75 is worth
+ * trying if your catalog looks similar. Two signals suggest a different value
+ * instead: a catalog that sets `experimentalSearchableDescription`
+ * everywhere skips schema flattening and has near-uniform document length, so
+ * `b` barely matters either way; and a catalog of long-form documents (skills,
+ * not tool-call schemas) doesn't resemble what BFCL measured at all. No
+ * built-in evaluation ships alongside this option — there is no way to tell,
+ * from this package alone, whether an override helped your corpus.
+ */
+export interface ExperimentalBm25Params {
+  /** Term-frequency saturation. Default `0.9`. Must be finite and `>= 0`. */
+  k1?: number;
+  /** Length normalisation. Default `0.4`. Must be finite and in `[0, 1]`. */
+  b?: number;
+}
+
+/**
  * How a trace stream is turned into observations — the same three knobs for
  * live learning ({@link ToolCatalog.experimentalEnableAdaptiveRanking}) and
  * offline construction ({@link ToolCatalog.experimentalBuildIntentGraph}),
@@ -194,6 +221,31 @@ export interface ObservationPolicyOptions {
   origins?: OriginFilterOption;
   /** Whether learning is marked as seeded. Default `"live"`. */
   provenance?: ProvenanceOption;
+  /**
+   * Minimum cosine a query must clear against a single cluster member for that
+   * member to count toward its match. Default `0.70`. Must be in `(0, 1]`.
+   *
+   * Worth tuning: the right value is model-dependent — a cosine of 0.70 does not
+   * mean the same thing on two embedding models — and corpus-dependent, since a
+   * narrow catalog and a broad one want different granularity.
+   *
+   * Applies to **future** admissions only. Clusters already drawn are not
+   * redrawn, and nothing can redraw them in place; the graph keeps reporting the
+   * policy it was clustered under, and the difference shows up as
+   * `"active: policy drift"`. To re-derive boundaries, replay a trace log
+   * through {@link ToolCatalog.experimentalBuildIntentGraph} or relearn from
+   * scratch.
+   */
+  clusterSimilarity?: number;
+  /**
+   * Share of a cluster's members a query must clear `clusterSimilarity` against
+   * before it joins. Default `0.5`, a majority. Must be in `(0, 1]`.
+   *
+   * Matching one member is single-link chaining: a query joins because of one
+   * neighbour, and the cluster grows into whatever that neighbour bridged to.
+   * Same future-only caveat as {@link clusterSimilarity}.
+   */
+  clusterCoverage?: number;
 }
 
 /**
@@ -315,6 +367,28 @@ export interface ToolCatalogOptions {
    * allowing a later asynchronous semantic override. */
   embedding?: EmbeddingSpec;
   /**
+   * Share of the hybrid content score the dense (semantic) arm carries; BM25
+   * takes the remainder. Default `0.7`. Read by `"hybrid"` only — the
+   * single-arm methods have nothing to weigh.
+   *
+   * **Experimental.** The default suits catalogs of natural-language
+   * descriptions, which is where it was measured (ADR-0024). A catalog keyed on
+   * exact identifiers, error codes, or internal jargon gives the lexical arm
+   * purchase those corpora do not have and wants a lower value. `0` is pure
+   * lexical, `1` pure dense; anything outside `[0, 1]` throws rather than being
+   * clamped, so a mistyped `70` is reported instead of silently searching at
+   * `1`.
+   *
+   * It does not scale the adaptive-ranking arm, whose own share is a separate
+   * guard (ADR-0014).
+   */
+  experimentalDenseWeight?: number;
+  /**
+   * BM25 `k1`/`b` override — see {@link ExperimentalBm25Params} for the
+   * defaults, the evidence behind them, and when to reach for this.
+   */
+  experimentalBm25?: ExperimentalBm25Params;
+  /**
    * Build-time RAT1 to warm on register (any method; default `onMiss: "error"`).
    * Each `register` re-resolves and re-warms over the whole current corpus —
    * intended for one batch at startup; incremental register calls repeat I/O
@@ -377,7 +451,12 @@ export class ToolCatalog {
    */
   constructor(options: ToolCatalogOptions = {}) {
     this.method = options.method ?? "bm25";
-    this.registry = new ToolRegistry(options.embedding, this.method);
+    this.registry = new ToolRegistry(
+      options.embedding,
+      this.method,
+      options.experimentalDenseWeight,
+      options.experimentalBm25,
+    );
     this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {
       this.registry.setTraceSink(options.trace);
@@ -647,6 +726,13 @@ export class ToolCatalog {
    * Re-embed the intent graph's members under the current model and replace its
    * centroids — call after changing the embedding model. Preserves members,
    * support, and edges. See {@link experimentalEnableAdaptiveRanking}.
+   *
+   * Also the repair for an **over-merged** graph. Clustering compares a query
+   * against a cluster's individual members, and those per-member vectors are
+   * held in memory rather than persisted, so a graph loaded from storage — or
+   * grown by an older version — matches on its centroid alone until a rebuild
+   * refills them. A rebuild does not move cluster boundaries; replaying a trace
+   * log, or relearning from scratch, is what re-clusters.
    */
   async experimentalRebuildIntentGraph(): Promise<void> {
     await this.registry.experimentalRebuildIntentGraph();

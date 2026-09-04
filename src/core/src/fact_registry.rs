@@ -10,7 +10,7 @@ use crate::fact::{Fact, PinMode};
 use crate::fact_indexing::searchable_text;
 use crate::fusion::{RETRIEVE_DEPTH, RRF_K, rrf_fuse_weighted, sort_and_truncate};
 use crate::method::SearchMethod;
-use crate::search::Bm25Cache;
+use crate::search::{Bm25Cache, Bm25Params};
 use crate::trace::{ChurnKind, FactHitTrace, NoopSink, Origin, SearchStage, TraceEvent, TraceSink};
 
 /// One ranked match from a [`FactRegistry`] search, best-first in the returned
@@ -102,6 +102,24 @@ impl FactRegistry {
     /// Enable experimental complete catalog-definition events for later registrations.
     pub fn experimental_enable_catalog_definitions(&mut self) {
         self.experimental_catalog_definitions = true;
+    }
+
+    /// Set the BM25 `k1`/`b` tuning; forces a rebuild on the next search. See
+    /// [`crate::search::BM25_B`]'s doc comment for when a caller would want to
+    /// deviate from the default.
+    ///
+    /// **Experimental.** No built-in evaluation ships alongside this — a
+    /// caller who overrides it has no way to tell, from this crate alone,
+    /// whether the override helped their corpus. See
+    /// [`crate::ToolRegistry::set_experimental_bm25_params`].
+    pub fn set_experimental_bm25_params(&mut self, params: Bm25Params) {
+        self.bm25.set_params(params);
+    }
+
+    /// The BM25 tuning the registry's index is (or will be) built with.
+    #[must_use]
+    pub fn experimental_bm25_params(&self) -> Bm25Params {
+        self.bm25.params()
     }
 
     /// Record an arbitrary [`TraceEvent`] on the registry's sink. The SDK fact
@@ -558,6 +576,30 @@ mod tests {
         assert_eq!(
             hits.first().map(|h| h.fact_id.as_str()),
             Some("cancellation")
+        );
+    }
+
+    #[test]
+    fn bm25_params_default_to_the_shipped_tuning_and_reach_search() {
+        let mut reg = FactRegistry::new();
+        assert_eq!(reg.experimental_bm25_params(), Bm25Params::default());
+        reg.register(fact("short", "short", "read", &[], PinMode::Retrieved));
+        reg.register(fact(
+            "long",
+            "long",
+            "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12",
+            &[],
+            PinMode::Retrieved,
+        ));
+
+        let top = |reg: &FactRegistry| reg.search("read", 1)[0].fact_id.clone();
+        assert_eq!(top(&reg), "long", "default b=0.4 favors term frequency");
+
+        reg.set_experimental_bm25_params(Bm25Params::default().with_b(1.0));
+        assert_eq!(
+            top(&reg),
+            "short",
+            "b=1.0 must reach search, not just be stored"
         );
     }
 

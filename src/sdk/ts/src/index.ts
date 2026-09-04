@@ -49,6 +49,7 @@ export type {
   EmbeddingSpec,
   ExecutableTool,
   Executor,
+  ExperimentalBm25Params,
   InputValidationResult,
   InputValidator,
   ObservationPolicyOptions,

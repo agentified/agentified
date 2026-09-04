@@ -8,9 +8,12 @@ use crate::dense_cache::{DenseCache, Embeddable};
 use crate::embedding::EmbedderError;
 use crate::embedding_artifact::{ArtifactEntryKind, ArtifactError};
 use crate::embedding_config::EmbeddingModel;
-use crate::fusion::{RETRIEVE_DEPTH, RRF_K, WeightedArm, rrf_fuse_weighted};
+use crate::fusion::{
+    DenseWeight, RETRIEVE_DEPTH, RRF_K, Scale, WeightedArm, normalize, rrf_fuse_weighted,
+    score_fuse,
+};
 use crate::method::SearchMethod;
-use crate::search::Bm25Cache;
+use crate::search::{Bm25Cache, Bm25Params};
 use crate::skill::Skill;
 use crate::skill_indexing::searchable_text;
 use crate::tool_registry::AdaptiveRankingStatus;
@@ -28,7 +31,7 @@ pub struct SkillHit {
     /// Relevance score — higher is better; the scale depends on the
     /// [`SearchMethod`] exactly as documented on [`crate::SearchHit::score`]:
     /// raw BM25 relevance for `Bm25`, cosine similarity (at most `1.0`) for
-    /// `Semantic`, a Reciprocal Rank Fusion sum for `Hybrid`. Ties break by
+    /// `Semantic`, a bounded score fusion for `Hybrid`. Ties break by
     /// `skill_id` ascending. **Scale also depends on [`fused`](Self::fused)** —
     /// order by [`rank`](Self::rank), branch on [`fused`](Self::fused).
     pub score: f32,
@@ -39,19 +42,27 @@ pub struct SkillHit {
     /// Whether [`score`](Self::score) is an RRF score (ordering-only) rather than
     /// the raw method score — the skill-side twin of [`crate::SearchHit::fused`].
     pub fused: bool,
+    /// [`score`](Self::score) mapped onto `[0, 1]` for display — the skill-side
+    /// twin of [`crate::SearchHit::relevance`], by the same three rules and
+    /// with the same caveats. See it for what each rule means and why this is
+    /// not a confidence.
+    pub relevance: f32,
 }
 
 /// Build hits from an already-ranked, best-first `(id, score)` list — the
 /// skill-side twin of [`crate::tool_registry`]'s `to_search_hits`.
-fn to_skill_hits(ranked: Vec<(String, f32)>, fused: bool) -> Vec<SkillHit> {
+fn to_skill_hits(ranked: Vec<(String, f32)>, scale: Scale) -> Vec<SkillHit> {
+    let relevance = normalize(&ranked, scale);
     ranked
         .into_iter()
+        .zip(relevance)
         .enumerate()
-        .map(|(i, (skill_id, score))| SkillHit {
+        .map(|(i, ((skill_id, score), relevance))| SkillHit {
             skill_id,
             score,
             rank: i as u32,
-            fused,
+            fused: matches!(scale, Scale::Rrf | Scale::Fused),
+            relevance,
         })
         .collect()
 }
@@ -104,6 +115,10 @@ pub struct SkillRegistry {
     /// today's behavior exactly. Shared behind a lock because the learner writes
     /// to the same graph the search path reads.
     graph: Option<Arc<RwLock<IntentGraph>>>,
+    /// Share of the hybrid content score the dense arm carries (ADR-0024).
+    /// Read only by the hybrid path; the single-arm methods have nothing to
+    /// weigh. Defaults to the shipped 0.7.
+    dense_weight: DenseWeight,
 }
 
 impl Default for SkillRegistry {
@@ -123,6 +138,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -136,6 +152,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::new(),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -152,6 +169,7 @@ impl SkillRegistry {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_model(model),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -188,6 +206,48 @@ impl SkillRegistry {
         self.graph = graph;
     }
 
+    /// Set the share of the hybrid content score the dense arm carries; BM25
+    /// takes the remainder. Default `0.7` (ADR-0024).
+    ///
+    /// **Experimental.** The default is right for the corpora measured so far —
+    /// natural-language queries against descriptive metadata — and the knob
+    /// exists because that is one corpus shape, not all of them. A catalog keyed
+    /// on exact identifiers, error codes, or internal jargon gives BM25 purchase
+    /// those corpora do not have, and wants a lower weight. Expect the default to
+    /// move if real usage says it should; expect this method to stay.
+    ///
+    /// Read by [`SearchMethod::Hybrid`] only. The single-arm methods have nothing
+    /// to weigh, so setting it does not affect them, and it never scales the
+    /// usage arm (ADR-0014).
+    ///
+    /// [`SearchMethod::Hybrid`]: crate::SearchMethod::Hybrid
+    pub fn set_experimental_dense_weight(&mut self, weight: DenseWeight) {
+        self.dense_weight = weight;
+    }
+
+    /// The dense arm's current share of the hybrid content score.
+    #[must_use]
+    pub fn experimental_dense_weight(&self) -> DenseWeight {
+        self.dense_weight
+    }
+
+    /// Set the BM25 `k1`/`b` tuning; forces a rebuild on the next search. See
+    /// [`crate::search::BM25_B`]'s doc comment for when a caller would want to
+    /// deviate from the default.
+    ///
+    /// **Experimental.** No built-in evaluation ships alongside this — a
+    /// caller who overrides it has no way to tell, from this crate alone,
+    /// whether the override helped their corpus.
+    pub fn set_experimental_bm25_params(&mut self, params: Bm25Params) {
+        self.bm25.set_params(params);
+    }
+
+    /// The BM25 tuning the registry's index is (or will be) built with.
+    #[must_use]
+    pub fn experimental_bm25_params(&self) -> Bm25Params {
+        self.bm25.params()
+    }
+
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
     /// the SDK can surface a model-mismatch to the user without draining the trace
     /// stream. Computed from the attached graph's model vs the active embedder.
@@ -216,7 +276,17 @@ impl SkillRegistry {
         };
         let active_dim = self.dense.dim().unwrap_or(0);
         match g.model_status(&active_fp, active_dim).describe() {
-            None => AdaptiveRankingStatus::Active,
+            // A paused graph is reported as paused: a policy notice would be the
+            // lesser problem, and the caller can only act on one at a time.
+            None => match g.cluster_policy_drift() {
+                None => AdaptiveRankingStatus::Active,
+                Some((built, active)) => AdaptiveRankingStatus::PolicyDrift {
+                    built_similarity: built.similarity,
+                    built_coverage: built.coverage,
+                    active_similarity: active.similarity,
+                    active_coverage: active.coverage,
+                },
+            },
             Some((built, active, dim_mismatch)) => AdaptiveRankingStatus::Paused {
                 dim_mismatch,
                 built,
@@ -255,7 +325,7 @@ impl SkillRegistry {
         for (id, cluster_members) in &members {
             let (vectors, fp) = self
                 .dense
-                .embed_texts_with_identity(cluster_members, self.sink.as_ref())?;
+                .embed_queries_with_identity(cluster_members, self.sink.as_ref())?;
             if !cluster_members.is_empty() {
                 fingerprint = Some(fp);
             }
@@ -277,24 +347,39 @@ impl SkillRegistry {
         let fingerprint = self.dense.built_fingerprint();
         // Usage ranking is an enhancement; a poisoned lock degrades to today's
         // behavior rather than failing the search.
-        let (outcome, mismatch) = {
+        let (outcome, mismatch, drift) = {
             let guard = graph.read().ok()?;
+            // Read under the same guard as the arm, so the notice describes the
+            // graph the ranking actually came from.
+            let drift = guard.cluster_policy_drift();
             let mismatch = match (query_vec, &fingerprint) {
                 (Some(v), Some(fp)) => guard.model_status(fp, v.len()).describe(),
                 _ => None,
             };
             if mismatch.is_some() {
-                (ArmOutcome::NoMatch, mismatch)
+                (ArmOutcome::NoMatch, mismatch, drift)
             } else {
                 if let (Some(v), Some(fp)) = (query_vec, &fingerprint) {
                     guard.note_query_vector(query, v, fp);
                 }
                 let known = |id: &str| self.skills.contains_key(id);
-                (guard.arm(query, query_vec, Capability::Skill, &known), None)
+                (
+                    guard.arm(query, query_vec, Capability::Skill, &known),
+                    None,
+                    drift,
+                )
             }
         };
         // The read guard is released BEFORE the sink runs (RwLock is not
         // reentrant and a `UsageLearner` sink takes the write lock).
+        if let Some((built, active)) = drift {
+            self.sink.record(TraceEvent::UsageClusterPolicyChanged {
+                built_similarity: f64::from(built.similarity),
+                built_coverage: f64::from(built.coverage),
+                active_similarity: f64::from(active.similarity),
+                active_coverage: f64::from(active.coverage),
+            });
+        }
         if let Some((built, active, dim_mismatch)) = mismatch {
             self.sink.record(TraceEvent::UsageModelMismatch {
                 built,
@@ -332,15 +417,18 @@ impl SkillRegistry {
     /// the `rrf` stage — one implementation for all three engines.
     fn fuse_arms(arms: &[WeightedArm<'_>], top_k: usize) -> (Vec<SkillHit>, SearchStage) {
         let t = Instant::now();
-        let mut fused = rrf_fuse_weighted(arms, RRF_K);
-        fused.truncate(top_k);
+        let fused = rrf_fuse_weighted(arms, RRF_K);
         let stage = SearchStage {
             name: "rrf".into(),
             took_ms: t.elapsed().as_millis() as u64,
             top_score: fused.first().map(|(_, s)| *s as f64),
         };
-        // Ordering-only RRF scores.
-        let hits = to_skill_hits(fused, true);
+        // Ordering-only RRF scores. Normalize across the WHOLE candidate set,
+        // then cut — after the cut, min-max would pin the last hit a caller
+        // asked for to 0.00 however good it was, and the same hit would read
+        // differently at a different `top_k`. Twin of `ToolRegistry::fuse_arms`.
+        let mut hits = to_skill_hits(fused, Scale::Rrf);
+        hits.truncate(top_k);
         (hits, stage)
     }
 
@@ -712,7 +800,15 @@ impl SkillRegistry {
             // No graph, or nothing matched: the original path with raw BM25
             // scores, unchanged.
             // Raw BM25 scores — not fused.
-            let hits = to_skill_hits(self.bm25_index().search(query, top_k), false);
+            let hits = {
+                let index = self.bm25_index();
+                to_skill_hits(
+                    index.search(query, top_k),
+                    Scale::Bm25 {
+                        ceiling: index.query_ceiling(query),
+                    },
+                )
+            };
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
             self.record_search(
@@ -794,7 +890,7 @@ impl SkillRegistry {
             // to give the usage arm room to re-rank; with no arm to fuse, trim
             // back to what the caller asked for (the fused path does this in
             // `fuse_arms`).
-            let mut hits = to_skill_hits(ranked, false);
+            let mut hits = to_skill_hits(ranked, Scale::Cosine);
             hits.truncate(top_k);
             let took_ms = started.elapsed().as_millis() as u64;
             let top_score = hits.first().map(|h| h.score as f64);
@@ -850,7 +946,8 @@ impl SkillRegistry {
         let depth = RETRIEVE_DEPTH.max(top_k);
 
         let t = Instant::now();
-        let bm25_ranked = self.bm25_index().search(query, depth);
+        let index = self.bm25_index();
+        let bm25_ranked = index.search(query, depth);
         let bm25_stage = SearchStage {
             name: "bm25".into(),
             took_ms: t.elapsed().as_millis() as u64,
@@ -875,19 +972,30 @@ impl SkillRegistry {
         let arm = self.usage_arm(query, Some(&query_vec));
         let usage_ms = t.elapsed().as_millis() as u64;
 
-        let bm25_ids: Vec<String> = bm25_ranked.into_iter().map(|(id, _)| id).collect();
-        let dense_ids: Vec<String> = dense_ranked.into_iter().map(|(id, _)| id).collect();
-        let mut arms: Vec<WeightedArm<'_>> = vec![(&bm25_ids, 1.0), (&dense_ids, 1.0)];
-        if let Some(arm) = &arm {
-            arms.push((&arm.ids, arm.weight()));
-        }
-        let (hits, rrf_stage) = Self::fuse_arms(&arms, top_k);
+        // Score fusion, the twin of `ToolRegistry::hybrid_search_traced`: the
+        // arms are normalised onto one absolute scale and added rather than
+        // fused on rank position.
+        let t = Instant::now();
+        let fused = score_fuse(
+            &bm25_ranked,
+            index.query_ceiling(query),
+            &dense_ranked,
+            arm.as_ref().map(|a| (a.ids.as_slice(), a.weight())),
+            self.dense_weight,
+        );
+        let fusion_stage = SearchStage {
+            name: "fusion".into(),
+            took_ms: t.elapsed().as_millis() as u64,
+            top_score: fused.first().map(|(_, s)| *s as f64),
+        };
+        let mut hits = to_skill_hits(fused, Scale::Fused);
+        hits.truncate(top_k);
 
         let mut stages = vec![bm25_stage, dense_stage];
         if let Some(arm) = &arm {
             stages.push(Self::usage_stage(arm, usage_ms));
         }
-        stages.push(rrf_stage);
+        stages.push(fusion_stage);
 
         let took_ms = started.elapsed().as_millis() as u64;
         self.record_search(query, origin, top_k, &hits, stages, took_ms, context);
@@ -989,6 +1097,7 @@ mod tests {
             bm25: Bm25Cache::new(),
             dense: DenseCache::with_embedder(embedder),
             graph: None,
+            dense_weight: DenseWeight::default(),
         }
     }
 
@@ -1625,6 +1734,115 @@ mod tests {
     }
 
     #[test]
+    fn the_dense_weight_defaults_to_the_shipped_value_and_only_hybrid_reads_it() {
+        // Skill twin of the tool-side test: an untouched registry ranks exactly
+        // as before the knob existed, and the split cannot leak into the
+        // single-arm methods.
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        assert_eq!(reg.experimental_dense_weight(), DenseWeight::default());
+        reg.register(skill(
+            "api-design",
+            "api-design",
+            "REST API design patterns",
+            &["api"],
+        ));
+        reg.register(skill(
+            "frontend-slides",
+            "frontend-slides",
+            "Build animation-rich HTML presentations",
+            &["frontend"],
+        ));
+        reg.build_embeddings().unwrap();
+
+        let ids =
+            |hits: Vec<SkillHit>| -> Vec<String> { hits.into_iter().map(|h| h.skill_id).collect() };
+        let bm25_before = ids(reg
+            .search_with_method("api", 5, Origin::Agent, SearchMethod::Bm25)
+            .unwrap());
+        let semantic_before = ids(reg
+            .search_with_method("api", 5, Origin::Agent, SearchMethod::Semantic)
+            .unwrap());
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.0).unwrap());
+
+        assert_eq!(
+            ids(reg
+                .search_with_method("api", 5, Origin::Agent, SearchMethod::Bm25)
+                .unwrap()),
+            bm25_before,
+            "bm25 has one content arm and must ignore the split"
+        );
+        assert_eq!(
+            ids(reg
+                .search_with_method("api", 5, Origin::Agent, SearchMethod::Semantic)
+                .unwrap()),
+            semantic_before,
+            "semantic has one content arm and must ignore the split"
+        );
+    }
+
+    #[test]
+    fn the_dense_weight_reaches_the_hybrid_skill_scores() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill(
+            "api-design",
+            "api-design",
+            "REST API design patterns",
+            &["api"],
+        ));
+        reg.register(skill(
+            "frontend-slides",
+            "frontend-slides",
+            "Build animation-rich HTML presentations",
+            &["frontend"],
+        ));
+        reg.build_embeddings().unwrap();
+
+        // A two-term query where each skill matches one term lexically but only
+        // one densely. A single-term query saturates both arms at 1.0/0.0 and
+        // the clamp then hides the weight entirely.
+        let slate = |reg: &SkillRegistry| -> Vec<(String, f32)> {
+            reg.search_with_method("api presentations", 5, Origin::Agent, SearchMethod::Hybrid)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.skill_id, h.score))
+                .collect()
+        };
+
+        reg.set_experimental_dense_weight(DenseWeight::new(0.2).unwrap());
+        let lexical_heavy = slate(&reg);
+        reg.set_experimental_dense_weight(DenseWeight::new(0.9).unwrap());
+        assert_ne!(
+            lexical_heavy,
+            slate(&reg),
+            "the weight must change the fused scores, not just be stored"
+        );
+    }
+
+    #[test]
+    fn bm25_params_default_to_the_shipped_tuning_and_reach_search() {
+        let mut reg = SkillRegistry::new();
+        assert_eq!(reg.experimental_bm25_params(), Bm25Params::default());
+        reg.register(skill("short", "short", "read", &[]));
+        reg.register(skill(
+            "long",
+            "long",
+            "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12",
+            &[],
+        ));
+
+        let top = |reg: &SkillRegistry| reg.search("read", 1)[0].skill_id.clone();
+        assert_eq!(top(&reg), "long", "default b=0.4 favors term frequency");
+
+        reg.set_experimental_bm25_params(Bm25Params::default().with_b(1.0));
+        assert_eq!(
+            top(&reg),
+            "short",
+            "b=1.0 must reach search, not just be stored"
+        );
+    }
+
+    #[test]
     fn hybrid_emits_three_stages() {
         let sink = Arc::new(MemorySink::new("s"));
         let mut reg = with_embedder(Arc::new(StubEmbedder));
@@ -1644,7 +1862,7 @@ mod tests {
             TraceEvent::SkillSearch { stages, .. }
                 if stages.iter().any(|s| s.name == "bm25")
                 && stages.iter().any(|s| s.name == "dense")
-                && stages.iter().any(|s| s.name == "rrf")
+                && stages.iter().any(|s| s.name == "fusion")
         )));
     }
 
@@ -2025,5 +2243,89 @@ mod tests {
         let bytes = reg.build_embedding_artifact().unwrap();
         reg.warm_embeddings_from_artifact(&bytes, OnArtifactMiss::Error)
             .unwrap();
+    }
+
+    // ---- the relevance score ----
+
+    fn hits_for(reg: &SkillRegistry, q: &str, m: SearchMethod, k: usize) -> Vec<SkillHit> {
+        reg.search_with_method(q, k, Origin::Direct, m)
+            .expect("search")
+    }
+
+    /// The skill twin of `bm25_normalizes_against_the_query_ceiling_not_the_list`:
+    /// divided by the query's own ceiling, so the top is not pinned to 1.0.
+    #[test]
+    fn a_skill_bm25_hit_normalizes_against_the_query_ceiling() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("alpha", "alpha", "shared token alpha", &[]));
+        reg.register(skill(
+            "beta",
+            "beta",
+            "shared token beta padding padding",
+            &[],
+        ));
+        let hits = hits_for(&reg, "shared token", SearchMethod::Bm25, 5);
+        assert!(hits.len() >= 2);
+        assert!(hits.iter().all(|h| (0.0..=1.0).contains(&h.relevance)));
+        assert!(
+            hits.last().is_some_and(|h| h.relevance > 0.0),
+            "the weakest hit still captured part of the query"
+        );
+        for pair in hits.windows(2) {
+            assert!(pair[0].relevance >= pair[1].relevance);
+        }
+    }
+
+    /// The property the truncate order decides. `fuse_arms` relevance AFTER the
+    /// cut until this landed, which pinned the last returned hit to 0.00 and made
+    /// the value move with `top_k` — the same bug fixed on the tool side.
+    #[test]
+    fn a_skill_hit_normalizes_the_same_at_any_top_k() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("aa", "aa", "shared token api", &[]));
+        reg.register(skill(
+            "bb",
+            "bb",
+            "shared token api padding padding padding",
+            &[],
+        ));
+        reg.register(skill("cc", "cc", "shared token frontend", &[]));
+        reg.build_embeddings().unwrap();
+        let deep = hits_for(&reg, "shared token api", SearchMethod::Hybrid, 3);
+        let shallow = hits_for(&reg, "shared token api", SearchMethod::Hybrid, 2);
+        assert!(deep.len() > shallow.len(), "need differing depths");
+        for h in &shallow {
+            let same = deep.iter().find(|d| d.skill_id == h.skill_id).unwrap();
+            assert!(
+                (same.relevance - h.relevance).abs() < 1e-6,
+                "{}: {} at k=2, {} at k=3",
+                h.skill_id,
+                h.relevance,
+                same.relevance
+            );
+        }
+        assert!(
+            shallow.last().is_some_and(|h| h.relevance > 0.0),
+            "something ranked below it, so it is not the minimum"
+        );
+    }
+
+    /// Cosine is remapped affinely, so an orthogonal hit reads 0.5 rather than
+    /// being promoted to 1.0 for being least-bad.
+    #[test]
+    fn a_skill_semantic_hit_normalizes_cosine_affinely() {
+        let mut reg = with_embedder(Arc::new(StubEmbedder));
+        reg.register(skill("api-docs", "api-docs", "rest api reference", &[]));
+        reg.register(skill("slides", "slides", "frontend slides deck", &[]));
+        reg.build_embeddings().unwrap();
+        for h in hits_for(&reg, "api", SearchMethod::Semantic, 5) {
+            assert!(
+                (h.relevance - (h.score + 1.0) / 2.0).abs() < 1e-6,
+                "{} score {} relevance {}",
+                h.skill_id,
+                h.score,
+                h.relevance
+            );
+        }
     }
 }

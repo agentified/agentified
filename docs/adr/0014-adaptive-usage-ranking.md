@@ -20,6 +20,20 @@ switched on — see [Seeding from a baseline capture](#seeding-from-a-baseline-c
 learning remains how ranking learns while serving; the "no build step" claim below is narrowed
 to the serving path, not the bootstrap.
 
+Amended 2026-08-20: the cluster policy (similarity threshold and coverage fraction) is
+**configurable per catalog and recorded on the graph**, reversing the "fixed tuning, not public
+knobs" position taken earlier the same day — see
+[The clustering policy is configurable, and recorded](#the-clustering-policy-is-configurable-and-recorded).
+
+Amended 2026-08-20: the dense tier admits a query by **member coverage**, not by one cosine
+against the centroid — see [Two similarity tiers](#two-similarity-tiers). Not porting the
+lexical tier's per-member guard was a defect, and it collapsed 12 distinct queries into a
+single cluster in production.
+
+Amended 2026-08-27: a cluster **records what its searches surfaced** — see [Impressions are
+recorded, not consumed](#impressions-are-recorded-not-consumed). Edges still come from
+invocations only; the decision below is unchanged and nothing reads the new map.
+
 ## Context
 
 Every ranker in the engine scores **text similarity only** — BM25 over the flattened
@@ -105,23 +119,120 @@ outranks one only history supports. The arm still promotes a low-ranked capabili
 BM25's rank-0 (it contributes from both arms), but it cannot conjure one the base ranker
 did not retrieve at all.
 
+### Which capability the arm promotes first
+
+An edge weight is a count of confirmed invocations, but serving that order raw lets a capability
+invoked across many different intents rank on volume rather than on answering *this* question —
+the mechanism behind the reported failure, where the most-invoked write op rode into every
+task-phrased search. Worse, where counts tie the order fell through to the id tie-break, so a
+write op could lead a read query on the strength of sorting earlier alphabetically.
+
+Each count is therefore scaled by `1 + ln(clusters / clusters naming that capability)`. The
+smoothing is load-bearing: plain `ln(N/cf)` sends a capability present in *every* cluster to
+exactly zero, pinning a genuine workhorse last in every arm. The floor of 1.0 stops ubiquity
+earning a promotion without making it earn a punishment, and it is why there is nothing here to
+configure — unlike the cluster policy, the smoothing is the whole of the tuning, and the
+statistic is derived from the graph's own edges rather than chosen.
+
+**Counted over the raw edge maps, before any registry filtering.** Which capabilities a consumer
+still defines is a property of its catalog, not of the graph; counting only survivors would make
+two agents sharing a graph rank the same cluster differently, and a tool that knows every id
+disagree with both. The corollary is that a capability the registry has dropped still counts
+toward how spread out the others are — the observations happened, and it is what keeps the
+numbers portable. Scoped per kind, since tools and skills are separate namespaces and a
+tools-only cluster is ordinary.
+
+The weight never reaches the arm's own RRF weight, which stays `W · min(1, support/3)`. It
+changes the order *within* the arm and nothing else.
+
 ### Two similarity tiers
 
 Online clustering needs a query-to-cluster similarity at search time.
 
 | Method | similarity | reach |
 |---|---|---|
-| `Semantic` / `Hybrid` | cosine against `centroid` | groups phrasings that share no words |
+| `Semantic` / `Hybrid` | share of members a query clears `TAU_MEMBER` against, centroid as prefilter | groups phrasings that share no words |
 | `Bm25` | best Jaccard overlap with any single member | repeats and near-repeats only |
 
 On semantic/hybrid the marginal cost is zero — the dense arm already embedded the query for
 its own ranking. On `Bm25` no model is loaded at any point, so ADR-0011's model-free
 default is preserved. The Bm25 tier is genuinely weaker and is documented as such.
 
-**Lexical scoring is per member, never against their union.** A union only grows, so scoring
+**Both tiers score per member, never against an aggregate.** A union only grows, so scoring
 against it let a mature cluster recognize most of the vocabulary, absorb unrelated asks, and
 grow further — 100 distinct topics measured as 18 clusters, once as 1. Per-member Jaccard
 keeps a cluster exactly as discriminating on its 200th member as on its first.
+
+The dense tier shipped without that guard, and it has the same failure in a different
+costume. A mean of unit vectors keeps the component its members share and cancels the ones
+that distinguish them, so a diversifying cluster drifts toward the generic direction of its
+domain — close to everything in it. Absorbing made it more generic, which made it absorb
+more. Normalizing the centroid then divided out the very spread that would have shown this,
+so a diffuse cluster presented as a tight one. Measured on real embeddings of 12 distinct
+queries, it produced two clusters holding 11 and 1.
+
+A query is therefore admitted when it clears `TAU_MEMBER` against a **majority** of the
+cluster's vector-bearing members (`COVERAGE_FRACTION`, floored at two members and capped at
+the cluster). A count is what separates *close to this whole cluster* from *close to one
+thing in it*; a fraction keeps that test comparable across clusters of different sizes. The
+centroid stays as a prefilter at the same threshold, so admission is provably the old rule
+**and** coverage — a strict subset, never looser.
+
+Per-member vectors are held in memory only, capped at the newest `VECTOR_RETAIN` per cluster:
+fifty 384-dim vectors is ~230 KB of JSON per cluster crossing the SDK boundary on every save,
+on an artifact that already carries raw query text. A cluster with none — every graph off the
+wire — is *no dense evidence*, not a rejection, and falls back to the centroid scaled by the
+cluster's recorded `cohesion`, which rises as a cluster spreads.
+
+Rejected: **serializing the member vectors** (the size and privacy cost above); an
+**all-members denominator**, which makes a cluster holding 20 lexical members and 2 dense ones
+arithmetically unjoinable forever, and — since the lexical fallback is restricted to
+centroid-less clusters — silently unable to arm again; and a **split pass** over existing
+clusters, which the stored evidence cannot support (edges are cluster-level counts with no
+member attribution, so splitting either copies the full edge set into every child, amplifying
+the bad boost, or discards it and destroys the learning). Recency eviction is not a remedy
+either: an over-merged cluster absorbs nearly every turn, so its `last_ts` stays fresh and it
+is never approached.
+
+### The clustering policy is configurable, and recorded
+
+The similarity a query must clear and the share of members it must clear it against — the
+**cluster policy** — are set per catalog and default to today's values.
+
+This reverses the position first recorded here, which was that they are fixed tuning like
+`BM25_K1` and `RRF_K`. Two arguments overturned it. The threshold is **model-dependent**: an
+endpoint catalog can carry any embedding model, and a cosine of 0.70 does not mean the same
+thing on two of them. It is **corpus-dependent** too — a narrow single-domain catalog and a
+broad one want different granularity, and the integrator knows their corpus better than a
+constant chosen once against one model. Measured on the checked-in incident fixture, bge-small
+puts same-intent query pairs at a median cosine of 0.688 and distinct-intent pairs at 0.639, so
+even for the built-in model 0.70 sits inside the overlap rather than between the modes.
+
+The decisive objection was not that these are geometry rather than policy — it was that **the
+wire format did not record the constants a graph was clustered under**, so two producers at
+different values would disagree about what a cluster means while both claiming `v: 1`. That
+objection is answered rather than waived: the graph now carries its policy, exactly as it
+already carries the `model` its centroids were built with, and a consumer can tell the two
+apart. `VECTOR_RETAIN` stays internal — it bounds memory, it does not draw boundaries.
+
+`ObservationPolicy` remains a different thing, and the distinction is where each lives.
+It configures which *events* become evidence, so it belongs to the learner. The cluster policy
+is read while matching, from both the learning and the serving path, so it belongs to the graph
+— which is also what makes recording it natural.
+
+**A policy change is a notice, not a pause.** A model mismatch pauses the arm because cosine
+across two vector spaces is meaningless. A policy mismatch is not that: the vectors are fine and
+the clusters are still coherent, merely coarser or finer than the current setting would draw
+them. The mechanical reason matters more than the principle. Both SDKs auto-recover on a status
+beginning `paused`, and the remedy they reach for is `rebuild_intent_graph` — which cannot
+revisit cluster boundaries, for the reason given above. Routing a policy change through that
+string would fire an embedding pass incapable of fixing what it fired for, so the new status
+begins `active` and the notice is raised deliberately instead.
+
+Changing the policy therefore **does not re-cluster**. Raising the threshold on a graph that
+already over-merged leaves those clusters exactly as they are; only later admissions are
+stricter. Re-drawing boundaries means replaying the trace log through `build_intent_graph`, or
+relearning from scratch.
 
 The cost is recall, and it is the right trade. Two queries sharing one word out of two are
 structurally identical whether they are the same question phrased differently or two
@@ -134,6 +245,43 @@ is consumable by the other. **The tier is chosen from what the graph carries, no
 caller's search method**: a semantic catalog handed a centroid-less graph matches it
 lexically rather than seeing nothing. Without that fallback the in-process learner's own
 output would be invisible to the very methods it is meant to improve.
+
+### Impressions are recorded, not consumed
+
+`Intent::surfaced` counts, per cluster, how many of its searches put each **tool** in front of
+the caller — counting only searches the caller then acted on, so an abandoned search still
+teaches nothing. Tools only: skill ids are a different id space.
+
+**It is the denominator the edge map never had.** `tools` records that a capability was chosen;
+nothing recorded how often it was offered and passed over. Those look identical: a tool shown
+twelve times and invoked once is indistinguishable from one shown once and invoked once. On the
+harness fixture `create_task` is the most-surfaced tool in the catalog, shown for 30 of 47
+queries and invoked 6 times, while `create_task_for_branch` is shown 9 times and invoked never —
+and none of that is expressible in `tools`. It is also the evidence the misranking
+investigation's row #6 asks for, and the loop it names (search → nothing → create, which teaches
+`create_task` and unteaches nothing) is invisible without it.
+
+**Nothing consumes it.** The arm's order is still `tools` scaled by inverse cluster frequency.
+An id in `surfaced` with no entry in `tools` has no edge, contributes nothing, and cannot be
+promoted — pinned by a test, beside the one pinning that retrieval never becomes an edge.
+
+**This does not reverse "edges come from invocations, never from retrievals."** That decision
+rejects promoting a retrieved id to evidence, and it still holds: recording how often an
+*existing* edge was offered is a denominator for evidence already gathered, not new evidence.
+The distinction is load-bearing, because the objection to the rejected design — that it
+memorizes the ranker's own output and reinforces it — inverts here: an impression can only ever
+count *against* a tool the ranker surfaced.
+
+Ranking on it is a separate decision, deliberately not taken, and two things must be answered
+first. **Position bias**: a tool ranked first is invoked more for being first, so the ratio
+partly measures where we ranked it, and feeding that back is circular; the standard mitigation
+counts only impressions above the invoked item's rank, which is untried here. And **it may not
+address the failure it was proposed for**: where a tool is genuinely dominant its ratio stays
+high, so this guards against riding on volume, not against a real majority.
+
+Recorded with the same wire treatment as `seeded_support` — optional, absent means none, no
+version bump — and marked PROVENANCE ONLY in `protocol/v1`, so a consumer that does not
+understand it ignores it and one that does may not rank on it.
 
 ### Embedding-model changes
 
@@ -244,8 +392,17 @@ inspect it, and only then enable ranking.**
 - **Building embeds every distinct query up front**, so clusters form at the **dense** tier —
   the tier the live path would have grown them at. A model-free replay clusters lexically, and
   `rebuild_intent_graph` cannot repair that later: it replaces centroids without revisiting
-  cluster boundaries. Getting the tier right is therefore a property of the build, not
-  something a caller can fix afterwards.
+  cluster boundaries, and it cannot revisit them — edges carry no member attribution, so there
+  is nothing to split them on. Getting the tier right is therefore a property of the build,
+  not something a caller can fix afterwards.
+
+  A rebuild *is* the mitigation for a graph grown before coverage existed, or loaded from the
+  wire where per-member vectors cannot travel: it re-embeds every member — **query-side**,
+  since members are past queries and the document path would put them in a manifold live
+  queries never reach — and keeps those vectors, so the dense tier can tell the cluster's
+  members apart again. Boundaries and edges are untouched, and a cluster that over-merged then
+  covers any specific query poorly, so it stops boosting broadly. Re-clustering outright means
+  replaying the trace log through `build_intent_graph`, or dropping the graph and relearning.
 - **The pairing rule exists once.** The live learner and the offline replay share one
   `classify` step. They differ only in where pending state lives — a per-session learner holds
   a slot, a replay holds a map keyed by `session_id` — because a log interleaves sessions by
@@ -353,7 +510,9 @@ LLM-extracted intents populate the same `members` field.
   cos 0.78 and ranks the correct capability *below* where no boost at all would leave it.
   Real match similarities occupy 0.70–0.90, so a ramp normalized to 1.0 spends its range
   where nothing lives. Similarity is a gate; the arms combine additively.
-- **Recording retrieved capabilities as edges**: self-reinforcing, adds no information.
+- **Recording retrieved capabilities as edges**: self-reinforcing, adds no information. Still
+  rejected — and distinct from `Intent::surfaced`, which counts retrievals as a *denominator*
+  for edges invocations already wrote, promotes nothing, and is read by nothing.
 - **An LLM for intent extraction or labeling in the OSS path**: labels are cosmetic —
   identical retrieval results if every label were `intent_17`. The crate is encoder-only
   (`candle_transformers::models::bert`); adding a generation path, and a download or an

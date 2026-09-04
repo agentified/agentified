@@ -130,6 +130,23 @@ export function validateGraph(doc) {
   if (doc.rev !== undefined && !(isInt(doc.rev) && doc.rev >= 0)) {
     errs.push(`rev, when present, must be a non-negative integer, got ${JSON.stringify(doc.rev)}`);
   }
+  // Optional provenance: the policy the graph's existing boundaries were drawn
+  // under. A cosine and a fraction both live in (0, 1]. Absent means the
+  // built-in defaults, which is what every graph written before the policy was
+  // configurable was necessarily clustered at.
+  if (doc.cluster_policy !== undefined) {
+    const p = doc.cluster_policy;
+    if (!isObj(p)) {
+      errs.push(`cluster_policy, when present, must be an object, got ${JSON.stringify(p)}`);
+    } else {
+      for (const key of ['similarity', 'coverage']) {
+        const v = p[key];
+        if (!(typeof v === 'number' && v > 0 && v <= 1)) {
+          errs.push(`cluster_policy.${key} must be a number in (0, 1], got ${JSON.stringify(v)}`);
+        }
+      }
+    }
+  }
   if (!Array.isArray(doc.intents)) return errs.concat('intents must be an array');
 
   const seen = new Set();
@@ -168,6 +185,39 @@ export function validateGraph(doc) {
         );
       } else if (isInt(it.support) && it.seeded_support > it.support) {
         errs.push(`${at}.seeded_support (${it.seeded_support}) exceeds support (${it.support})`);
+      }
+    }
+    // Optional spread of the members the centroid averages, in (0, 1]. It
+    // describes a centroid, so recording one without a centroid means the
+    // producer dropped a field. Absent means 1.0 (treat the cluster as tight).
+    if (it.cohesion !== undefined) {
+      if (!(typeof it.cohesion === 'number' && it.cohesion > 0 && it.cohesion <= 1)) {
+        errs.push(
+          `${at}.cohesion, when present, must be a number in (0, 1], got ${JSON.stringify(it.cohesion)}`,
+        );
+      } else if (it.cohesion !== 1 && it.centroid === undefined) {
+        errs.push(`${at}.cohesion is recorded without a centroid to describe`);
+      }
+    }
+    // Optional fold count behind the centroid. Absent means 1.
+    if (it.vector_n !== undefined && !(isInt(it.vector_n) && it.vector_n >= 1)) {
+      errs.push(
+        `${at}.vector_n, when present, must be an integer >= 1, got ${JSON.stringify(it.vector_n)}`,
+      );
+    }
+    // Optional impression counts, one map per id space: how many searches showed
+    // each id. A denominator for the edges below, never an edge itself. Absent
+    // means none.
+    for (const key of ['surfaced_tools', 'surfaced_skills']) {
+      if (it[key] === undefined) continue;
+      if (!isObj(it[key])) {
+        errs.push(`${at}.${key}, when present, must be an object`);
+        continue;
+      }
+      for (const [id, n] of Object.entries(it[key])) {
+        if (!(isInt(n) && n >= 1)) {
+          errs.push(`${at}.${key}["${id}"] must be an integer >= 1, got ${JSON.stringify(n)}`);
+        }
       }
     }
     for (const key of ['tools', 'skills']) {
