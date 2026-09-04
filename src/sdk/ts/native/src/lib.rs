@@ -1755,7 +1755,11 @@ impl ToolRegistry {
     /// the result is outside its mathematically valid domain (`k1` finite and
     /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
     #[napi]
-    pub fn set_experimental_bm25_params(&self, k1: Option<f64>, b: Option<f64>) -> napi::Result<()> {
+    pub fn set_experimental_bm25_params(
+        &self,
+        k1: Option<f64>,
+        b: Option<f64>,
+    ) -> napi::Result<()> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         let mut params = registry.experimental_bm25_params();
         if let Some(k1) = k1 {
@@ -2732,7 +2736,11 @@ impl SkillRegistry {
     /// the result is outside its mathematically valid domain (`k1` finite and
     /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
     #[napi]
-    pub fn set_experimental_bm25_params(&self, k1: Option<f64>, b: Option<f64>) -> napi::Result<()> {
+    pub fn set_experimental_bm25_params(
+        &self,
+        k1: Option<f64>,
+        b: Option<f64>,
+    ) -> napi::Result<()> {
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         let mut params = registry.experimental_bm25_params();
         if let Some(k1) = k1 {
