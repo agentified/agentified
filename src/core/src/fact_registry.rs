@@ -106,7 +106,12 @@ impl FactRegistry {
 
     /// Set the BM25 `k1`/`b` tuning; forces a rebuild on the next search. See
     /// [`crate::search::BM25_B`]'s doc comment for when a caller would want to
-    /// deviate from the default. See [`crate::ToolRegistry::set_experimental_bm25_params`].
+    /// deviate from the default.
+    ///
+    /// **Experimental.** No built-in evaluation ships alongside this — a
+    /// caller who overrides it has no way to tell, from this crate alone,
+    /// whether the override helped their corpus. See
+    /// [`crate::ToolRegistry::set_experimental_bm25_params`].
     pub fn set_experimental_bm25_params(&mut self, params: Bm25Params) {
         self.bm25.set_params(params);
     }
@@ -571,6 +576,30 @@ mod tests {
         assert_eq!(
             hits.first().map(|h| h.fact_id.as_str()),
             Some("cancellation")
+        );
+    }
+
+    #[test]
+    fn bm25_params_default_to_the_shipped_tuning_and_reach_search() {
+        let mut reg = FactRegistry::new();
+        assert_eq!(reg.experimental_bm25_params(), Bm25Params::default());
+        reg.register(fact("short", "short", "read", &[], PinMode::Retrieved));
+        reg.register(fact(
+            "long",
+            "long",
+            "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12",
+            &[],
+            PinMode::Retrieved,
+        ));
+
+        let top = |reg: &FactRegistry| reg.search("read", 1)[0].fact_id.clone();
+        assert_eq!(top(&reg), "long", "default b=0.4 favors term frequency");
+
+        reg.set_experimental_bm25_params(Bm25Params::default().with_b(1.0));
+        assert_eq!(
+            top(&reg),
+            "short",
+            "b=1.0 must reach search, not just be stored"
         );
     }
 

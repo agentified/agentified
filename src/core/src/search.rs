@@ -456,6 +456,16 @@ mod tests {
     }
 
     #[test]
+    fn cache_params_defaults_and_reflects_what_was_set() {
+        let cache = Bm25Cache::new();
+        assert_eq!(cache.params(), Bm25Params::default());
+
+        let overridden = Bm25Params::default().with_k1(1.2).with_b(0.75);
+        cache.set_params(overridden);
+        assert_eq!(cache.params(), overridden);
+    }
+
+    #[test]
     fn tied_scores_break_by_id_with_stable_top_k_membership() {
         // Identical searchable text → identical scores for any matching query.
         // The bm25 crate collects candidates through a HashSet, so the engine's
