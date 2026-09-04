@@ -311,6 +311,16 @@ class ToolRegistry:
         ValueError outside [0, 1] rather than clamping.
         """
 
+    def set_experimental_bm25_params(
+        self, k1: float | None = None, b: float | None = None
+    ) -> None:
+        """Set BM25 k1/b; unset fields keep their current value.
+
+        Raises ValueError if the result is outside its mathematically valid
+        domain (k1 finite and >= 0, b finite and in [0, 1]) rather than
+        clamping.
+        """
+
     def disable_adaptive_ranking(self) -> None:
         """Turn adaptive usage ranking off.
 
@@ -552,6 +562,16 @@ class SkillRegistry:
 
         BM25 takes the remainder. Default 0.7, read by "hybrid" only. Raises
         ValueError outside [0, 1] rather than clamping.
+        """
+
+    def set_experimental_bm25_params(
+        self, k1: float | None = None, b: float | None = None
+    ) -> None:
+        """Set BM25 k1/b; unset fields keep their current value.
+
+        Raises ValueError if the result is outside its mathematically valid
+        domain (k1 finite and >= 0, b finite and in [0, 1]) rather than
+        clamping.
         """
 
     def disable_adaptive_ranking(self) -> None:

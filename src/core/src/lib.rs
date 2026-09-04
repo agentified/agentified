@@ -117,6 +117,7 @@ pub use fact::{Fact, ParsePinModeError, PinMode};
 pub use fact_registry::{FactHit, FactRegistry};
 pub use fusion::{DenseWeight, InvalidDenseWeight};
 pub use method::{ParseSearchMethodError, SearchMethod};
+pub use search::Bm25Params;
 pub use skill::Skill;
 pub use skill_registry::{ReplaceOutcome, SkillHit, SkillRegistry};
 pub use tool::Tool;

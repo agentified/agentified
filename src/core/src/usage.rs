@@ -48,7 +48,10 @@ pub(crate) const SUPPORT_FULL: u32 = 3;
 /// lexically matched outranks one only usage history supports. The arm still
 /// promotes a deeply-ranked capability past another arm's top hit, because that
 /// id accumulates from both arms — sub-unit damps the arm without disabling it.
-/// Like `BM25_K1` / `RRF_K`, this is fixed tuning, not a public knob (ADR-0004).
+/// Like `RRF_K`, this is fixed tuning, not a public knob (ADR-0004). Unlike
+/// `BM25_K1`/`BM25_B`, which moved to a caller-configurable [`crate::Bm25Params`]
+/// because the corpus-shape assumption behind their defaults does not hold for
+/// every deployment.
 pub(crate) const USAGE_WEIGHT: f32 = 0.5;
 
 /// Default for [`ClusterPolicy::similarity`].

@@ -16,6 +16,7 @@ import {
 import { assertNotArtifactBusy } from "./artifact-source-warm.js";
 import type {
   EmbeddingSpec,
+  ExperimentalBm25Params,
   ObservationPolicyOptions,
   SearchMethod,
   SearchOrigin,
@@ -64,16 +65,22 @@ export class ToolRegistry {
    * @param experimentalDenseWeight - Share of the hybrid content score the
    *   dense arm carries; BM25 takes the remainder. Default `0.7`. Read by
    *   `"hybrid"` only. Throws outside `[0, 1]`.
+   * @param experimentalBm25 - BM25 `k1`/`b` override. See
+   *   {@link ExperimentalBm25Params}.
    */
   constructor(
     embedding?: EmbeddingSpec,
     method: SearchMethod = "bm25",
     experimentalDenseWeight?: number,
+    experimentalBm25?: ExperimentalBm25Params,
   ) {
     this.native = new NativeToolRegistry(toNativeEmbedding(embedding));
     this.eager = method === "semantic" || method === "hybrid";
     if (experimentalDenseWeight !== undefined) {
       this.native.setExperimentalDenseWeight(experimentalDenseWeight);
+    }
+    if (experimentalBm25) {
+      this.native.setExperimentalBm25Params(experimentalBm25.k1, experimentalBm25.b);
     }
   }
 
@@ -439,16 +446,22 @@ export class SkillRegistry {
    * @param experimentalDenseWeight - Share of the hybrid content score the
    *   dense arm carries; BM25 takes the remainder. Default `0.7`. Read by
    *   `"hybrid"` only. Throws outside `[0, 1]`.
+   * @param experimentalBm25 - BM25 `k1`/`b` override. See
+   *   {@link ExperimentalBm25Params}.
    */
   constructor(
     embedding?: EmbeddingSpec,
     method: SearchMethod = "bm25",
     experimentalDenseWeight?: number,
+    experimentalBm25?: ExperimentalBm25Params,
   ) {
     this.native = new NativeSkillRegistry(toNativeEmbedding(embedding));
     this.eager = method === "semantic" || method === "hybrid";
     if (experimentalDenseWeight !== undefined) {
       this.native.setExperimentalDenseWeight(experimentalDenseWeight);
+    }
+    if (experimentalBm25) {
+      this.native.setExperimentalBm25Params(experimentalBm25.k1, experimentalBm25.b);
     }
   }
 

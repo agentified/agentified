@@ -299,6 +299,8 @@ class ToolRegistry:
         *,
         method: SearchMethod = "bm25",
         experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None: ...
 
@@ -365,6 +367,8 @@ class ToolRegistry:
         *,
         method: SearchMethod = "bm25",
         experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
         spec: str | None = None,
         huggingface: str | None = None,
@@ -404,6 +408,8 @@ class ToolRegistry:
         self._native = _NativeToolRegistry(**kwargs)
         if experimental_dense_weight is not None:
             self._native.set_experimental_dense_weight(experimental_dense_weight)
+        if experimental_bm25_k1 is not None or experimental_bm25_b is not None:
+            self._native.set_experimental_bm25_params(experimental_bm25_k1, experimental_bm25_b)
         self._eager = method in ("semantic", "hybrid")
         self._embedding_artifact = experimental_embedding_artifact
         self._warn_on_model_mismatch = True
@@ -957,6 +963,8 @@ class ToolCatalog:
         method: SearchMethod = "bm25",
         embedding: EmbeddingSpec | None = None,
         experimental_dense_weight: float | None = None,
+        experimental_bm25_k1: float | None = None,
+        experimental_bm25_b: float | None = None,
         experimental_embedding_artifact: ExperimentalEmbeddingArtifact | None = None,
     ) -> None:
         """Create an empty catalog.
@@ -980,6 +988,22 @@ class ToolCatalog:
                 do not have and wants a lower value. 0 is pure lexical, 1 pure
                 dense; anything outside [0, 1] raises rather than being clamped.
                 It does not scale the adaptive-ranking arm.
+            experimental_bm25_k1: term-frequency saturation. Default 0.9.
+            experimental_bm25_b: length normalisation. Default 0.4. The shipped
+                defaults assume tool-shaped documents — a short description
+                plus every schema token — so document length partly reflects
+                parameter count, not verbosity. BFCL measured b=0.75 as a
+                narrow winner on a corpus shaped like that (599 function-calling
+                scenarios, lexical arm only — ADR-0023/ADR-0024), worth trying
+                if your catalog looks similar. A catalog that sets
+                experimental_searchable_description everywhere skips schema
+                flattening and has near-uniform document length, and a catalog
+                of long-form documents (skills, not tool-call schemas) doesn't
+                resemble what BFCL measured — both suggest a different value.
+                No built-in evaluation ships alongside this: there is no way to
+                tell, from this package alone, whether an override helped your
+                corpus. Rejected (not clamped) outside their valid domain: k1
+                finite and >= 0, b finite and in [0, 1].
             experimental_embedding_artifact: build-time RAT1 to warm on register
                 (any method; default ``on_miss`` is ``"error"``). Each
                 ``register`` re-resolves and re-warms over the whole current
@@ -1002,6 +1026,8 @@ class ToolCatalog:
             embedding,
             method=method,
             experimental_dense_weight=experimental_dense_weight,
+            experimental_bm25_k1=experimental_bm25_k1,
+            experimental_bm25_b=experimental_bm25_b,
             experimental_embedding_artifact=experimental_embedding_artifact,
         )
         if trace is not None:

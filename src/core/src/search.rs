@@ -3,34 +3,86 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use bm25::{DefaultTokenizer, Document, Language, SearchEngine, SearchEngineBuilder, Tokenizer};
 
-/// Term-frequency saturation. Below the crate default because tool text is
-/// short, so a term repeating adds little (ADR-0004).
+/// Shipped `k1`, unless a caller overrides it via [`Bm25Params`].
+///
+/// Below the crate default because tool text is short, so a term repeating
+/// adds little (ADR-0004).
 pub(crate) const BM25_K1: f32 = 0.9;
-/// Length normalisation, at the standard value.
+/// Shipped `b`, unless a caller overrides it via [`Bm25Params`].
 ///
-/// It was 0.4 (ADR-0004), discounted below standard because a tool's document is
-/// its description plus every schema token, so length differences partly reflect
-/// how many arguments a tool takes rather than how much it says.
+/// Standard-value length normalisation. A tool's indexed document is its
+/// description plus every schema token, so length differences partly reflect
+/// how many arguments a tool takes rather than how much it says — that is why
+/// ADR-0004 originally discounted `b` to 0.4 below standard.
 ///
-/// **It moved on evidence that was withdrawn, and was re-justified on a real
-/// corpus.** It rose to 0.75 alongside a projection change that dropped schema
-/// prose, and that projection change was reverted after measurement showed it
-/// altered nothing. BFCL then isolated `b` on its own — 599 scenarios, lexical
-/// arm only, no intent graph, the projection back to its original form — and
-/// 0.75 wins narrowly: hit@1 0.8998 to 0.9065, MRR@5 0.9366 to 0.9410, recall
-/// unchanged at every `k`. Recall holding while MRR moves is the signature of a
-/// length penalty: it reorders what was already retrieved rather than retrieving
-/// differently.
+/// **BFCL later re-measured `b` on its own** — 599 scenarios, lexical arm
+/// only, no intent graph — and 0.75 won narrowly there: hit@1 0.8998 to
+/// 0.9065, MRR@5 0.9366 to 0.9410, recall unchanged at every `k`. On the
+/// in-repo 47-query fixture, though, 0.75 raises how often a write op crowds
+/// out a read query (8/25 to 11/25) — a failure mode BFCL's taxonomy cannot
+/// see at all. See the `b` sweep in `harness-results.md` and ADR-0023/ADR-0024.
 ///
-/// **The fixture's objection stands and is about something else.** On 47 queries
-/// 0.75 leaves top-1 unchanged (12 of 47) and raises read-queries-served-a-
-/// write-op from 8 of 25 to 11. BFCL has no read/write taxonomy, so it cannot
-/// see that failure mode at all — the mode this branch exists to fix. Four net
-/// scenarios better on 599 against three worse on 25, measuring different
-/// things. Keep 0.75 as the field standard now that a real corpus is not against
-/// it, and treat the read/write question as open until a corpus can score it.
-/// See the `b` sweep in `harness-results.md` and ADR-0023.
-pub(crate) const BM25_B: f32 = 0.75;
+/// **The shipped default is 0.4**, not the BFCL-favored 0.75: different
+/// deployments have differently-shaped documents than the tool-call corpora
+/// this constant was tuned against — a catalog that sets
+/// `experimental_searchable_description` everywhere skips schema flattening
+/// entirely ([`crate::indexing::searchable_text`]) and has near-uniform
+/// document length, and a catalog of long-form skill documents looks nothing
+/// like a BFCL scenario. [`Bm25Params`] lets a caller pick 0.75 (or any other
+/// value) back for a corpus that does resemble what BFCL measured.
+pub(crate) const BM25_B: f32 = 0.4;
+
+/// `k1`/`b` for a BM25 index build (ADR-0004, ADR-0023/ADR-0024).
+///
+/// Unlike most of this module's tuning, this one is a deliberate public knob
+/// (not "fixed tuning" in the ADR-0004 sense) — the corpus-shape assumption
+/// behind the shipped defaults does not hold for every deployment. See the
+/// [`BM25_B`] doc comment for when a caller would want to override it. No
+/// built-in evaluation ships alongside this: a caller who overrides it has no
+/// way to tell, from this crate alone, whether the override helped their
+/// corpus.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bm25Params {
+    /// Term-frequency saturation. Must be finite and non-negative.
+    pub k1: f32,
+    /// Length normalisation. Must be finite and in `[0, 1]`.
+    pub b: f32,
+}
+
+impl Default for Bm25Params {
+    fn default() -> Self {
+        Self {
+            k1: BM25_K1,
+            b: BM25_B,
+        }
+    }
+}
+
+impl Bm25Params {
+    /// Set `k1`.
+    #[must_use]
+    pub fn with_k1(mut self, k1: f32) -> Self {
+        self.k1 = k1;
+        self
+    }
+
+    /// Set `b`.
+    #[must_use]
+    pub fn with_b(mut self, b: f32) -> Self {
+        self.b = b;
+        self
+    }
+
+    /// Whether `k1` and `b` are both in their mathematically valid domain —
+    /// `k1` finite and non-negative, `b` finite and in `[0, 1]`. Rejected
+    /// rather than clamped at the SDK boundary, same reasoning as
+    /// [`crate::ClusterPolicy`]: a clamp would silently search at a tuning the
+    /// caller did not ask for.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.k1.is_finite() && self.k1 >= 0.0 && self.b.is_finite() && (0.0..=1.0).contains(&self.b)
+    }
+}
 
 /// A prebuilt BM25 index over `(id, searchable_text)` documents: build once
 /// per corpus state, query many times. Building tokenizes and stems the whole
@@ -58,11 +110,11 @@ fn tokenizer() -> DefaultTokenizer {
 }
 
 impl Bm25Index {
-    /// Tokenize and index `docs`. Corpus statistics (`avgdl`, IDF) come from a
-    /// complete build over exactly these documents, so a rebuild after any
-    /// mutation scores byte-for-byte like a fresh one-shot search — never
-    /// incrementally upsert into the engine, that freezes a stale `avgdl` into
-    /// new documents' scores.
+    /// [`Self::build_with`] at the shipped [`Bm25Params::default`]. Production
+    /// always goes through [`Bm25Cache`], which reads the registry's current
+    /// params instead — this exists for tests and the harness, which want the
+    /// default without threading it explicitly.
+    #[cfg(test)]
     pub(crate) fn build<I>(docs: I) -> Self
     where
         I: IntoIterator<Item = (String, String)>,
@@ -70,9 +122,14 @@ impl Bm25Index {
         Self::build_with(docs, BM25_K1, BM25_B)
     }
 
-    /// [`Self::build`] with explicit `k1`/`b`, so the harness can measure what a
-    /// tuning change costs instead of the constants being taken on faith.
-    /// Production always goes through `build`.
+    /// Tokenize and index `docs` at explicit `k1`/`b`. Corpus statistics
+    /// (`avgdl`, IDF) come from a complete build over exactly these documents,
+    /// so a rebuild after any mutation scores byte-for-byte like a fresh
+    /// one-shot search — never incrementally upsert into the engine, that
+    /// freezes a stale `avgdl` into new documents' scores.
+    ///
+    /// [`Bm25Cache`] calls this directly with the registry's current
+    /// [`Bm25Params`] on every rebuild — this is the one production path.
     pub(crate) fn build_with<I>(docs: I, k1: f32, b: f32) -> Self
     where
         I: IntoIterator<Item = (String, String)>,
@@ -185,18 +242,20 @@ impl Bm25Index {
 /// [`DenseCache`]: crate::dense_cache::DenseCache
 pub(crate) struct Bm25Cache {
     index: Mutex<Option<Arc<Bm25Index>>>,
+    params: Mutex<Bm25Params>,
 }
 
 impl Bm25Cache {
     pub(crate) fn new() -> Self {
         Self {
             index: Mutex::new(None),
+            params: Mutex::new(Bm25Params::default()),
         }
     }
 
     /// The cached index, or the one built from `docs()` and cached. `docs` is
-    /// only called on a cache miss — the first search after construction or
-    /// [`Self::invalidate`].
+    /// only called on a cache miss — the first search after construction, or
+    /// after [`Self::invalidate`]/[`Self::set_params`].
     ///
     /// The corpus snapshot runs under the lock: registries mutate through
     /// `&mut self`, so no mutation can interleave, and concurrent first
@@ -209,7 +268,8 @@ impl Bm25Cache {
         match &*slot {
             Some(index) => Arc::clone(index),
             None => {
-                let index = Arc::new(Bm25Index::build(docs()));
+                let params = *self.params.lock().unwrap_or_else(PoisonError::into_inner);
+                let index = Arc::new(Bm25Index::build_with(docs(), params.k1, params.b));
                 *slot = Some(Arc::clone(&index));
                 index
             }
@@ -220,6 +280,19 @@ impl Bm25Cache {
     /// the then-current corpus. Called by every registry mutation.
     pub(crate) fn invalidate(&self) {
         *self.index.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// `k1`/`b` the next build will use.
+    pub(crate) fn params(&self) -> Bm25Params {
+        *self.params.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Set `k1`/`b` for future builds and invalidate the cached index — a
+    /// param change must rebuild, same as any corpus mutation, or a search
+    /// right after `set_params` would still score under the old tuning.
+    pub(crate) fn set_params(&self, params: Bm25Params) {
+        *self.params.lock().unwrap_or_else(PoisonError::into_inner) = params;
+        self.invalidate();
     }
 }
 
@@ -328,6 +401,58 @@ mod tests {
             "post-invalidate index must reflect only the new corpus"
         );
         assert!(rebuilt.search("notification", 5).is_empty());
+    }
+
+    #[test]
+    fn bm25_params_default_is_the_shipped_tuning() {
+        let params = Bm25Params::default();
+        assert_eq!(params.k1, BM25_K1);
+        assert_eq!(params.b, BM25_B);
+        assert_eq!(params.b, 0.4, "shipped default reverted to 0.4");
+    }
+
+    #[test]
+    fn bm25_params_rejects_b_outside_zero_one() {
+        assert!(!Bm25Params::default().with_b(-0.01).is_valid());
+        assert!(!Bm25Params::default().with_b(1.01).is_valid());
+        assert!(!Bm25Params::default().with_b(f32::NAN).is_valid());
+        assert!(Bm25Params::default().with_b(0.0).is_valid());
+        assert!(Bm25Params::default().with_b(1.0).is_valid());
+    }
+
+    #[test]
+    fn bm25_params_rejects_negative_or_nan_k1() {
+        assert!(!Bm25Params::default().with_k1(-0.01).is_valid());
+        assert!(!Bm25Params::default().with_k1(f32::NAN).is_valid());
+        assert!(Bm25Params::default().with_k1(0.0).is_valid());
+    }
+
+    #[test]
+    fn cache_set_params_rebuilds_and_changes_ranking() {
+        // "long" repeats the query term 4x across 16 words; "short" has it once
+        // in a 1-word document. At low b (default 0.4), the extra term
+        // frequency outweighs the modest length cost and "long" wins. At b=1.0
+        // (full length normalization), the length cost dominates and "short"
+        // wins. The margin (~20-25%) is deliberately wide: an earlier,
+        // narrower corpus flipped on a difference as small as one extra
+        // indexed token, because a 30x-repetition term frequency saturates
+        // with k1=0.9 and nearly cancels the length penalty regardless of b.
+        let docs = || {
+            vec![
+                ("short".to_string(), "read".to_string()),
+                ("long".to_string(), "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12".to_string()),
+            ]
+        };
+        let cache = Bm25Cache::new();
+        let low_b = cache.get_or_build(docs);
+        let low_b_top = low_b.search("read", 1)[0].0.clone();
+
+        cache.set_params(Bm25Params::default().with_b(1.0));
+        let high_b = cache.get_or_build(docs);
+        let high_b_top = high_b.search("read", 1)[0].0.clone();
+
+        assert_eq!(low_b_top, "long", "at low b, term frequency should win");
+        assert_eq!(high_b_top, "short", "at high b, length penalty should win");
     }
 
     #[test]

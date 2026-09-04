@@ -367,3 +367,15 @@ def test_dense_weight_is_wired_on_the_skill_catalog_too() -> None:
             SkillCatalog(method="hybrid", experimental_dense_weight=bad)
     for good in (0.0, 0.3, 0.7, 1.0):
         SkillCatalog(method="hybrid", experimental_dense_weight=good)
+
+
+def test_bm25_params_are_wired_on_the_skill_catalog_too() -> None:
+    """Separate wiring from ToolCatalog's, so it needs its own proof."""
+    for bad in (-0.1, 1.1, float("nan")):
+        with pytest.raises(ValueError, match="experimental_bm25_params"):
+            SkillCatalog(experimental_bm25_b=bad)
+    for bad in (-0.1, float("nan")):
+        with pytest.raises(ValueError, match="experimental_bm25_params"):
+            SkillCatalog(experimental_bm25_k1=bad)
+    for good in (0.0, 0.4, 0.75, 1.0):
+        SkillCatalog(experimental_bm25_b=good)

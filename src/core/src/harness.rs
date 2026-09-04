@@ -1243,8 +1243,9 @@ fn render(turns: &[Turn], graph: &IntentGraph, records: &[TurnRecord]) -> String
     let _ = writeln!(o, "\n## BM25 length penalty (`b`)\n");
     let _ = writeln!(
         o,
-        "The lexical arm alone, over the same 47 queries, at the old `b = 0.4` and the standard\n\
-         `b = 0.75` it was raised to. `b` scales how hard a long document is\n\
+        "The lexical arm alone, over the same 47 queries, at the shipped `b = 0.4` and the\n\
+         BFCL-favored `b = 0.75` (ADR-0023/ADR-0024) a caller can opt into via\n\
+         `set_experimental_bm25_params`. `b` scales how hard a long document is\n\
          penalised: at 0 length is ignored, at 1 it is fully normalised.\n\
          \n\
          `top-1 correct` counts the queries whose BM25 top-1 is the tool the turn actually\n\

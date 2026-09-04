@@ -422,3 +422,19 @@ describe("SkillCatalog experimentalDenseWeight", () => {
     }
   });
 });
+
+describe("SkillCatalog experimentalBm25", () => {
+  it("rejects out of range and accepts both endpoints", () => {
+    // Separate wiring from ToolCatalog's, so it needs its own proof rather
+    // than inheriting the tool-side test's.
+    for (const bad of [-0.1, 1.1, Number.NaN]) {
+      expect(() => new SkillCatalog({ experimentalBm25: { b: bad } })).toThrow(/experimentalBm25/);
+    }
+    for (const bad of [-0.1, Number.NaN]) {
+      expect(() => new SkillCatalog({ experimentalBm25: { k1: bad } })).toThrow(/experimentalBm25/);
+    }
+    for (const good of [0, 0.4, 0.75, 1]) {
+      expect(() => new SkillCatalog({ experimentalBm25: { b: good } })).not.toThrow();
+    }
+  });
+});

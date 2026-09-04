@@ -1751,6 +1751,29 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[napi]
+    pub fn set_experimental_bm25_params(&self, k1: Option<f64>, b: Option<f64>) -> napi::Result<()> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let mut params = registry.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(napi::Error::from_reason(format!(
+                "experimentalBm25: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        registry.set_experimental_bm25_params(params);
+        Ok(())
+    }
+
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph itself is untouched, so re-enabling
     /// resumes from what it already learned.
@@ -2702,6 +2725,29 @@ impl SkillRegistry {
             .map_err(|e| napi::Error::from_reason(format!("experimentalDenseWeight: {e}")))?;
         let mut registry = write_registry(&self.inner, &self.pending_dense)?;
         registry.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[napi]
+    pub fn set_experimental_bm25_params(&self, k1: Option<f64>, b: Option<f64>) -> napi::Result<()> {
+        let mut registry = write_registry(&self.inner, &self.pending_dense)?;
+        let mut params = registry.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(napi::Error::from_reason(format!(
+                "experimentalBm25: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        registry.set_experimental_bm25_params(params);
         Ok(())
     }
 

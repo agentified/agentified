@@ -15,7 +15,7 @@ use crate::fusion::{
 };
 use crate::indexing::searchable_text;
 use crate::method::SearchMethod;
-use crate::search::Bm25Cache;
+use crate::search::{Bm25Cache, Bm25Params};
 use crate::tool::Tool;
 use crate::trace::{
     ChurnKind, NoopSink, Origin, SearchHitTrace, SearchStage, TraceEnvelope, TraceEvent,
@@ -78,7 +78,8 @@ pub struct SearchHit {
     /// [`SearchMethod`] that produced the hit:
     ///
     /// - `Bm25`: raw BM25 relevance (non-negative, unbounded; `k1=0.9`,
-    ///   `b=0.75`).
+    ///   `b=0.4` by default, configurable via
+    ///   [`ToolRegistry::set_experimental_bm25_params`]).
     /// - `Semantic`: cosine similarity of the L2-normalized query and
     ///   document embeddings (at most `1.0`).
     /// - `Hybrid`: the **score fusion** `(1-w)·bm25/ceiling + w·cos`, plus the
@@ -345,6 +346,23 @@ impl ToolRegistry {
     #[must_use]
     pub fn experimental_dense_weight(&self) -> DenseWeight {
         self.dense_weight
+    }
+
+    /// Set the BM25 `k1`/`b` tuning; forces a rebuild on the next search. See
+    /// [`crate::search::BM25_B`]'s doc comment for when a caller would want to
+    /// deviate from the default.
+    ///
+    /// **Experimental.** No built-in evaluation ships alongside this — a
+    /// caller who overrides it has no way to tell, from this crate alone,
+    /// whether the override helped their corpus.
+    pub fn set_experimental_bm25_params(&mut self, params: Bm25Params) {
+        self.bm25.set_params(params);
+    }
+
+    /// The BM25 tuning the registry's index is (or will be) built with.
+    #[must_use]
+    pub fn experimental_bm25_params(&self) -> Bm25Params {
+        self.bm25.params()
     }
 
     /// A snapshot of whether adaptive usage ranking is currently contributing, so
@@ -1555,6 +1573,30 @@ mod tests {
         assert_ne!(
             lexical_heavy, dense_heavy,
             "the weight must change the fused scores, not just be stored"
+        );
+    }
+
+    #[test]
+    fn bm25_params_default_to_the_shipped_tuning_and_reach_search() {
+        // Same shape as the dense-weight pair above: the untouched registry
+        // reads the shipped default, and setting the knob actually changes
+        // what `search` returns rather than merely being stored.
+        let mut reg = ToolRegistry::new();
+        assert_eq!(reg.experimental_bm25_params(), Bm25Params::default());
+        reg.register(tool("short", "read"));
+        reg.register(tool(
+            "long",
+            "read read read read filler1 filler2 filler3 filler4 filler5 filler6 filler7 filler8 filler9 filler10 filler11 filler12",
+        ));
+
+        let top = |reg: &ToolRegistry| reg.search("read", 1)[0].tool_id.clone();
+        assert_eq!(top(&reg), "long", "default b=0.4 favors term frequency");
+
+        reg.set_experimental_bm25_params(Bm25Params::default().with_b(1.0));
+        assert_eq!(
+            top(&reg),
+            "short",
+            "b=1.0 must reach search, not just be stored"
         );
     }
 

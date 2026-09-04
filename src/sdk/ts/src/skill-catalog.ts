@@ -3,6 +3,7 @@ import type { NativeEventSubscription, ReplaceOutcome, Skill, SkillHit } from ".
 import { warmFromEmbeddingArtifactSource } from "./artifact-source-warm.js";
 import type {
   EmbeddingSpec,
+  ExperimentalBm25Params,
   ObservationPolicyOptions,
   SearchMethod,
   SearchOrigin,
@@ -75,6 +76,11 @@ export interface SkillCatalogOptions {
    * guard (ADR-0014).
    */
   experimentalDenseWeight?: number;
+  /**
+   * BM25 `k1`/`b` override — see {@link ExperimentalBm25Params} for the
+   * defaults, the evidence behind them, and when to reach for this.
+   */
+  experimentalBm25?: ExperimentalBm25Params;
   /** Embedding model for semantic/hybrid retrieval — see
    * {@link ToolCatalogOptions.embedding}. Retained for asynchronous overrides. */
   embedding?: EmbeddingSpec;
@@ -117,6 +123,7 @@ export class SkillCatalog {
       options.embedding,
       this.method,
       options.experimentalDenseWeight,
+      options.experimentalBm25,
     );
     this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {

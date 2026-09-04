@@ -347,6 +347,25 @@ describe("ToolCatalog search methods", () => {
     }
   });
 
+  it("rejects an out-of-range experimentalBm25.b at construction", () => {
+    for (const bad of [-0.1, 1.1, Number.NaN]) {
+      expect(() => new ToolCatalog({ experimentalBm25: { b: bad } })).toThrow(/experimentalBm25/);
+    }
+  });
+
+  it("rejects a negative or NaN experimentalBm25.k1 at construction", () => {
+    for (const bad of [-0.1, Number.NaN]) {
+      expect(() => new ToolCatalog({ experimentalBm25: { k1: bad } })).toThrow(/experimentalBm25/);
+    }
+  });
+
+  it("accepts both endpoints of experimentalBm25.b, and an unset field keeps its default", () => {
+    for (const good of [0, 0.4, 0.75, 1]) {
+      expect(() => new ToolCatalog({ experimentalBm25: { b: good } })).not.toThrow();
+    }
+    expect(() => new ToolCatalog({ experimentalBm25: { k1: 1.2 } })).not.toThrow();
+  });
+
   it("keeps dense search behind the asynchronous API", () => {
     // search() rejects a resolved semantic/hybrid method before ever touching
     // the registry, so this needs no registration (and no working model).

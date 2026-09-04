@@ -1335,6 +1335,28 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[pyo3(signature = (k1=None, b=None))]
+    fn set_experimental_bm25_params(&mut self, k1: Option<f64>, b: Option<f64>) -> PyResult<()> {
+        let mut params = self.inner.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(PyValueError::new_err(format!(
+                "experimental_bm25_params: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        self.inner.set_experimental_bm25_params(params);
+        Ok(())
+    }
+
     /// Turn adaptive usage ranking off: ranking returns to the base engine and
     /// the graph stops growing. The graph keeps what it learned.
     fn disable_adaptive_ranking(&mut self) {
@@ -1828,6 +1850,28 @@ impl SkillRegistry {
         let weight = core::DenseWeight::new(weight as f32)
             .map_err(|e| PyValueError::new_err(format!("experimental_dense_weight: {e}")))?;
         self.inner.set_experimental_dense_weight(weight);
+        Ok(())
+    }
+
+    /// Set BM25 `k1`/`b`; unset fields keep their current value. Rejected if
+    /// the result is outside its mathematically valid domain (`k1` finite and
+    /// non-negative, `b` finite and in `[0, 1]`) rather than clamped.
+    #[pyo3(signature = (k1=None, b=None))]
+    fn set_experimental_bm25_params(&mut self, k1: Option<f64>, b: Option<f64>) -> PyResult<()> {
+        let mut params = self.inner.experimental_bm25_params();
+        if let Some(k1) = k1 {
+            params = params.with_k1(k1 as f32);
+        }
+        if let Some(b) = b {
+            params = params.with_b(b as f32);
+        }
+        if !params.is_valid() {
+            return Err(PyValueError::new_err(format!(
+                "experimental_bm25_params: k1 {} / b {} must be k1 >= 0 and b in [0, 1]",
+                params.k1, params.b
+            )));
+        }
+        self.inner.set_experimental_bm25_params(params);
         Ok(())
     }
 

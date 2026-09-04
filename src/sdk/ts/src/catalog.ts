@@ -178,6 +178,33 @@ export type OriginFilterOption = "any" | "agent" | "baseline";
 export type ProvenanceOption = "live" | "seeded";
 
 /**
+ * BM25 `k1`/`b` override. Both are optional independently — an unset field
+ * keeps its current value. Rejected outside their valid domain (`k1` finite
+ * and non-negative, `b` finite and in `[0, 1]`) rather than clamped, same
+ * posture as {@link ToolCatalogOptions.experimentalDenseWeight}.
+ *
+ * **Experimental.** The shipped defaults (`k1=0.9`, `b=0.4`) assume
+ * tool-shaped documents — a short description plus every schema token
+ * (ADR-0004) — so document length partly reflects how many arguments a tool
+ * takes, not how much it says. BFCL later measured `b=0.75` as a narrow
+ * winner on a corpus shaped like that (599 function-calling scenarios,
+ * lexical arm only — see ADR-0023/ADR-0024), which is why 0.75 is worth
+ * trying if your catalog looks similar. Two signals suggest a different value
+ * instead: a catalog that sets `experimentalSearchableDescription`
+ * everywhere skips schema flattening and has near-uniform document length, so
+ * `b` barely matters either way; and a catalog of long-form documents (skills,
+ * not tool-call schemas) doesn't resemble what BFCL measured at all. No
+ * built-in evaluation ships alongside this option — there is no way to tell,
+ * from this package alone, whether an override helped your corpus.
+ */
+export interface ExperimentalBm25Params {
+  /** Term-frequency saturation. Default `0.9`. Must be finite and `>= 0`. */
+  k1?: number;
+  /** Length normalisation. Default `0.4`. Must be finite and in `[0, 1]`. */
+  b?: number;
+}
+
+/**
  * How a trace stream is turned into observations — the same three knobs for
  * live learning ({@link ToolCatalog.experimentalEnableAdaptiveRanking}) and
  * offline construction ({@link ToolCatalog.experimentalBuildIntentGraph}),
@@ -357,6 +384,11 @@ export interface ToolCatalogOptions {
    */
   experimentalDenseWeight?: number;
   /**
+   * BM25 `k1`/`b` override — see {@link ExperimentalBm25Params} for the
+   * defaults, the evidence behind them, and when to reach for this.
+   */
+  experimentalBm25?: ExperimentalBm25Params;
+  /**
    * Build-time RAT1 to warm on register (any method; default `onMiss: "error"`).
    * Each `register` re-resolves and re-warms over the whole current corpus —
    * intended for one batch at startup; incremental register calls repeat I/O
@@ -423,6 +455,7 @@ export class ToolCatalog {
       options.embedding,
       this.method,
       options.experimentalDenseWeight,
+      options.experimentalBm25,
     );
     this.embeddingArtifact = options.experimentalEmbeddingArtifact;
     if (options.trace) {

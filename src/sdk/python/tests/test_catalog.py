@@ -758,3 +758,21 @@ def test_dense_weight_accepts_both_endpoints() -> None:
     """0 is pure lexical and 1 pure dense: both are real choices."""
     for good in (0.0, 0.3, 0.7, 1.0):
         ToolCatalog(method="hybrid", experimental_dense_weight=good)
+
+
+def test_bm25_b_out_of_range_is_rejected_not_clamped() -> None:
+    for bad in (-0.1, 1.1, float("nan")):
+        with pytest.raises(ValueError, match="experimental_bm25_params"):
+            ToolCatalog(experimental_bm25_b=bad)
+
+
+def test_bm25_k1_negative_or_nan_is_rejected() -> None:
+    for bad in (-0.1, float("nan")):
+        with pytest.raises(ValueError, match="experimental_bm25_params"):
+            ToolCatalog(experimental_bm25_k1=bad)
+
+
+def test_bm25_params_accept_both_endpoints_and_an_unset_field_keeps_its_default() -> None:
+    for good in (0.0, 0.4, 0.75, 1.0):
+        ToolCatalog(experimental_bm25_b=good)
+    ToolCatalog(experimental_bm25_k1=1.2)
